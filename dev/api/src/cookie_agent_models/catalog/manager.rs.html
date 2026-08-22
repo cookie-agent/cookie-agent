@@ -32,7 +32,7 @@
 <a href=#32 id=32 data-nosnippet>32</a></span><span class="kw">pub struct </span>CatalogManager&lt;T&gt; {
 <a href=#33 id=33 data-nosnippet>33</a>    transport: Arc&lt;T&gt;,
 <a href=#34 id=34 data-nosnippet>34</a>    cache: <span class="prelude-ty">Result</span>&lt;SecureDirectory, CatalogError&gt;,
-<a href=#35 id=35 data-nosnippet>35</a>    <span class="attr">#[cfg(test)]
+<a href=#35 id=35 data-nosnippet>35</a>    <span class="attr">#[cfg(all(test, unix))]
 <a href=#36 id=36 data-nosnippet>36</a>    </span>commit_failure: std::sync::Mutex&lt;<span class="prelude-ty">Option</span>&lt;CacheCommitPhase&gt;&gt;,
 <a href=#37 id=37 data-nosnippet>37</a>}
 <a href=#38 id=38 data-nosnippet>38</a>
@@ -42,7 +42,7 @@
 <a href=#42 id=42 data-nosnippet>42</a>        <span class="self">Self </span>{
 <a href=#43 id=43 data-nosnippet>43</a>            transport: Arc::new(transport),
 <a href=#44 id=44 data-nosnippet>44</a>            cache: SecureDirectory::user_data(<span class="string">"catalog"</span>).map_err(CatalogError::from_store),
-<a href=#45 id=45 data-nosnippet>45</a>            <span class="attr">#[cfg(test)]
+<a href=#45 id=45 data-nosnippet>45</a>            <span class="attr">#[cfg(all(test, unix))]
 <a href=#46 id=46 data-nosnippet>46</a>            </span>commit_failure: std::sync::Mutex::new(<span class="prelude-val">None</span>),
 <a href=#47 id=47 data-nosnippet>47</a>        }
 <a href=#48 id=48 data-nosnippet>48</a>    }
@@ -53,7 +53,7 @@
 <a href=#53 id=53 data-nosnippet>53</a>        <span class="self">Self </span>{
 <a href=#54 id=54 data-nosnippet>54</a>            transport: Arc::new(transport),
 <a href=#55 id=55 data-nosnippet>55</a>            cache: <span class="prelude-val">Ok</span>(cache),
-<a href=#56 id=56 data-nosnippet>56</a>            <span class="attr">#[cfg(test)]
+<a href=#56 id=56 data-nosnippet>56</a>            <span class="attr">#[cfg(all(test, unix))]
 <a href=#57 id=57 data-nosnippet>57</a>            </span>commit_failure: std::sync::Mutex::new(<span class="prelude-val">None</span>),
 <a href=#58 id=58 data-nosnippet>58</a>        }
 <a href=#59 id=59 data-nosnippet>59</a>    }
@@ -67,7 +67,7 @@
 <a href=#67 id=67 data-nosnippet>67</a>        <span class="self">Self </span>{
 <a href=#68 id=68 data-nosnippet>68</a>            transport: Arc::new(transport),
 <a href=#69 id=69 data-nosnippet>69</a>            cache: SecureDirectory::open_in(anchor, relative).map_err(CatalogError::from_store),
-<a href=#70 id=70 data-nosnippet>70</a>            <span class="attr">#[cfg(test)]
+<a href=#70 id=70 data-nosnippet>70</a>            <span class="attr">#[cfg(all(test, unix))]
 <a href=#71 id=71 data-nosnippet>71</a>            </span>commit_failure: std::sync::Mutex::new(<span class="prelude-val">None</span>),
 <a href=#72 id=72 data-nosnippet>72</a>        }
 <a href=#73 id=73 data-nosnippet>73</a>    }
@@ -389,12 +389,12 @@
 <a href=#389 id=389 data-nosnippet>389</a>        <span class="prelude-val">Ok</span>(())
 <a href=#390 id=390 data-nosnippet>390</a>    }
 <a href=#391 id=391 data-nosnippet>391</a>
-<a href=#392 id=392 data-nosnippet>392</a>    <span class="attr">#[cfg(test)]
+<a href=#392 id=392 data-nosnippet>392</a>    <span class="attr">#[cfg(all(test, unix))]
 <a href=#393 id=393 data-nosnippet>393</a>    </span><span class="kw">fn </span>fail_commit_at(<span class="kw-2">&amp;</span><span class="self">self</span>, phase: CacheCommitPhase) {
 <a href=#394 id=394 data-nosnippet>394</a>        <span class="kw-2">*</span><span class="self">self</span>.commit_failure.lock().expect(<span class="string">"commit failure lock"</span>) = <span class="prelude-val">Some</span>(phase);
 <a href=#395 id=395 data-nosnippet>395</a>    }
 <a href=#396 id=396 data-nosnippet>396</a>
-<a href=#397 id=397 data-nosnippet>397</a>    <span class="attr">#[cfg(test)]
+<a href=#397 id=397 data-nosnippet>397</a>    <span class="attr">#[cfg(all(test, unix))]
 <a href=#398 id=398 data-nosnippet>398</a>    </span><span class="kw">fn </span>commit_checkpoint(<span class="kw-2">&amp;</span><span class="self">self</span>, phase: CacheCommitPhase) -&gt; <span class="prelude-ty">Result</span>&lt;(), CatalogError&gt; {
 <a href=#399 id=399 data-nosnippet>399</a>        <span class="kw">let </span><span class="kw-2">mut </span>failure = <span class="self">self</span>.commit_failure.lock().expect(<span class="string">"commit failure lock"</span>);
 <a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">if </span>failure.as_ref() == <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>phase) {
@@ -408,7 +408,7 @@
 <a href=#408 id=408 data-nosnippet>408</a>        }
 <a href=#409 id=409 data-nosnippet>409</a>    }
 <a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>    <span class="attr">#[cfg(not(test))]
+<a href=#411 id=411 data-nosnippet>411</a>    <span class="attr">#[cfg(not(all(test, unix)))]
 <a href=#412 id=412 data-nosnippet>412</a>    </span><span class="kw">fn </span>commit_checkpoint(<span class="kw-2">&amp;</span><span class="self">self</span>, _phase: CacheCommitPhase) -&gt; <span class="prelude-ty">Result</span>&lt;(), CatalogError&gt; {
 <a href=#413 id=413 data-nosnippet>413</a>        <span class="prelude-val">Ok</span>(())
 <a href=#414 id=414 data-nosnippet>414</a>    }
@@ -947,173 +947,172 @@
 <a href=#947 id=947 data-nosnippet>947</a>    <span class="kw">fn </span>from_store(error: SecureStoreError) -&gt; <span class="self">Self </span>{
 <a href=#948 id=948 data-nosnippet>948</a>        <span class="kw">let </span>code = <span class="kw">match </span>error {
 <a href=#949 id=949 data-nosnippet>949</a>            SecureStoreError::HomeUnavailable =&gt; <span class="string">"catalog_cache_home_unavailable"</span>,
-<a href=#950 id=950 data-nosnippet>950</a>            SecureStoreError::UnsupportedPlatform =&gt; <span class="string">"catalog_cache_unsupported_platform"</span>,
-<a href=#951 id=951 data-nosnippet>951</a>            SecureStoreError::UnsafePath =&gt; <span class="string">"catalog_cache_unsafe_path"</span>,
-<a href=#952 id=952 data-nosnippet>952</a>            SecureStoreError::TooLarge =&gt; <span class="string">"catalog_cache_too_large"</span>,
-<a href=#953 id=953 data-nosnippet>953</a>            SecureStoreError::Io(<span class="kw">_</span>) =&gt; <span class="string">"catalog_cache_io_failed"</span>,
-<a href=#954 id=954 data-nosnippet>954</a>        };
-<a href=#955 id=955 data-nosnippet>955</a>        <span class="self">Self</span>::new(code, <span class="string">"catalog cache could not be used safely"</span>)
-<a href=#956 id=956 data-nosnippet>956</a>    }
-<a href=#957 id=957 data-nosnippet>957</a>
-<a href=#958 id=958 data-nosnippet>958</a>    <span class="kw">fn </span>from_transport(error: CatalogTransportError) -&gt; <span class="self">Self </span>{
-<a href=#959 id=959 data-nosnippet>959</a>        <span class="kw">let </span>code = <span class="kw">match </span>error {
-<a href=#960 id=960 data-nosnippet>960</a>            CatalogTransportError::ClientBuild =&gt; <span class="string">"catalog_transport_client_build_failed"</span>,
-<a href=#961 id=961 data-nosnippet>961</a>            CatalogTransportError::InvalidRequest =&gt; <span class="string">"catalog_transport_invalid_request"</span>,
-<a href=#962 id=962 data-nosnippet>962</a>            CatalogTransportError::InvalidEtag =&gt; <span class="string">"invalid_catalog_etag"</span>,
-<a href=#963 id=963 data-nosnippet>963</a>            CatalogTransportError::InvalidHeaders =&gt; <span class="string">"catalog_response_headers_invalid"</span>,
-<a href=#964 id=964 data-nosnippet>964</a>            CatalogTransportError::RequestFailed =&gt; <span class="string">"catalog_network_failed"</span>,
-<a href=#965 id=965 data-nosnippet>965</a>            CatalogTransportError::BodyReadFailed =&gt; <span class="string">"catalog_body_read_failed"</span>,
-<a href=#966 id=966 data-nosnippet>966</a>            CatalogTransportError::BodyTooLarge =&gt; <span class="string">"catalog_body_too_large"</span>,
-<a href=#967 id=967 data-nosnippet>967</a>        };
-<a href=#968 id=968 data-nosnippet>968</a>        <span class="self">Self</span>::new(code, error.to_string())
-<a href=#969 id=969 data-nosnippet>969</a>    }
-<a href=#970 id=970 data-nosnippet>970</a>}
-<a href=#971 id=971 data-nosnippet>971</a>
-<a href=#972 id=972 data-nosnippet>972</a><span class="attr">#[cfg(all(test, unix))]
-<a href=#973 id=973 data-nosnippet>973</a></span><span class="kw">mod </span>tests {
-<a href=#974 id=974 data-nosnippet>974</a>    <span class="kw">use </span>std::{collections::VecDeque, fs, os::unix::fs::PermissionsExt <span class="kw">as _</span>, sync::Mutex};
-<a href=#975 id=975 data-nosnippet>975</a>
-<a href=#976 id=976 data-nosnippet>976</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#977 id=977 data-nosnippet>977</a>    <span class="kw">use </span><span class="kw">crate</span>::catalog::{CatalogRequest, CatalogTransportFuture, CatalogTransportResponse};
-<a href=#978 id=978 data-nosnippet>978</a>
-<a href=#979 id=979 data-nosnippet>979</a>    <span class="kw">struct </span>TestTransport {
-<a href=#980 id=980 data-nosnippet>980</a>        responses: Mutex&lt;VecDeque&lt;<span class="prelude-ty">Result</span>&lt;CatalogTransportResponse, CatalogTransportError&gt;&gt;&gt;,
-<a href=#981 id=981 data-nosnippet>981</a>    }
-<a href=#982 id=982 data-nosnippet>982</a>
-<a href=#983 id=983 data-nosnippet>983</a>    <span class="kw">impl </span>CatalogTransport <span class="kw">for </span>TestTransport {
-<a href=#984 id=984 data-nosnippet>984</a>        <span class="kw">fn </span>fetch(<span class="kw-2">&amp;</span><span class="self">self</span>, _request: CatalogRequest) -&gt; CatalogTransportFuture&lt;<span class="lifetime">'_</span>&gt; {
-<a href=#985 id=985 data-nosnippet>985</a>            <span class="kw">let </span>response = <span class="self">self
-<a href=#986 id=986 data-nosnippet>986</a>                </span>.responses
-<a href=#987 id=987 data-nosnippet>987</a>                .lock()
-<a href=#988 id=988 data-nosnippet>988</a>                .expect(<span class="string">"transport responses"</span>)
-<a href=#989 id=989 data-nosnippet>989</a>                .pop_front()
-<a href=#990 id=990 data-nosnippet>990</a>                .expect(<span class="string">"scripted response"</span>);
-<a href=#991 id=991 data-nosnippet>991</a>            Box::pin(<span class="kw">async move </span>{ response })
-<a href=#992 id=992 data-nosnippet>992</a>        }
-<a href=#993 id=993 data-nosnippet>993</a>    }
-<a href=#994 id=994 data-nosnippet>994</a>
-<a href=#995 id=995 data-nosnippet>995</a>    <span class="kw">fn </span>body(name: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;u8&gt; {
-<a href=#996 id=996 data-nosnippet>996</a>        serde_json::to_vec(<span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({
-<a href=#997 id=997 data-nosnippet>997</a>            <span class="string">"providers"</span>: {
-<a href=#998 id=998 data-nosnippet>998</a>                <span class="string">"test"</span>: {
-<a href=#999 id=999 data-nosnippet>999</a>                    <span class="string">"id"</span>: <span class="string">"test"</span>,
-<a href=#1000 id=1000 data-nosnippet>1000</a>                    <span class="string">"env"</span>: [<span class="string">"TEST_API_KEY"</span>],
-<a href=#1001 id=1001 data-nosnippet>1001</a>                    <span class="string">"npm"</span>: <span class="string">"test-npm"</span>,
-<a href=#1002 id=1002 data-nosnippet>1002</a>                    <span class="string">"name"</span>: <span class="string">"Test"</span>,
-<a href=#1003 id=1003 data-nosnippet>1003</a>                    <span class="string">"doc"</span>: <span class="string">"https://example.invalid"</span>,
-<a href=#1004 id=1004 data-nosnippet>1004</a>                    <span class="string">"models"</span>: {
-<a href=#1005 id=1005 data-nosnippet>1005</a>                        <span class="string">"model"</span>: {
-<a href=#1006 id=1006 data-nosnippet>1006</a>                            <span class="string">"id"</span>: <span class="string">"model"</span>,
-<a href=#1007 id=1007 data-nosnippet>1007</a>                            <span class="string">"name"</span>: name,
-<a href=#1008 id=1008 data-nosnippet>1008</a>                            <span class="string">"description"</span>: <span class="string">"test"</span>,
-<a href=#1009 id=1009 data-nosnippet>1009</a>                            <span class="string">"attachment"</span>: <span class="bool-val">false</span>,
-<a href=#1010 id=1010 data-nosnippet>1010</a>                            <span class="string">"reasoning"</span>: <span class="bool-val">false</span>,
-<a href=#1011 id=1011 data-nosnippet>1011</a>                            <span class="string">"tool_call"</span>: <span class="bool-val">false</span>,
-<a href=#1012 id=1012 data-nosnippet>1012</a>                            <span class="string">"open_weights"</span>: <span class="bool-val">false</span>,
-<a href=#1013 id=1013 data-nosnippet>1013</a>                            <span class="string">"release_date"</span>: <span class="string">"2026-08-01"</span>,
-<a href=#1014 id=1014 data-nosnippet>1014</a>                            <span class="string">"last_updated"</span>: <span class="string">"2026-08-05"</span>,
-<a href=#1015 id=1015 data-nosnippet>1015</a>                            <span class="string">"modalities"</span>: {<span class="string">"input"</span>: [<span class="string">"text"</span>], <span class="string">"output"</span>: [<span class="string">"text"</span>]},
-<a href=#1016 id=1016 data-nosnippet>1016</a>                            <span class="string">"limit"</span>: {<span class="string">"context"</span>: <span class="number">4096</span>, <span class="string">"output"</span>: <span class="number">1024</span>}
-<a href=#1017 id=1017 data-nosnippet>1017</a>                        }
-<a href=#1018 id=1018 data-nosnippet>1018</a>                    }
-<a href=#1019 id=1019 data-nosnippet>1019</a>                }
-<a href=#1020 id=1020 data-nosnippet>1020</a>            },
-<a href=#1021 id=1021 data-nosnippet>1021</a>            <span class="string">"models"</span>: {
-<a href=#1022 id=1022 data-nosnippet>1022</a>                <span class="string">"model"</span>: {
-<a href=#1023 id=1023 data-nosnippet>1023</a>                    <span class="string">"id"</span>: <span class="string">"model"</span>,
-<a href=#1024 id=1024 data-nosnippet>1024</a>                    <span class="string">"name"</span>: name,
-<a href=#1025 id=1025 data-nosnippet>1025</a>                    <span class="string">"description"</span>: <span class="string">"test"</span>,
-<a href=#1026 id=1026 data-nosnippet>1026</a>                    <span class="string">"attachment"</span>: <span class="bool-val">false</span>,
-<a href=#1027 id=1027 data-nosnippet>1027</a>                    <span class="string">"reasoning"</span>: <span class="bool-val">false</span>,
-<a href=#1028 id=1028 data-nosnippet>1028</a>                    <span class="string">"tool_call"</span>: <span class="bool-val">false</span>,
-<a href=#1029 id=1029 data-nosnippet>1029</a>                    <span class="string">"open_weights"</span>: <span class="bool-val">false</span>,
-<a href=#1030 id=1030 data-nosnippet>1030</a>                    <span class="string">"release_date"</span>: <span class="string">"2026-08-01"</span>,
-<a href=#1031 id=1031 data-nosnippet>1031</a>                    <span class="string">"last_updated"</span>: <span class="string">"2026-08-05"</span>,
-<a href=#1032 id=1032 data-nosnippet>1032</a>                    <span class="string">"modalities"</span>: {<span class="string">"input"</span>: [<span class="string">"text"</span>], <span class="string">"output"</span>: [<span class="string">"text"</span>]},
-<a href=#1033 id=1033 data-nosnippet>1033</a>                    <span class="string">"limit"</span>: {<span class="string">"context"</span>: <span class="number">4096</span>, <span class="string">"output"</span>: <span class="number">1024</span>}
-<a href=#1034 id=1034 data-nosnippet>1034</a>                }
-<a href=#1035 id=1035 data-nosnippet>1035</a>            }
-<a href=#1036 id=1036 data-nosnippet>1036</a>        }))
-<a href=#1037 id=1037 data-nosnippet>1037</a>        .expect(<span class="string">"catalog fixture"</span>)
-<a href=#1038 id=1038 data-nosnippet>1038</a>    }
-<a href=#1039 id=1039 data-nosnippet>1039</a>
-<a href=#1040 id=1040 data-nosnippet>1040</a>    <span class="kw">fn </span>time() -&gt; Timestamp {
-<a href=#1041 id=1041 data-nosnippet>1041</a>        <span class="string">"2026-08-05T00:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>)
-<a href=#1042 id=1042 data-nosnippet>1042</a>    }
-<a href=#1043 id=1043 data-nosnippet>1043</a>
-<a href=#1044 id=1044 data-nosnippet>1044</a>    <span class="attr">#[tokio::test]
-<a href=#1045 id=1045 data-nosnippet>1045</a>    </span><span class="kw">async fn </span>every_fixed_pair_commit_failure_recovers_one_complete_transaction() {
-<a href=#1046 id=1046 data-nosnippet>1046</a>        <span class="kw">for </span>phase <span class="kw">in </span>[
-<a href=#1047 id=1047 data-nosnippet>1047</a>            CacheCommitPhase::BeforeNextBody,
-<a href=#1048 id=1048 data-nosnippet>1048</a>            CacheCommitPhase::AfterNextBody,
-<a href=#1049 id=1049 data-nosnippet>1049</a>            CacheCommitPhase::AfterNextMetadata,
-<a href=#1050 id=1050 data-nosnippet>1050</a>            CacheCommitPhase::AfterPrepared,
-<a href=#1051 id=1051 data-nosnippet>1051</a>            CacheCommitPhase::AfterBodyBackup,
-<a href=#1052 id=1052 data-nosnippet>1052</a>            CacheCommitPhase::AfterMetadataBackup,
-<a href=#1053 id=1053 data-nosnippet>1053</a>            CacheCommitPhase::AfterInstalling,
-<a href=#1054 id=1054 data-nosnippet>1054</a>            CacheCommitPhase::AfterBodyInstall,
-<a href=#1055 id=1055 data-nosnippet>1055</a>            CacheCommitPhase::AfterMetadataInstall,
-<a href=#1056 id=1056 data-nosnippet>1056</a>            CacheCommitPhase::AfterValidation,
-<a href=#1057 id=1057 data-nosnippet>1057</a>            CacheCommitPhase::AfterCommitted,
-<a href=#1058 id=1058 data-nosnippet>1058</a>            CacheCommitPhase::AfterCleanup,
-<a href=#1059 id=1059 data-nosnippet>1059</a>        ] {
-<a href=#1060 id=1060 data-nosnippet>1060</a>            <span class="kw">let </span>temporary = tempfile::tempdir().expect(<span class="string">"temporary directory"</span>);
-<a href=#1061 id=1061 data-nosnippet>1061</a>            fs::set_permissions(temporary.path(), fs::Permissions::from_mode(<span class="number">0o700</span>))
-<a href=#1062 id=1062 data-nosnippet>1062</a>                .expect(<span class="string">"private temporary directory"</span>);
-<a href=#1063 id=1063 data-nosnippet>1063</a>            <span class="kw">let </span>directory = SecureDirectory::open_in(temporary.path(), <span class="string">"catalog"</span>)
-<a href=#1064 id=1064 data-nosnippet>1064</a>                .expect(<span class="string">"secure catalog directory"</span>);
-<a href=#1065 id=1065 data-nosnippet>1065</a>            <span class="kw">let </span>first_body = body(<span class="string">"first"</span>);
-<a href=#1066 id=1066 data-nosnippet>1066</a>            <span class="kw">let </span>second_body = body(<span class="string">"second"</span>);
-<a href=#1067 id=1067 data-nosnippet>1067</a>            <span class="kw">let </span>transport = TestTransport {
-<a href=#1068 id=1068 data-nosnippet>1068</a>                responses: Mutex::new(VecDeque::from([
-<a href=#1069 id=1069 data-nosnippet>1069</a>                    <span class="prelude-val">Ok</span>(CatalogTransportResponse::from_bytes(<span class="number">200</span>, first_body)),
-<a href=#1070 id=1070 data-nosnippet>1070</a>                    <span class="prelude-val">Ok</span>(CatalogTransportResponse::from_bytes(<span class="number">200</span>, second_body)),
-<a href=#1071 id=1071 data-nosnippet>1071</a>                    <span class="prelude-val">Err</span>(CatalogTransportError::RequestFailed),
-<a href=#1072 id=1072 data-nosnippet>1072</a>                ])),
-<a href=#1073 id=1073 data-nosnippet>1073</a>            };
-<a href=#1074 id=1074 data-nosnippet>1074</a>            <span class="kw">let </span>manager = CatalogManager::new(transport, directory);
-<a href=#1075 id=1075 data-nosnippet>1075</a>            <span class="kw">let </span>first = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"first transaction"</span>);
-<a href=#1076 id=1076 data-nosnippet>1076</a>            manager.fail_commit_at(phase);
-<a href=#1077 id=1077 data-nosnippet>1077</a>            <span class="kw">let </span>second = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"network selection"</span>);
-<a href=#1078 id=1078 data-nosnippet>1078</a>            <span class="macro">assert_eq!</span>(
-<a href=#1079 id=1079 data-nosnippet>1079</a>                second
-<a href=#1080 id=1080 data-nosnippet>1080</a>                    .state
-<a href=#1081 id=1081 data-nosnippet>1081</a>                    .last_error
-<a href=#1082 id=1082 data-nosnippet>1082</a>                    .as_ref()
-<a href=#1083 id=1083 data-nosnippet>1083</a>                    .map(|error| error.code.as_str()),
-<a href=#1084 id=1084 data-nosnippet>1084</a>                <span class="prelude-val">Some</span>(<span class="string">"cache_commit_injected_failure"</span>),
-<a href=#1085 id=1085 data-nosnippet>1085</a>                <span class="string">"phase {phase:?}"
-<a href=#1086 id=1086 data-nosnippet>1086</a>            </span>);
-<a href=#1087 id=1087 data-nosnippet>1087</a>            <span class="kw">let </span>recovered = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"cache recovery"</span>);
-<a href=#1088 id=1088 data-nosnippet>1088</a>            <span class="macro">assert_eq!</span>(recovered.source, CatalogSource::Cache, <span class="string">"phase {phase:?}"</span>);
-<a href=#1089 id=1089 data-nosnippet>1089</a>            <span class="kw">let </span>expected = <span class="kw">if </span><span class="macro">matches!</span>(
-<a href=#1090 id=1090 data-nosnippet>1090</a>                phase,
-<a href=#1091 id=1091 data-nosnippet>1091</a>                CacheCommitPhase::AfterCommitted | CacheCommitPhase::AfterCleanup
-<a href=#1092 id=1092 data-nosnippet>1092</a>            ) {
-<a href=#1093 id=1093 data-nosnippet>1093</a>                <span class="kw-2">&amp;</span>second.revision
-<a href=#1094 id=1094 data-nosnippet>1094</a>            } <span class="kw">else </span>{
-<a href=#1095 id=1095 data-nosnippet>1095</a>                <span class="kw-2">&amp;</span>first.revision
-<a href=#1096 id=1096 data-nosnippet>1096</a>            };
-<a href=#1097 id=1097 data-nosnippet>1097</a>            <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>recovered.revision, expected, <span class="string">"phase {phase:?}"</span>);
-<a href=#1098 id=1098 data-nosnippet>1098</a>            <span class="kw">let </span>entries = fs::read_dir(temporary.path().join(<span class="string">"catalog"</span>))
-<a href=#1099 id=1099 data-nosnippet>1099</a>                .expect(<span class="string">"cache directory"</span>)
-<a href=#1100 id=1100 data-nosnippet>1100</a>                .map(|entry| {
-<a href=#1101 id=1101 data-nosnippet>1101</a>                    entry
-<a href=#1102 id=1102 data-nosnippet>1102</a>                        .expect(<span class="string">"cache entry"</span>)
-<a href=#1103 id=1103 data-nosnippet>1103</a>                        .file_name()
-<a href=#1104 id=1104 data-nosnippet>1104</a>                        .into_string()
-<a href=#1105 id=1105 data-nosnippet>1105</a>                        .expect(<span class="string">"UTF-8 cache name"</span>)
-<a href=#1106 id=1106 data-nosnippet>1106</a>                })
-<a href=#1107 id=1107 data-nosnippet>1107</a>                .collect::&lt;std::collections::BTreeSet&lt;<span class="kw">_</span>&gt;&gt;();
-<a href=#1108 id=1108 data-nosnippet>1108</a>            <span class="macro">assert_eq!</span>(
-<a href=#1109 id=1109 data-nosnippet>1109</a>                entries,
-<a href=#1110 id=1110 data-nosnippet>1110</a>                [CATALOG_BODY_FILE, CATALOG_META_FILE, CATALOG_LOCK_FILE]
-<a href=#1111 id=1111 data-nosnippet>1111</a>                    .into_iter()
-<a href=#1112 id=1112 data-nosnippet>1112</a>                    .map(str::to_owned)
-<a href=#1113 id=1113 data-nosnippet>1113</a>                    .collect(),
-<a href=#1114 id=1114 data-nosnippet>1114</a>                <span class="string">"phase {phase:?}"
-<a href=#1115 id=1115 data-nosnippet>1115</a>            </span>);
-<a href=#1116 id=1116 data-nosnippet>1116</a>        }
-<a href=#1117 id=1117 data-nosnippet>1117</a>    }
-<a href=#1118 id=1118 data-nosnippet>1118</a>}
+<a href=#950 id=950 data-nosnippet>950</a>            SecureStoreError::UnsafePath =&gt; <span class="string">"catalog_cache_unsafe_path"</span>,
+<a href=#951 id=951 data-nosnippet>951</a>            SecureStoreError::TooLarge =&gt; <span class="string">"catalog_cache_too_large"</span>,
+<a href=#952 id=952 data-nosnippet>952</a>            SecureStoreError::Io(<span class="kw">_</span>) =&gt; <span class="string">"catalog_cache_io_failed"</span>,
+<a href=#953 id=953 data-nosnippet>953</a>        };
+<a href=#954 id=954 data-nosnippet>954</a>        <span class="self">Self</span>::new(code, <span class="string">"catalog cache could not be used safely"</span>)
+<a href=#955 id=955 data-nosnippet>955</a>    }
+<a href=#956 id=956 data-nosnippet>956</a>
+<a href=#957 id=957 data-nosnippet>957</a>    <span class="kw">fn </span>from_transport(error: CatalogTransportError) -&gt; <span class="self">Self </span>{
+<a href=#958 id=958 data-nosnippet>958</a>        <span class="kw">let </span>code = <span class="kw">match </span>error {
+<a href=#959 id=959 data-nosnippet>959</a>            CatalogTransportError::ClientBuild =&gt; <span class="string">"catalog_transport_client_build_failed"</span>,
+<a href=#960 id=960 data-nosnippet>960</a>            CatalogTransportError::InvalidRequest =&gt; <span class="string">"catalog_transport_invalid_request"</span>,
+<a href=#961 id=961 data-nosnippet>961</a>            CatalogTransportError::InvalidEtag =&gt; <span class="string">"invalid_catalog_etag"</span>,
+<a href=#962 id=962 data-nosnippet>962</a>            CatalogTransportError::InvalidHeaders =&gt; <span class="string">"catalog_response_headers_invalid"</span>,
+<a href=#963 id=963 data-nosnippet>963</a>            CatalogTransportError::RequestFailed =&gt; <span class="string">"catalog_network_failed"</span>,
+<a href=#964 id=964 data-nosnippet>964</a>            CatalogTransportError::BodyReadFailed =&gt; <span class="string">"catalog_body_read_failed"</span>,
+<a href=#965 id=965 data-nosnippet>965</a>            CatalogTransportError::BodyTooLarge =&gt; <span class="string">"catalog_body_too_large"</span>,
+<a href=#966 id=966 data-nosnippet>966</a>        };
+<a href=#967 id=967 data-nosnippet>967</a>        <span class="self">Self</span>::new(code, error.to_string())
+<a href=#968 id=968 data-nosnippet>968</a>    }
+<a href=#969 id=969 data-nosnippet>969</a>}
+<a href=#970 id=970 data-nosnippet>970</a>
+<a href=#971 id=971 data-nosnippet>971</a><span class="attr">#[cfg(all(test, unix))]
+<a href=#972 id=972 data-nosnippet>972</a></span><span class="kw">mod </span>tests {
+<a href=#973 id=973 data-nosnippet>973</a>    <span class="kw">use </span>std::{collections::VecDeque, fs, os::unix::fs::PermissionsExt <span class="kw">as _</span>, sync::Mutex};
+<a href=#974 id=974 data-nosnippet>974</a>
+<a href=#975 id=975 data-nosnippet>975</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#976 id=976 data-nosnippet>976</a>    <span class="kw">use </span><span class="kw">crate</span>::catalog::{CatalogRequest, CatalogTransportFuture, CatalogTransportResponse};
+<a href=#977 id=977 data-nosnippet>977</a>
+<a href=#978 id=978 data-nosnippet>978</a>    <span class="kw">struct </span>TestTransport {
+<a href=#979 id=979 data-nosnippet>979</a>        responses: Mutex&lt;VecDeque&lt;<span class="prelude-ty">Result</span>&lt;CatalogTransportResponse, CatalogTransportError&gt;&gt;&gt;,
+<a href=#980 id=980 data-nosnippet>980</a>    }
+<a href=#981 id=981 data-nosnippet>981</a>
+<a href=#982 id=982 data-nosnippet>982</a>    <span class="kw">impl </span>CatalogTransport <span class="kw">for </span>TestTransport {
+<a href=#983 id=983 data-nosnippet>983</a>        <span class="kw">fn </span>fetch(<span class="kw-2">&amp;</span><span class="self">self</span>, _request: CatalogRequest) -&gt; CatalogTransportFuture&lt;<span class="lifetime">'_</span>&gt; {
+<a href=#984 id=984 data-nosnippet>984</a>            <span class="kw">let </span>response = <span class="self">self
+<a href=#985 id=985 data-nosnippet>985</a>                </span>.responses
+<a href=#986 id=986 data-nosnippet>986</a>                .lock()
+<a href=#987 id=987 data-nosnippet>987</a>                .expect(<span class="string">"transport responses"</span>)
+<a href=#988 id=988 data-nosnippet>988</a>                .pop_front()
+<a href=#989 id=989 data-nosnippet>989</a>                .expect(<span class="string">"scripted response"</span>);
+<a href=#990 id=990 data-nosnippet>990</a>            Box::pin(<span class="kw">async move </span>{ response })
+<a href=#991 id=991 data-nosnippet>991</a>        }
+<a href=#992 id=992 data-nosnippet>992</a>    }
+<a href=#993 id=993 data-nosnippet>993</a>
+<a href=#994 id=994 data-nosnippet>994</a>    <span class="kw">fn </span>body(name: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;u8&gt; {
+<a href=#995 id=995 data-nosnippet>995</a>        serde_json::to_vec(<span class="kw-2">&amp;</span><span class="macro">serde_json::json!</span>({
+<a href=#996 id=996 data-nosnippet>996</a>            <span class="string">"providers"</span>: {
+<a href=#997 id=997 data-nosnippet>997</a>                <span class="string">"test"</span>: {
+<a href=#998 id=998 data-nosnippet>998</a>                    <span class="string">"id"</span>: <span class="string">"test"</span>,
+<a href=#999 id=999 data-nosnippet>999</a>                    <span class="string">"env"</span>: [<span class="string">"TEST_API_KEY"</span>],
+<a href=#1000 id=1000 data-nosnippet>1000</a>                    <span class="string">"npm"</span>: <span class="string">"test-npm"</span>,
+<a href=#1001 id=1001 data-nosnippet>1001</a>                    <span class="string">"name"</span>: <span class="string">"Test"</span>,
+<a href=#1002 id=1002 data-nosnippet>1002</a>                    <span class="string">"doc"</span>: <span class="string">"https://example.invalid"</span>,
+<a href=#1003 id=1003 data-nosnippet>1003</a>                    <span class="string">"models"</span>: {
+<a href=#1004 id=1004 data-nosnippet>1004</a>                        <span class="string">"model"</span>: {
+<a href=#1005 id=1005 data-nosnippet>1005</a>                            <span class="string">"id"</span>: <span class="string">"model"</span>,
+<a href=#1006 id=1006 data-nosnippet>1006</a>                            <span class="string">"name"</span>: name,
+<a href=#1007 id=1007 data-nosnippet>1007</a>                            <span class="string">"description"</span>: <span class="string">"test"</span>,
+<a href=#1008 id=1008 data-nosnippet>1008</a>                            <span class="string">"attachment"</span>: <span class="bool-val">false</span>,
+<a href=#1009 id=1009 data-nosnippet>1009</a>                            <span class="string">"reasoning"</span>: <span class="bool-val">false</span>,
+<a href=#1010 id=1010 data-nosnippet>1010</a>                            <span class="string">"tool_call"</span>: <span class="bool-val">false</span>,
+<a href=#1011 id=1011 data-nosnippet>1011</a>                            <span class="string">"open_weights"</span>: <span class="bool-val">false</span>,
+<a href=#1012 id=1012 data-nosnippet>1012</a>                            <span class="string">"release_date"</span>: <span class="string">"2026-08-01"</span>,
+<a href=#1013 id=1013 data-nosnippet>1013</a>                            <span class="string">"last_updated"</span>: <span class="string">"2026-08-05"</span>,
+<a href=#1014 id=1014 data-nosnippet>1014</a>                            <span class="string">"modalities"</span>: {<span class="string">"input"</span>: [<span class="string">"text"</span>], <span class="string">"output"</span>: [<span class="string">"text"</span>]},
+<a href=#1015 id=1015 data-nosnippet>1015</a>                            <span class="string">"limit"</span>: {<span class="string">"context"</span>: <span class="number">4096</span>, <span class="string">"output"</span>: <span class="number">1024</span>}
+<a href=#1016 id=1016 data-nosnippet>1016</a>                        }
+<a href=#1017 id=1017 data-nosnippet>1017</a>                    }
+<a href=#1018 id=1018 data-nosnippet>1018</a>                }
+<a href=#1019 id=1019 data-nosnippet>1019</a>            },
+<a href=#1020 id=1020 data-nosnippet>1020</a>            <span class="string">"models"</span>: {
+<a href=#1021 id=1021 data-nosnippet>1021</a>                <span class="string">"model"</span>: {
+<a href=#1022 id=1022 data-nosnippet>1022</a>                    <span class="string">"id"</span>: <span class="string">"model"</span>,
+<a href=#1023 id=1023 data-nosnippet>1023</a>                    <span class="string">"name"</span>: name,
+<a href=#1024 id=1024 data-nosnippet>1024</a>                    <span class="string">"description"</span>: <span class="string">"test"</span>,
+<a href=#1025 id=1025 data-nosnippet>1025</a>                    <span class="string">"attachment"</span>: <span class="bool-val">false</span>,
+<a href=#1026 id=1026 data-nosnippet>1026</a>                    <span class="string">"reasoning"</span>: <span class="bool-val">false</span>,
+<a href=#1027 id=1027 data-nosnippet>1027</a>                    <span class="string">"tool_call"</span>: <span class="bool-val">false</span>,
+<a href=#1028 id=1028 data-nosnippet>1028</a>                    <span class="string">"open_weights"</span>: <span class="bool-val">false</span>,
+<a href=#1029 id=1029 data-nosnippet>1029</a>                    <span class="string">"release_date"</span>: <span class="string">"2026-08-01"</span>,
+<a href=#1030 id=1030 data-nosnippet>1030</a>                    <span class="string">"last_updated"</span>: <span class="string">"2026-08-05"</span>,
+<a href=#1031 id=1031 data-nosnippet>1031</a>                    <span class="string">"modalities"</span>: {<span class="string">"input"</span>: [<span class="string">"text"</span>], <span class="string">"output"</span>: [<span class="string">"text"</span>]},
+<a href=#1032 id=1032 data-nosnippet>1032</a>                    <span class="string">"limit"</span>: {<span class="string">"context"</span>: <span class="number">4096</span>, <span class="string">"output"</span>: <span class="number">1024</span>}
+<a href=#1033 id=1033 data-nosnippet>1033</a>                }
+<a href=#1034 id=1034 data-nosnippet>1034</a>            }
+<a href=#1035 id=1035 data-nosnippet>1035</a>        }))
+<a href=#1036 id=1036 data-nosnippet>1036</a>        .expect(<span class="string">"catalog fixture"</span>)
+<a href=#1037 id=1037 data-nosnippet>1037</a>    }
+<a href=#1038 id=1038 data-nosnippet>1038</a>
+<a href=#1039 id=1039 data-nosnippet>1039</a>    <span class="kw">fn </span>time() -&gt; Timestamp {
+<a href=#1040 id=1040 data-nosnippet>1040</a>        <span class="string">"2026-08-05T00:00:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>)
+<a href=#1041 id=1041 data-nosnippet>1041</a>    }
+<a href=#1042 id=1042 data-nosnippet>1042</a>
+<a href=#1043 id=1043 data-nosnippet>1043</a>    <span class="attr">#[tokio::test]
+<a href=#1044 id=1044 data-nosnippet>1044</a>    </span><span class="kw">async fn </span>every_fixed_pair_commit_failure_recovers_one_complete_transaction() {
+<a href=#1045 id=1045 data-nosnippet>1045</a>        <span class="kw">for </span>phase <span class="kw">in </span>[
+<a href=#1046 id=1046 data-nosnippet>1046</a>            CacheCommitPhase::BeforeNextBody,
+<a href=#1047 id=1047 data-nosnippet>1047</a>            CacheCommitPhase::AfterNextBody,
+<a href=#1048 id=1048 data-nosnippet>1048</a>            CacheCommitPhase::AfterNextMetadata,
+<a href=#1049 id=1049 data-nosnippet>1049</a>            CacheCommitPhase::AfterPrepared,
+<a href=#1050 id=1050 data-nosnippet>1050</a>            CacheCommitPhase::AfterBodyBackup,
+<a href=#1051 id=1051 data-nosnippet>1051</a>            CacheCommitPhase::AfterMetadataBackup,
+<a href=#1052 id=1052 data-nosnippet>1052</a>            CacheCommitPhase::AfterInstalling,
+<a href=#1053 id=1053 data-nosnippet>1053</a>            CacheCommitPhase::AfterBodyInstall,
+<a href=#1054 id=1054 data-nosnippet>1054</a>            CacheCommitPhase::AfterMetadataInstall,
+<a href=#1055 id=1055 data-nosnippet>1055</a>            CacheCommitPhase::AfterValidation,
+<a href=#1056 id=1056 data-nosnippet>1056</a>            CacheCommitPhase::AfterCommitted,
+<a href=#1057 id=1057 data-nosnippet>1057</a>            CacheCommitPhase::AfterCleanup,
+<a href=#1058 id=1058 data-nosnippet>1058</a>        ] {
+<a href=#1059 id=1059 data-nosnippet>1059</a>            <span class="kw">let </span>temporary = tempfile::tempdir().expect(<span class="string">"temporary directory"</span>);
+<a href=#1060 id=1060 data-nosnippet>1060</a>            fs::set_permissions(temporary.path(), fs::Permissions::from_mode(<span class="number">0o700</span>))
+<a href=#1061 id=1061 data-nosnippet>1061</a>                .expect(<span class="string">"private temporary directory"</span>);
+<a href=#1062 id=1062 data-nosnippet>1062</a>            <span class="kw">let </span>directory = SecureDirectory::open_in(temporary.path(), <span class="string">"catalog"</span>)
+<a href=#1063 id=1063 data-nosnippet>1063</a>                .expect(<span class="string">"secure catalog directory"</span>);
+<a href=#1064 id=1064 data-nosnippet>1064</a>            <span class="kw">let </span>first_body = body(<span class="string">"first"</span>);
+<a href=#1065 id=1065 data-nosnippet>1065</a>            <span class="kw">let </span>second_body = body(<span class="string">"second"</span>);
+<a href=#1066 id=1066 data-nosnippet>1066</a>            <span class="kw">let </span>transport = TestTransport {
+<a href=#1067 id=1067 data-nosnippet>1067</a>                responses: Mutex::new(VecDeque::from([
+<a href=#1068 id=1068 data-nosnippet>1068</a>                    <span class="prelude-val">Ok</span>(CatalogTransportResponse::from_bytes(<span class="number">200</span>, first_body)),
+<a href=#1069 id=1069 data-nosnippet>1069</a>                    <span class="prelude-val">Ok</span>(CatalogTransportResponse::from_bytes(<span class="number">200</span>, second_body)),
+<a href=#1070 id=1070 data-nosnippet>1070</a>                    <span class="prelude-val">Err</span>(CatalogTransportError::RequestFailed),
+<a href=#1071 id=1071 data-nosnippet>1071</a>                ])),
+<a href=#1072 id=1072 data-nosnippet>1072</a>            };
+<a href=#1073 id=1073 data-nosnippet>1073</a>            <span class="kw">let </span>manager = CatalogManager::new(transport, directory);
+<a href=#1074 id=1074 data-nosnippet>1074</a>            <span class="kw">let </span>first = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"first transaction"</span>);
+<a href=#1075 id=1075 data-nosnippet>1075</a>            manager.fail_commit_at(phase);
+<a href=#1076 id=1076 data-nosnippet>1076</a>            <span class="kw">let </span>second = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"network selection"</span>);
+<a href=#1077 id=1077 data-nosnippet>1077</a>            <span class="macro">assert_eq!</span>(
+<a href=#1078 id=1078 data-nosnippet>1078</a>                second
+<a href=#1079 id=1079 data-nosnippet>1079</a>                    .state
+<a href=#1080 id=1080 data-nosnippet>1080</a>                    .last_error
+<a href=#1081 id=1081 data-nosnippet>1081</a>                    .as_ref()
+<a href=#1082 id=1082 data-nosnippet>1082</a>                    .map(|error| error.code.as_str()),
+<a href=#1083 id=1083 data-nosnippet>1083</a>                <span class="prelude-val">Some</span>(<span class="string">"cache_commit_injected_failure"</span>),
+<a href=#1084 id=1084 data-nosnippet>1084</a>                <span class="string">"phase {phase:?}"
+<a href=#1085 id=1085 data-nosnippet>1085</a>            </span>);
+<a href=#1086 id=1086 data-nosnippet>1086</a>            <span class="kw">let </span>recovered = manager.refresh_at(time()).<span class="kw">await</span>.expect(<span class="string">"cache recovery"</span>);
+<a href=#1087 id=1087 data-nosnippet>1087</a>            <span class="macro">assert_eq!</span>(recovered.source, CatalogSource::Cache, <span class="string">"phase {phase:?}"</span>);
+<a href=#1088 id=1088 data-nosnippet>1088</a>            <span class="kw">let </span>expected = <span class="kw">if </span><span class="macro">matches!</span>(
+<a href=#1089 id=1089 data-nosnippet>1089</a>                phase,
+<a href=#1090 id=1090 data-nosnippet>1090</a>                CacheCommitPhase::AfterCommitted | CacheCommitPhase::AfterCleanup
+<a href=#1091 id=1091 data-nosnippet>1091</a>            ) {
+<a href=#1092 id=1092 data-nosnippet>1092</a>                <span class="kw-2">&amp;</span>second.revision
+<a href=#1093 id=1093 data-nosnippet>1093</a>            } <span class="kw">else </span>{
+<a href=#1094 id=1094 data-nosnippet>1094</a>                <span class="kw-2">&amp;</span>first.revision
+<a href=#1095 id=1095 data-nosnippet>1095</a>            };
+<a href=#1096 id=1096 data-nosnippet>1096</a>            <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>recovered.revision, expected, <span class="string">"phase {phase:?}"</span>);
+<a href=#1097 id=1097 data-nosnippet>1097</a>            <span class="kw">let </span>entries = fs::read_dir(temporary.path().join(<span class="string">"catalog"</span>))
+<a href=#1098 id=1098 data-nosnippet>1098</a>                .expect(<span class="string">"cache directory"</span>)
+<a href=#1099 id=1099 data-nosnippet>1099</a>                .map(|entry| {
+<a href=#1100 id=1100 data-nosnippet>1100</a>                    entry
+<a href=#1101 id=1101 data-nosnippet>1101</a>                        .expect(<span class="string">"cache entry"</span>)
+<a href=#1102 id=1102 data-nosnippet>1102</a>                        .file_name()
+<a href=#1103 id=1103 data-nosnippet>1103</a>                        .into_string()
+<a href=#1104 id=1104 data-nosnippet>1104</a>                        .expect(<span class="string">"UTF-8 cache name"</span>)
+<a href=#1105 id=1105 data-nosnippet>1105</a>                })
+<a href=#1106 id=1106 data-nosnippet>1106</a>                .collect::&lt;std::collections::BTreeSet&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#1107 id=1107 data-nosnippet>1107</a>            <span class="macro">assert_eq!</span>(
+<a href=#1108 id=1108 data-nosnippet>1108</a>                entries,
+<a href=#1109 id=1109 data-nosnippet>1109</a>                [CATALOG_BODY_FILE, CATALOG_META_FILE, CATALOG_LOCK_FILE]
+<a href=#1110 id=1110 data-nosnippet>1110</a>                    .into_iter()
+<a href=#1111 id=1111 data-nosnippet>1111</a>                    .map(str::to_owned)
+<a href=#1112 id=1112 data-nosnippet>1112</a>                    .collect(),
+<a href=#1113 id=1113 data-nosnippet>1113</a>                <span class="string">"phase {phase:?}"
+<a href=#1114 id=1114 data-nosnippet>1114</a>            </span>);
+<a href=#1115 id=1115 data-nosnippet>1115</a>        }
+<a href=#1116 id=1116 data-nosnippet>1116</a>    }
+<a href=#1117 id=1117 data-nosnippet>1117</a>}
 </code></pre></div></section></main></body></html>

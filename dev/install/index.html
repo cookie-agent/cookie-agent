@@ -492,6 +492,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#powershell-installer" class="md-nav__link">
+    <span class="md-ellipsis">
+      PowerShell installer
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#release-archives" class="md-nav__link">
     <span class="md-ellipsis">
       Release archives
@@ -651,6 +660,29 @@
   
   <span class="md-ellipsis">
     Permissions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guide/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Security guarantees
     
   </span>
   
@@ -1075,6 +1107,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#powershell-installer" class="md-nav__link">
+    <span class="md-ellipsis">
+      PowerShell installer
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#release-archives" class="md-nav__link">
     <span class="md-ellipsis">
       Release archives
@@ -1129,18 +1170,30 @@ installer:</p>
 <p>The installer selects the archive for the current platform, verifies its
 SHA256 checksum, and installs <code>cookie</code> under <code>$CARGO_HOME/bin</code> (normally
 <code>~/.cargo/bin</code>).</p>
+<h2 id="powershell-installer">PowerShell installer<a class="headerlink" href="#powershell-installer" title="Permanent link">&para;</a></h2>
+<p>Windows installers will be available starting with the next Windows-enabled
+tagged release. Once that release is published, Windows x86_64 and ARM64 users
+can run the PowerShell installer:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">irm </span><span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">cookie-agent</span><span class="p">/</span><span class="n">cookie-agent</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">latest</span><span class="p">/</span><span class="n">download</span><span class="p">/</span><span class="n">cookie_agent-installer</span><span class="p">.</span><span class="n">ps1</span> <span class="p">|</span> <span class="nb">iex</span>
+</code></pre></div>
+<p>The installer selects the matching MSVC ZIP archive, verifies its SHA256
+checksum, and installs <code>cookie.exe</code> under <code>%CARGO_HOME%\bin</code> (normally
+<code>%USERPROFILE%\.cargo\bin</code>).</p>
 <h2 id="release-archives">Release archives<a class="headerlink" href="#release-archives" title="Permanent link">&para;</a></h2>
 <p>Each <a href="https://github.com/cookie-agent/cookie-agent/releases">GitHub release</a>
-provides a tar archive and <code>.sha256</code> checksum for:</p>
+provides an archive and <code>.sha256</code> checksum for:</p>
 <ul>
 <li>Linux x86_64 with glibc</li>
 <li>Linux x86_64 with musl</li>
 <li>Linux aarch64 with glibc</li>
 <li>macOS Apple silicon</li>
 <li>macOS Intel</li>
+<li>Windows x86_64 (MSVC), as a ZIP archive</li>
+<li>Windows ARM64 (MSVC), as a ZIP archive</li>
 </ul>
-<p>Download the archive for your platform, verify it with <code>sha256sum</code> or
-<code>shasum -a 256</code>, extract it, and place <code>cookie</code> on your <code>PATH</code>.</p>
+<p>Linux and macOS archives use tar; Windows archives use ZIP. Download the archive
+for your platform, verify its checksum, extract it, and place <code>cookie</code> or
+<code>cookie.exe</code> on your <code>PATH</code>.</p>
 <h2 id="nightly-builds">Nightly builds<a class="headerlink" href="#nightly-builds" title="Permanent link">&para;</a></h2>
 <p>The rolling
 <a href="https://github.com/cookie-agent/cookie-agent/releases/tag/nightly"><code>nightly</code> prerelease</a>
@@ -1150,7 +1203,7 @@ Run <code>cookie --version</code> to see the source commit hash embedded in the 
 <h2 id="build-from-source">Build from source<a class="headerlink" href="#build-from-source" title="Permanent link">&para;</a></h2>
 <p>Install Rust 1.88 or newer, clone the repository, and install the locked
 workspace version:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--path<span class="w"> </span>crates/cookie_agent
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--path<span class="w"> </span>crates/cookie_agent
 </code></pre></div>
 <p>For development, <code>cargo build --locked -p cookie_agent</code> writes the binary to
 <code>target/debug/cookie</code>.</p>

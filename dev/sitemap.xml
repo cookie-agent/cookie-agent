@@ -2,86 +2,90 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/architecture/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/getting-started/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/install/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/agents/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/compaction/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/configuration/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/headless/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/mcp/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/permissions/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/plugins/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/providers/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
+    </url>
+    <url>
+         <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/security/</loc>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/sessions/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/skills/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/tui/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/guide/usage/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/api/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/configuration/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/events/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/protocol/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
     <url>
          <loc>https://cookie-agent.github.io/cookie-agent/dev/reference/schemas/</loc>
-         <lastmod>2026-08-20</lastmod>
+         <lastmod>2026-08-22</lastmod>
     </url>
 </urlset>

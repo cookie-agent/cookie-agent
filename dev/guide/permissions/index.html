@@ -16,7 +16,7 @@
         <link rel="prev" href="../sessions/">
       
       
-        <link rel="next" href="../mcp/">
+        <link rel="next" href="../security/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -673,6 +673,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Security guarantees
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../mcp/" class="md-nav__link">
         
   
@@ -1192,7 +1215,9 @@ ask.</p>
 </table>
 <p>The <code>edit</code> tool uses the <code>write</code> permission action. Bash is not parsed into file
 operations: <code>cat .env</code> is controlled by <code>bash</code>, not <code>read</code>, and a pattern such
-as <code>git *</code> also matches a longer command beginning with <code>git</code>.</p>
+as <code>git *</code> also matches a longer command beginning with <code>git</code>. See
+<a href="../security/">Security guarantees</a> for the platform-specific filesystem and
+process boundaries behind these tools.</p>
 <p>MCP checks are always scoped. A rule such as <code>"github_*": allow</code> covers every
 tool from that generated server prefix, while a more-specific deny can override
 one tool. An unmatched MCP tool asks.</p>
