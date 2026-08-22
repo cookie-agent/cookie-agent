@@ -1218,6 +1218,10 @@ operations: <code>cat .env</code> is controlled by <code>bash</code>, not <code>
 as <code>git *</code> also matches a longer command beginning with <code>git</code>. See
 <a href="../security/">Security guarantees</a> for the platform-specific filesystem and
 process boundaries behind these tools.</p>
+<p>Permission policy does not validate cookie agent's pre-existing private-state
+paths. New state is created with owner-only permissions, but existing loose,
+foreign-owned, hard-linked, or symlinked state is read and written as-is. This is
+part of the local storage threat model, not an <code>allow</code>/<code>ask</code>/<code>deny</code> decision.</p>
 <p>MCP checks are always scoped. A rule such as <code>"github_*": allow</code> covers every
 tool from that generated server prefix, while a more-specific deny can override
 one tool. An unmatched MCP tool asks.</p>

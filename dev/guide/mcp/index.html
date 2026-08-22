@@ -1233,12 +1233,12 @@ the real code only in the outbound token request, preventing debug logs from
 containing the browser callback code.</p>
 <p>OAuth credentials are user-level and stored in the single
 <code>~/.cookie_agent/mcp-oauth.json</code> file. On Unix the file is owner-only
-(<code>0600</code>). The unversioned file is parsed strictly, and malformed contents, unsafe
-permissions, or symlinks stop engine startup. Stop the daemon and delete this
-file to revoke all locally stored MCP OAuth credentials. Removing a server
-through MCP management removes its credential. Writers serialize through the
-owner-only <code>mcp-oauth.lock</code>, reread the current file, and merge one credential
-key before each atomic replacement.</p>
+(<code>0600</code>) when cookie agent creates it. The unversioned file is parsed strictly,
+but an existing file is used regardless of permissions, ownership, links, or
+symlinks. Stop the daemon and delete this file to revoke all locally stored MCP
+OAuth credentials. Removing a server through MCP management removes its
+credential. Writers serialize through <code>mcp-oauth.lock</code>, reread the current file,
+and merge one credential key before each atomic replacement.</p>
 <p>Each credential is keyed by the server name and a SHA-256 hash of its canonical
 resource URL, and is also bound to that URL and the configured OAuth client
 identity. Canonicalization lowercases the scheme and host, removes default HTTP

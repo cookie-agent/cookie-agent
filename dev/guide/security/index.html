@@ -1242,21 +1242,24 @@ this validation-to-use window but do not eliminate it. Windows also has no
 atomic two-file exchange in this backend, so replacement cannot verify the
 displaced file and roll back with the Linux guarantee.</p>
 <h2 id="private-state">Private state<a class="headerlink" href="#private-state" title="Permanent link">&para;</a></h2>
-<p>On Unix, private state directories and files are opened with owner-only modes
-and checked for the expected owner, type, link count, and permissions. Store
-updates use locked journals and atomic publication.</p>
-<p>On Windows, state directories and files are created with a protected DACL whose
-single access-control entry grants the current user full control. Existing
-entries are rejected unless the owner, protected-DACL flag, access-control entry,
-inheritance flags, and current-user SID match that shape. Reparse points,
-directories opened as files, and multiply linked files are rejected. Secure-store
-lock files use an exclusive whole-file <code>LockFileEx</code> lock, and durable state
-replacement stages and flushes a private file before publishing it with
-<code>MoveFileExW</code> using replace-existing and write-through flags.</p>
-<p>The Windows DACL protects against other ordinary user accounts. It is not a
-boundary against <code>SYSTEM</code> or an elevated administrator, who can take ownership
-or replace the ACL and read the state. ACL setup and validation fail closed, but
-they cannot protect secrets from privileged code on the same machine.</p>
+<p>On Unix, cookie agent creates new private-state directories with mode <code>0700</code> and
+new files with mode <code>0600</code>. Store updates use <code>flock</code>-locked journals and atomic
+publication. Existing paths are not checked for owner, mode, type, link count,
+or symlinks; they are opened and used as-is.</p>
+<p>On Windows, new state directories and files are created with a protected DACL
+whose single access-control entry grants the current user full control.
+Secure-store lock files use an exclusive whole-file <code>LockFileEx</code> lock, and
+durable state replacement stages and flushes a private file before publishing it
+with <code>MoveFileExW</code> using replace-existing and write-through flags. Existing
+paths are not checked for owner, DACL shape, reparse points, object type, or hard
+links; they are opened and used as-is.</p>
+<p>Creation-time modes and DACLs protect newly created state from other ordinary
+users. They do not protect state that already exists or is later replaced. A
+local actor able to pre-create or replace a state path can redirect reads and
+writes through a symlink or provide loose/foreign-owned storage; cookie agent
+will use that path. Treat the parent storage location as trusted and remove
+unexpected state before starting the daemon. Neither platform protects secrets
+from privileged code such as <code>root</code>, <code>SYSTEM</code>, or an elevated administrator.</p>
 <h2 id="process-boundary">Process boundary<a class="headerlink" href="#process-boundary" title="Permanent link">&para;</a></h2>
 <p>On Unix, Bash commands run in a new session so cancellation and timeout can kill
 the process group. On Windows, Bash commands are assigned to a Job Object before

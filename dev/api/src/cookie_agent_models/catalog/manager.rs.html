@@ -947,11 +947,11 @@
 <a href=#947 id=947 data-nosnippet>947</a>    <span class="kw">fn </span>from_store(error: SecureStoreError) -&gt; <span class="self">Self </span>{
 <a href=#948 id=948 data-nosnippet>948</a>        <span class="kw">let </span>code = <span class="kw">match </span>error {
 <a href=#949 id=949 data-nosnippet>949</a>            SecureStoreError::HomeUnavailable =&gt; <span class="string">"catalog_cache_home_unavailable"</span>,
-<a href=#950 id=950 data-nosnippet>950</a>            SecureStoreError::UnsafePath =&gt; <span class="string">"catalog_cache_unsafe_path"</span>,
+<a href=#950 id=950 data-nosnippet>950</a>            SecureStoreError::UnsafePath =&gt; <span class="string">"catalog_cache_invalid_path"</span>,
 <a href=#951 id=951 data-nosnippet>951</a>            SecureStoreError::TooLarge =&gt; <span class="string">"catalog_cache_too_large"</span>,
 <a href=#952 id=952 data-nosnippet>952</a>            SecureStoreError::Io(<span class="kw">_</span>) =&gt; <span class="string">"catalog_cache_io_failed"</span>,
 <a href=#953 id=953 data-nosnippet>953</a>        };
-<a href=#954 id=954 data-nosnippet>954</a>        <span class="self">Self</span>::new(code, <span class="string">"catalog cache could not be used safely"</span>)
+<a href=#954 id=954 data-nosnippet>954</a>        <span class="self">Self</span>::new(code, <span class="string">"catalog cache could not be used"</span>)
 <a href=#955 id=955 data-nosnippet>955</a>    }
 <a href=#956 id=956 data-nosnippet>956</a>
 <a href=#957 id=957 data-nosnippet>957</a>    <span class="kw">fn </span>from_transport(error: CatalogTransportError) -&gt; <span class="self">Self </span>{
