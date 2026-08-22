@@ -98,16 +98,7 @@ fn write_mcp_server_observed(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // Preserve the existing file's mode (config may hold credentials);
-        // default to owner-only when creating a new file.
-        let mode = fs::metadata(path)
-            .ok()
-            .map(|metadata| {
-                use std::os::unix::fs::PermissionsExt;
-                metadata.permissions().mode() & 0o777
-            })
-            .unwrap_or(0o600);
-        open_options.mode(mode);
+        open_options.mode(0o600);
     }
     #[cfg(unix)]
     let mut temporary_file = open_options.open(&temporary).map_err(ConfigError::Io)?;
@@ -117,11 +108,7 @@ fn write_mcp_server_observed(
     {
         // A stale temp file from a crashed write keeps its old mode; force it.
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(path)
-            .ok()
-            .map(|metadata| metadata.permissions().mode() & 0o777)
-            .unwrap_or(0o600);
-        if let Err(error) = temporary_file.set_permissions(fs::Permissions::from_mode(mode)) {
+        if let Err(error) = temporary_file.set_permissions(fs::Permissions::from_mode(0o600)) {
             let _ = fs::remove_file(&temporary);
             return Err(ConfigError::Io(error));
         }
@@ -321,7 +308,7 @@ mod tests {
                             .is_some_and(|name| name.to_string_lossy().ends_with(".tmp"))
                     })
                     .expect("unique temporary config");
-                cookie_agent_models::secure_store::validate_windows_path_acl(&temporary)
+                cookie_agent_models::secure_store::verify_windows_private_creation(&temporary)
                     .expect("temporary config ACL");
             }
         });

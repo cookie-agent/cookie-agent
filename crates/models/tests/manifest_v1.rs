@@ -95,7 +95,7 @@ fn shared_project_anchor_modes_create_and_reopen_private_storage() {
 }
 
 #[test]
-fn symlink_anchors_and_storage_children_remain_rejected() {
+fn symlink_anchors_and_storage_children_are_used() {
     let temporary = TempDir::new().unwrap();
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o777)).unwrap();
     let actual = temporary.path().join("actual");
@@ -103,47 +103,44 @@ fn symlink_anchors_and_storage_children_remain_rejected() {
     fs::set_permissions(&actual, fs::Permissions::from_mode(0o777)).unwrap();
     let linked = temporary.path().join("linked");
     symlink(&actual, &linked).unwrap();
-    assert!(matches!(
-        ModelSnapshotManifestStore::open(&linked),
-        Err(ManifestError::Storage(_))
-    ));
+    ModelSnapshotManifestStore::open(&linked)
+        .unwrap()
+        .write(payload())
+        .unwrap();
 
-    let target = temporary.path().join("target");
+    let second = TempDir::new().unwrap();
+    let second_project = second.path().join("project");
+    let target = second.path().join("target");
+    fs::create_dir(&second_project).unwrap();
     fs::create_dir(&target).unwrap();
-    symlink(&target, actual.join(".cookie-agent")).unwrap();
-    assert!(matches!(
-        ModelSnapshotManifestStore::open(&actual),
-        Err(ManifestError::Storage(_))
-    ));
+    symlink(&target, second_project.join(".cookie-agent")).unwrap();
+    ModelSnapshotManifestStore::open(&second_project)
+        .unwrap()
+        .write(payload())
+        .unwrap();
 
-    fs::remove_file(actual.join(".cookie-agent")).unwrap();
-    fs::write(actual.join(".cookie-agent"), b"not a directory").unwrap();
+    fs::remove_file(second_project.join(".cookie-agent")).unwrap();
+    fs::write(second_project.join(".cookie-agent"), b"not a directory").unwrap();
     assert!(matches!(
-        ModelSnapshotManifestStore::open(&actual),
+        ModelSnapshotManifestStore::open(&second_project),
         Err(ManifestError::Storage(_))
     ));
 }
 
 #[test]
-fn non_private_or_wrong_owner_storage_children_remain_rejected() {
+fn non_private_or_wrong_owner_storage_children_are_used() {
     let temporary = TempDir::new().unwrap();
     fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o777)).unwrap();
     let project = temporary.path().join(".cookie-agent");
     fs::create_dir(&project).unwrap();
     fs::set_permissions(&project, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(matches!(
-        ModelSnapshotManifestStore::open(temporary.path()),
-        Err(ManifestError::Storage(_))
-    ));
+    ModelSnapshotManifestStore::open(temporary.path()).unwrap();
 
     fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).unwrap();
     if unsafe { libc::geteuid() } == 0 {
         let path = std::ffi::CString::new(project.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::chown(path.as_ptr(), 1, 1) }, 0);
-        assert!(matches!(
-            ModelSnapshotManifestStore::open(temporary.path()),
-            Err(ManifestError::Storage(_))
-        ));
+        ModelSnapshotManifestStore::open(temporary.path()).unwrap();
     }
 }
 
@@ -219,25 +216,22 @@ fn missing_corrupt_and_revision_mismatched_manifests_fail_closed() {
 }
 
 #[test]
-fn matching_manifest_symlink_hardlink_and_wrong_mode_are_rejected() {
+fn matching_manifest_symlink_hardlink_and_wrong_mode_are_used() {
     let temporary = TempDir::new().unwrap();
     let store = private_store(&temporary);
+    let manifest = store.write(payload()).unwrap();
+    let attack = manifest_path(&store, &manifest.revision);
     let target = store.path().join("target");
-    fs::write(&target, b"{}").unwrap();
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-    let attack = store.path().join(format!("{}.json", "a".repeat(64)));
+    fs::rename(&attack, &target).unwrap();
     symlink(&target, &attack).unwrap();
-    assert!(matches!(store.scan(), Err(ManifestError::Storage(_))));
+    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
     fs::remove_file(&attack).unwrap();
 
     fs::hard_link(&target, &attack).unwrap();
-    assert!(matches!(store.scan(), Err(ManifestError::Storage(_))));
-    fs::remove_file(&attack).unwrap();
-    fs::remove_file(&target).unwrap();
+    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
 
-    fs::write(&attack, b"{}").unwrap();
     fs::set_permissions(&attack, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(matches!(store.scan(), Err(ManifestError::Storage(_))));
+    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
 }
 
 #[test]

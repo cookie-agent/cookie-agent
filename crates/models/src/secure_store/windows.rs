@@ -9,7 +9,7 @@ use std::{
         io::{AsRawHandle, FromRawHandle, RawHandle},
     },
     path::{Component, Path, PathBuf},
-    ptr::{null, null_mut},
+    ptr::null_mut,
 };
 
 use uuid::Uuid;
@@ -20,21 +20,18 @@ use windows_sys::Win32::{
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
         AddAccessAllowedAceEx,
-        Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW},
+        Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
-        InitializeSecurityDescriptor, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
-        SECURITY_DESCRIPTOR, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
-        SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        InitializeSecurityDescriptor, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS,
-        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileAttributesW, GetFileInformationByHandle,
-        LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        MoveFileExW, UnlockFileEx,
+        CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, UnlockFileEx,
     },
     System::{
         IO::OVERLAPPED,
@@ -184,58 +181,6 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
-/// Applies and verifies a protected DACL granting only the current user full control.
-pub fn protect_path(path: &Path) -> io::Result<()> {
-    if path_is_reparse(path)? {
-        return Err(unsafe_path_error());
-    }
-    let sid = current_user_sid()?;
-    let sid_length = unsafe { windows_sys::Win32::Security::GetLengthSid(sid.as_sid()) } as usize;
-    if sid_length == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let acl_bytes =
-        size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_length;
-    let mut acl_storage = vec![0u32; acl_bytes.div_ceil(size_of::<u32>())];
-    let acl = acl_storage.as_mut_ptr().cast::<ACL>();
-    let inheritance = if fs::metadata(path)?.is_dir() {
-        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
-    } else {
-        0
-    };
-    // SAFETY: acl_storage is aligned and sized for the ACL and its single SID-bearing ACE.
-    if unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) } == 0
-        || unsafe {
-            AddAccessAllowedAceEx(
-                acl,
-                ACL_REVISION,
-                inheritance,
-                FILE_ALL_ACCESS,
-                sid.as_sid(),
-            )
-        } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let wide = wide_path(path)?;
-    // SAFETY: wide is NUL-terminated and acl remains alive for the call.
-    let status = unsafe {
-        SetNamedSecurityInfoW(
-            wide.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            acl,
-            null(),
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(io::Error::from_raw_os_error(status as i32));
-    }
-    validate_path_acl(path)
-}
-
 /// Atomically replaces one Windows path with another file from the same volume.
 pub fn replace_path(source: &Path, target: &Path) -> io::Result<()> {
     let source = wide_path(source)?;
@@ -255,8 +200,8 @@ pub fn replace_path(source: &Path, target: &Path) -> io::Result<()> {
     }
 }
 
-/// Verifies that a path has exactly the current-user protected full-control DACL.
-pub fn validate_path_acl(path: &Path) -> io::Result<()> {
+/// Test/diagnostic inspection for creation-time owner-only DACLs.
+pub fn verify_private_creation(path: &Path) -> io::Result<()> {
     let sid = current_user_sid()?;
     let wide = wide_path(path)?;
     let mut owner = null_mut();
@@ -331,20 +276,7 @@ pub fn validate_path_acl(path: &Path) -> io::Result<()> {
 }
 
 fn unsafe_path_error() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        "secure storage path is unsafe",
-    )
-}
-
-fn path_is_reparse(path: &Path) -> io::Result<bool> {
-    let wide = wide_path(path)?;
-    // SAFETY: wide is NUL-terminated.
-    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
-    if attributes == u32::MAX {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    io::Error::new(io::ErrorKind::InvalidInput, "invalid secure storage path")
 }
 
 fn private_components(path: &Path) -> Result<Vec<&OsStr>, SecureStoreError> {
@@ -385,14 +317,6 @@ fn validate_component(name: &OsStr) -> Result<(), SecureStoreError> {
     }
 }
 
-fn open_directory_handle(path: &Path) -> io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
-}
-
 fn create_private_directory(path: &Path) -> io::Result<()> {
     let wide = wide_path(path)?;
     with_private_security_attributes(true, |attributes| {
@@ -405,7 +329,7 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     })
 }
 
-/// Creates missing directory components with final ACLs and validates existing ones.
+/// Creates missing directory components with final owner-only ACLs.
 pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(unsafe_path_error());
@@ -421,21 +345,13 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
         );
         existing = existing.parent().ok_or_else(unsafe_path_error)?.to_owned();
     }
-    if path_is_reparse(&existing)? {
-        return Err(unsafe_path_error());
-    }
     let mut current = existing;
     for component in missing.into_iter().rev() {
         validate_component(&component).map_err(|_| unsafe_path_error())?;
         current.push(component);
         create_private_directory(&current)?;
-        validate_path_acl(&current)?;
     }
-    if current == path {
-        validate_path_acl(path)
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 pub(super) fn open_private(
@@ -443,31 +359,15 @@ pub(super) fn open_private(
     relative: &Path,
 ) -> Result<SecureDirectory, SecureStoreError> {
     let mut current = anchor.canonicalize().map_err(SecureStoreError::Io)?;
-    if path_is_reparse(&current).map_err(SecureStoreError::Io)? {
-        return Err(SecureStoreError::UnsafePath);
-    }
     for component in private_components(relative)? {
         current.push(component);
-        let created = match create_private_directory(&current) {
-            Ok(()) => true,
-            Err(error) if error.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) => false,
+        match create_private_directory(&current) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) => {}
             Err(error) => return Err(SecureStoreError::Io(error)),
-        };
-        let metadata = fs::symlink_metadata(&current).map_err(SecureStoreError::Io)?;
-        if !metadata.is_dir() || path_is_reparse(&current).map_err(SecureStoreError::Io)? {
-            return Err(SecureStoreError::UnsafePath);
-        }
-        if !created {
-            validate_path_acl(&current).map_err(SecureStoreError::Io)?;
         }
     }
-    let directory = open_directory_handle(&current).map_err(SecureStoreError::Io)?;
-    validate_directory_handle(&directory)?;
-    validate_path_acl(&current).map_err(SecureStoreError::Io)?;
-    Ok(SecureDirectory {
-        directory,
-        path: current,
-    })
+    Ok(SecureDirectory { path: current })
 }
 
 pub(super) fn open_absolute_private(path: &Path) -> Result<SecureDirectory, SecureStoreError> {
@@ -506,63 +406,14 @@ fn handle(file: &fs::File) -> HANDLE {
     file.as_raw_handle() as RawHandle as HANDLE
 }
 
-fn file_information(file: &fs::File) -> Result<BY_HANDLE_FILE_INFORMATION, SecureStoreError> {
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: handle is valid and information is writable.
-    if unsafe { GetFileInformationByHandle(handle(file), &mut information) } == 0 {
-        return Err(SecureStoreError::Io(io::Error::last_os_error()));
-    }
-    Ok(information)
-}
-
-fn validate_directory_handle(file: &fs::File) -> Result<(), SecureStoreError> {
-    let information = file_information(file)?;
-    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        || information.dwFileAttributes
-            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY
-            == 0
-    {
-        Err(SecureStoreError::UnsafePath)
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_file_handle(file: &fs::File) -> Result<(), SecureStoreError> {
-    let information = file_information(file)?;
-    if information.dwFileAttributes
-        & (FILE_ATTRIBUTE_REPARSE_POINT
-            | windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY)
-        != 0
-        || information.nNumberOfLinks != 1
-    {
-        Err(SecureStoreError::UnsafePath)
-    } else {
-        Ok(())
-    }
-}
-
-fn file_identity(file: &fs::File) -> Result<(u32, u64), SecureStoreError> {
-    let information = file_information(file)?;
-    Ok((
-        information.dwVolumeSerialNumber,
-        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
-    ))
-}
-
 fn open_existing(path: &Path, write: bool) -> Result<Option<fs::File>, SecureStoreError> {
     let mut options = fs::OpenOptions::new();
     options
         .read(true)
         .write(write)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
     match options.open(path) {
-        Ok(file) => {
-            validate_file_handle(&file)?;
-            validate_path_acl(path).map_err(SecureStoreError::Io)?;
-            Ok(Some(file))
-        }
+        Ok(file) => Ok(Some(file)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(SecureStoreError::Io(error)),
     }
@@ -579,7 +430,7 @@ fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 attributes,
                 CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                FILE_ATTRIBUTE_NORMAL,
                 null_mut(),
             )
         };
@@ -592,8 +443,6 @@ fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
     .map_err(SecureStoreError::Io)?;
     // SAFETY: ownership is transferred from OwnedHandle to File exactly once.
     let file = unsafe { fs::File::from_raw_handle(handle.into_raw() as RawHandle) };
-    validate_file_handle(&file)?;
-    validate_path_acl(path).map_err(SecureStoreError::Io)?;
     Ok(file)
 }
 
@@ -601,7 +450,9 @@ fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
 pub fn create_private_file(path: &Path) -> io::Result<fs::File> {
     create_file(path).map_err(|error| match error {
         SecureStoreError::Io(error) => error,
-        SecureStoreError::UnsafePath => unsafe_path_error(),
+        SecureStoreError::UnsafePath => {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid private file path")
+        }
         SecureStoreError::HomeUnavailable | SecureStoreError::TooLarge => {
             io::Error::other("private file creation failed")
         }
@@ -615,7 +466,12 @@ fn open_or_create(path: &Path) -> Result<fs::File, SecureStoreError> {
     match create_file(path) {
         Ok(file) => Ok(file),
         Err(SecureStoreError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
-            open_existing(path, true)?.ok_or(SecureStoreError::UnsafePath)
+            open_existing(path, true)?.ok_or_else(|| {
+                SecureStoreError::Io(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "storage file disappeared during creation",
+                ))
+            })
         }
         Err(error) => Err(error),
     }
@@ -626,7 +482,6 @@ pub(super) fn read_file(
     name: &str,
     limit: u64,
 ) -> Result<Option<Vec<u8>>, SecureStoreError> {
-    validate_directory_handle(&directory.directory)?;
     let path = directory.path.join(name);
     let Some(file) = open_existing(&path, false)? else {
         return Ok(None);
@@ -668,7 +523,6 @@ pub(super) fn lock<'a>(
     {
         return Err(SecureStoreError::Io(io::Error::last_os_error()));
     }
-    verify_current_entry(directory, name, &file)?;
     Ok(SecureDirectoryLock {
         directory,
         lock_name: name.to_owned(),
@@ -684,25 +538,10 @@ pub(super) fn unlock(file: &fs::File) {
     }
 }
 
-pub(super) fn verify_current_entry(
-    directory: &SecureDirectory,
-    name: &str,
-    held: &fs::File,
-) -> Result<(), SecureStoreError> {
-    let current =
-        open_existing(&directory.path.join(name), false)?.ok_or(SecureStoreError::UnsafePath)?;
-    if file_identity(held)? == file_identity(&current)? {
-        Ok(())
-    } else {
-        Err(SecureStoreError::UnsafePath)
-    }
-}
-
 pub(super) fn read_journal(
     lock: &SecureDirectoryLock<'_>,
     limit: u64,
 ) -> Result<Vec<u8>, SecureStoreError> {
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
     let metadata = lock._lock.metadata().map_err(SecureStoreError::Io)?;
     if metadata.len() > limit {
         return Err(SecureStoreError::TooLarge);
@@ -717,7 +556,6 @@ pub(super) fn read_journal(
     if bytes.len() as u64 > limit {
         return Err(SecureStoreError::TooLarge);
     }
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
     Ok(bytes)
 }
 
@@ -726,7 +564,6 @@ pub(super) fn append_journal(
     bytes: &[u8],
     limit: u64,
 ) -> Result<(), SecureStoreError> {
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
     let current = lock._lock.metadata().map_err(SecureStoreError::Io)?.len();
     if current.saturating_add(bytes.len() as u64) > limit {
         return Err(SecureStoreError::TooLarge);
@@ -735,14 +572,13 @@ pub(super) fn append_journal(
     file.seek(SeekFrom::End(0)).map_err(SecureStoreError::Io)?;
     file.write_all(bytes).map_err(SecureStoreError::Io)?;
     file.sync_all().map_err(SecureStoreError::Io)?;
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)
+    Ok(())
 }
 
 pub(super) fn clear_journal(lock: &SecureDirectoryLock<'_>) -> Result<(), SecureStoreError> {
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
     lock._lock.set_len(0).map_err(SecureStoreError::Io)?;
     lock._lock.sync_all().map_err(SecureStoreError::Io)?;
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)
+    Ok(())
 }
 
 pub(super) fn atomic_replace(
@@ -750,9 +586,6 @@ pub(super) fn atomic_replace(
     name: &str,
     bytes: &[u8],
 ) -> Result<(), SecureStoreError> {
-    if let Some(existing) = open_existing(&lock.directory.path.join(name), false)? {
-        verify_current_entry(lock.directory, name, &existing)?;
-    }
     let temporary_name = format!(".{name}.tmp-{}", Uuid::now_v7());
     let temporary = lock.directory.path.join(&temporary_name);
     let target = lock.directory.path.join(name);
@@ -760,12 +593,8 @@ pub(super) fn atomic_replace(
     let result = (|| {
         file.write_all(bytes).map_err(SecureStoreError::Io)?;
         file.sync_all().map_err(SecureStoreError::Io)?;
-        verify_current_entry(lock.directory, &temporary_name, &file)?;
-        verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
         replace_path(&temporary, &target).map_err(SecureStoreError::Io)?;
-        let installed = open_existing(&target, false)?.ok_or(SecureStoreError::UnsafePath)?;
-        verify_current_entry(lock.directory, name, &installed)?;
-        verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temporary);
@@ -774,13 +603,11 @@ pub(super) fn atomic_replace(
 }
 
 pub(super) fn remove(lock: &SecureDirectoryLock<'_>, name: &str) -> Result<(), SecureStoreError> {
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)?;
     let path = lock.directory.path.join(name);
-    if let Some(file) = open_existing(&path, false)? {
-        verify_current_entry(lock.directory, name, &file)?;
+    if open_existing(&path, false)?.is_some() {
         fs::remove_file(path).map_err(SecureStoreError::Io)?;
     }
-    verify_current_entry(lock.directory, &lock.lock_name, &lock._lock)
+    Ok(())
 }
 
 pub(super) fn validate_leaf_name(name: &str) -> Result<(), SecureStoreError> {

@@ -866,7 +866,7 @@ fn recipe_fingerprint_is_required_and_revision_protected_in_schema3() {
 }
 
 #[test]
-fn lock_replacement_race_prevents_proposal_commit() {
+fn lock_replacement_race_does_not_prevent_proposal_commit() {
     let temporary = TempDir::new().unwrap();
     let store = private_store(&temporary);
     let initial = store.load().unwrap();
@@ -892,11 +892,8 @@ fn lock_replacement_race_prevents_proposal_commit() {
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
-    assert!(matches!(
-        transaction.commit(*proposal),
-        Err(ProviderStoreError::Storage(_))
-    ));
-    assert!(!store.path().join("store-v3.json").exists());
+    transaction.commit(*proposal).unwrap();
+    assert!(store.path().join("store-v3.json").exists());
 }
 
 #[test]
