@@ -29,6 +29,10 @@ jobs:
             runner: macos-14
           - target: x86_64-apple-darwin
             runner: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     env:
       COOKIE_GIT_HASH: ${{ github.sha }}
@@ -45,23 +49,38 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
-      - name: Build archive
+      - name: Build binary
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release -p cookie_agent --bin cookie --target "${{ matrix.target }}"
+      - name: Package Unix archive
+        if: ${{ !endsWith(matrix.target, '-windows-msvc') }}
+        shell: bash
+        run: |
+          set -euo pipefail
           archive="cookie_agent-${{ matrix.target }}.tar.xz"
           mkdir package
           cp "target/${{ matrix.target }}/release/cookie" package/cookie
           cp LICENSE README.md package/
           tar -C package -cJf "$archive" cookie LICENSE README.md
+      - name: Package Windows archive
+        if: ${{ endsWith(matrix.target, '-windows-msvc') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="cookie_agent-${{ matrix.target }}.zip"
+          mkdir package
+          cp "target/${{ matrix.target }}/release/cookie.exe" package/cookie.exe
+          cp LICENSE README.md package/
+          tar -C package -acf "$archive" cookie.exe LICENSE README.md
       - name: Upload nightly archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: nightly-${{ matrix.target }}
           retention-days: 2
           path: |
-            cookie_agent-${{ matrix.target }}.tar.xz
+            cookie_agent-${{ matrix.target }}.*
 
   release:
     name: Update rolling nightly release
@@ -83,10 +102,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for archive in *.tar.xz; do
+          archives=(cookie_agent-*.tar.xz cookie_agent-*.zip)
+          for archive in "${archives[@]}"; do
             sha256sum "$archive" > "$archive.sha256"
           done
-          sha256sum *.tar.xz > sha256.sum
+          sha256sum "${archives[@]}" > sha256.sum
       - name: Update nightly prerelease in place
         shell: bash
         run: |
