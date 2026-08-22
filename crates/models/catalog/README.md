@@ -35,10 +35,10 @@ On Unix, cache files are fixed at:
 ~/.cookie_agent/catalog/models-dev-v2.lock
 ```
 
-Directories are current-user-owned mode `0700`. Body, metadata, lock, and
-temporary files are current-user-owned mode `0600`, regular, single-link, opened
-descriptor-relative/no-follow, and written by lock/reread, exclusive sibling
-temp, fsync, atomic rename, and parent fsync.
+New directories are created mode `0700`; new body, metadata, lock, and temporary
+files are created mode `0600`. Writes use lock/reread, exclusive sibling temp,
+fsync, atomic rename, and parent fsync. Existing cache paths are used as-is
+without ownership, mode, type, link, or symlink checks.
 
 Metadata schema 2 records
 `sha256:<lowercase SHA-256 digest of the exact selected body bytes>`, ETag, size,

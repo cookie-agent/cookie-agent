@@ -2217,14 +2217,17 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLog
         source,
     })?;
     let created = !path.exists();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|source| EventLogError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
     file.write_all(&bytes)
         .and_then(|()| file.write_all(b"\n"))
         .and_then(|()| file.sync_data())

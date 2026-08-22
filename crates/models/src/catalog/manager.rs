@@ -947,11 +947,11 @@ impl CatalogError {
     fn from_store(error: SecureStoreError) -> Self {
         let code = match error {
             SecureStoreError::HomeUnavailable => "catalog_cache_home_unavailable",
-            SecureStoreError::UnsafePath => "catalog_cache_unsafe_path",
+            SecureStoreError::UnsafePath => "catalog_cache_invalid_path",
             SecureStoreError::TooLarge => "catalog_cache_too_large",
             SecureStoreError::Io(_) => "catalog_cache_io_failed",
         };
-        Self::new(code, "catalog cache could not be used safely")
+        Self::new(code, "catalog cache could not be used")
     }
 
     fn from_transport(error: CatalogTransportError) -> Self {

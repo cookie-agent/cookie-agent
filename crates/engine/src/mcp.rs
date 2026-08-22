@@ -873,7 +873,7 @@ fn redacted_oauth_error_body(status: reqwest::StatusCode, body: &[u8]) -> Vec<u8
 
 fn oauth_store_startup_error(path: &Path) -> ToolError {
     ToolError::execution(format!(
-        "invalid MCP OAuth credential store `{}`; fix its permissions and contents or remove the file to reset user MCP OAuth credentials",
+        "invalid MCP OAuth credential store `{}`; fix its contents or remove the file to reset user MCP OAuth credentials",
         path.display()
     ))
 }
@@ -923,21 +923,23 @@ fn oauth_store_auth_error() -> rmcp::transport::AuthError {
 impl OAuthStoreLock {
     fn acquire(store_path: &Path) -> Result<Self, ()> {
         let parent = store_path.parent().ok_or(())?;
-        fs::create_dir_all(parent).map_err(|_| ())?;
+        if !parent.exists() {
+            use std::os::unix::fs::DirBuilderExt as _;
+
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder.create(parent).map_err(|_| ())?;
+        }
         let path = parent.join(OAUTH_STORE_LOCK_FILE);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt as _;
-            options
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            options.mode(0o600).custom_flags(libc::O_CLOEXEC);
         }
         let file = options.open(&path).map_err(|_| ())?;
-        validate_oauth_file(&file).map_err(|_| ())?;
         fs2::FileExt::lock_exclusive(&file).map_err(|_| ())?;
-        validate_oauth_lock_entry(&path, &file)?;
         Ok(Self { file })
     }
 }
@@ -947,20 +949,6 @@ impl Drop for OAuthStoreLock {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.file);
     }
-}
-
-#[cfg(unix)]
-fn validate_oauth_lock_entry(path: &Path, file: &fs::File) -> Result<(), ()> {
-    validate_oauth_file(file)?;
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let current = fs::metadata(path).map_err(|_| ())?;
-        let held = file.metadata().map_err(|_| ())?;
-        if current.dev() != held.dev() || current.ino() != held.ino() {
-            return Err(());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -981,38 +969,11 @@ fn load_oauth_store(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCreden
 
 #[cfg(unix)]
 fn open_oauth_store(path: &Path) -> Result<Option<fs::File>, ()> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    }
-    match options.open(path) {
-        Ok(file) => {
-            validate_oauth_file(&file).map_err(|_| ())?;
-            Ok(Some(file))
-        }
+    match OpenOptions::new().read(true).open(path) {
+        Ok(file) => Ok(Some(file)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(()),
     }
-}
-
-#[cfg(unix)]
-fn validate_oauth_file(file: &fs::File) -> Result<(), ()> {
-    let metadata = file.metadata().map_err(|_| ())?;
-    if !metadata.is_file() || metadata.len() > OAUTH_STORE_MAX_BYTES {
-        return Err(());
-    }
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        if metadata.uid() != rustix::process::getuid().as_raw()
-            || metadata.mode() & 0o777 != 0o600
-            || metadata.nlink() != 1
-        {
-            return Err(());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -1021,7 +982,13 @@ fn persist_oauth_store(
     credentials: &BTreeMap<String, PersistedOAuthCredential>,
 ) -> Result<(), ()> {
     let parent = path.parent().ok_or(())?;
-    fs::create_dir_all(parent).map_err(|_| ())?;
+    if !parent.exists() {
+        use std::os::unix::fs::DirBuilderExt as _;
+
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(parent).map_err(|_| ())?;
+    }
     let bytes = serde_json::to_vec(credentials).map_err(|_| ())?;
     let temporary = parent.join(format!(".{OAUTH_STORE_FILE}.{}.tmp", uuid::Uuid::now_v7()));
     let mut options = OpenOptions::new();
@@ -3709,8 +3676,9 @@ mod windows_oauth_tests {
         let path = temporary.path().join("oauth").join("mcp-oauth.json");
         let store = OAuthCredentialFile::open(path.clone()).expect("OAuth store");
         store.update(|_| {}).expect("persist empty store");
-        cookie_agent_models::secure_store::validate_windows_path_acl(&path).expect("store ACL");
-        cookie_agent_models::secure_store::validate_windows_path_acl(
+        cookie_agent_models::secure_store::verify_windows_private_creation(&path)
+            .expect("store ACL");
+        cookie_agent_models::secure_store::verify_windows_private_creation(
             &path.parent().unwrap().join("mcp-oauth.lock"),
         )
         .expect("lock ACL");

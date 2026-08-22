@@ -11,9 +11,7 @@ mod unix {
         ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
         ToolOutputTruncation,
     };
-    use rustix::fs::{
-        AtFlags, Dir, FileType, Mode, OFlags, fchmod, fsync, openat, renameat, statat, unlinkat,
-    };
+    use rustix::fs::{AtFlags, Dir, Mode, OFlags, fsync, openat, renameat, unlinkat};
     use serde::Serialize;
     use serde_json::Value;
     use sha2::{Digest, Sha256};
@@ -32,22 +30,18 @@ mod unix {
     impl ArtifactStore {
         pub(crate) fn open(directory: PathBuf) -> std::io::Result<Arc<Self>> {
             prepare_private_directory(&directory)?;
-            let expected = fs::symlink_metadata(&directory)?;
             let handle = rustix::fs::open(
                 &directory,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
                 Mode::empty(),
             )?;
             let handle = fs::File::from(handle);
-            ensure_same_object(&handle.metadata()?, &expected)?;
-            validate_owned_directory(&handle)?;
-            fchmod(&handle, Mode::from_raw_mode(0o700))?;
             let store = Arc::new(Self {
                 directory_handle: Arc::new(handle),
                 writes: Mutex::new(()),
             });
             store.cleanup_temporary_artifacts()?;
-            store.validate_existing_artifacts()?;
+            store.verify_existing_artifact_hashes()?;
             Ok(store)
         }
 
@@ -81,7 +75,6 @@ mod unix {
                         Mode::from_raw_mode(0o600),
                     )?;
                     let mut temporary = fs::File::from(temporary);
-                    validate_owned_regular_file(&temporary)?;
                     temporary.write_all(content)?;
                     temporary.sync_all()?;
                     drop(temporary);
@@ -91,11 +84,8 @@ mod unix {
                         &*self.directory_handle,
                         &digest,
                     )?;
-                    let final_file = self
-                        .open_existing(&digest)?
+                    self.open_existing(&digest)?
                         .ok_or_else(|| std::io::Error::other("retained artifact disappeared"))?;
-                    validate_owned_regular_file(&final_file)?;
-                    fchmod(&final_file, Mode::from_raw_mode(0o600))?;
                     fsync(&*self.directory_handle)?;
                     Ok(())
                 })();
@@ -116,15 +106,10 @@ mod unix {
             match openat(
                 &*self.directory_handle,
                 name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::CLOEXEC,
                 Mode::empty(),
             ) {
-                Ok(file) => {
-                    let file = fs::File::from(file);
-                    validate_owned_regular_file(&file)?;
-                    fchmod(&file, Mode::from_raw_mode(0o600))?;
-                    Ok(Some(file))
-                }
+                Ok(file) => Ok(Some(fs::File::from(file))),
                 Err(error) if error == rustix::io::Errno::NOENT => Ok(None),
                 Err(error) => Err(error.into()),
             }
@@ -135,23 +120,13 @@ mod unix {
                 if !valid_temporary_artifact_name(&name) {
                     continue;
                 }
-                let stat = statat(&*self.directory_handle, &name, AtFlags::SYMLINK_NOFOLLOW)?;
-                if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
-                    continue;
-                }
-                validate_stat_owner(&stat, "temporary artifact")?;
-                let Some(file) = self.open_existing(&name)? else {
-                    continue;
-                };
-                validate_owned_regular_file(&file)?;
-                ensure_stat_same_object(&file.metadata()?, &stat)?;
                 unlinkat(&*self.directory_handle, &name, AtFlags::empty())?;
             }
             fsync(&*self.directory_handle)?;
             Ok(())
         }
 
-        fn validate_existing_artifacts(&self) -> std::io::Result<()> {
+        fn verify_existing_artifact_hashes(&self) -> std::io::Result<()> {
             for name in directory_names(&self.directory_handle)? {
                 if is_digest_name(&name) {
                     let mut file = self.open_existing(&name)?.ok_or_else(|| {
@@ -184,9 +159,7 @@ mod unix {
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             )?;
-            let file = fs::File::from(file);
-            validate_owned_regular_file(&file)?;
-            Ok(file)
+            Ok(fs::File::from(file))
         }
 
         fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
@@ -215,11 +188,8 @@ mod unix {
                     &*self.directory_handle,
                     &digest,
                 )?;
-                let final_file = self
-                    .open_existing(&digest)?
+                self.open_existing(&digest)?
                     .ok_or_else(|| std::io::Error::other("capture artifact disappeared"))?;
-                validate_owned_regular_file(&final_file)?;
-                fchmod(&final_file, Mode::from_raw_mode(0o600))?;
             }
             fsync(&*self.directory_handle)?;
             Ok((
@@ -504,111 +474,6 @@ mod unix {
         }
     }
 
-    pub(super) fn validate_owned_directory(directory: &fs::File) -> std::io::Result<()> {
-        let metadata = directory.metadata()?;
-        if !metadata.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "artifact store root is not a directory",
-            ));
-        }
-        validate_owner(&metadata, "artifact store root")
-    }
-
-    pub(super) fn validate_owned_regular_file(file: &fs::File) -> std::io::Result<()> {
-        let metadata = file.metadata()?;
-        if !metadata.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "artifact object is not a regular file",
-            ));
-        }
-        validate_owner(&metadata, "artifact object")
-    }
-
-    pub(super) fn validate_owner(metadata: &fs::Metadata, object: &str) -> std::io::Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-
-            if metadata.uid() != rustix::process::geteuid().as_raw() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("{object} is not owned by the current user"),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn validate_stat_owner(
-        stat: &rustix::fs::Stat,
-        object: &str,
-    ) -> std::io::Result<()> {
-        #[cfg(unix)]
-        if stat.st_uid != rustix::process::geteuid().as_raw() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("{object} is not owned by the current user"),
-            ));
-        }
-        Ok(())
-    }
-
-    pub(super) fn ensure_same_object(
-        opened: &fs::Metadata,
-        path: &fs::Metadata,
-    ) -> std::io::Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-
-            if opened.dev() != path.dev() || opened.ino() != path.ino() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "authorized read target changed while it was being opened",
-                ));
-            }
-        }
-        #[cfg(not(unix))]
-        if opened.is_file() != path.is_file()
-            || opened.is_dir() != path.is_dir()
-            || opened.len() != path.len()
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "authorized read target changed while it was being opened",
-            ));
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[allow(clippy::unnecessary_cast)]
-    fn stat_identity(stat: &rustix::fs::Stat) -> (u64, u64) {
-        // Darwin's native dev_t is narrower than MetadataExt's u64 representation.
-        (stat.st_dev as u64, stat.st_ino as u64)
-    }
-
-    pub(super) fn ensure_stat_same_object(
-        opened: &fs::Metadata,
-        path: &rustix::fs::Stat,
-    ) -> std::io::Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-
-            let (device, inode) = stat_identity(path);
-            if opened.dev() != device || opened.ino() != inode {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "artifact object changed during validation",
-                ));
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn directory_names(directory: &fs::File) -> std::io::Result<Vec<String>> {
         let mut names = Vec::new();
         let mut entries = Dir::read_from(directory)?;
@@ -655,28 +520,12 @@ mod unix {
     }
 
     pub(super) fn prepare_private_directory(directory: &Path) -> std::io::Result<()> {
-        match fs::symlink_metadata(directory) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "artifact store root must be a non-symlink directory",
-                    ));
-                }
-                validate_owner(&metadata, "artifact store root")?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir_all(directory)?;
-                let metadata = fs::symlink_metadata(directory)?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "artifact store root must be a non-symlink directory",
-                    ));
-                }
-                validate_owner(&metadata, "artifact store root")?;
-            }
-            Err(error) => return Err(error),
+        if !directory.exists() {
+            use std::os::unix::fs::DirBuilderExt as _;
+
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder.create(directory)?;
         }
         Ok(())
     }
@@ -712,6 +561,22 @@ mod unix {
                 .expect("open artifact store");
             let capture = OutputCapture::new(store).expect("create output capture");
             (directory, capture)
+        }
+
+        #[test]
+        fn artifact_store_uses_preexisting_symlinked_directory() {
+            use std::os::unix::fs::symlink;
+
+            let directory = tempfile::tempdir().expect("temporary artifact root");
+            let actual = directory.path().join("actual");
+            std::fs::create_dir(&actual).expect("actual artifact directory");
+            let linked = directory.path().join("linked");
+            symlink(&actual, &linked).expect("artifact directory symlink");
+            let store = ArtifactStore::open(linked).expect("symlinked artifact store");
+            let (_, digest) = store
+                .retain(b"existing-path-policy")
+                .expect("retain artifact");
+            assert!(actual.join(digest).is_file());
         }
 
         #[test]
@@ -794,22 +659,15 @@ mod windows {
 
     impl ArtifactStore {
         pub(crate) fn open(directory: PathBuf) -> std::io::Result<Arc<Self>> {
-            match fs::symlink_metadata(&directory) {
-                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-                    cookie_agent_models::secure_store::validate_windows_path_acl(&directory)?;
-                }
-                Ok(_) => return Err(invalid("artifact store root is not a plain directory")),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    cookie_agent_models::secure_store::create_windows_private_dir_all(&directory)?;
-                }
-                Err(error) => return Err(error),
+            if !directory.exists() {
+                cookie_agent_models::secure_store::create_windows_private_dir_all(&directory)?;
             }
             let store = Arc::new(Self {
                 directory,
                 writes: Mutex::new(()),
             });
             store.cleanup_temporary_artifacts()?;
-            store.validate_existing_artifacts()?;
+            store.verify_existing_artifact_hashes()?;
             Ok(store)
         }
 
@@ -894,10 +752,7 @@ mod windows {
         pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
             let path = self.directory.join(name);
             match fs::OpenOptions::new().read(true).write(true).open(&path) {
-                Ok(file) => {
-                    validate_regular_file(&path, &file)?;
-                    Ok(Some(file))
-                }
+                Ok(file) => Ok(Some(file)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error),
             }
@@ -905,9 +760,7 @@ mod windows {
 
         fn create_file(&self, name: &str) -> std::io::Result<fs::File> {
             let path = self.directory.join(name);
-            let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
-            validate_regular_file(&path, &file)?;
-            Ok(file)
+            cookie_agent_models::secure_store::create_windows_private_file(&path)
         }
 
         fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
@@ -915,18 +768,13 @@ mod windows {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if valid_temporary_artifact_name(&name) {
-                    let path = entry.path();
-                    let metadata = fs::symlink_metadata(&path)?;
-                    if metadata.is_file() && !metadata.file_type().is_symlink() {
-                        cookie_agent_models::secure_store::validate_windows_path_acl(&path)?;
-                        fs::remove_file(path)?;
-                    }
+                    fs::remove_file(entry.path())?;
                 }
             }
             Ok(())
         }
 
-        fn validate_existing_artifacts(&self) -> std::io::Result<()> {
+        fn verify_existing_artifact_hashes(&self) -> std::io::Result<()> {
             for entry in fs::read_dir(&self.directory)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -1169,15 +1017,6 @@ mod windows {
         }
     }
 
-    fn validate_regular_file(path: &std::path::Path, file: &fs::File) -> std::io::Result<()> {
-        let metadata = file.metadata()?;
-        let path_metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_file() || path_metadata.file_type().is_symlink() {
-            return Err(invalid("artifact object is not a plain regular file"));
-        }
-        cookie_agent_models::secure_store::validate_windows_path_acl(path)
-    }
-
     fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
         file.seek(SeekFrom::Start(0))?;
         let mut hash = Sha256::new();
@@ -1252,11 +1091,11 @@ mod windows {
         use super::ArtifactStore;
 
         #[test]
-        fn rejects_preexisting_untrusted_artifact_acl() {
+        fn uses_preexisting_artifact_directory_without_acl_validation() {
             let temporary = tempfile::tempdir().expect("temporary root");
             let artifacts = temporary.path().join("artifacts");
             std::fs::create_dir(&artifacts).expect("ordinary artifact directory");
-            assert!(ArtifactStore::open(artifacts).is_err());
+            ArtifactStore::open(artifacts).expect("existing artifact directory");
         }
     }
 }

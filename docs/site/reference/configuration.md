@@ -40,8 +40,8 @@ keys, tables, and comments are retained. The complete candidate is passed
 through the strict configuration loader before an atomic replacement; an
 existing unknown field, type conflict, or malformed table fails without
 changing the file. The replacement syncs the candidate before rename and syncs
-the containing directory afterward, and preserves the existing file's
-permission mode (new files are owner-only). The source file is re-read and
+the containing directory afterward. The newly staged replacement is owner-only;
+the existing source path is not validated before replacement. The source file is re-read and
 compared immediately before replacement, and a mismatch fails with a conflict
 instead of overwriting the external edit. A modification landing between that
 comparison and the rename itself cannot be detected — a narrow residual race

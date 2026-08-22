@@ -55,23 +55,26 @@ displaced file and roll back with the Linux guarantee.
 
 ## Private state
 
-On Unix, private state directories and files are opened with owner-only modes
-and checked for the expected owner, type, link count, and permissions. Store
-updates use locked journals and atomic publication.
+On Unix, cookie agent creates new private-state directories with mode `0700` and
+new files with mode `0600`. Store updates use `flock`-locked journals and atomic
+publication. Existing paths are not checked for owner, mode, type, link count,
+or symlinks; they are opened and used as-is.
 
-On Windows, state directories and files are created with a protected DACL whose
-single access-control entry grants the current user full control. Existing
-entries are rejected unless the owner, protected-DACL flag, access-control entry,
-inheritance flags, and current-user SID match that shape. Reparse points,
-directories opened as files, and multiply linked files are rejected. Secure-store
-lock files use an exclusive whole-file `LockFileEx` lock, and durable state
-replacement stages and flushes a private file before publishing it with
-`MoveFileExW` using replace-existing and write-through flags.
+On Windows, new state directories and files are created with a protected DACL
+whose single access-control entry grants the current user full control.
+Secure-store lock files use an exclusive whole-file `LockFileEx` lock, and
+durable state replacement stages and flushes a private file before publishing it
+with `MoveFileExW` using replace-existing and write-through flags. Existing
+paths are not checked for owner, DACL shape, reparse points, object type, or hard
+links; they are opened and used as-is.
 
-The Windows DACL protects against other ordinary user accounts. It is not a
-boundary against `SYSTEM` or an elevated administrator, who can take ownership
-or replace the ACL and read the state. ACL setup and validation fail closed, but
-they cannot protect secrets from privileged code on the same machine.
+Creation-time modes and DACLs protect newly created state from other ordinary
+users. They do not protect state that already exists or is later replaced. A
+local actor able to pre-create or replace a state path can redirect reads and
+writes through a symlink or provide loose/foreign-owned storage; cookie agent
+will use that path. Treat the parent storage location as trusted and remove
+unexpected state before starting the daemon. Neither platform protects secrets
+from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
 
 ## Process boundary
 
