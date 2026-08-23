@@ -342,38 +342,6 @@ fn load_agent_document(
     Ok(())
 }
 
-#[cfg(test)]
-mod agent_loader_tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_agent_ids_in_one_preset_map_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("worker.md"),
-            "---\ndescription: Worker\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nPrompt.\n",
-        )
-        .unwrap();
-        let mut documents = BTreeMap::new();
-        load_agent_document(
-            directory.path(),
-            "worker.md",
-            AgentDocumentSource::Workspace,
-            &mut documents,
-        )
-        .unwrap();
-        assert!(matches!(
-            load_agent_document(
-                directory.path(),
-                "worker.md",
-                AgentDocumentSource::Workspace,
-                &mut documents,
-            ),
-            Err(ConfigError::DuplicateAgent(id)) if id.as_str() == "worker"
-        ));
-    }
-}
-
 fn decode_runtime_layer(
     value: &mut toml::Value,
     text: &str,
@@ -497,4 +465,36 @@ fn key_line(text: &str, key: &str) -> Option<usize> {
 
 fn user_root() -> Option<PathBuf> {
     paths::user_data_root().ok()
+}
+
+#[cfg(test)]
+mod agent_loader_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_agent_ids_in_one_preset_map_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("worker.md"),
+            "---\ndescription: Worker\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nPrompt.\n",
+        )
+        .unwrap();
+        let mut documents = BTreeMap::new();
+        load_agent_document(
+            directory.path(),
+            "worker.md",
+            AgentDocumentSource::Workspace,
+            &mut documents,
+        )
+        .unwrap();
+        assert!(matches!(
+            load_agent_document(
+                directory.path(),
+                "worker.md",
+                AgentDocumentSource::Workspace,
+                &mut documents,
+            ),
+            Err(ConfigError::DuplicateAgent(id)) if id.as_str() == "worker"
+        ));
+    }
 }

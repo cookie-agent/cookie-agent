@@ -1836,10 +1836,12 @@ impl Engine {
     }
 }
 
+type ResolvedAgentRegistries = (Arc<AgentRegistry>, BTreeMap<String, Arc<AgentRegistry>>);
+
 fn resolve_agent_registries(
     config: &LoadedConfiguration,
     models: &Arc<cookie_agent_models::CompiledModelRuntime>,
-) -> Result<(Arc<AgentRegistry>, BTreeMap<String, Arc<AgentRegistry>>), EngineError> {
+) -> Result<ResolvedAgentRegistries, EngineError> {
     let shared = Arc::new(AgentRegistry::resolve(
         &config.agent_registry(),
         models,
