@@ -8692,7 +8692,8 @@ mod tests {
         );
         for expected in [
             "/quit — exit the TUI",
-            "/new — choose the next run agent",
+            "/new — start a new root session",
+            "/preset — choose the agent preset for new sessions",
             "/approve once|all|reject|cancel — answer an approval",
             "/events debug|info|warning|error — set the diagnostic level filter for this view",
             "/help — show command help",
