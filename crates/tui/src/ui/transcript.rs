@@ -2830,6 +2830,13 @@ mod tests {
         }
     }
 
+    fn preset_descriptor(preset: &str, agent: &str) -> cookie_agent_protocol::AgentDescriptor {
+        let mut descriptor = descriptor(agent, true);
+        descriptor.preset = Some(preset.into());
+        descriptor.description = format!("{preset} {agent} agent");
+        descriptor
+    }
+
     fn model_descriptor() -> cookie_agent_protocol::AvailableModelDescriptor {
         cookie_agent_protocol::AvailableModelDescriptor {
             key: model_key(),
@@ -8851,10 +8858,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preset_picker_filters_new_session_agents_without_touching_existing_drafts() {
+        let mut app = test_app().await;
+        app.agents.extend([
+            preset_descriptor("python", "primary"),
+            preset_descriptor("python", "reviewer"),
+            preset_descriptor("rust", "primary"),
+        ]);
+        let existing_draft = app.draft.clone();
+
+        app.run_command(SlashCommand::Preset).await;
+        assert_eq!(app.modal, Modal::Presets);
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("None (shared)"));
+        assert!(rendered.contains("python"));
+        assert!(rendered.contains("rust"));
+        app.choose_picker_entry(1).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("python"));
+        assert_eq!(app.draft, existing_draft);
+
+        app.run_command(SlashCommand::New).await;
+        assert!(app.new_session_draft);
+        assert_eq!(app.modal, Modal::Agents);
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+        assert_eq!(
+            app.selectable_agents()
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            ["primary", "reviewer"]
+        );
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("preset: python"));
+        app.cycle_agent(false);
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(!app.new_session_draft);
+        let fresh = test_app().await;
+        assert_eq!(fresh.selected_preset, None);
+    }
+
+    #[tokio::test]
     async fn every_slash_command_variant_dispatches_from_key_events_without_starting_a_run() {
         let cases = [
             ("/quit", None),
             ("/new", Some("Agent")),
+            ("/preset", Some("Agent preset")),
             ("/connect", Some("Connect provider")),
             ("/sessions", Some("Sessions")),
             ("/cancel", Some("no active run")),

@@ -11,6 +11,7 @@ use ratatui::{
 pub(crate) enum SlashCommand {
     Quit,
     New,
+    Preset,
     Connect,
     Mcp,
     Permissions,
@@ -45,7 +46,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "new",
         aliases: &[],
         usage: "/new",
-        description: "choose the next run agent",
+        description: "start a new root session",
+        requires_arguments: false,
+    },
+    CommandSpec {
+        name: "preset",
+        aliases: &[],
+        usage: "/preset",
+        description: "choose the agent preset for new sessions",
         requires_arguments: false,
     },
     CommandSpec {
@@ -208,6 +216,7 @@ pub(crate) fn parse_submission_with_skills(
         match parts.as_slice() {
             ["quit"] | ["q"] => SlashCommand::Quit,
             ["new"] => SlashCommand::New,
+            ["preset"] => SlashCommand::Preset,
             ["connect"] => SlashCommand::Connect,
             ["mcp"] => SlashCommand::Mcp,
             ["permissions"] | ["perms"] => SlashCommand::Permissions,
@@ -273,6 +282,14 @@ mod parse_tests {
                 name: "release-check".into(),
                 args: "v1.2.0 --strict".into(),
             })
+        );
+    }
+
+    #[test]
+    fn parses_preset_picker_command() {
+        assert_eq!(
+            parse_submission("/preset").unwrap(),
+            Submission::Command(SlashCommand::Preset)
         );
     }
 }
