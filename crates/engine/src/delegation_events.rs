@@ -150,6 +150,7 @@ impl DelegationEventStore {
                     &cookie_agent_protocol::RunSelection {
                         agent: child_agent.agent.clone(),
                         model: selected_suffix[0].selection.clone(),
+                        preset: None,
                     },
                     &selected_suffix,
                 )
@@ -432,6 +433,7 @@ fn apply_event(
                         &cookie_agent_protocol::RunSelection {
                             agent: child_agent.agent.clone(),
                             model: selected_suffix[0].selection.clone(),
+                            preset: None,
                         },
                         &selected_suffix,
                     )

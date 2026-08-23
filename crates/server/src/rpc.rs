@@ -260,6 +260,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::MissingActor(_) => "missing_actor",
         EngineError::ActorStopped => "actor_stopped",
         EngineError::NoRunnableModel => "no_runnable_model",
+        EngineError::UnknownAgentPreset(_) => "unknown_agent_preset",
         EngineError::ProviderStoreReloadFailed => "provider_store_reload_failed",
         EngineError::RuntimeCompileFailed => "runtime_compile_failed",
         EngineError::InvalidRuntimeAgent(_) => "invalid_runtime_agent",

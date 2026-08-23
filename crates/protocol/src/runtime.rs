@@ -83,8 +83,16 @@ impl RuntimeSnapshotV1 {
         {
             return Err("models must be strictly sorted and unique with at most 4096 entries");
         }
-        if self.agents.len() > 4096 || self.agents.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-            return Err("agents must be strictly sorted and unique with at most 4096 entries");
+        if self.agents.len() > 4096
+            || self
+                .agents
+                .windows(2)
+                .any(|pair| (&pair[0].preset, &pair[0].id) >= (&pair[1].preset, &pair[1].id))
+            || self.agents.iter().any(|agent| agent.validate().is_err())
+        {
+            return Err(
+                "agents must be strictly sorted and unique by preset and ID with at most 4096 entries",
+            );
         }
         Ok(())
     }

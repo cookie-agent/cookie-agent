@@ -249,6 +249,7 @@ fn freeze_with_bindings(
     let run_selection = protocol::RunSelection {
         agent: document.id.clone(),
         model: selection.clone(),
+        preset: registry.preset().map(str::to_owned),
     };
     snapshot
         .validate_selected_suffix(&run_selection, &bindings)
@@ -272,7 +273,7 @@ pub(crate) fn policy_for_session_selection(
     tool_output_max_bytes: usize,
     prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    if selection.agent != agent.agent {
+    if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
         return Err(EngineError::NoRunnableModel);
     }
     let index = agent

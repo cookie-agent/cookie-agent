@@ -2063,6 +2063,7 @@ impl EventPayload {
                                 .ok_or(EventSchemaError::InvalidDelegationLifecycle)?
                                 .selection
                                 .clone(),
+                            preset: None,
                         },
                         selected_suffix,
                     )

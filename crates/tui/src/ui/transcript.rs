@@ -2360,6 +2360,7 @@ mod tests {
         let selection = RunSelection {
             agent: AgentId::new(agent).expect("agent id"),
             model: chain[suffix_start as usize].selection.clone(),
+            preset: None,
         };
         let chain = chain.into_iter().map(frozen_binding).collect::<Vec<_>>();
         session_created_from_bindings(session_id, seq, selection, chain, suffix_start)
@@ -2722,6 +2723,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             },
             runtime_revision: protocol_revision("1"),
             catalog_revision: protocol_revision("2"),
@@ -2815,6 +2817,7 @@ mod tests {
     fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::AgentDescriptor {
         cookie_agent_protocol::AgentDescriptor {
             id: AgentId::new(agent).expect("agent id"),
+            preset: None,
             description: format!("Test {agent} agent"),
             mode: cookie_agent_protocol::AgentMode::Primary,
             enabled: runnable,
@@ -3306,6 +3309,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         let wide = rendered_row(&mut app, 100, 24, 23);
@@ -4374,6 +4378,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent_id(),
             model: resolved.selection.clone(),
+            preset: None,
         };
         let created =
             session_created_from_bindings(session, 1, selection.clone(), vec![binding.clone()], 0);
@@ -6186,6 +6191,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         let rendered = frame_rows(&mut app, 100, 30).join("\n");
@@ -6414,6 +6420,7 @@ mod tests {
                 model: model_key(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("primary • gateway/arbitrary-model[high]"));
@@ -6480,6 +6487,7 @@ mod tests {
                 model: model_key(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -6549,6 +6557,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             });
             app.input
                 .set_buffer("zero\none\ntwo\nthree\nfour\nfive\nsix".into());
@@ -6719,6 +6728,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         rendered_frame(&mut app, 100, 30);
         let agent = app
@@ -6761,6 +6771,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         assert_eq!(app.draft_models().len(), app.models.len());
         let variants = app.draft_variants();
@@ -6961,6 +6972,7 @@ mod tests {
                 model: first.key.clone(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
 
         app.set_draft_model(first.key.clone());
@@ -7100,6 +7112,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             },
             ..session_meta(session_id)
         }
@@ -7123,6 +7136,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         assert!(app.watching_root_session());
         assert!(app.agent_switching_allowed());
@@ -7254,6 +7268,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         app.revalidate_draft();
         assert_eq!(
@@ -7267,6 +7282,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         app.revalidate_draft();
         assert_eq!(
@@ -7418,6 +7434,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent_id(),
             model: suffix[0].selection.clone(),
+            preset: None,
         };
         event(
             session_id,
@@ -8805,6 +8822,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         rendered_frame(&mut models, 100, 30);
         let model_hit = models
@@ -9341,6 +9359,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         type_input(&mut app, "/connect").await;

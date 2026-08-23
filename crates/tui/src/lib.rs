@@ -64,6 +64,7 @@ mod tests {
                     .expect("model key"),
                 variant: None,
             },
+            preset: None,
         }
     }
 

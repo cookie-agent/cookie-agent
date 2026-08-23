@@ -3,7 +3,7 @@
 mod agents;
 pub(crate) mod projection;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cookie_agent_models::{CompiledModelRuntime, manifests::ModelSnapshotManifestIndex};
 use cookie_agent_protocol::{RuntimeChangedNotification, RuntimeSnapshotResult};
@@ -17,8 +17,25 @@ pub struct PublishedRuntime {
     pub result: RuntimeSnapshotResult,
     pub models: Arc<CompiledModelRuntime>,
     pub agents: Arc<AgentRegistry>,
+    pub agent_presets: BTreeMap<String, Arc<AgentRegistry>>,
     pub manifests: Arc<ModelSnapshotManifestIndex>,
     pub current_manifest: Arc<cookie_agent_protocol::ModelSnapshotManifestV1>,
+}
+
+impl PublishedRuntime {
+    pub(crate) fn agents_for_preset(
+        &self,
+        preset: Option<&str>,
+    ) -> Result<Arc<AgentRegistry>, crate::EngineError> {
+        match preset {
+            None => Ok(Arc::clone(&self.agents)),
+            Some(name) => self
+                .agent_presets
+                .get(name)
+                .cloned()
+                .ok_or_else(|| crate::EngineError::UnknownAgentPreset(name.to_owned())),
+        }
+    }
 }
 
 impl std::fmt::Debug for PublishedRuntime {

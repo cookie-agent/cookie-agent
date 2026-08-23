@@ -266,16 +266,19 @@ fn session_tree_usage_result_round_trips() {
 }
 
 #[test]
-fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
+fn prior_agent_snapshots_upconvert_exactly_and_write_schema_seven() {
     let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
     let mut previous = current.clone();
-    previous["schema"] = json!(5);
-    previous
-        .as_object_mut()
-        .unwrap()
-        .remove("max_output_tokens");
+    previous["schema"] = json!(6);
     let converted = serde_json::from_value::<AgentSnapshot>(previous).unwrap();
-    assert_eq!(converted.schema.value(), 6);
+    assert_eq!(converted.schema.value(), 7);
+    assert_eq!(converted.max_output_tokens, 0);
+
+    let mut older = current.clone();
+    older["schema"] = json!(5);
+    older.as_object_mut().unwrap().remove("max_output_tokens");
+    let converted = serde_json::from_value::<AgentSnapshot>(older).unwrap();
+    assert_eq!(converted.schema.value(), 7);
     assert_eq!(converted.max_output_tokens, 0);
 
     let mut legacy = current;
@@ -284,9 +287,9 @@ fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
     legacy["tools"] = json!(["read", "write", "edit", "bash"]);
 
     let converted = serde_json::from_value::<AgentSnapshot>(legacy.clone()).unwrap();
-    assert_eq!(converted.schema.value(), 6);
+    assert_eq!(converted.schema.value(), 7);
     let current = serde_json::to_value(converted).unwrap();
-    assert_eq!(current["schema"], 6);
+    assert_eq!(current["schema"], 7);
     assert_eq!(current["max_output_tokens"], 0);
     assert!(current.get("tools").is_none());
 
@@ -729,6 +732,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
                 model: "openai/gpt-5.6-sol".parse().expect("model key"),
                 variant: None,
             },
+            preset: None,
         },
         runtime_revision: runtime.runtime_revision,
         catalog_revision: runtime.catalog_revision,

@@ -46,6 +46,12 @@
             "model",
             "variant"
           ]
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,

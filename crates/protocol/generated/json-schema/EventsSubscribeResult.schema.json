@@ -118,7 +118,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 6
+          "const": 7
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -5179,6 +5179,12 @@
           "required": [
             "model",
             "variant"
+          ]
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
           ]
         }
       },

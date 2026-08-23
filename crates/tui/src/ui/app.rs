@@ -1113,6 +1113,7 @@ impl App {
         Some(RunSelection {
             agent: agent.id.clone(),
             model,
+            preset: agent.preset.clone(),
         })
     }
 
@@ -1447,7 +1448,11 @@ impl App {
         let Some(model) = model else {
             return;
         };
-        self.draft = Some(RunSelection { agent, model });
+        self.draft = Some(RunSelection {
+            agent,
+            model,
+            preset: descriptor.preset.clone(),
+        });
         self.status = self.draft_status("Draft run agent");
     }
 
@@ -1475,6 +1480,7 @@ impl App {
         self.draft = Some(RunSelection {
             agent: draft.agent,
             model: selection,
+            preset: draft.preset,
         });
         self.status = self.draft_status("Draft run model");
     }
@@ -1489,6 +1495,7 @@ impl App {
                 model: draft.model.model,
                 variant,
             },
+            preset: draft.preset,
         });
         self.status = self.draft_status("Draft run variant");
     }
@@ -2248,6 +2255,7 @@ impl App {
                     self.draft = Some(RunSelection {
                         agent: creation.agent,
                         model,
+                        preset: creation.preset,
                     });
                 } else {
                     self.draft = Some(creation);

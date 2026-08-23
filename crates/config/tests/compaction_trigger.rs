@@ -598,12 +598,12 @@ fn agent_presets_replace_shared_documents_and_add_agents() {
     write_agent(
         &root,
         "python/primary.md",
-        &agent("Python primary", "[{ model: \"custom.test/python\" }]"),
+        "---\ndescription: Python primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/python\" }]\npermissions:\n  delegate:\n    python-only: allow\n---\nPython prompt.\n",
     );
     write_agent(
         &root,
         "python/python-only.md",
-        &agent("Python only", "[{ model: \"custom.test/python\" }]"),
+        "---\ndescription: Python only\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/python\" }]\npermissions: {}\n---\nPython worker.\n",
     );
 
     let loaded = load_from_roots(None, Some(&root)).unwrap();

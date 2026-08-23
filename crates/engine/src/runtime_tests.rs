@@ -2137,6 +2137,7 @@ compaction = "openai-responses-compact"
                 model: "openai/gpt-test".parse().unwrap(),
                 variant: None,
             },
+            preset: None,
         },
     )
 }
@@ -2663,6 +2664,7 @@ media = {}
             model: "custom.test/group/model".parse().expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     (
         Fixture {
@@ -2680,7 +2682,9 @@ fn frozen_root_policy(
     selection: &RunSelection,
 ) -> crate::policy::FrozenRunPolicy {
     let runtime = fixture.engine.current_runtime();
-    let registry = Arc::clone(&runtime.agents);
+    let registry = runtime
+        .agents_for_preset(selection.preset.as_deref())
+        .expect("selected agent preset");
     let agent = crate::policy::resolve_agent(&registry, &selection.agent).expect("resolved agent");
     crate::policy::freeze_root_agent_policy(
         agent,
@@ -2868,6 +2872,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let owner = frozen_root_policy(&fixture, &selection);
     let parent = owner.selected_suffix[0].clone();
@@ -3004,6 +3009,7 @@ fn model_capabilities_follow_the_exact_fallback_binding() {
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
@@ -3037,6 +3043,7 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
@@ -4443,6 +4450,7 @@ lazy = true
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let session = fixture
         .engine
@@ -5195,6 +5203,7 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
             model: "openai/model".parse().expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     assert!(matches!(
         fixture.engine.create_session(selection),
@@ -5233,6 +5242,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -5366,6 +5376,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -5398,6 +5409,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     let selection = RunSelection {
         agent: default.id.clone(),
         model: default.resolved_fallback[0].clone(),
+        preset: None,
     };
     policy = frozen_root_policy(&fixture, &selection);
     // The default document has delegate permission but no named target; supply
@@ -5482,6 +5494,97 @@ fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_o
             .iter()
             .any(|agent| agent.id.as_str() == "default")
     );
+}
+
+#[tokio::test]
+async fn agent_presets_materialize_effective_registries_and_persist_selection() {
+    let (mut fixture, shared_selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+
+    let primary_id = AgentId::new("primary").expect("primary agent ID");
+    let mut python_agents = fixture.config.agents.clone();
+    let mut python_primary = python_agents[&primary_id].clone();
+    python_primary.frontmatter.description = "Python preset primary".into();
+    python_primary.body = "Use Python for this task.\n".into();
+    python_agents.insert(primary_id.clone(), python_primary);
+    let reviewer_id = AgentId::new("reviewer").expect("reviewer agent ID");
+    let mut reviewer = fixture.config.agents[&primary_id].clone();
+    reviewer.id = reviewer_id.clone();
+    reviewer.frontmatter.description = "Python-only reviewer".into();
+    reviewer.body = "Review Python code.\n".into();
+    python_agents.insert(reviewer_id.clone(), reviewer);
+    fixture
+        .config
+        .agent_presets
+        .insert("python".into(), python_agents);
+
+    let mut no_root_agents = fixture.config.agents.clone();
+    no_root_agents
+        .get_mut(&primary_id)
+        .expect("primary agent")
+        .frontmatter
+        .enabled = false;
+    fixture
+        .config
+        .agent_presets
+        .insert("no-root".into(), no_root_agents);
+    fixture.engine = reopen_engine(&fixture);
+
+    let snapshot = &fixture.engine.current_runtime().result.snapshot;
+    let shared_primary = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.preset.is_none() && agent.id == primary_id)
+        .expect("shared primary descriptor");
+    assert_eq!(shared_primary.description, "Primary test agent");
+    let python_primary = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.preset.as_deref() == Some("python") && agent.id == primary_id)
+        .expect("Python primary descriptor");
+    assert_eq!(python_primary.description, "Python preset primary");
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| { agent.preset.as_deref() == Some("python") && agent.id == reviewer_id })
+    );
+    assert!(snapshot.agents.iter().any(|agent| {
+        agent.preset.as_deref() == Some("no-root") && agent.id.as_str() == "default"
+    }));
+    assert!(snapshot.agents.iter().any(|agent| {
+        agent.preset.as_deref() == Some("python") && agent.id.as_str() == "approval"
+    }));
+
+    let preset_selection = RunSelection {
+        agent: reviewer_id,
+        model: shared_selection.model.clone(),
+        preset: Some("python".into()),
+    };
+    let created = fixture
+        .engine
+        .create_session(preset_selection.clone())
+        .expect("preset session");
+    assert_eq!(created.creation_selection, preset_selection);
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(created.session_id)
+            .expect("preset projection")
+            .creation_agent
+            .description,
+        "Python-only reviewer"
+    );
+    assert!(matches!(
+        fixture.engine.create_session(RunSelection {
+            preset: Some("missing".into()),
+            ..shared_selection
+        }),
+        Err(EngineError::UnknownAgentPreset(name)) if name == "missing"
+    ));
+    fixture.engine.shutdown().await;
 }
 
 // This regression asserts exact POSIX mode bits for a shared workspace.
@@ -5689,6 +5792,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
                 .expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     manager_two
         .current()
@@ -6245,7 +6349,7 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
         else {
             panic!("first event must be session creation");
         };
-        assert_eq!(creation_agent.schema.value(), 6);
+        assert_eq!(creation_agent.schema.value(), 7);
         assert!(
             serde_json::to_value(creation_agent)
                 .expect("serialize up-converted creation agent")

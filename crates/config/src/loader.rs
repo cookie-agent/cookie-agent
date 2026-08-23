@@ -67,6 +67,14 @@ impl LoadedConfiguration {
     pub fn agent_registry(&self) -> AgentRegistry {
         AgentRegistry::from_validated(self.agents.clone())
     }
+
+    #[must_use]
+    pub fn agent_preset_registries(&self) -> BTreeMap<String, AgentRegistry> {
+        self.agent_presets
+            .iter()
+            .map(|(name, agents)| (name.clone(), AgentRegistry::from_validated(agents.clone())))
+            .collect()
+    }
 }
 
 /// Loads user config and exact-cwd `.cookie-agent` with no upward search.

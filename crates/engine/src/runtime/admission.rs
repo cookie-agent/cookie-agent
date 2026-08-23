@@ -256,6 +256,7 @@ impl Engine {
         let selection = RunSelection {
             agent: agent.clone(),
             model: child_policy.selected_suffix[0].selection.clone(),
+            preset: child_policy.registry.preset().map(str::to_owned),
         };
         let child_session_id = entry.reservation.child_session_id;
         let creation = Event::SessionCreated {

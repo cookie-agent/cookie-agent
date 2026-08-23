@@ -166,7 +166,7 @@ impl Engine {
             SessionOrigin::Root => {
                 self.reconcile_provider_store()?;
                 let runtime = self.current_runtime();
-                let agents = Arc::clone(&runtime.agents);
+                let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
                 let agent = resolve_agent(&agents, &params.selection.agent)?;
                 if !agent.runnable_as_root {
                     return Err(EngineError::NoRunnableModel);
@@ -183,7 +183,10 @@ impl Engine {
             }
             SessionOrigin::Delegated { .. } => {
                 let runtime = self.current_runtime();
-                let agents = Arc::clone(&runtime.agents);
+                if params.selection.preset != session.meta.creation_selection.preset {
+                    return Err(EngineError::NoRunnableModel);
+                }
+                let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
                 policy_for_session_selection(
                     session.creation_agent.clone(),
                     agents,

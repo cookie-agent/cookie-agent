@@ -2681,6 +2681,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent.agent.clone(),
             model: suffix[0].selection.clone(),
+            preset: None,
         };
         let prompt_fingerprint = agent.prompt_fingerprint.clone();
         let mut records = vec![
@@ -3633,7 +3634,7 @@ mod tests {
                 cookie_agent_protocol::SessionStatus::Idle
             );
             assert_eq!(projected.meta.last_event_seq, 1);
-            assert_eq!(projected.creation_agent.schema.value(), 6);
+            assert_eq!(projected.creation_agent.schema.value(), 7);
         }
     }
 

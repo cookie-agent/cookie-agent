@@ -605,6 +605,7 @@ async fn model_disabled_skill_lookup_rejects_without_leaking_hidden_hints() {
                 model: "custom.local/test".parse().expect("model"),
                 variant: None,
             },
+            preset: None,
         })
         .expect("session");
     assert!(
@@ -713,6 +714,7 @@ async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
                     model: "custom.local/test".parse().expect("model"),
                     variant: None,
                 },
+                preset: None,
             },
             input: cookie_agent_protocol::encode_skill_submission_with_prompt(
                 "release-check",
@@ -1067,6 +1069,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
                 model: "custom.local/test".parse().expect("model"),
                 variant: None,
             },
+            preset: None,
         })
         .expect("gap session");
     let coordination_deadline = Instant::now() + Duration::from_secs(30);
@@ -1188,6 +1191,7 @@ async fn start_run_admission_failures_map_to_one() {
         .create_session(RunSelection {
             agent: agent.id.clone(),
             model,
+            preset: None,
         })
         .expect("running session");
     fixture

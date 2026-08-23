@@ -30,7 +30,13 @@ impl Engine {
     ) -> Result<FrozenRunPolicy, EngineError> {
         let (agent, suffix) = latest_run_policy(events, run)?;
         let runtime = self.historical_run_runtime(run)?;
-        let agents = Arc::clone(&runtime.agents);
+        let preset = events.iter().find_map(|event| match &event.payload {
+            crate::runtime::Event::SessionCreated {
+                creation_selection, ..
+            } => Some(creation_selection.preset.as_deref()),
+            _ => None,
+        });
+        let agents = runtime.agents_for_preset(preset.flatten())?;
         policy_from_snapshot(
             agent,
             suffix,

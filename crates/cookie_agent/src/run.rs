@@ -601,6 +601,7 @@ fn resolve_selection(
     Ok(RunSelection {
         agent: agent.id.clone(),
         model,
+        preset: None,
     })
 }
 
