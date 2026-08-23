@@ -139,6 +139,9 @@ pub struct RunArgs {
     /// Root-runnable agent ID.
     #[arg(short = 'a', long)]
     pub agent: Option<AgentId>,
+    /// Agent preset used for a newly created session.
+    #[arg(long)]
+    pub preset: Option<String>,
     /// Available provider/model selection.
     #[arg(short = 'm', long)]
     pub model: Option<ModelKey>,
@@ -547,22 +550,41 @@ fn resolve_selection(
     args: &RunArgs,
 ) -> anyhow::Result<RunSelection> {
     let root_session = resumed.is_none_or(|session| matches!(session.origin, SessionOrigin::Root));
+    if resumed.is_some() && args.preset.is_some() {
+        return Err(anyhow!("--preset cannot override a resumed session"));
+    }
     if !root_session && args.agent.is_some() {
         return Err(anyhow!("--agent cannot override a delegated session"));
+    }
+    let preset = resumed
+        .and_then(|session| session.creation_selection.preset.clone())
+        .or_else(|| args.preset.clone());
+    if let Some(name) = preset.as_deref()
+        && !agents
+            .iter()
+            .any(|agent| agent.preset.as_deref() == Some(name))
+    {
+        return Err(anyhow!("agent preset `{name}` is not available"));
     }
     let base_agent = args
         .agent
         .as_ref()
         .or_else(|| resumed.map(|session| &session.creation_selection.agent));
     let agent = match base_agent {
-        Some(agent_id) => agents
-            .iter()
-            .find(|agent| agent.id == *agent_id && (agent.runnable_as_root || !root_session)),
+        Some(agent_id) => agents.iter().find(|agent| {
+            agent.id == *agent_id
+                && agent.preset == preset
+                && (agent.runnable_as_root || !root_session)
+        }),
         None => agents
             .iter()
-            .filter(|agent| agent.runnable_as_root)
+            .filter(|agent| agent.runnable_as_root && agent.preset == preset)
             .find(|agent| agent.id.as_str() == "primary")
-            .or_else(|| agents.iter().find(|agent| agent.runnable_as_root)),
+            .or_else(|| {
+                agents
+                    .iter()
+                    .find(|agent| agent.runnable_as_root && agent.preset == preset)
+            }),
     }
     .ok_or_else(|| anyhow!("selected agent is not available for this session"))?;
 
@@ -601,7 +623,7 @@ fn resolve_selection(
     Ok(RunSelection {
         agent: agent.id.clone(),
         model,
-        preset: None,
+        preset,
     })
 }
 
