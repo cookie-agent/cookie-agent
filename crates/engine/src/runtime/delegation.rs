@@ -348,6 +348,13 @@ impl Engine {
                 )
             })
             .transpose()?;
+        if resume_child.as_ref().is_some_and(|child| {
+            child.meta.creation_selection.preset.as_deref() != parent_policy.registry.preset()
+        }) {
+            return Err(EngineError::MissingTool(
+                "resume target belongs to a different agent preset".into(),
+            ));
+        }
         let child_agent = resolve_agent(&parent_policy.registry, &invocation.agent_type)?;
         if !child_agent.document.frontmatter.enabled
             || !matches!(
