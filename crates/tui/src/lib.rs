@@ -234,6 +234,7 @@ mod tests {
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), agent)]),
+            agent_presets: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             user_mcp_servers: BTreeMap::new(),
             workspace_mcp_servers: BTreeMap::new(),

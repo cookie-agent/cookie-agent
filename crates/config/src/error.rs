@@ -41,6 +41,10 @@ pub enum ConfigError {
     AgentFilename(String),
     #[error("duplicate agent `{0}`")]
     DuplicateAgent(AgentId),
+    #[error(
+        "invalid agent preset name `{name}` at `{path}`; expected ^[a-z0-9]+(-[a-z0-9]+)*$ with at most 64 characters"
+    )]
+    AgentPresetName { path: PathBuf, name: String },
     #[error("agent ID `{0}` is reserved for a built-in agent")]
     ReservedAgentId(AgentId),
     #[error("invalid agent document `{path}`: {message}")]

@@ -1856,6 +1856,7 @@ fn fixture() -> Fixture {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),

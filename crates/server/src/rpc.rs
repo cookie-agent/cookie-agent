@@ -316,6 +316,7 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::NonUtf8Environment { .. } => "config_non_utf8_environment",
         ConfigError::AgentFilename(_) => "config_agent_filename",
         ConfigError::DuplicateAgent(_) => "config_duplicate_agent",
+        ConfigError::AgentPresetName { .. } => "config_agent_preset_name",
         ConfigError::ReservedAgentId(_) => "config_reserved_agent_id",
         ConfigError::AgentDocument { .. } => "config_agent_document",
         ConfigError::AgentSchemaRemoved { .. } => "config_agent_schema_removed",
