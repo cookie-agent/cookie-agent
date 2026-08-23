@@ -2445,7 +2445,7 @@ mod tests {
         )
     }
 
-    // Test fixtures stay explicit about each protocol-9 turn field; grouping them
+    // Test fixtures stay explicit about each protocol-10 turn field; grouping them
     // would obscure the event shape without reducing call-site complexity.
     #[allow(clippy::too_many_arguments)]
     fn turn_committed(
@@ -2632,7 +2632,7 @@ mod tests {
         )
     }
 
-    // Fixture mirrors the exact protocol-9 ownership/presentation fields; grouping
+    // Fixture mirrors the exact protocol-10 ownership/presentation fields; grouping
     // them would obscure the event shape.
     #[allow(clippy::too_many_arguments)]
     fn tool_started_at(
@@ -5189,7 +5189,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Streaming reduction against protocol-9 events
+    // Streaming reduction against protocol-10 events
     // ------------------------------------------------------------------
 
     #[test]

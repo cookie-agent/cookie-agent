@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 9, event schemas 15-21, and session metadata schema 9.
+//! Exact cookie-agent protocol 10, event schemas 15-21, and session metadata schema 10.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 

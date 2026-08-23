@@ -942,8 +942,9 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
         }
     };
     println!(
-        "cookie daemon listening on ws://{}/ws (protocol 9)",
-        listener.address()
+        "cookie daemon listening on ws://{}/ws (protocol {})",
+        listener.address(),
+        cookie_agent_protocol::PROTOCOL_VERSION
     );
     let signal = tokio::signal::ctrl_c().await;
     runtime.server.shutdown();

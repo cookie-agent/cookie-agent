@@ -1,4 +1,4 @@
-//! Disposable UI projections reduced from protocol-9 stored events.
+//! Disposable UI projections reduced from protocol-10 stored events.
 //!
 //! Assistant attribution is derived only from the frozen `RunStarted` plus
 //! `ModelAttemptStarted`/`ModelTurnCommitted` ownership — never from the
@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::{client::ClientDelivery, markdown::MarkdownDocument};
 
-/// The visible state of a tool invocation, reduced from the exact protocol-9
+/// The visible state of a tool invocation, reduced from the exact protocol-10
 /// termination outcome. Failed, cancelled, and interrupted stay distinct.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolStatus {
@@ -128,7 +128,7 @@ impl EventLevel {
 }
 
 /// Frozen producing identity for one assistant attempt/turn, reduced from the
-/// exact protocol-9 attempt and turn ownership events.
+/// exact protocol-10 attempt and turn ownership events.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrozenAssistantAttribution {
     pub agent: AgentId,

@@ -1035,7 +1035,7 @@ impl App {
         self.refresh_coherent_lists().await;
     }
 
-    /// Fetch and install the sole protocol-9 discovery object.
+    /// Fetch and install the sole protocol-10 discovery object.
     pub(super) async fn refresh_coherent_lists(&mut self) {
         match self.client.runtime_snapshot().await {
             Ok(result) => self.install_initial_runtime(result.snapshot),
