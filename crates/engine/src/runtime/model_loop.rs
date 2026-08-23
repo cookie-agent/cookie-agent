@@ -157,6 +157,9 @@ impl Engine {
         if session.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(params.session_id));
         }
+        if params.selection.preset != session.meta.creation_selection.preset {
+            return Err(EngineError::NoRunnableModel);
+        }
         self.resolve_interrupted_direct(params.session_id).await?;
         let result_limits = policy::ResultLimits {
             tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
@@ -183,9 +186,6 @@ impl Engine {
             }
             SessionOrigin::Delegated { .. } => {
                 let runtime = self.current_runtime();
-                if params.selection.preset != session.meta.creation_selection.preset {
-                    return Err(EngineError::NoRunnableModel);
-                }
                 let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
                 policy_for_session_selection(
                     session.creation_agent.clone(),

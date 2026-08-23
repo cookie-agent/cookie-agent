@@ -5577,6 +5577,20 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
             .description,
         "Python-only reviewer"
     );
+    let switched = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: created.session_id,
+            client_run_id: ClientRunId::new("cross-preset-root-run").expect("run ID"),
+            selection: RunSelection {
+                preset: None,
+                ..preset_selection.clone()
+            },
+            input: "must not switch presets".into(),
+        })
+        .await
+        .expect_err("root session preset is immutable");
+    assert!(matches!(switched, EngineError::NoRunnableModel));
     assert!(matches!(
         fixture.engine.create_session(RunSelection {
             preset: Some("missing".into()),
@@ -10895,25 +10909,30 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
     let worker = AgentId::new("worker").expect("worker agent");
     let self_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, parent.session_id, &worker)
+        .validate_resume_target(parent.session_id, parent.session_id, &worker, None)
         .expect_err("self resume is rejected");
     assert!(self_error.to_string().contains("itself"));
     let foreign_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, foreign.session_id, &worker)
+        .validate_resume_target(parent.session_id, foreign.session_id, &worker, None)
         .expect_err("foreign resume is rejected");
     assert!(foreign_error.to_string().contains("prior direct child"));
     let missing_id = SessionId::new_v7();
     let missing_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, missing_id, &worker)
+        .validate_resume_target(parent.session_id, missing_id, &worker, None)
         .expect_err("unknown resume is rejected");
     assert!(missing_error.to_string().contains("was not found"));
     let ancestor_error = fixture
         .engine
-        .validate_resume_target(child_session_id, parent.session_id, &worker)
+        .validate_resume_target(child_session_id, parent.session_id, &worker, None)
         .expect_err("ancestor resume is rejected");
     assert!(ancestor_error.to_string().contains("ancestor"));
+    let preset_error = fixture
+        .engine
+        .validate_resume_target(parent.session_id, child_session_id, &worker, Some("python"))
+        .expect_err("cross-preset child resume is rejected");
+    assert!(preset_error.to_string().contains("different agent preset"));
 
     responses
         .send(MatchedScriptedResponse::last_message_contains(

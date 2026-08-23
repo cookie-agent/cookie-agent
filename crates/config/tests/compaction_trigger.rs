@@ -639,6 +639,52 @@ fn unused_agent_presets_are_loaded_strictly() {
 }
 
 #[test]
+fn regular_non_markdown_files_at_the_agent_root_are_ignored() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("agent-readme");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        &agent("Primary", "[{ model: \"custom.test/model\" }]"),
+    );
+    write_agent(&root, "README.txt", "Agent authoring notes");
+    let loaded = load_from_roots(None, Some(&root)).expect("root README is ignored");
+    assert!(
+        loaded
+            .agents
+            .contains_key(&AgentId::new("primary").unwrap())
+    );
+}
+
+#[test]
+fn preset_override_cannot_disable_a_shared_delegation_target() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("disabled-preset-target");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        "---\ndescription: Delegator\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    worker: allow\n---\nDelegate.\n",
+    );
+    write_agent(
+        &root,
+        "worker.md",
+        "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nWork.\n",
+    );
+    write_agent(
+        &root,
+        "python/worker.md",
+        "---\ndescription: Disabled worker\nmode: subagent\nenabled: false\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nDisabled.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&root)),
+        Err(ConfigError::IneligibleDelegationTarget { agent, target })
+            if agent.as_str() == "primary" && target.as_str() == "worker"
+    ));
+}
+
+#[test]
 fn reserved_agent_rules_apply_inside_presets() {
     let temp = TempDir::new().unwrap();
     let default_root = temp.path().join("preset-default");

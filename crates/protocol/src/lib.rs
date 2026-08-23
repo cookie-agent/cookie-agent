@@ -126,12 +126,12 @@ pub use session::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 // Retained for the grant-invalidation journal until that journal is folded
 // into session events. Stored session events are versionless.
 pub const EVENT_SCHEMA_VERSION: u32 = 21;
 /// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 /// Returns the TypeScript generation configuration required by this JSON wire.
 #[must_use]
@@ -200,7 +200,12 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 9, "9", "The exact protocol wire version.");
+exact_numeric_wire_type!(
+    ProtocolVersion,
+    10,
+    "10",
+    "The exact protocol wire version."
+);
 /// Legacy schema marker used only by the grant-invalidation journal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(type = "15 | 16 | 17 | 18 | 19 | 20 | 21")]
@@ -244,8 +249,8 @@ impl<'de> Deserialize<'de> for EventSchemaVersion {
 }
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
-    4,
-    "4",
+    5,
+    "5",
     "The exact coherent runtime snapshot schema version."
 );
 

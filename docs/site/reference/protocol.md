@@ -2,7 +2,7 @@
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
 Protocol 9 is current-only. A client must call `handshake` with
-`{ "protocol_version": 9 }` before any other method.
+`{ "protocol_version": 10 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility

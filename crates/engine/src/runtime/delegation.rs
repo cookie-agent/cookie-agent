@@ -28,6 +28,7 @@ impl Engine {
         parent_session_id: SessionId,
         resume_session_id: SessionId,
         agent_type: &cookie_agent_protocol::AgentId,
+        preset: Option<&str>,
     ) -> Result<session::SessionProjection, EngineError> {
         if resume_session_id == parent_session_id {
             return Err(EngineError::MissingTool(
@@ -72,6 +73,11 @@ impl Engine {
         if &resumed.meta.creation_selection.agent != agent_type {
             return Err(EngineError::MissingTool(
                 "resume session agent does not match agent_type".into(),
+            ));
+        }
+        if resumed.meta.creation_selection.preset.as_deref() != preset {
+            return Err(EngineError::MissingTool(
+                "resume target belongs to a different agent preset".into(),
             ));
         }
         if let Some(record) = self
@@ -345,16 +351,10 @@ impl Engine {
                     invocation.parent_session_id,
                     resume_session_id,
                     &invocation.agent_type,
+                    parent_policy.registry.preset(),
                 )
             })
             .transpose()?;
-        if resume_child.as_ref().is_some_and(|child| {
-            child.meta.creation_selection.preset.as_deref() != parent_policy.registry.preset()
-        }) {
-            return Err(EngineError::MissingTool(
-                "resume target belongs to a different agent preset".into(),
-            ));
-        }
         let child_agent = resolve_agent(&parent_policy.registry, &invocation.agent_type)?;
         if !child_agent.document.frontmatter.enabled
             || !matches!(

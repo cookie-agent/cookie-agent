@@ -195,10 +195,10 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 9);
+    assert_eq!(PROTOCOL_VERSION, 10);
     assert_eq!(EVENT_SCHEMA_VERSION, 21);
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(9)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     for version in [15, 16, 17, 18, 19, 20, 21] {
         assert_eq!(
@@ -210,8 +210,39 @@ fn wire_versions_accept_only_documented_history() {
     }
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(14)).is_err());
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(22)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(3)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn run_selection_preset_is_optional_and_uses_the_authored_name_grammar() {
+    let selection = json!({
+        "agent": "primary",
+        "model": {"model": "custom.test/model", "variant": null}
+    });
+    assert_eq!(
+        serde_json::from_value::<RunSelection>(selection.clone())
+            .unwrap()
+            .preset,
+        None
+    );
+    let mut valid = selection.clone();
+    valid["preset"] = json!("python-3");
+    assert_eq!(
+        serde_json::from_value::<RunSelection>(valid)
+            .unwrap()
+            .preset
+            .as_deref(),
+        Some("python-3")
+    );
+    for invalid in ["", "Python", "python--3", "python_3"] {
+        let mut value = selection.clone();
+        value["preset"] = json!(invalid);
+        assert!(serde_json::from_value::<RunSelection>(value).is_err());
+    }
+    let mut oversized = selection;
+    oversized["preset"] = json!("a".repeat(65));
+    assert!(serde_json::from_value::<RunSelection>(oversized).is_err());
 }
 
 #[test]

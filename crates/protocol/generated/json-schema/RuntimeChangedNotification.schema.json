@@ -839,7 +839,7 @@
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 4
+          "const": 5
         }
       },
       "additionalProperties": false,

@@ -560,7 +560,12 @@ pub struct RunSelection {
     #[schemars(with = "crate::RequiredModelSelectionSchema")]
     #[ts(type = "ModelSelection")]
     pub model: ModelSelection,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_preset",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<AgentPresetNameSchema>")]
     #[ts(optional = nullable)]
     pub preset: Option<String>,
 }
@@ -677,6 +682,20 @@ fn valid_preset_name(name: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         })
+}
+
+fn deserialize_optional_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let preset = Option::<String>::deserialize(deserializer)?;
+    if preset
+        .as_deref()
+        .is_some_and(|name| !valid_preset_name(name))
+    {
+        return Err(serde::de::Error::custom(AgentSchemaError::InvalidPreset));
+    }
+    Ok(preset)
 }
 impl<'de> Deserialize<'de> for AgentDescriptor {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>

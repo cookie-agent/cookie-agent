@@ -278,6 +278,9 @@ impl LayerRoot {
                 load_agent_document(&directory, &name, self.source, &mut layer.shared)?;
                 continue;
             }
+            if regular_file_at(&directory, &name)? {
+                continue;
+            }
             let preset_directory =
                 open_optional_directory(&directory, &name)?.ok_or(ConfigError::UnsafePath)?;
             AgentId::new(&name).map_err(|_| ConfigError::AgentPresetName {
