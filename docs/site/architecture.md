@@ -166,8 +166,8 @@ See [Configuration](guide/configuration.md) and the
    authentication, capabilities, request defaults, and variants.
 4. **Executable adapters.** The Oven SDK crates
    (`oven-sdk-openai`, `oven-sdk-anthropic`, `oven-sdk-google`,
-   `oven-sdk-google-vertex`, `oven-sdk-bedrock`, `oven-sdk-azure`,
-   `oven-sdk-cohere`, `oven-sdk-open-responses`) provide normalized language-model
+    `oven-sdk-google-vertex`, `oven-sdk-bedrock`, `oven-sdk-azure`, and
+    `oven-sdk-cohere`) provide normalized language-model
    implementations. The `models` crate selects the adapter for each compiled
    model and freezes it into project manifests.
 5. **Provider store.** Managed connections live in a global per-user provider
