@@ -930,9 +930,9 @@
 <a href=#930 id=930 data-nosnippet>930</a>        complete_if_empty: bool,
 <a href=#931 id=931 data-nosnippet>931</a>        reply: oneshot::Sender&lt;<span class="prelude-ty">Result</span>&lt;bool, EngineError&gt;&gt;,
 <a href=#932 id=932 data-nosnippet>932</a>    },
-<a href=#933 id=933 data-nosnippet>933</a>    PromptSnapshot {
+<a href=#933 id=933 data-nosnippet>933</a>    PromotePendingInputs {
 <a href=#934 id=934 data-nosnippet>934</a>        run: RunId,
-<a href=#935 id=935 data-nosnippet>935</a>        reply: oneshot::Sender&lt;<span class="prelude-ty">Result</span>&lt;Vec&lt;StoredEvent&gt;, EngineError&gt;&gt;,
+<a href=#935 id=935 data-nosnippet>935</a>        reply: oneshot::Sender&lt;<span class="prelude-ty">Result</span>&lt;Arc&lt;[StoredEvent]&gt;, EngineError&gt;&gt;,
 <a href=#936 id=936 data-nosnippet>936</a>    },
 <a href=#937 id=937 data-nosnippet>937</a>    EvictionBarrier {
 <a href=#938 id=938 data-nosnippet>938</a>        reply: oneshot::Sender&lt;<span class="prelude-ty">Result</span>&lt;(), EngineError&gt;&gt;,
@@ -942,7 +942,7 @@
 <a href=#942 id=942 data-nosnippet>942</a><span class="kw">impl </span>SessionCommand {
 <a href=#943 id=943 data-nosnippet>943</a>    <span class="kw">fn </span>compaction_deferred_kind(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;CompactionDeferredKind&gt; {
 <a href=#944 id=944 data-nosnippet>944</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#945 id=945 data-nosnippet>945</a>            <span class="self">Self</span>::PromptSnapshot { .. } =&gt; <span class="prelude-val">Some</span>(CompactionDeferredKind::PromptSnapshot),
+<a href=#945 id=945 data-nosnippet>945</a>            <span class="self">Self</span>::PromotePendingInputs { .. } =&gt; <span class="prelude-val">Some</span>(CompactionDeferredKind::PromotePendingInputs),
 <a href=#946 id=946 data-nosnippet>946</a>            <span class="self">Self</span>::PromotePendingOrComplete { .. } =&gt; {
 <a href=#947 id=947 data-nosnippet>947</a>                <span class="prelude-val">Some</span>(CompactionDeferredKind::PromotePendingOrComplete)
 <a href=#948 id=948 data-nosnippet>948</a>            }
@@ -953,7 +953,7 @@
 <a href=#953 id=953 data-nosnippet>953</a>
 <a href=#954 id=954 data-nosnippet>954</a>    <span class="kw">fn </span>reject_duplicate_during_compaction(<span class="self">self</span>, session: SessionId) {
 <a href=#955 id=955 data-nosnippet>955</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#956 id=956 data-nosnippet>956</a>            <span class="self">Self</span>::PromptSnapshot { reply, .. } =&gt; {
+<a href=#956 id=956 data-nosnippet>956</a>            <span class="self">Self</span>::PromotePendingInputs { reply, .. } =&gt; {
 <a href=#957 id=957 data-nosnippet>957</a>                <span class="kw">let _ </span>= reply.send(<span class="prelude-val">Err</span>(EngineError::SessionRunning(session)));
 <a href=#958 id=958 data-nosnippet>958</a>            }
 <a href=#959 id=959 data-nosnippet>959</a>            <span class="self">Self</span>::PromotePendingOrComplete { reply, .. } =&gt; {
@@ -969,7 +969,7 @@
 <a href=#969 id=969 data-nosnippet>969</a>
 <a href=#970 id=970 data-nosnippet>970</a><span class="attr">#[derive(Clone, Copy, Eq, PartialEq)]
 <a href=#971 id=971 data-nosnippet>971</a></span><span class="kw">enum </span>CompactionDeferredKind {
-<a href=#972 id=972 data-nosnippet>972</a>    PromptSnapshot,
+<a href=#972 id=972 data-nosnippet>972</a>    PromotePendingInputs,
 <a href=#973 id=973 data-nosnippet>973</a>    PromotePendingOrComplete,
 <a href=#974 id=974 data-nosnippet>974</a>    Resume,
 <a href=#975 id=975 data-nosnippet>975</a>}

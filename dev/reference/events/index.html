@@ -1181,12 +1181,10 @@ the generated <code>EventPayload</code> schema with the committed additive basel
 </tr>
 <tr>
 <td>Compaction</td>
-<td><code>context_checkpoint_committed</code>, <code>context_rehydrated</code>, <code>context_compaction_auto_disabled</code></td>
+<td><code>context_checkpoint_committed</code>, <code>context_rehydrated</code></td>
 </tr>
 </tbody>
 </table>
-<p><code>context_compaction_auto_disabled</code> is a legacy durable event retained for old
-session logs. Current engines no longer emit it.</p>
 <p><code>plugin_event_added</code> is a runless plugin publication containing <code>plugin</code>, <code>name</code>, and arbitrary
 JSON <code>payload</code>. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
 complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
