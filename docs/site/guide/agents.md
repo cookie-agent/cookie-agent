@@ -2,8 +2,9 @@
 
 Agents are Markdown documents with YAML frontmatter. The filename is the agent
 ID. An agent defines the system prompt, permission-controlled tool access, its
-model fallback chain, and its runtime limits. The engine also runs
-four built-in agents that are part of the harness itself.
+model fallback chain, and its runtime limits. The harness supplies four agents:
+three internal agents plus the synthesized `default` coding agent when no
+authored root agent is runnable.
 
 ## Agent document structure
 

@@ -23,15 +23,19 @@ other. `-` reads standard input for any of them.
 The default agent is the root-runnable `primary` agent, or the first
 root-runnable agent. The default model is its first live fallback, including a
 valid variant; if none is live, the first available model and its default
-variant are used. Override these with `-a/--agent`, `-m/--model`, and
-`--variant`; use `--variant base` to select no named variant. Every override is
-validated against the current coherent runtime before a session starts.
+variant are used. Select an agent preset with `--preset`; override the effective
+selection with `-a/--agent`, `-m/--model`, and `--variant`. Use `--variant base`
+to select no named variant. Every override is validated against the current
+coherent runtime before a session starts.
 
-`--resume-session <id>` continues an existing session. `--data-dir <path>`
-selects the session and artifact store. `--max-turns` and `--timeout` are
-positive guards and default to 100 root model turns and 600 seconds. Reaching
-either guard cancels the run and waits for its terminal event. `SIGINT` follows
-the same cancellation path.
+`--resume-session <id>` continues an existing session and defaults to its
+creation preset. Supplying `--preset` selects a different preset for that run
+without rewriting the session's creation selection. See
+[Agent presets](agents.md#agent-presets) for resolution and persistence details.
+`--data-dir <path>` selects the session and artifact store. `--max-turns` and
+`--timeout` are positive guards and default to 100 root model turns and 600
+seconds. Reaching either guard cancels the run and waits for its terminal event.
+`SIGINT` follows the same cancellation path.
 
 ## Permissions
 

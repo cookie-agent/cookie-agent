@@ -1,11 +1,12 @@
 # Configuration
 
-cookie agent reads three independent configuration surfaces:
+cookie agent reads four independent configuration surfaces:
 
 | Surface | Location |
 |---|---|
 | Runtime, providers, MCP servers, and plugins | `~/.cookie_agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
 | Agents | `~/.cookie_agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
+| Skills | `~/.cookie_agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
 | TUI | `~/.cookie_agent/tui.toml` |
 
 This page covers where configuration lives and how it behaves. For the complete

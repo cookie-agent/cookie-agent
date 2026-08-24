@@ -26,7 +26,10 @@ Ctrl-P opens the command palette. The available commands are:
 | Command | Action |
 |---|---|
 | `/new` | Choose the next root-run agent |
+| `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](agents.md#agent-presets) |
 | `/connect` | Connect or update a managed provider |
+| `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
+| `/permissions` | Edit session permission overrides; see [Permissions](permissions.md) |
 | `/sessions` | Choose a session |
 | `/skills` | List discovered skills, sources, precedence, and permission effects |
 | `/<skill-name> [args]` | Invoke a user-invocable skill |
