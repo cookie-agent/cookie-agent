@@ -40,6 +40,15 @@ mode `0600` on Unix. Their digest is verified when content is first read. A
 missing or corrupt artifact produces a normal tool error and does not prevent
 the engine or session from opening.
 
+The idle janitor scans durable `events.jsonl` files for live artifact references
+and removes unreferenced digest files only after a one-hour grace period. It also
+follows retained Bash manifests to their stream artifacts and skips malformed or
+torn event lines. Event appends may remain buffered for up to 8 ms, but a newly
+written digest is younger than the grace period; deduplicating an existing digest
+refreshes its modification time before the event append. Garbage collection and
+artifact retain/commit operations share the artifact write mutex, so a pending
+append cannot race deletion of its retained bytes.
+
 `read_tool_result` reads retained content from a prior visible tool call in the
 same session:
 
