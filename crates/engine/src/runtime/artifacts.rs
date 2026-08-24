@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
+    time::SystemTime,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +19,20 @@ pub(crate) struct ArtifactGcReport {
 }
 
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ArtifactFileFingerprint {
+    modified: SystemTime,
+    len: u64,
+}
+
+fn artifact_file_fingerprint(file: &File) -> std::io::Result<ArtifactFileFingerprint> {
+    let metadata = file.metadata()?;
+    Ok(ArtifactFileFingerprint {
+        modified: metadata.modified()?,
+        len: metadata.len(),
+    })
+}
 
 fn scan_durable_artifact_references(sessions_dir: &Path) -> std::io::Result<HashSet<String>> {
     let mut live = HashSet::new();
@@ -150,7 +165,7 @@ fn read_file_paged(
 #[cfg(unix)]
 mod unix {
     use std::{
-        collections::HashSet,
+        collections::HashMap,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -169,8 +184,9 @@ mod unix {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
-        expand_transitive_artifact_references, read_file_paged, scan_durable_artifact_references,
+        ArtifactFileFingerprint, ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
+        artifact_file_fingerprint, expand_transitive_artifact_references, read_file_paged,
+        scan_durable_artifact_references,
     };
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
@@ -179,7 +195,7 @@ mod unix {
     pub(crate) struct ArtifactStore {
         directory_handle: Arc<fs::File>,
         writes: Mutex<()>,
-        verified_reads: Mutex<HashSet<String>>,
+        verified_reads: Mutex<HashMap<String, ArtifactFileFingerprint>>,
     }
 
     impl ArtifactStore {
@@ -194,7 +210,7 @@ mod unix {
             let store = Arc::new(Self {
                 directory_handle: Arc::new(handle),
                 writes: Mutex::new(()),
-                verified_reads: Mutex::new(HashSet::new()),
+                verified_reads: Mutex::new(HashMap::new()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -355,18 +371,25 @@ mod unix {
             let mut file = self.open_existing(digest)?.ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
             })?;
+            let fingerprint = artifact_file_fingerprint(&file)?;
             let mut verified = self
                 .verified_reads
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !verified.contains(digest) {
+            if verified.get(digest) != Some(&fingerprint) {
                 if hash_file(&mut file)?.0 != digest {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "artifact content does not match its digest",
                     ));
                 }
-                verified.insert(digest.to_owned());
+                if artifact_file_fingerprint(&file)? != fingerprint {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "artifact changed while it was being verified",
+                    ));
+                }
+                verified.insert(digest.to_owned(), fingerprint);
             }
             drop(verified);
             file.seek(SeekFrom::Start(0))?;
@@ -833,8 +856,13 @@ mod unix {
             );
             assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
 
+            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt cached artifact");
+            assert_eq!(
+                store.read_paged(&digest, 0, 1).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+
             drop(store);
-            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt artifact");
             let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
             assert_eq!(
                 reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
@@ -895,7 +923,7 @@ pub(crate) use unix::*;
 #[cfg(windows)]
 mod windows {
     use std::{
-        collections::HashSet,
+        collections::HashMap,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -913,8 +941,9 @@ mod windows {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
-        expand_transitive_artifact_references, read_file_paged, scan_durable_artifact_references,
+        ArtifactFileFingerprint, ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
+        artifact_file_fingerprint, expand_transitive_artifact_references, read_file_paged,
+        scan_durable_artifact_references,
     };
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
@@ -923,7 +952,7 @@ mod windows {
     pub(crate) struct ArtifactStore {
         directory: PathBuf,
         writes: Mutex<()>,
-        verified_reads: Mutex<HashSet<String>>,
+        verified_reads: Mutex<HashMap<String, ArtifactFileFingerprint>>,
     }
 
     impl ArtifactStore {
@@ -934,7 +963,7 @@ mod windows {
             let store = Arc::new(Self {
                 directory,
                 writes: Mutex::new(()),
-                verified_reads: Mutex::new(HashSet::new()),
+                verified_reads: Mutex::new(HashMap::new()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -1109,15 +1138,19 @@ mod windows {
             let mut file = self.open_existing(digest)?.ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
             })?;
+            let fingerprint = artifact_file_fingerprint(&file)?;
             let mut verified = self
                 .verified_reads
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !verified.contains(digest) {
+            if verified.get(digest) != Some(&fingerprint) {
                 if hash_file(&mut file)?.0 != digest {
                     return Err(invalid("artifact content does not match its digest"));
                 }
-                verified.insert(digest.to_owned());
+                if artifact_file_fingerprint(&file)? != fingerprint {
+                    return Err(invalid("artifact changed while it was being verified"));
+                }
+                verified.insert(digest.to_owned(), fingerprint);
             }
             drop(verified);
             file.seek(SeekFrom::Start(0))?;
@@ -1451,8 +1484,14 @@ mod windows {
                 }
             );
             assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
+
+            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt cached artifact");
+            assert_eq!(
+                store.read_paged(&digest, 0, 1).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+
             drop(store);
-            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt artifact");
             let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
             assert_eq!(
                 reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
