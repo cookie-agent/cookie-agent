@@ -2,10 +2,19 @@
 
 Session persistence and subscriptions use a versionless event format. Every new
 stored event contains `engine_version`, `session_id`, required nullable `run_id`,
-a positive physical `seq`, `timestamp`, and a tagged `payload`. The
+a positive physical `seq`, `timestamp`, a tagged `payload`, and an optional
+`origin`. The
 `engine_version` is the writing engine's binary semver; it is diagnostic metadata,
-not a compatibility gate, and old records may omit it. Legacy
+not a compatibility gate, and old records may omit it. Pre-origin records omit
+`origin`; readers preserve that absence rather than synthesizing a default.
+Legacy
 `event_schema_version` fields are ignored when reading.
+
+`origin` is either `user` or `<class>:<slug>`, where `class` is `engine`,
+`plugin`, or `client` and `slug` matches
+`[a-z0-9][a-z0-9-]{0,63}`. It identifies the author of that individual event,
+not the component described by its payload. For example, a diagnostic about a
+plugin can have origin `engine:plugin-host`.
 
 Readers handle each JSONL line independently. Fully readable events load
 normally. If a known event has an absent or type-mismatched optional field, that
@@ -23,6 +32,9 @@ is additive only. Existing variant tags and fields are never removed or renamed,
 existing required fields remain required, and new fields must be optional. New
 behavior that cannot fit an optional field uses a new variant tag. CI compares
 the generated `EventPayload` schema with the committed additive baseline.
+Because older binaries do not know the `origin` envelope key, their tolerant
+readers skip newly originated events and report an unknown-envelope diagnostic;
+they do not reinterpret those events without attribution.
 
 Terminal tool-result truncation and `tool_output_elided` references use the
 [retained-output readback lifecycle](tools.md#retained-tool-output).
