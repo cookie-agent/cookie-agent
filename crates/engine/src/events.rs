@@ -248,6 +248,14 @@ impl EventLogWriter {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+
+            const FILE_SHARE_READ: u32 = 0x1;
+            const FILE_SHARE_DELETE: u32 = 0x4;
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+        }
         let file = options.open(path).map_err(|source| EventLogError::Io {
             path: path.to_owned(),
             source,

@@ -401,6 +401,7 @@ impl SessionStore {
                 through_seq,
             });
         }
+        source.log.flush()?;
         let source_events = source.log.all_events();
         let prefix = source_events
             .iter()
@@ -1212,7 +1213,13 @@ fn create_windows_session_file(path: &Path) -> Result<(), SessionError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path, sync::mpsc, thread};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::Path,
+        sync::{Arc, mpsc},
+        thread,
+    };
 
     #[cfg(unix)]
     use std::{
@@ -1358,13 +1365,14 @@ mod tests {
         session_id
     }
 
-    #[test]
-    fn eviction_waits_for_pending_stream_records_to_sync() {
-        let temporary = private_tempdir();
-        let cwd = temporary.path().join("workspace");
-        create_private_test_dir_all(&cwd);
-        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
-        let session_id = persist_test_session(&store);
+    fn append_pending_test_delta(
+        store: &SessionStore,
+        session_id: SessionId,
+        text: &str,
+    ) -> (
+        Arc<crate::events::EventLog>,
+        cookie_agent_protocol::StoredEvent,
+    ) {
         let projection = store.get(session_id).expect("session projection");
         let (run_id, resolved_model, prompt_fingerprint) = projection
             .log
@@ -1402,16 +1410,27 @@ mod tests {
             .expect("start attempt");
         let log = store.get(session_id).expect("session projection").log;
         log.pause_background_sync_for_test();
-        store
+        let delta = store
             .append(
                 session_id,
                 Some(run_id),
                 EventPayload::TextDelta {
                     attempt_id,
-                    text: "durable before eviction".into(),
+                    text: text.into(),
                 },
             )
             .expect("append buffered delta");
+        (log, delta)
+    }
+
+    #[test]
+    fn eviction_waits_for_pending_stream_records_to_sync() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+        let session_id = persist_test_session(&store);
+        let (log, _) = append_pending_test_delta(&store, session_id, "durable before eviction");
         let (sync_reached, release_sync) = log.install_sync_hook_for_test();
         let (eviction_done, eviction_result) = mpsc::channel();
         let evicting = {
@@ -1444,6 +1463,44 @@ mod tests {
         assert!(durable.iter().any(|event| matches!(
             &event.payload,
             EventPayload::TextDelta { text, .. } if text == "durable before eviction"
+        )));
+    }
+
+    #[test]
+    fn fork_flushes_pending_source_records_before_copying() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+        let session_id = persist_test_session(&store);
+        let (log, delta) = append_pending_test_delta(&store, session_id, "copied after sync");
+        let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+        let (fork_done, fork_result) = mpsc::channel();
+        let forking = {
+            let store = store.clone();
+            thread::spawn(move || {
+                fork_done
+                    .send(store.fork(session_id, delta.seq))
+                    .expect("report fork result");
+            })
+        };
+
+        sync_reached.recv().expect("fork reached source sync");
+        assert!(matches!(
+            fork_result.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_sync.send(()).expect("release fork sync");
+        let fork_id = fork_result
+            .recv()
+            .expect("receive fork result")
+            .expect("fork session");
+        forking.join().expect("fork thread");
+
+        let copied = store.get(fork_id).expect("fork projection").log.events();
+        assert!(copied.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::TextDelta { text, .. } if text == "copied after sync"
         )));
     }
 
