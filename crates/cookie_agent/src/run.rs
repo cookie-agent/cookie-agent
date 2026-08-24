@@ -550,15 +550,13 @@ fn resolve_selection(
     args: &RunArgs,
 ) -> anyhow::Result<RunSelection> {
     let root_session = resumed.is_none_or(|session| matches!(session.origin, SessionOrigin::Root));
-    if resumed.is_some() && args.preset.is_some() {
-        return Err(anyhow!("--preset cannot override a resumed session"));
-    }
     if !root_session && args.agent.is_some() {
         return Err(anyhow!("--agent cannot override a delegated session"));
     }
-    let preset = resumed
-        .and_then(|session| session.creation_selection.preset.clone())
-        .or_else(|| args.preset.clone());
+    let preset = args
+        .preset
+        .clone()
+        .or_else(|| resumed.and_then(|session| session.creation_selection.preset.clone()));
     if let Some(name) = preset.as_deref()
         && !agents
             .iter()

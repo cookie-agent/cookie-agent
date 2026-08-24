@@ -3453,6 +3453,45 @@ async fn scripted_background_delegation_server() -> (String, tokio::task::JoinHa
     (endpoint, task)
 }
 
+async fn scripted_preset_switch_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>)
+{
+    let (endpoint, responses, task) = scripted_channel_server(4).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "complete the shared run",
+            scripted_text_body("shared run complete"),
+        ))
+        .expect("shared response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "delegate after switching presets",
+            scripted_tool_body(
+                "preset-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Preset child",
+                    "prompt":"preset child task",
+                    "background":true
+                }),
+            ),
+        ))
+        .expect("preset delegation response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "preset child task",
+            scripted_text_body("preset child complete"),
+        ))
+        .expect("preset child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("preset parent complete"),
+        ))
+        .expect("preset parent response");
+    (endpoint, task)
+}
+
 async fn read_scripted_http_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
     use tokio::io::AsyncReadExt as _;
 
@@ -5577,20 +5616,20 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
             .description,
         "Python-only reviewer"
     );
-    let switched = fixture
+    let unavailable = fixture
         .engine
         .start_run(RunStartParams {
             session_id: created.session_id,
-            client_run_id: ClientRunId::new("cross-preset-root-run").expect("run ID"),
+            client_run_id: ClientRunId::new("unavailable-preset-agent").expect("run ID"),
             selection: RunSelection {
-                preset: None,
+                preset: Some("no-root".into()),
                 ..preset_selection.clone()
             },
-            input: "must not switch presets".into(),
+            input: "agent is absent in this preset".into(),
         })
         .await
-        .expect_err("root session preset is immutable");
-    assert!(matches!(switched, EngineError::NoRunnableModel));
+        .expect_err("missing preset agent is rejected");
+    assert!(matches!(unavailable, EngineError::InvalidRuntimeAgent(_)));
     assert!(matches!(
         fixture.engine.create_session(RunSelection {
             preset: Some("missing".into()),
@@ -5599,6 +5638,143 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
         Err(EngineError::UnknownAgentPreset(name)) if name == "missing"
     ));
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
+    let (endpoint, server) = scripted_preset_switch_delegation_server().await;
+    let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.shutdown().await;
+    let primary_id = AgentId::new("primary").expect("primary ID");
+    let worker_id = AgentId::new("worker").expect("worker ID");
+    let mut python_agents = fixture.config.agents.clone();
+    python_agents
+        .get_mut(&primary_id)
+        .expect("preset primary")
+        .frontmatter
+        .description = "Python preset primary".into();
+    python_agents
+        .get_mut(&worker_id)
+        .expect("preset worker")
+        .frontmatter
+        .description = "Python preset worker".into();
+    fixture
+        .config
+        .agent_presets
+        .insert("python".into(), python_agents);
+    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+
+    let parent = fixture
+        .engine
+        .create_session(shared_selection.clone())
+        .expect("shared parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
+            selection: shared_selection.clone(),
+            input: "complete the shared run".into(),
+        })
+        .await
+        .expect("shared run");
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    let preset_selection = RunSelection {
+        preset: Some("python".into()),
+        ..shared_selection
+    };
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
+            selection: preset_selection,
+            input: "delegate after switching presets".into(),
+        })
+        .await
+        .expect("preset run");
+    let child = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "preset child completion",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    let parent_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("parent projection");
+    let shared_run = parent_projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "shared-before-preset")
+        .expect("shared run projection");
+    let preset_run = parent_projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "preset-delegation-run")
+        .expect("preset run projection");
+    assert_eq!(shared_run.selection.preset, None);
+    assert_eq!(shared_run.agent.description, "Primary test agent");
+    assert_eq!(preset_run.selection.preset.as_deref(), Some("python"));
+    assert_eq!(preset_run.agent.description, "Python preset primary");
+
+    let child_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(child.session_id)
+        .expect("preset child projection");
+    assert_eq!(
+        child_projection.meta.creation_selection.preset.as_deref(),
+        Some("python")
+    );
+    assert_eq!(
+        child_projection.creation_agent.description,
+        "Python preset worker"
+    );
+    let mut switched_child = child_projection.meta.creation_selection.clone();
+    switched_child.preset = None;
+    assert!(matches!(
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: child.session_id,
+                client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
+                selection: switched_child,
+                input: "must remain pinned".into(),
+            })
+            .await,
+        Err(EngineError::NoRunnableModel)
+    ));
+
+    assert_eq!(server.await.expect("preset switch server").len(), 4);
+    fixture.engine.shutdown().await;
+    fixture.config.agent_presets.clear();
+    let reopened = reopen_engine(&fixture);
+    let replayed = reopened
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("replayed parent");
+    let replayed_run = replayed
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "preset-delegation-run")
+        .expect("replayed preset run");
+    assert_eq!(replayed_run.selection.preset.as_deref(), Some("python"));
+    assert_eq!(replayed_run.agent.description, "Python preset primary");
+    reopened.shutdown().await;
 }
 
 // This regression asserts exact POSIX mode bits for a shared workspace.

@@ -351,7 +351,7 @@ impl Engine {
                     invocation.parent_session_id,
                     resume_session_id,
                     &invocation.agent_type,
-                    parent_policy.registry.preset(),
+                    parent_policy.preset.as_deref(),
                 )
             })
             .transpose()?;

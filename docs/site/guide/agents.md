@@ -205,10 +205,12 @@ invalid names, malformed documents in unselected presets, and files over 256
 KiB are hard configuration errors.
 
 No preset is selected by default. In the TUI, run `/preset` and choose either
-`None (shared)` or a discovered preset, then use `/new` to select an agent and
-create a root session from that effective set. The TUI choice is in memory only:
-it is not written to configuration and resets to shared when the TUI restarts.
-Changing the new-session preset does not alter existing sessions.
+`None (shared)` or a discovered preset. The choice updates the active root
+session's draft for its next run and is also used by `/new` when creating future
+root sessions. If the current draft agent is not root-runnable in the new
+effective set, the TUI selects that preset's `primary` or first runnable agent.
+The choice is in memory only: it is not written to configuration and resets to
+shared when the TUI restarts.
 
 For headless runs, pass the preset explicitly:
 
@@ -217,9 +219,17 @@ cookie run --preset python --agent primary "Implement the data pipeline"
 cookie run --preset rust --agent unsafe-reviewer "Review the FFI boundary"
 ```
 
-The selected preset is stored in the session's creation selection, so a resumed
-session keeps the same effective agent set. `--preset` cannot override a resumed
-session.
+The selected preset is stored in the session's creation selection and is the
+default when the session is resumed. Root sessions may select another preset for
+any later run; `cookie run --resume-session <id> --preset rust ...` applies
+`rust` to that run without rewriting the creation selection. Each run persists
+its exact preset, agent snapshot, and model bindings, so replay does not consult
+the live preset registry.
+
+Delegated sessions are different: they inherit the preset from the parent run
+that created them, including when the parent switched presets after session
+creation. Their agent is resolved and frozen from that effective set, and later
+runs of the delegated session remain pinned to the inherited preset.
 
 ## Internal agents
 

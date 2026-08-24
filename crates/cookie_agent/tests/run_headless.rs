@@ -572,7 +572,7 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
 }
 
 #[tokio::test]
-async fn headless_preset_is_persisted_and_resume_cannot_override_it() {
+async fn headless_preset_is_persisted_and_resume_can_override_the_next_run() {
     let fixture = Fixture::new().await;
     fixture
         .server
@@ -604,12 +604,31 @@ async fn headless_preset_is_persisted_and_resume_cannot_override_it() {
     resumed.resume_session = Some(session_id);
     assert_eq!(fixture.run(resumed, "").await.code, 0);
 
-    let mut override_preset = run_args("invalid override");
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("preset switched")));
+    let mut override_preset = run_args("switch preset");
     override_preset.resume_session = Some(session_id);
-    override_preset.preset = Some("python".into());
-    let rejected = fixture.run(override_preset, "").await;
-    assert_ne!(rejected.code, 0);
-    assert!(rejected.stderr.contains("--preset cannot override"));
+    override_preset.preset = Some("rust".into());
+    override_preset.output = Some(OutputMode::Json);
+    let switched = fixture.run(override_preset, "").await;
+    assert_eq!(switched.code, 0, "{}", switched.stderr);
+    let records = parse_json_lines(&switched.stdout);
+    assert!(records.iter().any(|record| {
+        record["type"] == "event"
+            && record["event"]["payload"]["type"] == "run_started"
+            && record["event"]["payload"]["selection"]["preset"] == "rust"
+    }));
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(session_id)
+            .expect("creation preset remains stable")
+            .creation_selection
+            .preset
+            .as_deref(),
+        Some("python")
+    );
 
     let mut missing = run_args("missing preset");
     missing.preset = Some("missing".into());
@@ -1518,9 +1537,11 @@ fn write_workspace(workspace: &Path, endpoint: &str) {
     let root = workspace.join(".cookie-agent");
     let agents = root.join("agents");
     let python_agents = agents.join("python");
+    let rust_agents = agents.join("rust");
     let skills = root.join("skills");
     fs::create_dir_all(&agents).expect("agent directory");
     fs::create_dir_all(&python_agents).expect("preset agent directory");
+    fs::create_dir_all(&rust_agents).expect("preset agent directory");
     for skill in [
         "release-check",
         "hidden-model",
@@ -1534,6 +1555,7 @@ fn write_workspace(workspace: &Path, endpoint: &str) {
     make_private(&root);
     make_private(&agents);
     make_private(&python_agents);
+    make_private(&rust_agents);
     make_private(&skills);
     for skill in [
         "release-check",
@@ -1668,6 +1690,20 @@ models:
 permissions: {}
 ---
 Answer as the Python preset agent.
+"#,
+    )
+    .expect("preset primary agent");
+    fs::write(
+        rust_agents.join("primary.md"),
+        r#"---
+description: Rust preset integration agent
+mode: primary
+enabled: true
+models:
+  - { model: "custom.local/test", variant: null }
+permissions: {}
+---
+Answer as the Rust preset agent.
 "#,
     )
     .expect("preset primary agent");

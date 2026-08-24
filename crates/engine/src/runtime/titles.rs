@@ -30,11 +30,14 @@ impl Engine {
     ) -> Result<FrozenRunPolicy, EngineError> {
         let (agent, suffix) = latest_run_policy(events, run)?;
         let runtime = self.historical_run_runtime(run)?;
-        let preset = events.iter().find_map(|event| match &event.payload {
-            crate::runtime::Event::SessionCreated {
-                creation_selection, ..
-            } => Some(creation_selection.preset.as_deref()),
-            _ => None,
+        let preset = events.iter().find_map(|event| {
+            if event.run_id != Some(run) {
+                return None;
+            }
+            let crate::runtime::Event::RunStarted { selection, .. } = &event.payload else {
+                return None;
+            };
+            Some(selection.preset.as_deref())
         });
         let agents = runtime.agents_for_preset(preset.flatten())?;
         policy_from_snapshot(

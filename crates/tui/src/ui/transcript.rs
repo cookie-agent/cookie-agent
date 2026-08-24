@@ -8859,14 +8859,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preset_picker_filters_new_session_agents_without_touching_existing_drafts() {
+    async fn preset_picker_updates_root_drafts_and_future_new_sessions() {
         let mut app = test_app().await;
+        let session_id = SessionId::new_v7();
+        app.sessions.push(session_meta(session_id));
+        app.selected = Some(session_id);
         app.agents.extend([
+            descriptor("reviewer", true),
             preset_descriptor("python", "primary"),
             preset_descriptor("python", "reviewer"),
             preset_descriptor("rust", "primary"),
         ]);
-        let existing_draft = app.draft.clone();
 
         app.run_command(SlashCommand::Preset).await;
         assert_eq!(app.modal, Modal::Presets);
@@ -8876,7 +8879,31 @@ mod tests {
         assert!(rendered.contains("rust"));
         app.choose_picker_entry(1).await;
         assert_eq!(app.selected_preset.as_deref(), Some("python"));
-        assert_eq!(app.draft, existing_draft);
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+        assert!(app.status.contains("Draft run preset"));
+        app.cycle_agent(false);
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(2).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("rust"));
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("primary")
+        );
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("rust")
+        );
+
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(1).await;
 
         app.run_command(SlashCommand::New).await;
         assert!(app.new_session_draft);

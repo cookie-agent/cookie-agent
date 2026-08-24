@@ -25,6 +25,7 @@ pub(crate) struct FreezeOptions {
 #[derive(Clone)]
 pub(crate) struct FrozenRunPolicy {
     pub agent: protocol::AgentSnapshot,
+    pub preset: Option<String>,
     pub selected_suffix: Vec<protocol::FrozenModelBinding>,
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
@@ -37,6 +38,7 @@ impl std::fmt::Debug for FrozenRunPolicy {
         formatter
             .debug_struct("FrozenRunPolicy")
             .field("agent", &self.agent.agent)
+            .field("preset", &self.preset)
             .field("selected_suffix", &self.selected_suffix)
             .field(
                 "runtime_revision",
@@ -254,8 +256,10 @@ fn freeze_with_bindings(
     snapshot
         .validate_selected_suffix(&run_selection, &bindings)
         .map_err(|_| EngineError::NoRunnableModel)?;
+    let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent: snapshot,
+        preset,
         selected_suffix: bindings,
         runtime,
         registry,
@@ -306,8 +310,10 @@ pub(crate) fn policy_from_snapshot(
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
     }
+    let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent,
+        preset,
         selected_suffix,
         runtime,
         registry,

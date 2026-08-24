@@ -1145,6 +1145,48 @@ impl App {
         self.selected_preset.as_deref().unwrap_or("shared")
     }
 
+    fn draft_selection_for_preset(
+        &self,
+        preset: Option<&str>,
+        preferred_agent: Option<&AgentId>,
+        preferred_model: Option<&ModelSelection>,
+    ) -> Option<RunSelection> {
+        let candidates = self
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent.runnable_as_root
+                    && agent.mode != cookie_agent_protocol::AgentMode::Internal
+                    && agent.preset.as_deref() == preset
+            })
+            .collect::<Vec<_>>();
+        let agent = preferred_agent
+            .and_then(|id| candidates.iter().find(|agent| agent.id == *id).copied())
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|agent| agent.id.as_str() == "primary")
+                    .copied()
+            })
+            .or_else(|| candidates.first().copied())?;
+        let model = preferred_model
+            .filter(|selection| self.selection_is_live(selection))
+            .cloned()
+            .or_else(|| {
+                agent
+                    .resolved_fallback
+                    .iter()
+                    .find(|selection| self.selection_is_live(selection))
+                    .cloned()
+            })
+            .or_else(|| self.models.first().map(Self::default_model_selection))?;
+        Some(RunSelection {
+            agent: agent.id.clone(),
+            model,
+            preset: preset.map(str::to_owned),
+        })
+    }
+
     pub(super) fn default_draft_selection(&self) -> Option<RunSelection> {
         let agents = self.selectable_agents();
         let agent = agents
@@ -1648,13 +1690,14 @@ impl App {
         let Some(draft) = &self.draft else {
             return "no draft selection".into();
         };
+        let preset = draft.preset.as_deref().unwrap_or("shared");
         if self.active_run_agent().is_some() {
             format!(
-                "{action}: {}; applies to the next run — the active run is unchanged",
-                draft_title(draft)
+                "{action}: {} · preset {preset}; applies to the next run — the active run is unchanged",
+                draft_title(draft),
             )
         } else {
-            format!("{action}: {}", draft_title(draft))
+            format!("{action}: {} · preset {preset}", draft_title(draft))
         }
     }
 
@@ -5013,15 +5056,29 @@ impl App {
                     self.preset_names().get(index - 1).cloned().map(Some)
                 };
                 if let Some(preset) = preset {
+                    let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
+                    let preferred_model = self.draft.as_ref().map(|draft| draft.model.clone());
                     self.selected_preset = preset;
-                    self.modal = Modal::None;
-                    if self.new_session_draft {
-                        self.draft = self.default_draft_selection();
+                    if self.new_session_draft || self.watching_root_session() {
+                        self.draft = self.draft_selection_for_preset(
+                            self.selected_preset.as_deref(),
+                            preferred_agent.as_ref(),
+                            preferred_model.as_ref(),
+                        );
                     }
-                    self.status = format!(
-                        "Agent preset for new sessions: {}",
-                        self.selected_preset_label()
-                    );
+                    self.modal = if self.draft.is_none() && self.watching_root_session() {
+                        Modal::Agents
+                    } else {
+                        Modal::None
+                    };
+                    self.status = if self.watching_root_session() {
+                        self.draft_status("Draft run preset")
+                    } else {
+                        format!(
+                            "Agent preset for future root sessions: {}; delegated session remains pinned",
+                            self.selected_preset_label()
+                        )
+                    };
                 }
             }
             Modal::Models => {
