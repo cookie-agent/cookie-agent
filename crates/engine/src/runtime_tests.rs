@@ -4907,19 +4907,13 @@ fn append_compaction_tool_history(
     session: SessionId,
     run: cookie_agent_protocol::RunId,
     binding: &cookie_agent_protocol::FrozenModelBinding,
-    output: String,
+    result: cookie_agent_protocol::PersistedToolResult,
     latest_usage: u64,
-) {
-    let model_call_id =
-        cookie_agent_protocol::ModelCallId::new("compaction-history-tool").expect("model call ID");
+) -> ToolCallId {
     let tool_call_id = ToolCallId::new_v7();
-    let owner = cookie_agent_protocol::AssistantToolCallRef {
-        model_turn_seq: 2,
-        content_index: 0,
-        model_call_id: model_call_id.clone(),
-        provider_item_id: None,
-    };
-    let resolved_model = crate::policy::wire_resolved(binding);
+    let model_call_id =
+        cookie_agent_protocol::ModelCallId::new(format!("compaction-history-tool-{tool_call_id}"))
+            .expect("model call ID");
     let prior_events = fixture
         .engine
         .inner
@@ -4928,6 +4922,22 @@ fn append_compaction_tool_history(
         .expect("history projection")
         .log
         .events();
+    let model_turn_seq = prior_events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ModelTurnCommitted { model_turn_seq, .. } => Some(model_turn_seq),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let owner = cookie_agent_protocol::AssistantToolCallRef {
+        model_turn_seq,
+        content_index: 0,
+        model_call_id: model_call_id.clone(),
+        provider_item_id: None,
+    };
+    let resolved_model = crate::policy::wire_resolved(binding);
     let first_attempt_ordinal = prior_events
         .iter()
         .filter(|event| {
@@ -4987,7 +4997,7 @@ fn append_compaction_tool_history(
             .expect("append model turn");
     };
     append_model_turn(
-        2,
+        model_turn_seq,
         first_attempt_ordinal,
         vec![cookie_agent_protocol::PersistedAssistantPart::ToolCall {
             id: model_call_id,
@@ -5032,14 +5042,7 @@ fn append_compaction_tool_history(
                     tool_call_id,
                     owner,
                     outcome: ToolTerminationOutcome::Completed,
-                    result: Some(cookie_agent_protocol::PersistedToolResult {
-                        title: cookie_agent_protocol::SafeDisplayText::new("Historical output")
-                            .unwrap(),
-                        output,
-                        metadata: serde_json::Value::Null,
-                        truncation: None,
-                        attachments: Vec::new(),
-                    }),
+                    result: Some(result),
                     error: None,
                 },
             },
@@ -5047,12 +5050,12 @@ fn append_compaction_tool_history(
         .expect("append tool result");
     for (model_turn_seq, attempt_ordinal, usage) in [
         (
-            3,
+            model_turn_seq + 1,
             first_attempt_ordinal + 1,
             cookie_agent_protocol::Usage::default(),
         ),
         (
-            4,
+            model_turn_seq + 2,
             first_attempt_ordinal + 2,
             cookie_agent_protocol::Usage {
                 input_tokens: Some(latest_usage),
@@ -5071,6 +5074,199 @@ fn append_compaction_tool_history(
             usage,
         );
     }
+    tool_call_id
+}
+
+#[tokio::test]
+async fn retained_tool_results_page_across_truncation_elision_revert_and_sessions() {
+    let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![root_body.to_owned()], usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new("tool-result-readback").unwrap(),
+            selection: selection.clone(),
+            input: "prepare tool result history".into(),
+        })
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let policy = frozen_root_policy(&fixture, &selection);
+    let binding = policy.selected_suffix.first().unwrap();
+    let artifacts = &fixture.engine.inner.artifacts;
+    let result =
+        |output: &str,
+         truncation: Option<cookie_agent_protocol::ToolOutputTruncation>,
+         metadata: serde_json::Value| cookie_agent_protocol::PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
+            output: output.into(),
+            metadata,
+            truncation,
+            attachments: Vec::new(),
+        };
+
+    let full = "zero\none\ntwo\nthree";
+    let (retained, _) = artifacts.retain(full.as_bytes()).unwrap();
+    let truncated_call = append_compaction_tool_history(
+        &fixture,
+        session.session_id,
+        run.run_id,
+        binding,
+        result(
+            "zero\n",
+            Some(cookie_agent_protocol::ToolOutputTruncation {
+                original_bytes: full.len() as u64,
+                original_lines: 4,
+                retained,
+            }),
+            serde_json::Value::Null,
+        ),
+        1,
+    );
+    let page = fixture
+        .engine
+        .read_tool_result(session.session_id, truncated_call, None, 1, 2)
+        .unwrap();
+    assert_eq!(page.content, "one\ntwo\n");
+    assert_eq!(page.next_offset_lines, Some(3));
+    assert_eq!(page.source, "truncation");
+
+    let (elided_preview, _) = artifacts.retain(b"zero\n").unwrap();
+    fixture
+        .engine
+        .append_direct(
+            session.session_id,
+            Some(run.run_id),
+            EventPayload::ToolOutputElided {
+                tool_call_id: truncated_call,
+                original_bytes: full.len() as u64,
+                retained: elided_preview,
+            },
+        )
+        .unwrap();
+    let page = fixture
+        .engine
+        .read_tool_result(session.session_id, truncated_call, None, 2, 2)
+        .unwrap();
+    assert_eq!(page.content, "two\nthree");
+    assert_eq!(page.source, "truncation");
+
+    let missing_call = append_compaction_tool_history(
+        &fixture,
+        session.session_id,
+        run.run_id,
+        binding,
+        result(
+            "preview",
+            Some(cookie_agent_protocol::ToolOutputTruncation {
+                original_bytes: 10,
+                original_lines: 1,
+                retained: cookie_agent_protocol::ArtifactReference {
+                    uri: format!("artifact://sha256/{}", "a".repeat(64)),
+                },
+            }),
+            serde_json::Value::Null,
+        ),
+        1,
+    );
+    assert!(
+        fixture
+            .engine
+            .read_tool_result(session.session_id, missing_call, None, 0, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("artifact missing")
+    );
+
+    let (stdout_ref, stdout_digest) = artifacts.retain(b"out-0\nout-1\n").unwrap();
+    let (stderr_ref, stderr_digest) = artifacts.retain(b"err-0\nerr-1\n").unwrap();
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "title":"Bash",
+        "streams":{
+            "stdout":{"reference":stdout_ref,"sha256":stdout_digest,"byte_length":12},
+            "stderr":{"reference":stderr_ref,"sha256":stderr_digest,"byte_length":12}
+        }
+    }))
+    .unwrap();
+    let (manifest_ref, _) = artifacts.retain(&manifest).unwrap();
+    let bash_call = append_compaction_tool_history(
+        &fixture,
+        session.session_id,
+        run.run_id,
+        binding,
+        result(
+            "stdout:\nout-0\n\nstderr:\nerr-0\n",
+            Some(cookie_agent_protocol::ToolOutputTruncation {
+                original_bytes: 42,
+                original_lines: 6,
+                retained: manifest_ref,
+            }),
+            serde_json::json!({"streams":true}),
+        ),
+        1,
+    );
+    let page = fixture
+        .engine
+        .read_tool_result(session.session_id, bash_call, Some("stderr"), 1, 1)
+        .unwrap();
+    assert_eq!(page.content, "err-1\n");
+    assert_eq!(page.source, "truncation.stderr");
+
+    let inline_call = append_compaction_tool_history(
+        &fixture,
+        session.session_id,
+        run.run_id,
+        binding,
+        result("inline-0\ninline-1\n", None, serde_json::Value::Null),
+        1,
+    );
+    let other = fixture.engine.create_session(selection).unwrap();
+    assert!(
+        fixture
+            .engine
+            .read_tool_result(other.session_id, inline_call, None, 0, 1)
+            .is_err()
+    );
+    let termination_seq = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == inline_call =>
+            {
+                Some(event.seq)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fixture
+        .engine
+        .append_direct(
+            session.session_id,
+            None,
+            EventPayload::SessionReverted {
+                through_seq: termination_seq - 1,
+            },
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .engine
+            .read_tool_result(session.session_id, inline_call, None, 0, 1)
+            .is_err()
+    );
+    fixture.engine.shutdown().await;
+    assert_eq!(captured.await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -5138,7 +5334,13 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             session.session_id,
             run.run_id,
             binding,
-            output,
+            cookie_agent_protocol::PersistedToolResult {
+                title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
+                output,
+                metadata: serde_json::Value::Null,
+                truncation: None,
+                attachments: Vec::new(),
+            },
             latest_usage,
         );
 
