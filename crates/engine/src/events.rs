@@ -53,7 +53,8 @@ pub struct EventLog {
     events: Mutex<Vec<StoredEvent>>,
     usage_cost_stamped: Mutex<HashSet<u64>>,
     diagnostics: Vec<EventLoadDiagnostic>,
-    validation_taint: ValidationTaint,
+    initial_validation_taint: ValidationTaint,
+    validation: Mutex<ValidationState>,
     next_seq: AtomicU64,
     persisted: AtomicBool,
 }
@@ -78,7 +79,8 @@ impl EventLog {
             events: Mutex::new(Vec::new()),
             usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
-            validation_taint: ValidationTaint::default(),
+            initial_validation_taint: ValidationTaint::default(),
+            validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(true),
         });
@@ -100,7 +102,8 @@ impl EventLog {
             events: Mutex::new(Vec::new()),
             usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
-            validation_taint: ValidationTaint::default(),
+            initial_validation_taint: ValidationTaint::default(),
+            validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(false),
         });
@@ -120,7 +123,7 @@ impl EventLog {
         ) {
             return Err(EventLogError::MissingCreation(path));
         }
-        let validation_taint =
+        let validation =
             validate_records(&path, session_id, &records, &loaded.validation_taint, None)?;
         Ok(Arc::new(Self {
             path,
@@ -128,7 +131,8 @@ impl EventLog {
             events: Mutex::new(records),
             usage_cost_stamped: Mutex::new(loaded.usage_cost_stamped),
             diagnostics: loaded.diagnostics,
-            validation_taint,
+            initial_validation_taint: loaded.validation_taint,
+            validation: Mutex::new(validation),
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
         }))
@@ -168,17 +172,33 @@ impl EventLog {
             path: self.path.clone(),
             message: error.to_string(),
         })?;
-        let mut candidate = events.clone();
-        candidate.push(event.clone());
-        let _ = validate_records(
-            &self.path,
-            self.session_id,
-            &candidate,
-            &self.validation_taint,
-            Some(event.seq),
-        )?;
-        if self.persisted.load(Ordering::Acquire) {
-            append_jsonl(&self.path, &event)?;
+        let mut validation = self
+            .validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(error) =
+            validate_record_incremental(&self.path, self.session_id, &event, &mut validation, true)
+        {
+            *validation = validate_records(
+                &self.path,
+                self.session_id,
+                &events,
+                &self.initial_validation_taint,
+                None,
+            )?;
+            return Err(error);
+        }
+        if self.persisted.load(Ordering::Acquire)
+            && let Err(error) = append_jsonl(&self.path, &event)
+        {
+            *validation = validate_records(
+                &self.path,
+                self.session_id,
+                &events,
+                &self.initial_validation_taint,
+                None,
+            )?;
+            return Err(error);
         }
         if usage_cost_stamped {
             self.usage_cost_stamped
@@ -230,7 +250,10 @@ impl EventLog {
     #[must_use]
     pub(crate) fn delegation_event_tainted(&self, event: &StoredEvent) -> bool {
         delegation_invocation_from_event(&event.payload).is_some_and(|invocation_id| {
-            self.validation_taint
+            self.validation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .taint
                 .delegation_before(invocation_id, event.seq)
         })
     }
@@ -255,7 +278,7 @@ impl EventLog {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct RunAttribution {
     start_seq: u64,
     agent_id: cookie_agent_protocol::AgentId,
@@ -268,14 +291,14 @@ struct RunAttribution {
     ordering_tainted: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct AttemptAttribution {
     run_id: RunId,
     resolved_model: cookie_agent_protocol::ResolvedModelRef,
     finished: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct InternalRunAttribution {
     start_seq: u64,
     invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
@@ -287,7 +310,7 @@ struct InternalRunAttribution {
     usage_phase_taint_seen: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct DelegationAttribution {
     parent_run_id: RunId,
     child_session_id: SessionId,
@@ -297,7 +320,70 @@ struct DelegationAttribution {
     finished: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, PartialEq)]
+struct ValidationState {
+    taint: ValidationTaint,
+    runs: HashMap<RunId, RunAttribution>,
+    approval_owners: HashMap<cookie_agent_protocol::ApprovalId, RunId>,
+    attempts: HashMap<AttemptId, AttemptAttribution>,
+    turns: HashMap<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>,
+    turn_models: HashMap<u64, cookie_agent_protocol::ResolvedModelRef>,
+    usage_turns: HashSet<u64>,
+    internal_runs: HashMap<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>,
+    delegations: HashMap<cookie_agent_protocol::InvocationId, DelegationAttribution>,
+    model_call_owners: HashMap<(RunId, ModelCallId), AssistantToolCallRef>,
+    provider_item_owners: HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
+    tool_starts: HashMap<ToolCallId, (RunId, ToolCallStart)>,
+    terminated_tools: HashSet<ToolCallId>,
+    elided_tools: HashSet<ToolCallId>,
+    admissions: HashMap<u64, (RunId, String)>,
+    next_model_turn_seq: u64,
+    previous_seq: Option<u64>,
+    previous_timestamp: Option<Timestamp>,
+    active_run: Option<RunId>,
+    record_count: usize,
+}
+
+impl ValidationState {
+    fn new(taint: ValidationTaint) -> Self {
+        Self {
+            taint,
+            runs: HashMap::new(),
+            approval_owners: HashMap::new(),
+            attempts: HashMap::new(),
+            turns: HashMap::new(),
+            turn_models: HashMap::new(),
+            usage_turns: HashSet::new(),
+            internal_runs: HashMap::new(),
+            delegations: HashMap::new(),
+            model_call_owners: HashMap::new(),
+            provider_item_owners: HashMap::new(),
+            tool_starts: HashMap::new(),
+            terminated_tools: HashSet::new(),
+            elided_tools: HashSet::new(),
+            admissions: HashMap::new(),
+            next_model_turn_seq: 1,
+            previous_seq: None,
+            previous_timestamp: None,
+            active_run: None,
+            record_count: 0,
+        }
+    }
+
+    fn finish_record(&mut self, record: &StoredEvent) {
+        self.previous_seq = Some(record.seq);
+        self.previous_timestamp = Some(record.timestamp);
+        self.record_count += 1;
+    }
+}
+
+impl Default for ValidationState {
+    fn default() -> Self {
+        Self::new(ValidationTaint::default())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 struct ValidationTaint {
     broad: Vec<(u64, u64)>,
     runs: HashMap<RunId, u64>,
@@ -858,874 +944,169 @@ fn validate_records(
     records: &[StoredEvent],
     initial_taint: &ValidationTaint,
     strict_from_seq: Option<u64>,
-) -> Result<ValidationTaint, EventLogError> {
+) -> Result<ValidationState, EventLogError> {
     validate_observed_duplicates(path, records)?;
-    let mut taint = initial_taint.clone();
-    let mut runs = HashMap::<RunId, RunAttribution>::new();
-    let mut approval_owners = HashMap::new();
-    let mut attempts = HashMap::<AttemptId, AttemptAttribution>::new();
-    let mut turns = HashMap::<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>::new();
-    let mut turn_models = HashMap::<u64, cookie_agent_protocol::ResolvedModelRef>::new();
-    let mut usage_turns = HashSet::<u64>::new();
-    let mut internal_runs =
-        HashMap::<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>::new();
-    let mut delegations =
-        HashMap::<cookie_agent_protocol::InvocationId, DelegationAttribution>::new();
-    let mut model_call_owners = HashMap::<(RunId, ModelCallId), AssistantToolCallRef>::new();
-    let mut provider_item_owners = HashMap::<(RunId, ProviderItemId), AssistantToolCallRef>::new();
-    let mut tool_starts = HashMap::<ToolCallId, (RunId, ToolCallStart)>::new();
-    let mut terminated_tools = HashSet::<ToolCallId>::new();
-    let mut elided_tools = HashSet::<ToolCallId>::new();
-    let mut next_model_turn_seq = 1_u64;
-    let mut previous_timestamp = None;
-    let mut active_run = None;
-    for (index, record) in records.iter().enumerate() {
-        if index > 0 && record.seq <= records[index - 1].seq {
-            return corrupt(
-                path,
-                format!(
-                    "event sequence {} is not strictly greater than {}",
-                    record.seq,
-                    records[index - 1].seq
-                ),
-            );
-        }
-        if record.session_id != session_id {
-            return corrupt(
-                path,
-                "event envelope session ID does not match its directory",
-            );
-        }
-        if previous_timestamp.is_some_and(|timestamp| record.timestamp < timestamp) {
-            return corrupt(path, "event timestamps are not monotonic");
-        }
-        previous_timestamp = Some(record.timestamp);
-        if index == 0 {
-            let EventPayload::SessionCreated { .. } = &record.payload else {
-                return Err(EventLogError::MissingCreation(path.to_owned()));
-            };
-            if record.run_id.is_some() {
-                return corrupt(path, "invalid initial SessionCreated record");
-            }
-            continue;
-        }
-        if matches!(record.payload, EventPayload::SessionCreated { .. }) {
-            return corrupt(path, "SessionCreated appeared after sequence 1");
-        }
-        validate_record_local(path, record)?;
+    let mut state = ValidationState::new(initial_taint.clone());
+    for record in records {
         let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
-        let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
-            !records[..index].iter().any(|prior| {
-                prior.seq == user_input_seq
-                    && prior.run_id == Some(run_id)
-                    && matches!(
-                        &prior.payload,
-                        EventPayload::UserInputAdmitted { input: admitted } if admitted == input
-                    )
-            })
+        validate_record_incremental(path, session_id, record, &mut state, strict)?;
+    }
+    Ok(state)
+}
+
+fn validate_record_incremental(
+    path: &Path,
+    session_id: SessionId,
+    record: &StoredEvent,
+    state: &mut ValidationState,
+    strict: bool,
+) -> Result<(), EventLogError> {
+    if state
+        .previous_seq
+        .is_some_and(|previous| record.seq <= previous)
+    {
+        return corrupt(
+            path,
+            format!(
+                "event sequence {} is not strictly greater than {}",
+                record.seq,
+                state.previous_seq.expect("checked previous sequence")
+            ),
+        );
+    }
+    if record.session_id != session_id {
+        return corrupt(
+            path,
+            "event envelope session ID does not match its directory",
+        );
+    }
+    if state
+        .previous_timestamp
+        .is_some_and(|timestamp| record.timestamp < timestamp)
+    {
+        return corrupt(path, "event timestamps are not monotonic");
+    }
+    if state.record_count == 0 {
+        let EventPayload::SessionCreated { .. } = &record.payload else {
+            return Err(EventLogError::MissingCreation(path.to_owned()));
         };
-        let tainted_prerequisite = if strict {
-            false
-        } else {
-            match &record.payload {
-                EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. }
-                    if record.run_id.is_some() =>
-                {
-                    record.run_id.is_some_and(|run_id| {
-                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                    })
-                }
-                EventPayload::SessionTitleCommitted { .. } if record.run_id.is_some() => {
-                    record.run_id.is_some_and(|run_id| {
-                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                    })
-                }
-                EventPayload::UserInputRecalledV2 {
-                    user_input_seq,
-                    input,
-                } => record.run_id.is_some_and(|run_id| {
-                    missing_admission(*user_input_seq, run_id, input)
-                        && taint.admission_before(*user_input_seq, record.seq)
-                }),
-                EventPayload::ModelAttemptStarted { .. }
-                | EventPayload::InternalAgentStarted { .. }
-                | EventPayload::ModelFallback { .. }
-                | EventPayload::ApprovalRequested { .. } => record.run_id.is_some_and(|run_id| {
-                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                }),
-                EventPayload::TextDelta { attempt_id, .. }
-                | EventPayload::ReasoningDelta { attempt_id, .. }
-                | EventPayload::ModelRequestPrepared { attempt_id, .. }
-                | EventPayload::AttemptAbandoned { attempt_id }
-                | EventPayload::ModelReplayEvaluated { attempt_id, .. }
-                | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
-                    (!attempts.contains_key(attempt_id)
-                        && taint.attempt_before(*attempt_id, record.seq))
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
-                    (!turns.contains_key(model_turn_seq)
-                        && taint.turn_before(*model_turn_seq, record.seq))
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::InternalAgentFallback {
-                    internal_run_id, ..
-                }
-                | EventPayload::InternalAgentUsageRecorded {
-                    internal_run_id, ..
-                } => {
-                    (!internal_runs.contains_key(internal_run_id)
-                        && taint.internal_run_before(*internal_run_id, record.seq))
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::ToolCallStarted { start } => {
-                    (!turns.contains_key(&start.owner.model_turn_seq)
-                        && taint.turn_before(start.owner.model_turn_seq, record.seq))
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::ToolCallTerminated { termination } => {
-                    !tool_starts.contains_key(&termination.tool_call_id)
-                        && taint.tool_before(termination.tool_call_id, record.seq)
-                }
-                EventPayload::ToolOutputElided { tool_call_id, .. }
-                | EventPayload::ToolCallProgress { tool_call_id, .. }
-                | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
-                | EventPayload::ToolCallLinked { tool_call_id, .. } => {
-                    !tool_starts.contains_key(tool_call_id)
-                        && taint.tool_before(*tool_call_id, record.seq)
-                }
-                EventPayload::ApprovalEvaluated { approval_id, .. }
-                | EventPayload::ApprovalEscalated { approval_id, .. }
-                | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
-                | EventPayload::ApprovalFinalized { approval_id, .. }
-                | EventPayload::ApprovalCancelled { approval_id, .. }
-                | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
-                    !approval_owners.contains_key(approval_id)
-                        && taint.approval_before(*approval_id, record.seq)
-                }
-                EventPayload::TreeApprovalGrantCommitted { grant } => {
-                    !approval_owners.contains_key(&grant.approval_id)
-                        && taint.approval_before(grant.approval_id, record.seq)
-                }
-                EventPayload::DelegationReserved { reservation, .. } => {
-                    taint.delegation_before(reservation.invocation_id, record.seq)
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::DelegationStarted { invocation_id, .. }
-                | EventPayload::DelegationRunStarted { invocation_id, .. }
-                | EventPayload::DelegationRunAttached { invocation_id, .. } => {
-                    taint.delegation_before(*invocation_id, record.seq)
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                EventPayload::DelegationFinished {
-                    invocation_id,
-                    child_session_id,
-                    child_run_id,
-                    ..
-                } => {
-                    let repair_matches = delegations.get(invocation_id).is_some_and(|delegation| {
-                        record.run_id == Some(delegation.parent_run_id)
-                            && *child_session_id == delegation.child_session_id
-                            && *child_run_id == delegation.child_run_id
-                            && !delegation.finished
-                    });
-                    (taint.delegation_before(*invocation_id, record.seq) && !repair_matches)
-                        || record.run_id.is_some_and(|run_id| {
-                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                        })
-                }
-                _ => record.run_id.is_some_and(|run_id| {
-                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
-                }),
-            }
-        };
-        if tainted_prerequisite {
-            taint
-                .mark_event(record)
-                .map_err(|message| EventLogError::Corrupt {
-                    path: path.to_owned(),
-                    message: message.into(),
-                })?;
-            continue;
+        if record.run_id.is_some() {
+            return corrupt(path, "invalid initial SessionCreated record");
         }
+        state.finish_record(record);
+        return Ok(());
+    }
+    if matches!(record.payload, EventPayload::SessionCreated { .. }) {
+        return corrupt(path, "SessionCreated appeared after sequence 1");
+    }
+    validate_record_local(path, record)?;
+    let ValidationState {
+        taint,
+        runs,
+        approval_owners,
+        attempts,
+        turns,
+        turn_models,
+        usage_turns,
+        internal_runs,
+        delegations,
+        model_call_owners,
+        provider_item_owners,
+        tool_starts,
+        terminated_tools,
+        elided_tools,
+        admissions,
+        next_model_turn_seq,
+        active_run,
+        ..
+    } = state;
+    if let EventPayload::UserInputAdmitted { input } = &record.payload
+        && let Some(run_id) = record.run_id
+    {
+        admissions.insert(record.seq, (run_id, input.clone()));
+    }
+    let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
+        !admissions
+            .get(&user_input_seq)
+            .is_some_and(|(owner, admitted)| *owner == run_id && admitted == input)
+    };
+    let tainted_prerequisite = if strict {
+        false
+    } else {
         match &record.payload {
-            EventPayload::SessionReverted { through_seq } => {
-                if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
-                    return corrupt(
-                        path,
-                        "SessionReverted target is not an existing prior event",
-                    );
-                }
-            }
-            EventPayload::SessionPermissionOverlaySet { .. } => {
-                if record.run_id.is_some() {
-                    return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
-                }
-            }
-            EventPayload::DelegationReserved {
-                reservation,
-                request,
-                ..
-            } => {
-                if record.run_id != Some(reservation.parent_run_id)
-                    || record.session_id != reservation.parent_session_id
-                    || !runs.contains_key(&reservation.parent_run_id)
-                    || delegations
-                        .insert(
-                            reservation.invocation_id,
-                            DelegationAttribution {
-                                parent_run_id: reservation.parent_run_id,
-                                child_session_id: reservation.child_session_id,
-                                resume: request.resume_session_id.is_some(),
-                                started: false,
-                                child_run_id: None,
-                                finished: false,
-                            },
-                        )
-                        .is_some()
-                {
-                    return corrupt(path, "delegation reservation ownership is invalid");
-                }
-            }
-            EventPayload::DelegationStarted {
-                invocation_id,
-                child_session_id,
-            } => {
-                let Some(delegation) = delegations.get_mut(invocation_id) else {
-                    return corrupt(path, "delegation start appeared before its reservation");
-                };
-                if record.run_id != Some(delegation.parent_run_id)
-                    || *child_session_id != delegation.child_session_id
-                    || delegation.started
-                    || delegation.finished
-                {
-                    return corrupt(path, "delegation start ownership is invalid");
-                }
-                delegation.started = true;
-            }
-            EventPayload::DelegationRunStarted {
-                invocation_id,
-                child_run_id,
-            }
-            | EventPayload::DelegationRunAttached {
-                invocation_id,
-                child_run_id,
-            } => {
-                let attached =
-                    matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
-                let Some(delegation) = delegations.get_mut(invocation_id) else {
-                    return corrupt(path, "delegation run appeared before its reservation");
-                };
-                if record.run_id != Some(delegation.parent_run_id)
-                    || delegation.child_run_id.is_some()
-                    || delegation.finished
-                    || (attached && !delegation.resume)
-                {
-                    return corrupt(path, "delegation run ownership is invalid");
-                }
-                delegation.child_run_id = Some(*child_run_id);
-            }
-            EventPayload::DelegationFinished {
-                invocation_id,
-                child_session_id,
-                child_run_id,
-                ..
-            } => {
-                let Some(delegation) = delegations.get_mut(invocation_id) else {
-                    return corrupt(path, "delegation finish appeared before its reservation");
-                };
-                if record.run_id != Some(delegation.parent_run_id)
-                    || *child_session_id != delegation.child_session_id
-                    || *child_run_id != delegation.child_run_id
-                    || delegation.finished
-                {
-                    return corrupt(path, "delegation finish ownership is invalid");
-                }
-                if taint.delegation_unrepaired_before(*invocation_id, record.seq) {
-                    taint.delegation_repairs.insert(*invocation_id, record.seq);
-                }
-                delegation.finished = true;
-            }
-            EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. } => {
-                if record.run_id.is_some() {
-                    require_started_run(path, &runs, record.run_id)?;
-                }
-            }
-            EventPayload::DelegateChildTerminated { .. } => {
-                if record.run_id.is_some() {
-                    return corrupt(path, "DelegateChildTerminated must not have run_id");
-                }
-            }
-            EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
-                if record.run_id.is_none() =>
+            EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. }
+                if record.run_id.is_some() =>
             {
-                if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
-                    return corrupt(path, "runless UserInputAdmitted requires no active run");
-                }
-                if taint.active_run_ordering_before(record.seq) {
-                    active_run = None;
-                }
+                record.run_id.is_some_and(|run_id| {
+                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                })
+            }
+            EventPayload::SessionTitleCommitted { .. } if record.run_id.is_some() => {
+                record.run_id.is_some_and(|run_id| {
+                    !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                })
             }
             EventPayload::UserInputRecalledV2 {
                 user_input_seq,
                 input,
-            } => {
-                let Some(run_id) = record.run_id else {
-                    return corrupt(path, "UserInputRecalledV2 is missing run_id");
-                };
-                if !records[..index].iter().any(|prior| {
-                    prior.seq == *user_input_seq
-                        && prior.run_id == Some(run_id)
-                        && matches!(
-                            &prior.payload,
-                            EventPayload::UserInputAdmitted { input: admitted }
-                                if admitted == input
-                        )
-                }) {
-                    return corrupt(path, "UserInputRecalledV2 target is not a prior admission");
-                }
+            } => record.run_id.is_some_and(|run_id| {
+                missing_admission(*user_input_seq, run_id, input)
+                    && taint.admission_before(*user_input_seq, record.seq)
+            }),
+            EventPayload::ModelAttemptStarted { .. }
+            | EventPayload::InternalAgentStarted { .. }
+            | EventPayload::ModelFallback { .. }
+            | EventPayload::ApprovalRequested { .. } => record.run_id.is_some_and(|run_id| {
+                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+            }),
+            EventPayload::TextDelta { attempt_id, .. }
+            | EventPayload::ReasoningDelta { attempt_id, .. }
+            | EventPayload::ModelRequestPrepared { attempt_id, .. }
+            | EventPayload::AttemptAbandoned { attempt_id }
+            | EventPayload::ModelReplayEvaluated { attempt_id, .. }
+            | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
+                (!attempts.contains_key(attempt_id)
+                    && taint.attempt_before(*attempt_id, record.seq))
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
             }
-            EventPayload::DelegatedContextSeeded { .. } => {
-                if record.run_id.is_some() || !runs.is_empty() {
-                    return corrupt(
-                        path,
-                        "DelegatedContextSeeded must be runless and precede the first run",
-                    );
-                }
-            }
-            EventPayload::RunStarted {
-                agent,
-                selected_suffix,
-                ..
-            } => {
-                let Some(run_id) = record.run_id else {
-                    return corrupt(path, "RunStarted is missing run_id");
-                };
-                let attribution = RunAttribution {
-                    start_seq: record.seq,
-                    agent_id: agent.agent.clone(),
-                    prompt_fingerprint: agent.prompt_fingerprint.clone(),
-                    selected_suffix: selected_suffix
-                        .iter()
-                        .map(crate::policy::wire_resolved)
-                        .collect(),
-                    active_fallback_index: 0,
-                    next_attempt_ordinal: 1,
-                    attempts_on_active: 0,
-                    active_attempt: None,
-                    ordering_tainted: false,
-                };
-                if runs.insert(run_id, attribution).is_some() {
-                    return corrupt(path, "run_id has more than one RunStarted event");
-                }
-                active_run = Some(run_id);
-            }
-            EventPayload::SessionTitleCommitted { change, .. } => {
-                let user = matches!(
-                    change,
-                    cookie_agent_protocol::SessionTitleChange::UserSet { .. }
-                        | cookie_agent_protocol::SessionTitleChange::UserClear { .. }
-                        | cookie_agent_protocol::SessionTitleChange::UserReset { .. }
-                        | cookie_agent_protocol::SessionTitleChange::DelegatedSet { .. }
-                );
-                if user != record.run_id.is_none() {
-                    return corrupt(path, "SessionTitleCommitted has inconsistent run ownership");
-                }
-                if let Some(run_id) = record.run_id
-                    && !runs.contains_key(&run_id)
-                {
-                    return corrupt(path, "session title references a run before RunStarted");
-                }
-            }
-            EventPayload::ModelAttemptStarted {
-                attempt_id,
-                attempt_ordinal,
-                fallback_index,
-                retry_ordinal,
-                resolved_model,
-                prompt_fingerprint,
-            } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                if attempts.contains_key(attempt_id) {
-                    return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
-                }
-                let run = runs.get_mut(&run_id).expect("started run is indexed");
-                run.ordering_tainted |=
-                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
-                if strict && run.ordering_tainted {
-                    return corrupt(
-                        path,
-                        "cannot strictly append an attempt after missing run-order prerequisites",
-                    );
-                }
-                if !run.ordering_tainted && run.active_attempt.is_some() {
-                    return corrupt(
-                        path,
-                        "ModelAttemptStarted appeared before the prior attempt ended",
-                    );
-                }
-                if !run.ordering_tainted && *attempt_ordinal != run.next_attempt_ordinal {
-                    return corrupt(path, "attempt_ordinal is not contiguous within its run");
-                }
-                let Ok(fallback_index) = usize::try_from(*fallback_index) else {
-                    return corrupt(path, "fallback_index does not index the frozen suffix");
-                };
-                if !run.ordering_tainted && fallback_index != run.active_fallback_index {
-                    return corrupt(
-                        path,
-                        "attempt fallback_index is not the active frozen suffix entry",
-                    );
-                }
-                let Some(expected_model) = run.selected_suffix.get(fallback_index) else {
-                    return corrupt(path, "fallback_index does not index the frozen suffix");
-                };
-                if resolved_model != expected_model {
-                    return corrupt(
-                        path,
-                        "attempt resolved model does not match its frozen suffix entry",
-                    );
-                }
-                if prompt_fingerprint != &run.prompt_fingerprint {
-                    return corrupt(path, "attempt prompt fingerprint does not match RunStarted");
-                }
-                if !run.ordering_tainted && *retry_ordinal != run.attempts_on_active {
-                    return corrupt(
-                        path,
-                        "retry_ordinal is not contiguous for the active fallback entry",
-                    );
-                }
-                run.next_attempt_ordinal = attempt_ordinal.saturating_add(1);
-                run.active_fallback_index = fallback_index;
-                run.attempts_on_active = retry_ordinal.saturating_add(1);
-                run.active_attempt = Some(*attempt_id);
-                attempts.insert(
-                    *attempt_id,
-                    AttemptAttribution {
-                        run_id,
-                        resolved_model: resolved_model.clone(),
-                        finished: false,
-                    },
-                );
-            }
-            EventPayload::ModelRequestPrepared { attempt_id, .. }
-            | EventPayload::TextDelta { attempt_id, .. }
-            | EventPayload::ReasoningDelta { attempt_id, .. } => {
-                validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
-            }
-            EventPayload::AttemptAbandoned { attempt_id } => {
-                let run_id = validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
-                let run = runs.get_mut(&run_id).expect("started run is indexed");
-                run.ordering_tainted |=
-                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
-                if strict && run.ordering_tainted {
-                    return corrupt(
-                        path,
-                        "cannot strictly append an attempt terminal after missing prerequisites",
-                    );
-                }
-                finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, false)?;
-            }
-            EventPayload::ModelReplayEvaluated {
-                attempt_id,
-                resolved_model,
-                ..
-            } => {
-                validate_attempt_model(
-                    path,
-                    &attempts,
-                    *attempt_id,
-                    record.run_id,
-                    resolved_model,
-                )?;
-            }
-            EventPayload::ModelTurnCommitted {
-                attempt_id,
-                model_turn_seq,
-                resolved_model,
-                turn,
-                ..
-            } => {
-                let run_id = validate_attempt_model(
-                    path,
-                    &attempts,
-                    *attempt_id,
-                    record.run_id,
-                    resolved_model,
-                )?;
-                let run = runs.get_mut(&run_id).expect("started run is indexed");
-                run.ordering_tainted |=
-                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
-                if strict && run.ordering_tainted {
-                    return corrupt(
-                        path,
-                        "cannot strictly append a model turn after missing prerequisites",
-                    );
-                }
-                finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, true)?;
-                let turn_ordering_tainted = taint.turn_ordering_before(record.seq);
-                if *model_turn_seq != next_model_turn_seq && (strict || !turn_ordering_tainted) {
-                    return corrupt(path, "model_turn_seq is not contiguous");
-                }
-                next_model_turn_seq = model_turn_seq.saturating_add(1);
-                for (content_index, part) in turn.content.iter().enumerate() {
-                    if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
-                        id,
-                        provider_item_id,
-                        ..
-                    } = part
-                    {
-                        let owner = AssistantToolCallRef {
-                            model_turn_seq: *model_turn_seq,
-                            content_index: content_index as u32,
-                            model_call_id: id.clone(),
-                            provider_item_id: provider_item_id.clone(),
-                        };
-                        if model_call_owners
-                            .insert((run_id, id.clone()), owner.clone())
-                            .is_some()
-                        {
-                            return corrupt(path, "model call id is reused within a run");
-                        }
-                        if let Some(provider_item_id) = provider_item_id
-                            && provider_item_owners
-                                .insert((run_id, provider_item_id.clone()), owner)
-                                .is_some()
-                        {
-                            return corrupt(path, "provider item id is reused within a run");
-                        }
-                    }
-                }
-                if turns
-                    .insert(*model_turn_seq, (run_id, turn.clone()))
-                    .is_some()
-                {
-                    return corrupt(path, "model turn sequence is duplicated");
-                }
-                turn_models.insert(*model_turn_seq, resolved_model.clone());
-            }
-            EventPayload::ModelUsageRecorded {
-                model_turn_seq,
-                agent_id,
-                resolved_model,
-                ..
-            } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                let Some((turn_run, _)) = turns.get(model_turn_seq) else {
-                    return corrupt(path, "usage references an unknown committed model turn");
-                };
-                if *turn_run != run_id
-                    || turn_models.get(model_turn_seq) != Some(resolved_model)
-                    || runs.get(&run_id).map(|run| &run.agent_id) != Some(agent_id)
-                    || !usage_turns.insert(*model_turn_seq)
-                {
-                    return corrupt(path, "usage ownership does not match its model turn");
-                }
-            }
-            EventPayload::InternalAgentStarted {
-                invocation_id,
-                internal_run_id,
-                kind,
-                backend,
-                ..
-            } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                let active_model = match backend {
-                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
-                        Some(resolved_model.clone())
-                    }
-                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
-                };
-                if internal_runs
-                    .insert(
-                        *internal_run_id,
-                        InternalRunAttribution {
-                            start_seq: record.seq,
-                            invocation_id: *invocation_id,
-                            kind: *kind,
-                            run_id,
-                            active_model,
-                            usage_recorded_in_phase: false,
-                            model_phase_taint_seen: 0,
-                            usage_phase_taint_seen: 0,
-                        },
-                    )
-                    .is_some()
-                {
-                    return corrupt(path, "internal_run_id has more than one start");
-                }
+            EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
+                (!turns.contains_key(model_turn_seq)
+                    && taint.turn_before(*model_turn_seq, record.seq))
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
             }
             EventPayload::InternalAgentFallback {
-                invocation_id,
-                internal_run_id,
-                kind,
-                from,
-                to,
-                ..
-            } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                let Some(internal) = internal_runs.get_mut(internal_run_id) else {
-                    return corrupt(path, "internal fallback appeared before its start");
-                };
-                let from_model = match from {
-                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
-                        Some(resolved_model)
-                    }
-                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
-                };
-                let model_phase_taint = taint
-                    .internal_model_phase_taint_before(*internal_run_id, record.seq)
-                    .filter(|tainted| {
-                        *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
-                    });
-                if strict && model_phase_taint.is_some() {
-                    return corrupt(
-                        path,
-                        "cannot strictly append internal fallback after a missing phase transition",
-                    );
-                }
-                if internal.invocation_id != *invocation_id
-                    || internal.kind != *kind
-                    || internal.run_id != run_id
-                    || (model_phase_taint.is_none() && internal.active_model.as_ref() != from_model)
-                {
-                    return corrupt(path, "internal fallback ownership does not match its run");
-                }
-                internal.active_model = match to {
-                    cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
-                        Some(resolved_model.clone())
-                    }
-                    cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
-                };
-                internal.usage_recorded_in_phase = false;
-                if let Some(tainted) = model_phase_taint {
-                    internal.model_phase_taint_seen = tainted;
-                }
-                if let Some(tainted) = taint
-                    .internal_usage_phase_taint_before(*internal_run_id, record.seq)
-                    .filter(|tainted| *tainted > internal.start_seq)
-                {
-                    internal.usage_phase_taint_seen = tainted;
-                }
+                internal_run_id, ..
             }
-            EventPayload::InternalAgentUsageRecorded {
-                internal_run_id,
-                kind,
-                agent_id,
-                resolved_model,
-                ..
+            | EventPayload::InternalAgentUsageRecorded {
+                internal_run_id, ..
             } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                let Some(internal) = internal_runs.get_mut(internal_run_id) else {
-                    return corrupt(path, "internal usage appeared before its start");
-                };
-                let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
-                    cookie_agent_protocol::InternalAgentKind::Approval => {
-                        cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
-                    }
-                    cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
-                        cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
-                    }
-                    cookie_agent_protocol::InternalAgentKind::SessionTitle => {
-                        cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
-                    }
-                })
-                .expect("built-in internal agent IDs are valid");
-                let model_phase_taint = taint
-                    .internal_model_phase_taint_before(*internal_run_id, record.seq)
-                    .filter(|tainted| {
-                        *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
-                    });
-                let usage_phase_taint = taint
-                    .internal_usage_phase_taint_before(*internal_run_id, record.seq)
-                    .filter(|tainted| {
-                        *tainted > internal.start_seq && *tainted > internal.usage_phase_taint_seen
-                    });
-                if strict && (model_phase_taint.is_some() || usage_phase_taint.is_some()) {
-                    return corrupt(
-                        path,
-                        "cannot strictly append internal usage after a missing phase transition",
-                    );
-                }
-                if internal.kind != *kind
-                    || internal.run_id != run_id
-                    || (model_phase_taint.is_none()
-                        && internal.active_model.as_ref() != Some(resolved_model))
-                    || *agent_id != expected_agent
-                    || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
-                {
-                    return corrupt(path, "internal usage ownership does not match its run");
-                }
-                internal.active_model = Some(resolved_model.clone());
-                internal.usage_recorded_in_phase = true;
-                if let Some(tainted) = model_phase_taint {
-                    internal.model_phase_taint_seen = tainted;
-                }
-                if let Some(tainted) = usage_phase_taint {
-                    internal.usage_phase_taint_seen = tainted;
-                }
-            }
-            EventPayload::ModelFallback {
-                from,
-                to,
-                from_fallback_index,
-                to_fallback_index,
-                attempts_on_from,
-                ..
-            } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                let run = runs.get_mut(&run_id).expect("started run is indexed");
-                run.ordering_tainted |=
-                    taint.run_ordering_between(run_id, run.start_seq, record.seq);
-                if strict && run.ordering_tainted {
-                    return corrupt(
-                        path,
-                        "cannot strictly append fallback after missing run-order prerequisites",
-                    );
-                }
-                if !run.ordering_tainted && run.active_attempt.is_some() {
-                    return corrupt(
-                        path,
-                        "ModelFallback appeared before the active attempt ended",
-                    );
-                }
-                let Ok(from_index) = usize::try_from(*from_fallback_index) else {
-                    return corrupt(path, "ModelFallback index does not index the frozen suffix");
-                };
-                let Ok(to_index) = usize::try_from(*to_fallback_index) else {
-                    return corrupt(path, "ModelFallback index does not index the frozen suffix");
-                };
-                let Some(adjacent_index) = from_index.checked_add(1) else {
-                    return corrupt(path, "ModelFallback source index cannot advance");
-                };
-                if (!run.ordering_tainted && from_index != run.active_fallback_index)
-                    || to_index != adjacent_index
-                {
-                    return corrupt(
-                        path,
-                        "ModelFallback transition is not adjacent from the active entry",
-                    );
-                }
-                let Some(expected_from) = run.selected_suffix.get(from_index) else {
-                    return corrupt(
-                        path,
-                        "ModelFallback source does not index the frozen suffix",
-                    );
-                };
-                let Some(expected_to) = run.selected_suffix.get(to_index) else {
-                    return corrupt(
-                        path,
-                        "ModelFallback target does not index the frozen suffix",
-                    );
-                };
-                if from != expected_from || to != expected_to {
-                    return corrupt(
-                        path,
-                        "ModelFallback models do not match the frozen suffix transition",
-                    );
-                }
-                if *attempts_on_from == 0
-                    || (!run.ordering_tainted && *attempts_on_from != run.attempts_on_active)
-                {
-                    return corrupt(
-                        path,
-                        "ModelFallback attempt count does not match started attempts",
-                    );
-                }
-                run.active_fallback_index = to_index;
-                run.attempts_on_active = 0;
+                (!internal_runs.contains_key(internal_run_id)
+                    && taint.internal_run_before(*internal_run_id, record.seq))
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
             }
             EventPayload::ToolCallStarted { start } => {
-                let run_id = require_started_run(path, &runs, record.run_id)?;
-                validate_tool_owner(
-                    path,
-                    run_id,
-                    &turns,
-                    &model_call_owners,
-                    &provider_item_owners,
-                    &start.owner,
-                )?;
-                if tool_starts
-                    .insert(start.tool_call_id, (run_id, start.clone()))
-                    .is_some()
-                {
-                    return corrupt(path, "tool_call_id has more than one start");
-                }
+                (!turns.contains_key(&start.owner.model_turn_seq)
+                    && taint.turn_before(start.owner.model_turn_seq, record.seq))
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
             }
             EventPayload::ToolCallTerminated { termination } => {
-                let Some((run_id, start)) = tool_starts.get(&termination.tool_call_id) else {
-                    return corrupt(path, "tool termination appeared before its start");
-                };
-                if record.run_id != Some(*run_id) || !termination.matches_start(start) {
-                    return corrupt(path, "tool termination ownership does not match its start");
-                }
-                if strict && taint.tool_terminal_before(termination.tool_call_id, record.seq) {
-                    return corrupt(
-                        path,
-                        "cannot strictly append tool termination after a missing terminal transition",
-                    );
-                }
-                if !terminated_tools.insert(termination.tool_call_id) {
-                    return corrupt(path, "tool call has more than one terminal event");
-                }
+                !tool_starts.contains_key(&termination.tool_call_id)
+                    && taint.tool_before(termination.tool_call_id, record.seq)
             }
-            EventPayload::ToolOutputElided { tool_call_id, .. } => {
-                let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
-                    return corrupt(path, "tool elision appeared before its start");
-                };
-                let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
-                if record.run_id != Some(*run_id)
-                    || (!terminated_tools.contains(tool_call_id) && !terminal_tainted)
-                    || (strict && terminal_tainted)
-                    || !elided_tools.insert(*tool_call_id)
-                {
-                    return corrupt(path, "tool elision ownership or ordering is invalid");
-                }
-            }
-            EventPayload::ToolCallProgress { tool_call_id, .. }
+            EventPayload::ToolOutputElided { tool_call_id, .. }
+            | EventPayload::ToolCallProgress { tool_call_id, .. }
             | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
             | EventPayload::ToolCallLinked { tool_call_id, .. } => {
-                let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
-                    return corrupt(path, "tool lifecycle event appeared before its start");
-                };
-                let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
-                if record.run_id != Some(*run_id)
-                    || terminated_tools.contains(tool_call_id)
-                    || (strict && terminal_tainted)
-                {
-                    return corrupt(
-                        path,
-                        "tool lifecycle event has invalid ownership or ordering",
-                    );
-                }
-            }
-            EventPayload::ApprovalRequested { request } => {
-                let Some(run_id) = record.run_id else {
-                    return corrupt(path, "ApprovalRequested is missing run_id");
-                };
-                if !runs.contains_key(&run_id) {
-                    return corrupt(path, "approval references a run before RunStarted");
-                }
-                if approval_owners
-                    .insert(request.approval_id(), run_id)
-                    .is_some()
-                {
-                    return corrupt(
-                        path,
-                        "approval_id has more than one ApprovalRequested event",
-                    );
-                }
+                !tool_starts.contains_key(tool_call_id)
+                    && taint.tool_before(*tool_call_id, record.seq)
             }
             EventPayload::ApprovalEvaluated { approval_id, .. }
             | EventPayload::ApprovalEscalated { approval_id, .. }
@@ -1733,32 +1114,734 @@ fn validate_records(
             | EventPayload::ApprovalFinalized { approval_id, .. }
             | EventPayload::ApprovalCancelled { approval_id, .. }
             | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
-                validate_approval_owner(path, &approval_owners, *approval_id, record.run_id)?;
+                !approval_owners.contains_key(approval_id)
+                    && taint.approval_before(*approval_id, record.seq)
             }
             EventPayload::TreeApprovalGrantCommitted { grant } => {
-                validate_approval_owner(path, &approval_owners, grant.approval_id, record.run_id)?;
+                !approval_owners.contains_key(&grant.approval_id)
+                    && taint.approval_before(grant.approval_id, record.seq)
             }
-            EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
-                if record.run_id.is_some() {
-                    return corrupt(path, "plugin events must be runless");
+            EventPayload::DelegationReserved { reservation, .. } => {
+                taint.delegation_before(reservation.invocation_id, record.seq)
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
+            }
+            EventPayload::DelegationStarted { invocation_id, .. }
+            | EventPayload::DelegationRunStarted { invocation_id, .. }
+            | EventPayload::DelegationRunAttached { invocation_id, .. } => {
+                taint.delegation_before(*invocation_id, record.seq)
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
+            }
+            EventPayload::DelegationFinished {
+                invocation_id,
+                child_session_id,
+                child_run_id,
+                ..
+            } => {
+                let repair_matches = delegations.get(invocation_id).is_some_and(|delegation| {
+                    record.run_id == Some(delegation.parent_run_id)
+                        && *child_session_id == delegation.child_session_id
+                        && *child_run_id == delegation.child_run_id
+                        && !delegation.finished
+                });
+                (taint.delegation_before(*invocation_id, record.seq) && !repair_matches)
+                    || record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    })
+            }
+            _ => record.run_id.is_some_and(|run_id| {
+                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+            }),
+        }
+    };
+    if tainted_prerequisite {
+        taint
+            .mark_event(record)
+            .map_err(|message| EventLogError::Corrupt {
+                path: path.to_owned(),
+                message: message.into(),
+            })?;
+        state.finish_record(record);
+        return Ok(());
+    }
+    match &record.payload {
+        EventPayload::SessionReverted { through_seq } => {
+            if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
+                return corrupt(
+                    path,
+                    "SessionReverted target is not an existing prior event",
+                );
+            }
+        }
+        EventPayload::SessionPermissionOverlaySet { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
+            }
+        }
+        EventPayload::DelegationReserved {
+            reservation,
+            request,
+            ..
+        } => {
+            if record.run_id != Some(reservation.parent_run_id)
+                || record.session_id != reservation.parent_session_id
+                || !runs.contains_key(&reservation.parent_run_id)
+                || delegations
+                    .insert(
+                        reservation.invocation_id,
+                        DelegationAttribution {
+                            parent_run_id: reservation.parent_run_id,
+                            child_session_id: reservation.child_session_id,
+                            resume: request.resume_session_id.is_some(),
+                            started: false,
+                            child_run_id: None,
+                            finished: false,
+                        },
+                    )
+                    .is_some()
+            {
+                return corrupt(path, "delegation reservation ownership is invalid");
+            }
+        }
+        EventPayload::DelegationStarted {
+            invocation_id,
+            child_session_id,
+        } => {
+            let Some(delegation) = delegations.get_mut(invocation_id) else {
+                return corrupt(path, "delegation start appeared before its reservation");
+            };
+            if record.run_id != Some(delegation.parent_run_id)
+                || *child_session_id != delegation.child_session_id
+                || delegation.started
+                || delegation.finished
+            {
+                return corrupt(path, "delegation start ownership is invalid");
+            }
+            delegation.started = true;
+        }
+        EventPayload::DelegationRunStarted {
+            invocation_id,
+            child_run_id,
+        }
+        | EventPayload::DelegationRunAttached {
+            invocation_id,
+            child_run_id,
+        } => {
+            let attached = matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
+            let Some(delegation) = delegations.get_mut(invocation_id) else {
+                return corrupt(path, "delegation run appeared before its reservation");
+            };
+            if record.run_id != Some(delegation.parent_run_id)
+                || delegation.child_run_id.is_some()
+                || delegation.finished
+                || (attached && !delegation.resume)
+            {
+                return corrupt(path, "delegation run ownership is invalid");
+            }
+            delegation.child_run_id = Some(*child_run_id);
+        }
+        EventPayload::DelegationFinished {
+            invocation_id,
+            child_session_id,
+            child_run_id,
+            ..
+        } => {
+            let Some(delegation) = delegations.get_mut(invocation_id) else {
+                return corrupt(path, "delegation finish appeared before its reservation");
+            };
+            if record.run_id != Some(delegation.parent_run_id)
+                || *child_session_id != delegation.child_session_id
+                || *child_run_id != delegation.child_run_id
+                || delegation.finished
+            {
+                return corrupt(path, "delegation finish ownership is invalid");
+            }
+            if taint.delegation_unrepaired_before(*invocation_id, record.seq) {
+                taint.delegation_repairs.insert(*invocation_id, record.seq);
+            }
+            delegation.finished = true;
+        }
+        EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. } => {
+            if record.run_id.is_some() {
+                require_started_run(path, runs, record.run_id)?;
+            }
+        }
+        EventPayload::DelegateChildTerminated { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "DelegateChildTerminated must not have run_id");
+            }
+        }
+        EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
+            if record.run_id.is_none() =>
+        {
+            if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
+                return corrupt(path, "runless UserInputAdmitted requires no active run");
+            }
+            if taint.active_run_ordering_before(record.seq) {
+                *active_run = None;
+            }
+        }
+        EventPayload::UserInputRecalledV2 {
+            user_input_seq,
+            input,
+        } => {
+            let Some(run_id) = record.run_id else {
+                return corrupt(path, "UserInputRecalledV2 is missing run_id");
+            };
+            if missing_admission(*user_input_seq, run_id, input) {
+                return corrupt(path, "UserInputRecalledV2 target is not a prior admission");
+            }
+        }
+        EventPayload::DelegatedContextSeeded { .. } => {
+            if record.run_id.is_some() || !runs.is_empty() {
+                return corrupt(
+                    path,
+                    "DelegatedContextSeeded must be runless and precede the first run",
+                );
+            }
+        }
+        EventPayload::RunStarted {
+            agent,
+            selected_suffix,
+            ..
+        } => {
+            let Some(run_id) = record.run_id else {
+                return corrupt(path, "RunStarted is missing run_id");
+            };
+            let attribution = RunAttribution {
+                start_seq: record.seq,
+                agent_id: agent.agent.clone(),
+                prompt_fingerprint: agent.prompt_fingerprint.clone(),
+                selected_suffix: selected_suffix
+                    .iter()
+                    .map(crate::policy::wire_resolved)
+                    .collect(),
+                active_fallback_index: 0,
+                next_attempt_ordinal: 1,
+                attempts_on_active: 0,
+                active_attempt: None,
+                ordering_tainted: false,
+            };
+            if runs.insert(run_id, attribution).is_some() {
+                return corrupt(path, "run_id has more than one RunStarted event");
+            }
+            *active_run = Some(run_id);
+        }
+        EventPayload::SessionTitleCommitted { change, .. } => {
+            let user = matches!(
+                change,
+                cookie_agent_protocol::SessionTitleChange::UserSet { .. }
+                    | cookie_agent_protocol::SessionTitleChange::UserClear { .. }
+                    | cookie_agent_protocol::SessionTitleChange::UserReset { .. }
+                    | cookie_agent_protocol::SessionTitleChange::DelegatedSet { .. }
+            );
+            if user != record.run_id.is_none() {
+                return corrupt(path, "SessionTitleCommitted has inconsistent run ownership");
+            }
+            if let Some(run_id) = record.run_id
+                && !runs.contains_key(&run_id)
+            {
+                return corrupt(path, "session title references a run before RunStarted");
+            }
+        }
+        EventPayload::ModelAttemptStarted {
+            attempt_id,
+            attempt_ordinal,
+            fallback_index,
+            retry_ordinal,
+            resolved_model,
+            prompt_fingerprint,
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            if attempts.contains_key(attempt_id) {
+                return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
+            }
+            let run = runs.get_mut(&run_id).expect("started run is indexed");
+            run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
+            if strict && run.ordering_tainted {
+                return corrupt(
+                    path,
+                    "cannot strictly append an attempt after missing run-order prerequisites",
+                );
+            }
+            if !run.ordering_tainted && run.active_attempt.is_some() {
+                return corrupt(
+                    path,
+                    "ModelAttemptStarted appeared before the prior attempt ended",
+                );
+            }
+            if !run.ordering_tainted && *attempt_ordinal != run.next_attempt_ordinal {
+                return corrupt(path, "attempt_ordinal is not contiguous within its run");
+            }
+            let Ok(fallback_index) = usize::try_from(*fallback_index) else {
+                return corrupt(path, "fallback_index does not index the frozen suffix");
+            };
+            if !run.ordering_tainted && fallback_index != run.active_fallback_index {
+                return corrupt(
+                    path,
+                    "attempt fallback_index is not the active frozen suffix entry",
+                );
+            }
+            let Some(expected_model) = run.selected_suffix.get(fallback_index) else {
+                return corrupt(path, "fallback_index does not index the frozen suffix");
+            };
+            if resolved_model != expected_model {
+                return corrupt(
+                    path,
+                    "attempt resolved model does not match its frozen suffix entry",
+                );
+            }
+            if prompt_fingerprint != &run.prompt_fingerprint {
+                return corrupt(path, "attempt prompt fingerprint does not match RunStarted");
+            }
+            if !run.ordering_tainted && *retry_ordinal != run.attempts_on_active {
+                return corrupt(
+                    path,
+                    "retry_ordinal is not contiguous for the active fallback entry",
+                );
+            }
+            run.next_attempt_ordinal = attempt_ordinal.saturating_add(1);
+            run.active_fallback_index = fallback_index;
+            run.attempts_on_active = retry_ordinal.saturating_add(1);
+            run.active_attempt = Some(*attempt_id);
+            attempts.insert(
+                *attempt_id,
+                AttemptAttribution {
+                    run_id,
+                    resolved_model: resolved_model.clone(),
+                    finished: false,
+                },
+            );
+        }
+        EventPayload::ModelRequestPrepared { attempt_id, .. }
+        | EventPayload::TextDelta { attempt_id, .. }
+        | EventPayload::ReasoningDelta { attempt_id, .. } => {
+            validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
+        }
+        EventPayload::AttemptAbandoned { attempt_id } => {
+            let run_id = validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
+            let run = runs.get_mut(&run_id).expect("started run is indexed");
+            run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
+            if strict && run.ordering_tainted {
+                return corrupt(
+                    path,
+                    "cannot strictly append an attempt terminal after missing prerequisites",
+                );
+            }
+            finish_attempt(path, runs, attempts, run_id, *attempt_id, false)?;
+        }
+        EventPayload::ModelReplayEvaluated {
+            attempt_id,
+            resolved_model,
+            ..
+        } => {
+            validate_attempt_model(path, attempts, *attempt_id, record.run_id, resolved_model)?;
+        }
+        EventPayload::ModelTurnCommitted {
+            attempt_id,
+            model_turn_seq,
+            resolved_model,
+            turn,
+            ..
+        } => {
+            let run_id =
+                validate_attempt_model(path, attempts, *attempt_id, record.run_id, resolved_model)?;
+            let run = runs.get_mut(&run_id).expect("started run is indexed");
+            run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
+            if strict && run.ordering_tainted {
+                return corrupt(
+                    path,
+                    "cannot strictly append a model turn after missing prerequisites",
+                );
+            }
+            finish_attempt(path, runs, attempts, run_id, *attempt_id, true)?;
+            let turn_ordering_tainted = taint.turn_ordering_before(record.seq);
+            if *model_turn_seq != *next_model_turn_seq && (strict || !turn_ordering_tainted) {
+                return corrupt(path, "model_turn_seq is not contiguous");
+            }
+            *next_model_turn_seq = model_turn_seq.saturating_add(1);
+            for (content_index, part) in turn.content.iter().enumerate() {
+                if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                    id,
+                    provider_item_id,
+                    ..
+                } = part
+                {
+                    let owner = AssistantToolCallRef {
+                        model_turn_seq: *model_turn_seq,
+                        content_index: content_index as u32,
+                        model_call_id: id.clone(),
+                        provider_item_id: provider_item_id.clone(),
+                    };
+                    if model_call_owners
+                        .insert((run_id, id.clone()), owner.clone())
+                        .is_some()
+                    {
+                        return corrupt(path, "model call id is reused within a run");
+                    }
+                    if let Some(provider_item_id) = provider_item_id
+                        && provider_item_owners
+                            .insert((run_id, provider_item_id.clone()), owner)
+                            .is_some()
+                    {
+                        return corrupt(path, "provider item id is reused within a run");
+                    }
                 }
             }
-            _ => {
-                require_started_run(path, &runs, record.run_id)?;
+            if turns
+                .insert(*model_turn_seq, (run_id, turn.clone()))
+                .is_some()
+            {
+                return corrupt(path, "model turn sequence is duplicated");
+            }
+            turn_models.insert(*model_turn_seq, resolved_model.clone());
+        }
+        EventPayload::ModelUsageRecorded {
+            model_turn_seq,
+            agent_id,
+            resolved_model,
+            ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let Some((turn_run, _)) = turns.get(model_turn_seq) else {
+                return corrupt(path, "usage references an unknown committed model turn");
+            };
+            if *turn_run != run_id
+                || turn_models.get(model_turn_seq) != Some(resolved_model)
+                || runs.get(&run_id).map(|run| &run.agent_id) != Some(agent_id)
+                || !usage_turns.insert(*model_turn_seq)
+            {
+                return corrupt(path, "usage ownership does not match its model turn");
             }
         }
-        if matches!(
-            record.payload,
-            EventPayload::RunCompleted { .. }
-                | EventPayload::RunFailed { .. }
-                | EventPayload::RunCancelled { .. }
-                | EventPayload::RunInterrupted { .. }
-        ) && record.run_id == active_run
-        {
-            active_run = None;
+        EventPayload::InternalAgentStarted {
+            invocation_id,
+            internal_run_id,
+            kind,
+            backend,
+            ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let active_model = match backend {
+                cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                    Some(resolved_model.clone())
+                }
+                cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+            };
+            if internal_runs
+                .insert(
+                    *internal_run_id,
+                    InternalRunAttribution {
+                        start_seq: record.seq,
+                        invocation_id: *invocation_id,
+                        kind: *kind,
+                        run_id,
+                        active_model,
+                        usage_recorded_in_phase: false,
+                        model_phase_taint_seen: 0,
+                        usage_phase_taint_seen: 0,
+                    },
+                )
+                .is_some()
+            {
+                return corrupt(path, "internal_run_id has more than one start");
+            }
+        }
+        EventPayload::InternalAgentFallback {
+            invocation_id,
+            internal_run_id,
+            kind,
+            from,
+            to,
+            ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                return corrupt(path, "internal fallback appeared before its start");
+            };
+            let from_model = match from {
+                cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                    Some(resolved_model)
+                }
+                cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+            };
+            let model_phase_taint = taint
+                .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                .filter(|tainted| {
+                    *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
+                });
+            if strict && model_phase_taint.is_some() {
+                return corrupt(
+                    path,
+                    "cannot strictly append internal fallback after a missing phase transition",
+                );
+            }
+            if internal.invocation_id != *invocation_id
+                || internal.kind != *kind
+                || internal.run_id != run_id
+                || (model_phase_taint.is_none() && internal.active_model.as_ref() != from_model)
+            {
+                return corrupt(path, "internal fallback ownership does not match its run");
+            }
+            internal.active_model = match to {
+                cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                    Some(resolved_model.clone())
+                }
+                cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+            };
+            internal.usage_recorded_in_phase = false;
+            if let Some(tainted) = model_phase_taint {
+                internal.model_phase_taint_seen = tainted;
+            }
+            if let Some(tainted) = taint
+                .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                .filter(|tainted| *tainted > internal.start_seq)
+            {
+                internal.usage_phase_taint_seen = tainted;
+            }
+        }
+        EventPayload::InternalAgentUsageRecorded {
+            internal_run_id,
+            kind,
+            agent_id,
+            resolved_model,
+            ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                return corrupt(path, "internal usage appeared before its start");
+            };
+            let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
+                cookie_agent_protocol::InternalAgentKind::Approval => {
+                    cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
+                }
+                cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
+                    cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
+                }
+                cookie_agent_protocol::InternalAgentKind::SessionTitle => {
+                    cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
+                }
+            })
+            .expect("built-in internal agent IDs are valid");
+            let model_phase_taint = taint
+                .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                .filter(|tainted| {
+                    *tainted > internal.start_seq && *tainted > internal.model_phase_taint_seen
+                });
+            let usage_phase_taint = taint
+                .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                .filter(|tainted| {
+                    *tainted > internal.start_seq && *tainted > internal.usage_phase_taint_seen
+                });
+            if strict && (model_phase_taint.is_some() || usage_phase_taint.is_some()) {
+                return corrupt(
+                    path,
+                    "cannot strictly append internal usage after a missing phase transition",
+                );
+            }
+            if internal.kind != *kind
+                || internal.run_id != run_id
+                || (model_phase_taint.is_none()
+                    && internal.active_model.as_ref() != Some(resolved_model))
+                || *agent_id != expected_agent
+                || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
+            {
+                return corrupt(path, "internal usage ownership does not match its run");
+            }
+            internal.active_model = Some(resolved_model.clone());
+            internal.usage_recorded_in_phase = true;
+            if let Some(tainted) = model_phase_taint {
+                internal.model_phase_taint_seen = tainted;
+            }
+            if let Some(tainted) = usage_phase_taint {
+                internal.usage_phase_taint_seen = tainted;
+            }
+        }
+        EventPayload::ModelFallback {
+            from,
+            to,
+            from_fallback_index,
+            to_fallback_index,
+            attempts_on_from,
+            ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let run = runs.get_mut(&run_id).expect("started run is indexed");
+            run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
+            if strict && run.ordering_tainted {
+                return corrupt(
+                    path,
+                    "cannot strictly append fallback after missing run-order prerequisites",
+                );
+            }
+            if !run.ordering_tainted && run.active_attempt.is_some() {
+                return corrupt(
+                    path,
+                    "ModelFallback appeared before the active attempt ended",
+                );
+            }
+            let Ok(from_index) = usize::try_from(*from_fallback_index) else {
+                return corrupt(path, "ModelFallback index does not index the frozen suffix");
+            };
+            let Ok(to_index) = usize::try_from(*to_fallback_index) else {
+                return corrupt(path, "ModelFallback index does not index the frozen suffix");
+            };
+            let Some(adjacent_index) = from_index.checked_add(1) else {
+                return corrupt(path, "ModelFallback source index cannot advance");
+            };
+            if (!run.ordering_tainted && from_index != run.active_fallback_index)
+                || to_index != adjacent_index
+            {
+                return corrupt(
+                    path,
+                    "ModelFallback transition is not adjacent from the active entry",
+                );
+            }
+            let Some(expected_from) = run.selected_suffix.get(from_index) else {
+                return corrupt(
+                    path,
+                    "ModelFallback source does not index the frozen suffix",
+                );
+            };
+            let Some(expected_to) = run.selected_suffix.get(to_index) else {
+                return corrupt(
+                    path,
+                    "ModelFallback target does not index the frozen suffix",
+                );
+            };
+            if from != expected_from || to != expected_to {
+                return corrupt(
+                    path,
+                    "ModelFallback models do not match the frozen suffix transition",
+                );
+            }
+            if *attempts_on_from == 0
+                || (!run.ordering_tainted && *attempts_on_from != run.attempts_on_active)
+            {
+                return corrupt(
+                    path,
+                    "ModelFallback attempt count does not match started attempts",
+                );
+            }
+            run.active_fallback_index = to_index;
+            run.attempts_on_active = 0;
+        }
+        EventPayload::ToolCallStarted { start } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            validate_tool_owner(
+                path,
+                run_id,
+                turns,
+                model_call_owners,
+                provider_item_owners,
+                &start.owner,
+            )?;
+            if tool_starts
+                .insert(start.tool_call_id, (run_id, start.clone()))
+                .is_some()
+            {
+                return corrupt(path, "tool_call_id has more than one start");
+            }
+        }
+        EventPayload::ToolCallTerminated { termination } => {
+            let Some((run_id, start)) = tool_starts.get(&termination.tool_call_id) else {
+                return corrupt(path, "tool termination appeared before its start");
+            };
+            if record.run_id != Some(*run_id) || !termination.matches_start(start) {
+                return corrupt(path, "tool termination ownership does not match its start");
+            }
+            if strict && taint.tool_terminal_before(termination.tool_call_id, record.seq) {
+                return corrupt(
+                    path,
+                    "cannot strictly append tool termination after a missing terminal transition",
+                );
+            }
+            if !terminated_tools.insert(termination.tool_call_id) {
+                return corrupt(path, "tool call has more than one terminal event");
+            }
+        }
+        EventPayload::ToolOutputElided { tool_call_id, .. } => {
+            let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
+                return corrupt(path, "tool elision appeared before its start");
+            };
+            let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
+            if record.run_id != Some(*run_id)
+                || (!terminated_tools.contains(tool_call_id) && !terminal_tainted)
+                || (strict && terminal_tainted)
+                || !elided_tools.insert(*tool_call_id)
+            {
+                return corrupt(path, "tool elision ownership or ordering is invalid");
+            }
+        }
+        EventPayload::ToolCallProgress { tool_call_id, .. }
+        | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
+        | EventPayload::ToolCallLinked { tool_call_id, .. } => {
+            let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
+                return corrupt(path, "tool lifecycle event appeared before its start");
+            };
+            let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
+            if record.run_id != Some(*run_id)
+                || terminated_tools.contains(tool_call_id)
+                || (strict && terminal_tainted)
+            {
+                return corrupt(
+                    path,
+                    "tool lifecycle event has invalid ownership or ordering",
+                );
+            }
+        }
+        EventPayload::ApprovalRequested { request } => {
+            let Some(run_id) = record.run_id else {
+                return corrupt(path, "ApprovalRequested is missing run_id");
+            };
+            if !runs.contains_key(&run_id) {
+                return corrupt(path, "approval references a run before RunStarted");
+            }
+            if approval_owners
+                .insert(request.approval_id(), run_id)
+                .is_some()
+            {
+                return corrupt(
+                    path,
+                    "approval_id has more than one ApprovalRequested event",
+                );
+            }
+        }
+        EventPayload::ApprovalEvaluated { approval_id, .. }
+        | EventPayload::ApprovalEscalated { approval_id, .. }
+        | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
+        | EventPayload::ApprovalFinalized { approval_id, .. }
+        | EventPayload::ApprovalCancelled { approval_id, .. }
+        | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+            validate_approval_owner(path, approval_owners, *approval_id, record.run_id)?;
+        }
+        EventPayload::TreeApprovalGrantCommitted { grant } => {
+            validate_approval_owner(path, approval_owners, grant.approval_id, record.run_id)?;
+        }
+        EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "plugin events must be runless");
+            }
+        }
+        _ => {
+            require_started_run(path, runs, record.run_id)?;
         }
     }
-    Ok(taint)
+    if matches!(
+        record.payload,
+        EventPayload::RunCompleted { .. }
+            | EventPayload::RunFailed { .. }
+            | EventPayload::RunCancelled { .. }
+            | EventPayload::RunInterrupted { .. }
+    ) && record.run_id == *active_run
+    {
+        *active_run = None;
+    }
+    state.finish_record(record);
+    Ok(())
 }
 
 struct LoadedEvents {
@@ -2506,7 +2589,10 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use super::{EventLog, OutputHub, OutputMessage, load_jsonl};
+    use super::{
+        EventLog, OutputHub, OutputMessage, ValidationState, load_jsonl,
+        validate_record_incremental, validate_records,
+    };
     use crate::{
         policy::wire_resolved,
         test_support::{agent_snapshot, model_binding_named, run_selection},
@@ -2774,6 +2860,63 @@ mod tests {
             (5, 5, 2, 0),
         );
         records
+    }
+
+    #[test]
+    fn incremental_validation_matches_full_validation_corpus() {
+        let valid = attribution_records();
+        let session_id = valid[0].session_id;
+        let path = Path::new("differential-events.jsonl");
+        let mut out_of_order = valid.clone();
+        out_of_order.swap(2, 3);
+        let mut duplicate_attempt = valid.clone();
+        let mut duplicate = duplicate_attempt[2].clone();
+        duplicate.seq = duplicate_attempt.last().expect("last event").seq + 1;
+        duplicate.timestamp = duplicate_attempt.last().expect("last event").timestamp;
+        duplicate_attempt.push(duplicate);
+        let mut attempt_before_run = vec![valid[0].clone(), valid[2].clone()];
+        attempt_before_run[1].seq = 2;
+        attempt_before_run[1].timestamp = attempt_before_run[0].timestamp;
+
+        for (label, records) in [
+            ("valid", valid),
+            ("out_of_order", out_of_order),
+            ("duplicate_attempt", duplicate_attempt),
+            ("attempt_before_run", attempt_before_run),
+        ] {
+            let mut accepted = Vec::new();
+            let mut incremental = ValidationState::default();
+            for record in records {
+                let mut full_candidate = accepted.clone();
+                full_candidate.push(record.clone());
+                let full = validate_records(
+                    path,
+                    session_id,
+                    &full_candidate,
+                    &Default::default(),
+                    Some(record.seq),
+                );
+                let mut incremental_candidate = incremental.clone();
+                let one = validate_record_incremental(
+                    path,
+                    session_id,
+                    &record,
+                    &mut incremental_candidate,
+                    true,
+                );
+                assert_eq!(
+                    one.is_ok(),
+                    full.is_ok(),
+                    "{label} diverged at sequence {}: incremental={one:?}, full={full:?}",
+                    record.seq
+                );
+                if let (Ok(()), Ok(full_state)) = (one, full) {
+                    assert_eq!(incremental_candidate, full_state, "{label} state");
+                    incremental = incremental_candidate;
+                    accepted.push(record);
+                }
+            }
+        }
     }
 
     fn current_delegation_records() -> Vec<StoredEvent> {
