@@ -752,6 +752,24 @@ impl EventLog {
         Ok(())
     }
 
+    pub(crate) fn suspend_writer(&self) -> Result<(), EventLogError> {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(writer) = writer {
+            let result = writer.flush();
+            writer.shutdown();
+            result?;
+        }
+        Ok(())
+    }
+
     fn persistent_writer(&self) -> Result<Arc<EventLogWriter>, EventLogError> {
         let mut writer = self
             .writer
@@ -780,6 +798,14 @@ impl EventLog {
         self.persistent_writer()
             .expect("open event log writer")
             .pause_background_sync();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn writer_is_open_for_test(&self) -> bool {
+        self.writer
+            .lock()
+            .expect("event log writer lock poisoned")
+            .is_some()
     }
 
     #[cfg(test)]

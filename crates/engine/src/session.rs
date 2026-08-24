@@ -401,7 +401,7 @@ impl SessionStore {
                 through_seq,
             });
         }
-        source.log.flush()?;
+        source.log.suspend_writer()?;
         let source_events = source.log.all_events();
         let prefix = source_events
             .iter()
@@ -473,6 +473,7 @@ impl SessionStore {
                     input_through_seq: through_seq,
                 },
             )?;
+            log.suspend_writer()?;
             let fork_projection = projection(log)?;
             write_cache(&temporary.join("meta.json"), &fork_projection.meta)?;
             fsync_directory(&temporary)?;
@@ -1474,13 +1475,19 @@ mod tests {
         let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
         let session_id = persist_test_session(&store);
         let (log, delta) = append_pending_test_delta(&store, session_id, "copied after sync");
+        assert!(log.writer_is_open_for_test());
+        let delta_seq = delta.seq;
+        let run_id = delta.run_id.expect("delta run id");
+        let EventPayload::TextDelta { attempt_id, .. } = delta.payload else {
+            panic!("pending event is a text delta")
+        };
         let (sync_reached, release_sync) = log.install_sync_hook_for_test();
         let (fork_done, fork_result) = mpsc::channel();
         let forking = {
             let store = store.clone();
             thread::spawn(move || {
                 fork_done
-                    .send(store.fork(session_id, delta.seq))
+                    .send(store.fork(session_id, delta_seq))
                     .expect("report fork result");
             })
         };
@@ -1496,12 +1503,25 @@ mod tests {
             .expect("receive fork result")
             .expect("fork session");
         forking.join().expect("fork thread");
+        assert!(!log.writer_is_open_for_test());
 
         let copied = store.get(fork_id).expect("fork projection").log.events();
         assert!(copied.iter().any(|event| matches!(
             &event.payload,
             EventPayload::TextDelta { text, .. } if text == "copied after sync"
         )));
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                EventPayload::ReasoningDelta {
+                    attempt_id,
+                    text: "reopened after fork".into(),
+                },
+            )
+            .expect("append after suspended fork source");
+        assert!(log.writer_is_open_for_test());
+        log.flush().expect("flush reopened source writer");
     }
 
     #[cfg(unix)]
