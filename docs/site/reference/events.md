@@ -24,6 +24,9 @@ existing required fields remain required, and new fields must be optional. New
 behavior that cannot fit an optional field uses a new variant tag. CI compares
 the generated `EventPayload` schema with the committed additive baseline.
 
+Terminal tool-result truncation and `tool_output_elided` references use the
+[retained-output readback lifecycle](tools.md#retained-tool-output).
+
 ## Payloads
 
 | Category | Event payload types |

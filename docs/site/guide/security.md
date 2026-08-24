@@ -76,6 +76,15 @@ will use that path. Treat the parent storage location as trusted and remove
 unexpected state before starting the daemon. Neither platform protects secrets
 from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
 
+### Retained tool output
+
+Tool-output truncation is a presentation bound, not redaction. The preview shown
+to a model or user can omit bytes that remain in the content-addressed artifact
+store, and those retained bytes may contain secrets. `read_tool_result` can read
+that content only for a visible call in the same session and remains subject to
+the agent's `read_tool_result` permission, but it does not retroactively redact
+the artifact. See the [tool artifact lifecycle](../reference/tools.md#retained-tool-output).
+
 ## Process boundary
 
 On Unix, Bash commands run in a new session so cancellation and timeout can kill

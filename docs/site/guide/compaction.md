@@ -76,7 +76,10 @@ The threshold is compared against two signals:
    (8 KiB or more) from turns older than the last two are replaced with
    content-addressed artifact references. The context is then reassembled from
    the elided events. If elision brings an automatic compaction below its trigger
-   threshold, no summarizer call is made.
+    threshold, no summarizer call is made.
+    The original truncation artifact remains preferred by
+    [`read_tool_result`](../reference/tools.md#retained-tool-output), so elision
+    of its preview does not discard the retained full output.
 3. **Native or summarizer call.** An opted-in Responses model first attempts
    native compaction. Otherwise, or after any native failure, the internal
    `compaction` agent (see

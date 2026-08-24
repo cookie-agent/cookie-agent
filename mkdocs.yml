@@ -68,6 +68,7 @@ nav:
       - Configuration: reference/configuration.md
       - Protocol: reference/protocol.md
       - Events: reference/events.md
+      - Tools: reference/tools.md
       - Schemas: reference/schemas.md
       - Rust API: reference/api.md
   - Architecture: architecture.md
