@@ -165,7 +165,6 @@ fn published_oven_dependencies_are_exactly_pinned() {
         "oven-sdk-bedrock = \"=0.4.0\"",
         "oven-sdk-azure = \"=0.4.0\"",
         "oven-sdk-cohere = \"=0.3.0\"",
-        "oven-sdk-open-responses = \"=0.3.0\"",
     ] {
         assert!(manifest.contains(pin), "missing exact pin: {pin}");
     }
@@ -195,7 +194,7 @@ fn models_source_has_no_unapproved_open_responses_adapter_surface() {
         }
     }
     let manifest = fs::read_to_string(models.join("Cargo.toml")).unwrap();
-    assert!(manifest.contains(&["oven-sdk-open", "-responses.workspace = true"].concat()));
+    assert!(!manifest.contains(&["oven-sdk-open", "-responses"].concat()));
 }
 
 #[test]
