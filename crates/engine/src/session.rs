@@ -635,6 +635,10 @@ impl SessionStore {
         &self.project_dir
     }
     #[must_use]
+    pub(crate) fn sessions_dir_path(&self) -> &Path {
+        &self.sessions_dir
+    }
+    #[must_use]
     pub fn cwd(&self) -> &Path {
         &self.cwd
     }

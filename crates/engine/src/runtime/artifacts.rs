@@ -1,12 +1,104 @@
 use std::{
+    collections::{HashSet, VecDeque},
     fs::File,
     io::{BufRead, BufReader},
+    path::Path,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ArtifactPage {
     pub(crate) content: String,
     pub(crate) next_offset_lines: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ArtifactGcReport {
+    pub(crate) deleted: usize,
+    pub(crate) retained: usize,
+}
+
+const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
+
+fn scan_durable_artifact_references(sessions_dir: &Path) -> std::io::Result<HashSet<String>> {
+    let mut live = HashSet::new();
+    for entry in std::fs::read_dir(sessions_dir)? {
+        let entry = entry?;
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(file) = File::open(entry.path().join("events.jsonl")) else {
+            continue;
+        };
+        for line in BufReader::new(file).lines() {
+            let Ok(line) = line else { continue };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            collect_artifact_references(&value, &mut live);
+        }
+    }
+    Ok(live)
+}
+
+fn collect_artifact_references(value: &serde_json::Value, live: &mut HashSet<String>) {
+    match value {
+        serde_json::Value::String(value) => {
+            if let Some(digest) = artifact_uri_digest(value) {
+                live.insert(digest.to_owned());
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_artifact_references(value, live);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_artifact_references(value, live);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn artifact_uri_digest(value: &str) -> Option<&str> {
+    value
+        .strip_prefix("artifact://sha256/")
+        .filter(|digest| is_digest_name_common(digest))
+}
+
+fn is_digest_name_common(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn expand_transitive_artifact_references(
+    live: &mut HashSet<String>,
+    mut read: impl FnMut(&str) -> std::io::Result<Option<Vec<u8>>>,
+) -> std::io::Result<()> {
+    let mut pending = live.iter().cloned().collect::<VecDeque<_>>();
+    let mut inspected = HashSet::new();
+    while let Some(digest) = pending.pop_front() {
+        if !inspected.insert(digest.clone()) {
+            continue;
+        }
+        let Some(bytes) = read(&digest)? else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let mut nested = HashSet::new();
+        collect_artifact_references(&value, &mut nested);
+        for digest in nested {
+            if live.insert(digest.clone()) {
+                pending.push_back(digest);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_file_paged(
@@ -70,7 +162,10 @@ mod unix {
     use uuid::Uuid;
 
     use super::super::tool_execution::truncate_tool_output;
-    use super::{ArtifactPage, read_file_paged};
+    use super::{
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
+        expand_transitive_artifact_references, read_file_paged, scan_durable_artifact_references,
+    };
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -115,6 +210,9 @@ mod unix {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
+                existing.set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+                )?;
             } else {
                 let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
                 let result = (|| -> std::io::Result<()> {
@@ -154,6 +252,62 @@ mod unix {
                 },
                 digest,
             ))
+        }
+
+        pub(crate) fn collect_garbage(
+            &self,
+            sessions_dir: &Path,
+            grace: std::time::Duration,
+        ) -> std::io::Result<ArtifactGcReport> {
+            let mut live = scan_durable_artifact_references(sessions_dir)?;
+            expand_transitive_artifact_references(&mut live, |digest| {
+                let Some(mut file) = self.open_existing(digest)? else {
+                    return Ok(None);
+                };
+                if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
+                    return Ok(None);
+                }
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(Some(bytes))
+            })?;
+            let _write = self
+                .writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::SystemTime::now();
+            let mut report = ArtifactGcReport::default();
+            for digest in directory_names(&self.directory_handle)? {
+                if !is_digest_name(&digest) {
+                    continue;
+                }
+                if live.contains(&digest) {
+                    report.retained += 1;
+                    continue;
+                }
+                let Some(file) = self.open_existing(&digest)? else {
+                    continue;
+                };
+                let modified = file.metadata()?.modified()?;
+                let age = now
+                    .duration_since(modified)
+                    .unwrap_or(std::time::Duration::ZERO);
+                drop(file);
+                if age < grace {
+                    report.retained += 1;
+                    continue;
+                }
+                unlinkat(&*self.directory_handle, &digest, AtFlags::empty())?;
+                self.verified_reads
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&digest);
+                report.deleted += 1;
+            }
+            if report.deleted > 0 {
+                fsync(&*self.directory_handle)?;
+            }
+            Ok(report)
         }
 
         pub(crate) fn open_existing(&self, name: &str) -> std::io::Result<Option<fs::File>> {
@@ -247,6 +401,9 @@ mod unix {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
+                existing.set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+                )?;
                 unlinkat(&*self.directory_handle, name, AtFlags::empty())?;
             } else {
                 renameat(
@@ -735,7 +892,7 @@ mod windows {
         collections::HashSet,
         fs,
         io::{Read, Seek, SeekFrom, Write},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{Arc, Mutex},
     };
 
@@ -749,7 +906,10 @@ mod windows {
     use uuid::Uuid;
 
     use super::super::tool_execution::truncate_tool_output;
-    use super::{ArtifactPage, read_file_paged};
+    use super::{
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
+        expand_transitive_artifact_references, read_file_paged, scan_durable_artifact_references,
+    };
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -789,6 +949,9 @@ mod windows {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
+                existing.set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+                )?;
             } else {
                 let temporary_name = format!(".{digest}.{}.tmp", Uuid::now_v7());
                 let temporary_path = self.directory.join(&temporary_name);
@@ -820,6 +983,57 @@ mod windows {
                 },
                 digest,
             ))
+        }
+
+        pub(crate) fn collect_garbage(
+            &self,
+            sessions_dir: &Path,
+            grace: std::time::Duration,
+        ) -> std::io::Result<ArtifactGcReport> {
+            let mut live = scan_durable_artifact_references(sessions_dir)?;
+            expand_transitive_artifact_references(&mut live, |digest| {
+                let Some(mut file) = self.open_existing(digest)? else {
+                    return Ok(None);
+                };
+                if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
+                    return Ok(None);
+                }
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(Some(bytes))
+            })?;
+            let _write = self
+                .writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::SystemTime::now();
+            let mut report = ArtifactGcReport::default();
+            for entry in fs::read_dir(&self.directory)? {
+                let entry = entry?;
+                let digest = entry.file_name().to_string_lossy().into_owned();
+                if !is_digest_name(&digest) {
+                    continue;
+                }
+                if live.contains(&digest) {
+                    report.retained += 1;
+                    continue;
+                }
+                let modified = entry.metadata()?.modified()?;
+                let age = now
+                    .duration_since(modified)
+                    .unwrap_or(std::time::Duration::ZERO);
+                if age < grace {
+                    report.retained += 1;
+                    continue;
+                }
+                fs::remove_file(entry.path())?;
+                self.verified_reads
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&digest);
+                report.deleted += 1;
+            }
+            Ok(report)
         }
 
         pub(crate) fn read_verified_attachment(
@@ -922,6 +1136,9 @@ mod windows {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
+                existing.set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
+                )?;
                 fs::remove_file(temporary_path)?;
             } else {
                 cookie_agent_models::secure_store::replace_windows_path(
@@ -1241,3 +1458,87 @@ mod windows {
 
 #[cfg(windows)]
 pub(crate) use windows::*;
+
+#[cfg(test)]
+mod gc_tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::ArtifactStore;
+
+    fn age(path: &std::path::Path) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn garbage_collection_tracks_logs_manifests_grace_and_torn_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let artifacts_dir = root.path().join("artifacts");
+        let sessions_dir = root.path().join("sessions");
+        let session_dir = sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string());
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
+
+        let (referenced, referenced_digest) = store.retain(b"referenced").unwrap();
+        let (elided, elided_digest) = store.retain(b"elided").unwrap();
+        let (persisted_file, persisted_file_digest) = store.retain(b"file").unwrap();
+        let (_, unreferenced_digest) = store.retain(b"unreferenced").unwrap();
+        let (_, young_digest) = store.retain(b"young").unwrap();
+        let (stdout_ref, stdout_digest) = store.retain(b"stdout").unwrap();
+        let (stderr_ref, stderr_digest) = store.retain(b"stderr").unwrap();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "title":"bash",
+            "streams":{
+                "stdout":{"reference":stdout_ref,"sha256":stdout_digest},
+                "stderr":{"reference":stderr_ref,"sha256":stderr_digest}
+            }
+        }))
+        .unwrap();
+        let (manifest_ref, manifest_digest) = store.retain(&manifest).unwrap();
+
+        for digest in [
+            &referenced_digest,
+            &unreferenced_digest,
+            &elided_digest,
+            &persisted_file_digest,
+            &stdout_digest,
+            &stderr_digest,
+            &manifest_digest,
+        ] {
+            age(&artifacts_dir.join(digest));
+        }
+        let line = serde_json::json!({
+            "payload":{
+                "result":{"attachments":[{"reference":referenced}]},
+                "truncation":{"retained":manifest_ref},
+                "tool_output_elided":{"retained":elided},
+                "persisted_file":{"source":{"type":"artifact","reference":persisted_file}}
+            }
+        });
+        std::fs::write(
+            session_dir.join("events.jsonl"),
+            format!("{}\n{{torn", serde_json::to_string(&line).unwrap()),
+        )
+        .unwrap();
+
+        let report = store
+            .collect_garbage(&sessions_dir, Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(!artifacts_dir.join(unreferenced_digest).exists());
+        for digest in [
+            referenced_digest,
+            elided_digest,
+            persisted_file_digest,
+            young_digest,
+            stdout_digest,
+            stderr_digest,
+            manifest_digest,
+        ] {
+            assert!(artifacts_dir.join(digest).exists());
+        }
+    }
+}
