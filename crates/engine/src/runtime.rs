@@ -930,7 +930,7 @@ enum SessionCommand {
         complete_if_empty: bool,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
-    PromptSnapshot {
+    PromotePendingInputs {
         run: RunId,
         reply: oneshot::Sender<Result<Arc<[StoredEvent]>, EngineError>>,
     },
@@ -942,7 +942,7 @@ enum SessionCommand {
 impl SessionCommand {
     fn compaction_deferred_kind(&self) -> Option<CompactionDeferredKind> {
         match self {
-            Self::PromptSnapshot { .. } => Some(CompactionDeferredKind::PromptSnapshot),
+            Self::PromotePendingInputs { .. } => Some(CompactionDeferredKind::PromotePendingInputs),
             Self::PromotePendingOrComplete { .. } => {
                 Some(CompactionDeferredKind::PromotePendingOrComplete)
             }
@@ -953,7 +953,7 @@ impl SessionCommand {
 
     fn reject_duplicate_during_compaction(self, session: SessionId) {
         match self {
-            Self::PromptSnapshot { reply, .. } => {
+            Self::PromotePendingInputs { reply, .. } => {
                 let _ = reply.send(Err(EngineError::SessionRunning(session)));
             }
             Self::PromotePendingOrComplete { reply, .. } => {
@@ -969,7 +969,7 @@ impl SessionCommand {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CompactionDeferredKind {
-    PromptSnapshot,
+    PromotePendingInputs,
     PromotePendingOrComplete,
     Resume,
 }

@@ -464,7 +464,7 @@ impl Engine {
         run: RunId,
     ) -> Result<Arc<[StoredEvent]>, EngineError> {
         let events = self
-            .request(session, |reply| SessionCommand::PromptSnapshot {
+            .request(session, |reply| SessionCommand::PromotePendingInputs {
                 run,
                 reply,
             })
@@ -1508,7 +1508,7 @@ impl Engine {
                     });
                 }
             }
-            SessionCommand::PromptSnapshot { run, reply } => {
+            SessionCommand::PromotePendingInputs { run, reply } => {
                 let result = self
                     .inner
                     .active
