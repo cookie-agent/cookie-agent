@@ -253,8 +253,9 @@ impl EventLogWriter {
             use std::os::windows::fs::OpenOptionsExt as _;
 
             const FILE_SHARE_READ: u32 = 0x1;
+            const FILE_SHARE_WRITE: u32 = 0x2;
             const FILE_SHARE_DELETE: u32 = 0x4;
-            options.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
         }
         let file = options.open(path).map_err(|source| EventLogError::Io {
             path: path.to_owned(),
@@ -4863,6 +4864,38 @@ mod tests {
             fs::read(&path).expect("read recovered log"),
             b"{\"ok\":true}\n"
         );
+    }
+
+    #[test]
+    fn torn_tail_recovery_can_write_while_retained_writer_is_open() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let writer = EventLogWriter::open(&path).expect("open retained writer");
+        writer
+            .append(br#"{"record":1}"#, true)
+            .expect("append durable record");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open second write handle")
+            .write_all(br#"{"torn"#)
+            .expect("write torn tail");
+
+        assert_eq!(
+            load_jsonl::<Value>(&path).expect("truncate through recovery handle"),
+            vec![serde_json::json!({"record": 1})]
+        );
+        writer
+            .append(br#"{"record":2}"#, true)
+            .expect("resume retained writer");
+        assert_eq!(
+            load_jsonl::<Value>(&path).expect("load resumed log"),
+            vec![
+                serde_json::json!({"record": 1}),
+                serde_json::json!({"record": 2}),
+            ]
+        );
+        writer.shutdown();
     }
 
     #[test]
