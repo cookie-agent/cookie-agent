@@ -22,7 +22,7 @@ use super::{
     MAX_PENDING_PREPARED_TOOLS, ModelApprovalInput, PendingTool, PredictiveCompactionInput,
     SessionCommand, ToolCallFailureCode, ToolFailure, UserInputInterception,
     approval_projection::denied_tool_failure,
-    compaction::{CompactionInput, latest_checkpoint_seq, resolve_compaction_trigger},
+    compaction::{CompactionInput, resolve_compaction_trigger},
     helpers::safe_error,
     should_run_predictive_compaction,
     tool_execution::fallback_operation_fingerprint,
@@ -72,15 +72,7 @@ impl Engine {
                 return Err(EngineError::InputHandled(reason));
             }
         };
-        let from_model = session
-            .log
-            .events()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::RunStarted { selection, .. } => Some(selection.model.clone()),
-                _ => None,
-            });
+        let from_model = session.log.last_run_started().map(|(_, _, model)| model);
         if from_model.as_ref() != Some(&params.selection.model) {
             let context_id = crate::plugin::plugin_context_id();
             for plugin in self.inner.plugins.interception_plugins(
@@ -544,15 +536,16 @@ impl Engine {
         {
             return Ok(false);
         }
-        let events = self.inner.store.get(input.session)?.log.events();
-        let before = latest_checkpoint_seq(&events);
+        let projection = self.inner.store.get(input.session)?;
+        let events = projection.log.event_snapshot();
+        let before = projection.log.latest_checkpoint_seq();
         let tools = self.tool_definitions(input.session, input.policy)?;
         let internal_policy = self.internal_agent_policy(
             InternalAgentKind::ContextCompaction,
             input.policy,
             Some(binding),
         )?;
-        let compacted = match self
+        match self
             .maybe_compact_context(CompactionInput {
                 session: input.session,
                 run: input.run,
@@ -569,11 +562,17 @@ impl Engine {
             })
             .await
         {
-            Ok(compacted) => compacted,
+            Ok(_) => {}
             Err(EngineError::CompactionCancelled(_)) => return Ok(false),
             Err(error) => return Err(error),
-        };
-        Ok(latest_checkpoint_seq(&compacted) > before)
+        }
+        Ok(self
+            .inner
+            .store
+            .get(input.session)?
+            .log
+            .latest_checkpoint_seq()
+            > before)
     }
 
     pub(super) async fn intercept_user_input(
@@ -1106,7 +1105,7 @@ impl Engine {
         cancellation: &CancellationToken,
         policy: &FrozenRunPolicy,
         sticky_entry: &mut usize,
-        prompt_events: Vec<StoredEvent>,
+        prompt_events: Arc<[StoredEvent]>,
         tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
         let chain = &policy.selected_suffix;
@@ -1151,7 +1150,7 @@ impl Engine {
                 .await?;
                 let request_events = if first_request {
                     first_request = false;
-                    prompt_events.clone()
+                    Arc::clone(&prompt_events)
                 } else {
                     self.prompt_events(session, run).await?
                 };
@@ -1160,7 +1159,7 @@ impl Engine {
                     policy,
                     Some(binding),
                 )?;
-                let uncompacted_events = request_events.clone();
+                let uncompacted_events = Arc::clone(&request_events);
                 let request_events = match self
                     .maybe_compact_context(CompactionInput {
                         session,
@@ -1591,27 +1590,14 @@ impl Engine {
                         self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
                             .await?;
                         context_recovery_attempted = true;
-                        let before = self
-                            .inner
-                            .store
-                            .get(session)?
-                            .log
-                            .events()
-                            .iter()
-                            .rev()
-                            .find_map(|event| {
-                                matches!(event.payload, Event::ContextCheckpointCommitted { .. })
-                                    .then_some(event.seq)
-                            })
-                            .unwrap_or(0);
+                        let before = self.inner.store.get(session)?.log.latest_checkpoint_seq();
                         let recovery_events = self.prompt_events(session, run).await?;
                         let recovery_policy = self.internal_agent_policy(
                             InternalAgentKind::ContextCompaction,
                             policy,
                             Some(binding),
                         )?;
-                        let unrecovered_events = recovery_events.clone();
-                        let recovered = match self
+                        match self
                             .maybe_compact_context(CompactionInput {
                                 session,
                                 run,
@@ -1628,18 +1614,10 @@ impl Engine {
                             })
                             .await
                         {
-                            Ok(events) => events,
-                            Err(EngineError::CompactionCancelled(_)) => unrecovered_events,
+                            Ok(_) | Err(EngineError::CompactionCancelled(_)) => {}
                             Err(error) => return Err(error),
-                        };
-                        let after = recovered
-                            .iter()
-                            .rev()
-                            .find_map(|event| {
-                                matches!(event.payload, Event::ContextCheckpointCommitted { .. })
-                                    .then_some(event.seq)
-                            })
-                            .unwrap_or(0);
+                        }
+                        let after = self.inner.store.get(session)?.log.latest_checkpoint_seq();
                         if after > before {
                             continue;
                         }

@@ -50,13 +50,146 @@ pub enum EventLogError {
 pub struct EventLog {
     path: PathBuf,
     session_id: SessionId,
-    events: Mutex<Vec<StoredEvent>>,
+    events: Mutex<EventStorage>,
     usage_cost_stamped: Mutex<HashSet<u64>>,
     diagnostics: Vec<EventLoadDiagnostic>,
     initial_validation_taint: ValidationTaint,
     validation: Mutex<ValidationState>,
     next_seq: AtomicU64,
     persisted: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct EventIndex {
+    last_run_started: Option<(u64, RunId, cookie_agent_protocol::ModelSelection)>,
+    last_checkpoint_seq: u64,
+    last_checkpoint_input_through_seq: u64,
+    last_recorded_usage: Option<(u64, u64)>,
+    last_turn_usage: Option<(u64, u64)>,
+}
+
+impl EventIndex {
+    fn observe(&mut self, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::RunStarted { selection, .. } => {
+                if let Some(run) = event.run_id {
+                    self.last_run_started = Some((event.seq, run, selection.model.clone()));
+                }
+            }
+            EventPayload::ContextCheckpointCommitted { commit } => {
+                self.last_checkpoint_seq = event.seq;
+                self.last_checkpoint_input_through_seq = commit.boundaries.input_through_seq;
+            }
+            EventPayload::ModelUsageRecorded { usage, .. } => {
+                if let Some(usage) = usage_total(event.seq, usage) {
+                    self.last_recorded_usage = Some(usage);
+                }
+            }
+            EventPayload::ModelTurnCommitted { turn, .. } => {
+                if let Some(usage) = usage_total(event.seq, &turn.usage) {
+                    self.last_turn_usage = Some(usage);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn latest_real_usage(&self) -> Option<(u64, u64)> {
+        self.last_recorded_usage.or(self.last_turn_usage)
+    }
+}
+
+#[derive(Debug)]
+struct EventStorage {
+    all: Vec<StoredEvent>,
+    visible: Vec<usize>,
+    visible_ceiling: u64,
+    snapshot: Option<Arc<[StoredEvent]>>,
+    index: EventIndex,
+}
+
+impl EventStorage {
+    fn new(all: Vec<StoredEvent>) -> Self {
+        let mut storage = Self {
+            all,
+            visible: Vec::new(),
+            visible_ceiling: u64::MAX,
+            snapshot: None,
+            index: EventIndex::default(),
+        };
+        storage.rebuild_visible();
+        storage
+    }
+
+    fn push(&mut self, event: StoredEvent) {
+        let revert = match &event.payload {
+            EventPayload::SessionReverted { through_seq } => Some(*through_seq),
+            _ => None,
+        };
+        let index = self.all.len();
+        self.all.push(event);
+        if let Some(through_seq) = revert {
+            self.visible_ceiling = self.visible_ceiling.min(through_seq);
+            let all = &self.all;
+            self.visible
+                .retain(|candidate| all[*candidate].seq <= self.visible_ceiling);
+            self.visible.push(index);
+            self.rebuild_index();
+        } else {
+            self.index.observe(&self.all[index]);
+            self.visible.push(index);
+        }
+        self.snapshot = None;
+    }
+
+    fn rebuild_visible(&mut self) {
+        self.visible.clear();
+        self.visible_ceiling = u64::MAX;
+        for (index, event) in self.all.iter().enumerate() {
+            if let EventPayload::SessionReverted { through_seq } = &event.payload {
+                self.visible_ceiling = self.visible_ceiling.min(*through_seq);
+                let all = &self.all;
+                self.visible
+                    .retain(|candidate| all[*candidate].seq <= self.visible_ceiling);
+            }
+            self.visible.push(index);
+        }
+        self.rebuild_index();
+        self.snapshot = None;
+    }
+
+    fn rebuild_index(&mut self) {
+        self.index = EventIndex::default();
+        for index in &self.visible {
+            self.index.observe(&self.all[*index]);
+        }
+    }
+
+    fn snapshot(&mut self) -> Arc<[StoredEvent]> {
+        self.snapshot
+            .get_or_insert_with(|| {
+                Arc::from(
+                    self.visible
+                        .iter()
+                        .map(|index| self.all[*index].clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .clone()
+    }
+}
+
+fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u64)> {
+    let input = usage.input_tokens;
+    let output = usage.output_tokens;
+    (input.is_some() || output.is_some()).then(|| {
+        (
+            seq,
+            input
+                .unwrap_or_default()
+                .saturating_add(output.unwrap_or_default()),
+        )
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,7 +209,7 @@ impl EventLog {
         let log = Arc::new(Self {
             path,
             session_id,
-            events: Mutex::new(Vec::new()),
+            events: Mutex::new(EventStorage::new(Vec::new())),
             usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
             initial_validation_taint: ValidationTaint::default(),
@@ -99,7 +232,7 @@ impl EventLog {
         let log = Arc::new(Self {
             path,
             session_id,
-            events: Mutex::new(Vec::new()),
+            events: Mutex::new(EventStorage::new(Vec::new())),
             usage_cost_stamped: Mutex::new(HashSet::new()),
             diagnostics: Vec::new(),
             initial_validation_taint: ValidationTaint::default(),
@@ -128,7 +261,7 @@ impl EventLog {
         Ok(Arc::new(Self {
             path,
             session_id,
-            events: Mutex::new(records),
+            events: Mutex::new(EventStorage::new(records)),
             usage_cost_stamped: Mutex::new(loaded.usage_cost_stamped),
             diagnostics: loaded.diagnostics,
             initial_validation_taint: loaded.validation_taint,
@@ -182,7 +315,7 @@ impl EventLog {
             *validation = validate_records(
                 &self.path,
                 self.session_id,
-                &events,
+                &events.all,
                 &self.initial_validation_taint,
                 None,
             )?;
@@ -194,7 +327,7 @@ impl EventLog {
             *validation = validate_records(
                 &self.path,
                 self.session_id,
-                &events,
+                &events.all,
                 &self.initial_validation_taint,
                 None,
             )?;
@@ -213,7 +346,15 @@ impl EventLog {
 
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
-        cookie_agent_protocol::visible_events(&self.all_events())
+        self.event_snapshot().to_vec()
+    }
+
+    #[must_use]
+    pub fn event_snapshot(&self) -> Arc<[StoredEvent]> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot()
     }
 
     #[must_use]
@@ -221,9 +362,8 @@ impl EventLog {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .cloned()
-            .collect()
+            .all
+            .to_vec()
     }
 
     pub(crate) fn usage_cost_is_stamped(&self, seq: u64) -> bool {
@@ -238,8 +378,45 @@ impl EventLog {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .all
             .last()
             .cloned()
+    }
+
+    pub(crate) fn last_run_started(
+        &self,
+    ) -> Option<(u64, RunId, cookie_agent_protocol::ModelSelection)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .last_run_started
+            .clone()
+    }
+
+    pub(crate) fn latest_checkpoint_seq(&self) -> u64 {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .last_checkpoint_seq
+    }
+
+    pub(crate) fn latest_real_usage(&self) -> Option<(u64, u64)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .latest_real_usage()
+    }
+
+    pub(crate) fn checkpoint_covers_input(&self, input_through_seq: u64) -> bool {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index
+            .last_checkpoint_input_through_seq
+            >= input_through_seq
     }
 
     #[must_use]
@@ -2569,7 +2746,7 @@ const fn stream_index(stream: OutputStream) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
     use cookie_agent_protocol::{
         AgentId, AgentMode, AgentRevision, ApprovalReasonCode, ApprovalTrigger, ArtifactReference,
@@ -2590,7 +2767,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        EventLog, OutputHub, OutputMessage, ValidationState, load_jsonl,
+        EventLog, EventStorage, OutputHub, OutputMessage, ValidationState, load_jsonl,
         validate_record_incremental, validate_records,
     };
     use crate::{
@@ -2916,6 +3093,83 @@ mod tests {
                     accepted.push(record);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn event_storage_snapshot_and_indexes_match_full_projection() {
+        let mut records = attribution_records();
+        let revert_seq = records.last().expect("last event").seq + 1;
+        records.push(StoredEvent {
+            engine_version: None,
+            session_id: records[0].session_id,
+            run_id: None,
+            seq: revert_seq,
+            timestamp: records.last().expect("last event").timestamp,
+            payload: EventPayload::SessionReverted { through_seq: 4 },
+        });
+        let mut storage = EventStorage::new(Vec::new());
+        for record in records {
+            storage.push(record);
+            let expected = cookie_agent_protocol::visible_events(&storage.all);
+            let actual = storage
+                .visible
+                .iter()
+                .map(|index| storage.all[*index].clone())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            let expected_run = expected
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    EventPayload::RunStarted { selection, .. } => event
+                        .run_id
+                        .map(|run| (event.seq, run, selection.model.clone())),
+                    _ => None,
+                });
+            let expected_checkpoint =
+                expected
+                    .iter()
+                    .rev()
+                    .find_map(|event| match &event.payload {
+                        EventPayload::ContextCheckpointCommitted { commit } => {
+                            Some((event.seq, commit.boundaries.input_through_seq))
+                        }
+                        _ => None,
+                    });
+            let expected_usage = expected
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ModelUsageRecorded { usage, .. } => {
+                        super::usage_total(event.seq, usage)
+                    }
+                    _ => None,
+                })
+                .or_else(|| {
+                    expected
+                        .iter()
+                        .rev()
+                        .find_map(|event| match &event.payload {
+                            EventPayload::ModelTurnCommitted { turn, .. } => {
+                                super::usage_total(event.seq, &turn.usage)
+                            }
+                            _ => None,
+                        })
+                });
+            assert_eq!(storage.index.last_run_started, expected_run);
+            assert_eq!(
+                (
+                    storage.index.last_checkpoint_seq,
+                    storage.index.last_checkpoint_input_through_seq
+                ),
+                expected_checkpoint.unwrap_or_default()
+            );
+            assert_eq!(storage.index.latest_real_usage(), expected_usage);
+            let first = storage.snapshot();
+            let second = storage.snapshot();
+            assert!(Arc::ptr_eq(&first, &second));
+            assert_eq!(first.as_ref(), expected);
         }
     }
 

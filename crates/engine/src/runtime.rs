@@ -932,7 +932,7 @@ enum SessionCommand {
     },
     PromptSnapshot {
         run: RunId,
-        reply: oneshot::Sender<Result<Vec<StoredEvent>, EngineError>>,
+        reply: oneshot::Sender<Result<Arc<[StoredEvent]>, EngineError>>,
     },
     EvictionBarrier {
         reply: oneshot::Sender<Result<(), EngineError>>,

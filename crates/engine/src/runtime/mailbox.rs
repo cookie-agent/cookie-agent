@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    sync::atomic::Ordering,
+    sync::{Arc, atomic::Ordering},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -462,7 +462,7 @@ impl Engine {
         &self,
         session: SessionId,
         run: RunId,
-    ) -> Result<Vec<StoredEvent>, EngineError> {
+    ) -> Result<Arc<[StoredEvent]>, EngineError> {
         let events = self
             .request(session, |reply| SessionCommand::PromptSnapshot {
                 run,
@@ -1519,7 +1519,7 @@ impl Engine {
                     .filter(|active| active.session == session)
                     .ok_or(EngineError::MissingRun(run))
                     .and_then(|_| {
-                        let events = self.inner.store.get(session)?.log.events();
+                        let events = self.inner.store.get(session)?.log.event_snapshot();
                         let applied: HashSet<u64> = events
                             .iter()
                             .filter_map(|event| match &event.payload {
@@ -1548,8 +1548,7 @@ impl Engine {
                                 Event::UserInputApplied { user_input_seq },
                             )?;
                         }
-                        let events = self.inner.store.get(session)?.log.events();
-                        Ok(events)
+                        Ok(self.inner.store.get(session)?.log.event_snapshot())
                     });
                 let _ = reply.send(result);
             }

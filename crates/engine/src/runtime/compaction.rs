@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    io,
     sync::Arc,
 };
 
@@ -52,7 +53,7 @@ pub(super) struct CompactionInput<'a> {
     pub(super) owner_policy: &'a FrozenRunPolicy,
     pub(super) internal_policy: &'a FrozenInternalAgentPolicy,
     pub(super) tools: &'a [ToolDefinition],
-    pub(super) events: Vec<StoredEvent>,
+    pub(super) events: Arc<[StoredEvent]>,
     pub(super) force: bool,
     pub(super) overflow_recovery: bool,
     pub(super) focus: Option<&'a str>,
@@ -98,14 +99,11 @@ impl Engine {
         if projection.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(session));
         }
-        let events = projection.log.events();
-        let run = events
-            .iter()
-            .rev()
-            .find_map(|event| {
-                matches!(event.payload, Event::RunStarted { .. }).then_some(event.run_id)
-            })
-            .flatten()
+        let events = projection.log.event_snapshot();
+        let run = projection
+            .log
+            .last_run_started()
+            .map(|(_, run, _)| run)
             .ok_or(EngineError::NoRunnableModel)?;
         let policy = self.historical_title_policy(&events, run)?;
         let binding = active_compaction_binding(&policy, &events, run)?;
@@ -115,8 +113,8 @@ impl Engine {
             Some(binding),
         )?;
         let tools = self.tool_definitions(session, &policy)?;
-        let before = latest_checkpoint_seq(&events);
-        let compacted = match self
+        let before = projection.log.latest_checkpoint_seq();
+        match self
             .maybe_compact_context(CompactionInput {
                 session,
                 run,
@@ -133,7 +131,7 @@ impl Engine {
             })
             .await
         {
-            Ok(compacted) => compacted,
+            Ok(_) => {}
             Err(EngineError::CompactionCancelled(reason)) => {
                 return Ok(SessionCompactResult {
                     compacted: false,
@@ -141,9 +139,9 @@ impl Engine {
                 });
             }
             Err(error) => return Err(error),
-        };
+        }
         Ok(SessionCompactResult {
-            compacted: latest_checkpoint_seq(&compacted) > before,
+            compacted: projection.log.latest_checkpoint_seq() > before,
             cancellation_reason: None,
         })
     }
@@ -151,7 +149,7 @@ impl Engine {
     pub(super) async fn maybe_compact_context(
         &self,
         input: CompactionInput<'_>,
-    ) -> Result<Vec<StoredEvent>, EngineError> {
+    ) -> Result<Arc<[StoredEvent]>, EngineError> {
         let Some(context_limit) = input.binding.descriptor.capabilities.limits.context else {
             return Ok(input.events);
         };
@@ -160,11 +158,13 @@ impl Engine {
         if !compaction_gate(input.force, config.auto_compaction, trigger_tokens) {
             return Ok(input.events);
         }
+        let projection = self.inner.store.get(input.session)?;
         if !input.force {
-            let Some((usage_seq, observed_tokens)) = latest_real_usage(&input.events) else {
+            let log = &projection.log;
+            let Some((usage_seq, observed_tokens)) = log.latest_real_usage() else {
                 return Ok(input.events);
             };
-            let last_checkpoint_seq = latest_checkpoint_seq(&input.events);
+            let last_checkpoint_seq = log.latest_checkpoint_seq();
             if usage_seq < last_checkpoint_seq {
                 return Ok(input.events);
             }
@@ -174,8 +174,11 @@ impl Engine {
         }
 
         let requested_input_through_seq = input.events.last().map_or(0, |event| event.seq);
-        let current_events = self.inner.store.get(input.session)?.log.events();
-        if checkpoint_covers_input(&current_events, requested_input_through_seq) {
+        let current_events = projection.log.event_snapshot();
+        if projection
+            .log
+            .checkpoint_covers_input(requested_input_through_seq)
+        {
             return Ok(current_events);
         }
 
@@ -260,7 +263,7 @@ impl Engine {
         }
 
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
-        let mut events = input.events.clone();
+        let mut events = input.events.to_vec();
         let mut context = assemble_model_context(
             &events,
             &self.inner.artifacts,
@@ -269,7 +272,10 @@ impl Engine {
         )?;
         let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
             input.overflow_recovery,
-            latest_real_usage(&events).map(|(_, observed_tokens)| observed_tokens),
+            projection
+                .log
+                .latest_real_usage()
+                .map(|(_, observed_tokens)| observed_tokens),
             |tokens| compaction_input_fits(input.binding, input.internal_policy, tokens),
         ) {
             raw_fits
@@ -303,7 +309,7 @@ impl Engine {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         };
         if !input.force && context_tokens_before < trigger_tokens {
-            return Ok(events);
+            return Ok(Arc::from(events));
         }
 
         // Rehydration runs outside a normal turn, so it uses the owner and binding that triggered
@@ -317,7 +323,7 @@ impl Engine {
         });
 
         let input_through_seq = events.last().map_or(0, |event| event.seq);
-        let previous = latest_checkpoint_seq(&events);
+        let previous = projection.log.latest_checkpoint_seq();
         let source_from_seq = if previous == 0 {
             1
         } else {
@@ -443,10 +449,10 @@ impl Engine {
         let Ok(summary) = summary else {
             // Deliberately leave history fully intact when the raw context fit. Failed
             // compaction no longer performs consolation elision on that path.
-            return Ok(events);
+            return Ok(Arc::from(events));
         };
         if summary.text.trim().is_empty() {
-            return Ok(events);
+            return Ok(Arc::from(events));
         }
         let checkpoint = InternalSummaryCheckpoint::new(
             summary.text,
@@ -474,7 +480,7 @@ impl Engine {
             budgets,
         };
         if commit.validate().is_err() {
-            return Ok(events);
+            return Ok(Arc::from(events));
         }
         self.append_compaction_event(
             input.session,
@@ -495,10 +501,10 @@ impl Engine {
     async fn finalize_context_checkpoint(
         &self,
         input: CompactionInput<'_>,
-        mut events: Vec<StoredEvent>,
+        events: Vec<StoredEvent>,
         input_tokens_after: u64,
         turn_context: Arc<TurnAgentContext>,
-    ) -> Result<Vec<StoredEvent>, EngineError> {
+    ) -> Result<Arc<[StoredEvent]>, EngineError> {
         self.inner
             .context_token_estimators
             .lock()
@@ -525,8 +531,7 @@ impl Engine {
             )
             .await?;
         }
-        events = self.inner.store.get(input.session)?.log.events();
-        Ok(events)
+        Ok(self.inner.store.get(input.session)?.log.event_snapshot())
     }
 
     async fn stage_tool_output_elision(
@@ -766,42 +771,7 @@ fn usage_reaches_compaction_trigger(observed_tokens: u64, trigger_tokens: u64) -
     observed_tokens >= trigger_tokens
 }
 
-fn latest_real_usage(events: &[StoredEvent]) -> Option<(u64, u64)> {
-    let recorded = events.iter().rev().find_map(|event| match &event.payload {
-        Event::ModelUsageRecorded { usage, .. } => usage_total(event.seq, usage),
-        _ => None,
-    });
-    recorded.or_else(|| {
-        events.iter().rev().find_map(|event| match &event.payload {
-            Event::ModelTurnCommitted { turn, .. } => usage_total(event.seq, &turn.usage),
-            _ => None,
-        })
-    })
-}
-
-fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u64)> {
-    let input = usage.input_tokens;
-    let output = usage.output_tokens;
-    (input.is_some() || output.is_some()).then(|| {
-        (
-            seq,
-            input
-                .unwrap_or_default()
-                .saturating_add(output.unwrap_or_default()),
-        )
-    })
-}
-
-pub(super) fn latest_checkpoint_seq(events: &[StoredEvent]) -> u64 {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| {
-            matches!(event.payload, Event::ContextCheckpointCommitted { .. }).then_some(event.seq)
-        })
-        .unwrap_or(0)
-}
-
+#[cfg(test)]
 fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bool {
     events.iter().rev().any(|event| {
         matches!(
@@ -816,9 +786,26 @@ fn serialized_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
-    Ok(serde_json::to_vec(&(history, tools))
-        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?
-        .len())
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, &(history, tools))
+        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
+    Ok(writer.bytes)
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: usize,
+}
+
+impl io::Write for CountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn estimated_request_tokens(
