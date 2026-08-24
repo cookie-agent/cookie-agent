@@ -296,7 +296,9 @@ impl SessionStore {
         if !session.log.is_persisted() {
             return Ok(false);
         }
-        // Persisted EventLog appends complete sync_data before projections update.
+        // Stream records may be published before their grouped sync. Flush before
+        // removing the resident projection so eviction never outruns durability.
+        session.log.flush()?;
         let summary = SessionSummary {
             meta: session.meta.clone(),
             usage: session.usage.clone(),

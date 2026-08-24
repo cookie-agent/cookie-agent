@@ -3,12 +3,14 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -50,12 +52,55 @@ pub enum EventLogError {
 pub struct EventLog {
     path: PathBuf,
     session_id: SessionId,
+    append: Mutex<()>,
     events: Mutex<EventStorage>,
     diagnostics: Vec<EventLoadDiagnostic>,
     initial_validation_taint: ValidationTaint,
     validation: Mutex<ValidationState>,
     next_seq: AtomicU64,
     persisted: AtomicBool,
+    writer: Mutex<Option<Arc<EventLogWriter>>>,
+}
+
+const EVENT_SYNC_WINDOW: Duration = Duration::from_millis(8);
+const EVENT_SYNC_BYTES: usize = 32 * 1024;
+
+#[derive(Debug)]
+struct EventLogWriter {
+    shared: Arc<EventLogWriterShared>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[derive(Debug)]
+struct EventLogWriterShared {
+    path: PathBuf,
+    state: Mutex<EventLogWriterState>,
+    wake: Condvar,
+    #[cfg(test)]
+    before_sync: Mutex<Option<SyncHook>>,
+}
+
+#[derive(Debug)]
+struct EventLogWriterState {
+    output: BufWriter<fs::File>,
+    unsynced_bytes: usize,
+    sync_deadline: Option<Instant>,
+    directory_sync_pending: bool,
+    background_error: Option<WriterFailure>,
+    shutdown: bool,
+}
+
+#[derive(Clone, Debug)]
+struct WriterFailure {
+    kind: io::ErrorKind,
+    message: String,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct SyncHook {
+    reached: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[derive(Debug, Default)]
@@ -191,6 +236,201 @@ fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u
     })
 }
 
+impl EventLogWriter {
+    fn open(path: &Path) -> Result<Arc<Self>, EventLogError> {
+        let created = !path.exists();
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(path).map_err(|source| EventLogError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let shared = Arc::new(EventLogWriterShared {
+            path: path.to_owned(),
+            state: Mutex::new(EventLogWriterState {
+                output: BufWriter::new(file),
+                unsynced_bytes: 0,
+                sync_deadline: None,
+                directory_sync_pending: created,
+                background_error: None,
+                shutdown: false,
+            }),
+            wake: Condvar::new(),
+            #[cfg(test)]
+            before_sync: Mutex::new(None),
+        });
+        let worker_shared = shared.clone();
+        let worker = thread::Builder::new()
+            .name("event-log-sync".into())
+            .spawn(move || event_log_sync_worker(&worker_shared))
+            .map_err(|source| EventLogError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+        Ok(Arc::new(Self {
+            shared,
+            worker: Mutex::new(Some(worker)),
+        }))
+    }
+
+    fn append(&self, bytes: &[u8], barrier: bool) -> Result<(), EventLogError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(failure) = state.background_error.take() {
+            return Err(self.shared.failure(failure));
+        }
+        state
+            .output
+            .write_all(bytes)
+            .and_then(|()| state.output.write_all(b"\n"))
+            .map_err(|source| self.shared.io_error(source))?;
+        state.unsynced_bytes = state.unsynced_bytes.saturating_add(bytes.len() + 1);
+        if barrier || state.unsynced_bytes >= EVENT_SYNC_BYTES {
+            self.shared.sync(&mut state)?;
+        } else if state.sync_deadline.is_none() {
+            state.sync_deadline = Some(Instant::now() + EVENT_SYNC_WINDOW);
+            self.shared.wake.notify_one();
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), EventLogError> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(failure) = state.background_error.take() {
+            return Err(self.shared.failure(failure));
+        }
+        if state.unsynced_bytes > 0 || state.directory_sync_pending {
+            self.shared.sync(&mut state)?;
+        }
+        Ok(())
+    }
+
+    fn shutdown(&self) {
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.shutdown = true;
+            self.shared.wake.notify_one();
+        }
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+
+    #[cfg(test)]
+    fn install_sync_hook(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached, reached_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .shared
+            .before_sync
+            .lock()
+            .expect("event log sync hook lock poisoned") = Some(SyncHook {
+            reached,
+            release: release_receiver,
+        });
+        (reached_receiver, release)
+    }
+}
+
+impl EventLogWriterShared {
+    fn sync(&self, state: &mut EventLogWriterState) -> Result<(), EventLogError> {
+        #[cfg(test)]
+        if let Some(hook) = self
+            .before_sync
+            .lock()
+            .expect("event log sync hook lock poisoned")
+            .take()
+        {
+            let _ = hook.reached.send(());
+            let _ = hook.release.recv();
+        }
+        state
+            .output
+            .flush()
+            .and_then(|()| state.output.get_ref().sync_data())
+            .map_err(|source| self.io_error(source))?;
+        if state.directory_sync_pending
+            && let Some(parent) = self.path.parent()
+        {
+            fsync_directory(parent)?;
+            state.directory_sync_pending = false;
+        }
+        state.unsynced_bytes = 0;
+        state.sync_deadline = None;
+        Ok(())
+    }
+
+    fn io_error(&self, source: io::Error) -> EventLogError {
+        EventLogError::Io {
+            path: self.path.clone(),
+            source,
+        }
+    }
+
+    fn failure(&self, failure: WriterFailure) -> EventLogError {
+        self.io_error(io::Error::new(failure.kind, failure.message))
+    }
+}
+
+fn event_log_sync_worker(shared: &EventLogWriterShared) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    loop {
+        if state.shutdown {
+            if state.unsynced_bytes > 0 || state.directory_sync_pending {
+                let _ = shared.sync(&mut state);
+            }
+            return;
+        }
+        let Some(deadline) = state.sync_deadline else {
+            state = shared
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            continue;
+        };
+        let now = Instant::now();
+        if now < deadline {
+            let (next_state, _) = shared
+                .wake
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            continue;
+        }
+        if let Err(EventLogError::Io { source, .. }) = shared.sync(&mut state) {
+            state.background_error = Some(WriterFailure {
+                kind: source.kind(),
+                message: source.to_string(),
+            });
+            state.sync_deadline = None;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventLoadDiagnostic {
     pub seq: u64,
@@ -208,12 +448,14 @@ impl EventLog {
         let log = Arc::new(Self {
             path,
             session_id,
+            append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(Vec::new())),
             diagnostics: Vec::new(),
             initial_validation_taint: ValidationTaint::default(),
             validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(true),
+            writer: Mutex::new(None),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
@@ -230,12 +472,14 @@ impl EventLog {
         let log = Arc::new(Self {
             path,
             session_id,
+            append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(Vec::new())),
             diagnostics: Vec::new(),
             initial_validation_taint: ValidationTaint::default(),
             validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
             persisted: AtomicBool::new(false),
+            writer: Mutex::new(None),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
@@ -258,12 +502,14 @@ impl EventLog {
         Ok(Arc::new(Self {
             path,
             session_id,
+            append: Mutex::new(()),
             events: Mutex::new(EventStorage::new(records)),
             diagnostics: loaded.diagnostics,
             initial_validation_taint: loaded.validation_taint,
             validation: Mutex::new(validation),
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
+            writer: Mutex::new(None),
         }))
     }
 
@@ -280,7 +526,11 @@ impl EventLog {
         run_id: Option<RunId>,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
-        let mut events = self
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let events = self
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -295,6 +545,10 @@ impl EventLog {
         event.validate().map_err(|error| EventLogError::Corrupt {
             path: self.path.clone(),
             message: error.to_string(),
+        })?;
+        let bytes = serde_json::to_vec(&event).map_err(|source| EventLogError::Json {
+            path: self.path.clone(),
+            source,
         })?;
         let mut validation = self
             .validation
@@ -312,9 +566,24 @@ impl EventLog {
             )?;
             return Err(error);
         }
-        if self.persisted.load(Ordering::Acquire)
-            && let Err(error) = append_jsonl(&self.path, &event)
-        {
+        drop(validation);
+        drop(events);
+        let write_result = if self.persisted.load(Ordering::Acquire) {
+            self.persistent_writer().and_then(|writer| {
+                writer.append(&bytes, event_requires_durable_barrier(&event.payload))
+            })
+        } else {
+            Ok(())
+        };
+        if let Err(error) = write_result {
+            let events = self
+                .events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut validation = self
+                .validation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             *validation = validate_records(
                 &self.path,
                 self.session_id,
@@ -324,6 +593,10 @@ impl EventLog {
             )?;
             return Err(error);
         }
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
         Ok(event)
@@ -430,6 +703,130 @@ impl EventLog {
 
     pub fn mark_persisted(&self) {
         self.persisted.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn flush(&self) -> Result<(), EventLogError> {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(writer) = writer {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
+    fn persistent_writer(&self) -> Result<Arc<EventLogWriter>, EventLogError> {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if writer.is_none() {
+            *writer = Some(EventLogWriter::open(&self.path)?);
+        }
+        Ok(writer
+            .as_ref()
+            .expect("event log writer initialized")
+            .clone())
+    }
+
+    #[cfg(test)]
+    fn install_sync_hook_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        self.persistent_writer()
+            .expect("open event log writer")
+            .install_sync_hook()
+    }
+
+    #[cfg(test)]
+    fn snapshot_lock_available_for_test(&self) -> bool {
+        self.events.try_lock().is_ok()
+    }
+}
+
+impl Drop for EventLog {
+    fn drop(&mut self) {
+        if let Some(writer) = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            writer.shutdown();
+        }
+    }
+}
+
+fn event_requires_durable_barrier(payload: &EventPayload) -> bool {
+    match payload {
+        EventPayload::TextDelta { .. }
+        | EventPayload::ReasoningDelta { .. }
+        | EventPayload::ToolCallProgress { .. } => false,
+        EventPayload::SessionCreated { .. }
+        | EventPayload::SessionReverted { .. }
+        | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::SkillLoaded { .. }
+        | EventPayload::SkillInvocationNoted { .. }
+        | EventPayload::PluginEventAdded { .. }
+        | EventPayload::PluginDiagnostic { .. }
+        | EventPayload::RunStarted { .. }
+        | EventPayload::MessageInjected { .. }
+        | EventPayload::UserInputAdmitted { .. }
+        | EventPayload::UserInputSubmitted { .. }
+        | EventPayload::UserInputTransformed { .. }
+        | EventPayload::UserInputRecalled { .. }
+        | EventPayload::UserInputRecalledV2 { .. }
+        | EventPayload::UserInputApplied { .. }
+        | EventPayload::DelegatedContextSeeded { .. }
+        | EventPayload::RunCompleted { .. }
+        | EventPayload::RunFailed { .. }
+        | EventPayload::RunCancelled { .. }
+        | EventPayload::RunInterrupted { .. }
+        | EventPayload::ModelAttemptStarted { .. }
+        | EventPayload::ModelRequestPrepared { .. }
+        | EventPayload::AttemptAbandoned { .. }
+        | EventPayload::ModelReplayEvaluated { .. }
+        | EventPayload::ModelTurnCommitted { .. }
+        | EventPayload::ModelUsageRecorded { .. }
+        | EventPayload::ModelFallback { .. }
+        | EventPayload::ToolCallStarted { .. }
+        | EventPayload::ToolCallTerminated { .. }
+        | EventPayload::ToolOutputElided { .. }
+        | EventPayload::ToolStdinSubmitted { .. }
+        | EventPayload::ToolCallLinked { .. }
+        | EventPayload::DelegationReserved { .. }
+        | EventPayload::DelegationStarted { .. }
+        | EventPayload::DelegationRunStarted { .. }
+        | EventPayload::DelegationRunAttached { .. }
+        | EventPayload::DelegationFinished { .. }
+        | EventPayload::DelegateQueued { .. }
+        | EventPayload::DelegateFinished { .. }
+        | EventPayload::DelegateFinishedV2 { .. }
+        | EventPayload::DelegateChildTerminated { .. }
+        | EventPayload::ApprovalRequested { .. }
+        | EventPayload::ApprovalEvaluated { .. }
+        | EventPayload::ApprovalEscalated { .. }
+        | EventPayload::ApprovalUserDecisionRecorded { .. }
+        | EventPayload::ApprovalFinalized { .. }
+        | EventPayload::ApprovalCancelled { .. }
+        | EventPayload::ApprovalDoomLoopDetected { .. }
+        | EventPayload::TreeApprovalGrantCommitted { .. }
+        | EventPayload::InternalAgentStarted { .. }
+        | EventPayload::InternalAgentCompleted { .. }
+        | EventPayload::InternalAgentUsageRecorded { .. }
+        | EventPayload::InternalAgentFailed { .. }
+        | EventPayload::InternalAgentCancelled { .. }
+        | EventPayload::InternalAgentInterrupted { .. }
+        | EventPayload::InternalAgentFallback { .. }
+        | EventPayload::ContextCheckpointCommitted { .. }
+        | EventPayload::ContextRehydrated { .. }
+        | EventPayload::SessionTitleCommitted { .. } => true,
     }
 }
 
@@ -4242,7 +4639,11 @@ mod tests {
         let persisted =
             EventLog::create(persisted_path, creation.session_id, creation.payload).unwrap();
         let before = persisted.event_snapshot();
-        fs::remove_dir_all(persisted_directory.path()).unwrap();
+        let writer = persisted.persistent_writer().expect("event log writer");
+        writer.shared.state.lock().unwrap().background_error = Some(WriterFailure {
+            kind: io::ErrorKind::Other,
+            message: "injected persistence failure".into(),
+        });
         assert!(
             persisted
                 .append(Some(run), records[1].payload.clone())
@@ -4425,6 +4826,135 @@ mod tests {
             fs::read(&path).expect("read recovered log"),
             b"{\"ok\":true}\n"
         );
+    }
+
+    #[test]
+    fn only_stream_records_skip_the_durable_barrier() {
+        let attempt_id = AttemptId(Uuid::from_u128(1));
+        let tool_call_id = ToolCallId(Uuid::from_u128(2));
+        assert!(!event_requires_durable_barrier(&EventPayload::TextDelta {
+            attempt_id,
+            text: "text".into(),
+        }));
+        assert!(!event_requires_durable_barrier(
+            &EventPayload::ReasoningDelta {
+                attempt_id,
+                text: "reasoning".into(),
+            }
+        ));
+        assert!(!event_requires_durable_barrier(
+            &EventPayload::ToolCallProgress {
+                tool_call_id,
+                message: SafeDisplayText::new("progress").expect("safe progress"),
+                output_chunk: None,
+            }
+        ));
+        assert!(event_requires_durable_barrier(
+            &EventPayload::UserInputAdmitted {
+                input: "steer".into(),
+            }
+        ));
+    }
+
+    #[test]
+    fn barrier_sync_precedes_publication_without_holding_snapshot_lock() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let creation = stored_event();
+        let log = EventLog::create(path.clone(), creation.session_id, creation.payload)
+            .expect("create event log");
+        let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+        let appending = {
+            let log = log.clone();
+            thread::spawn(move || {
+                log.append(
+                    None,
+                    EventPayload::UserInputAdmitted {
+                        input: "steer".into(),
+                    },
+                )
+            })
+        };
+
+        sync_reached.recv().expect("barrier reached sync");
+        assert!(log.snapshot_lock_available_for_test());
+        assert_eq!(log.all_events().len(), 1, "barrier is not published early");
+        assert_eq!(
+            load_jsonl::<StoredEvent>(&path)
+                .expect("read durable prefix")
+                .len(),
+            1,
+            "barrier is not durable before sync completes"
+        );
+        release_sync.send(()).expect("release barrier sync");
+        appending
+            .join()
+            .expect("append thread")
+            .expect("append barrier");
+
+        assert_eq!(log.all_events().len(), 2);
+        assert_eq!(
+            load_jsonl::<StoredEvent>(&path)
+                .expect("read durable barrier")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn buffered_records_become_durable_on_the_sync_deadline() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let writer = EventLogWriter::open(&path).expect("open writer");
+        let (sync_reached, release_sync) = writer.install_sync_hook();
+
+        writer
+            .append(br#"{"type":"text_delta"}"#, false)
+            .expect("buffer delta");
+        sync_reached.recv().expect("deadline reached sync");
+        assert!(fs::read(&path).expect("read pre-sync file").is_empty());
+        release_sync.send(()).expect("release deadline sync");
+        writer.flush().expect("wait for durable delta");
+
+        assert_eq!(
+            load_jsonl::<Value>(&path).expect("load durable delta"),
+            vec![serde_json::json!({"type": "text_delta"})]
+        );
+        writer.shutdown();
+    }
+
+    #[test]
+    fn torn_buffered_tail_does_not_remove_a_durable_barrier() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let writer = EventLogWriter::open(&path).expect("open writer");
+        writer
+            .append(br#"{"type":"user_input_admitted"}"#, true)
+            .expect("sync barrier");
+        let (sync_reached, release_sync) = writer.install_sync_hook();
+        writer
+            .append(br#"{"type":"text_delta"}"#, false)
+            .expect("buffer delta");
+        sync_reached.recv().expect("delta reached sync");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open crash writer")
+            .write_all(br#"{"type":"text_"#)
+            .expect("write torn delta");
+
+        assert_eq!(
+            load_jsonl::<Value>(&path).expect("recover torn log"),
+            vec![serde_json::json!({"type": "user_input_admitted"})]
+        );
+        assert_eq!(
+            fs::read(&path).expect("read recovered log"),
+            br#"{"type":"user_input_admitted"}
+"#
+        );
+        release_sync.send(()).expect("release delta sync");
+        writer.flush().expect("finish writer");
+        writer.shutdown();
     }
 
     #[test]
