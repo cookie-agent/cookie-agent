@@ -1,10 +1,11 @@
 use std::{
     collections::{HashSet, VecDeque},
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Seek, SeekFrom},
     path::Path,
-    time::SystemTime,
 };
+
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ArtifactPage {
@@ -19,19 +20,33 @@ pub(crate) struct ArtifactGcReport {
 }
 
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
+const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ArtifactFileFingerprint {
-    modified: SystemTime,
-    len: u64,
+#[derive(Debug, Default)]
+struct VerifiedFileCache {
+    entries: VecDeque<(String, File)>,
 }
 
-fn artifact_file_fingerprint(file: &File) -> std::io::Result<ArtifactFileFingerprint> {
-    let metadata = file.metadata()?;
-    Ok(ArtifactFileFingerprint {
-        modified: metadata.modified()?,
-        len: metadata.len(),
-    })
+impl VerifiedFileCache {
+    fn take(&mut self, digest: &str) -> Option<File> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(cached, _)| cached == digest)?;
+        self.entries.remove(index).map(|(_, file)| file)
+    }
+
+    fn insert(&mut self, digest: String, file: File) {
+        let _ = self.take(&digest);
+        if self.entries.len() == VERIFIED_FILE_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((digest, file));
+    }
+
+    fn evict(&mut self, digest: &str) {
+        let _ = self.take(digest);
+    }
 }
 
 fn scan_durable_artifact_references(sessions_dir: &Path) -> std::io::Result<HashSet<String>> {
@@ -122,10 +137,12 @@ fn expand_transitive_artifact_references(
     Ok(())
 }
 
-fn read_file_paged(
-    file: File,
+fn read_verified_file_paged(
+    file: &mut File,
+    digest: &str,
     offset_lines: u64,
     limit_lines: u64,
+    after_first_read: impl FnOnce() -> std::io::Result<()>,
 ) -> std::io::Result<ArtifactPage> {
     if limit_lines == 0 {
         return Err(std::io::Error::new(
@@ -133,29 +150,40 @@ fn read_file_paged(
             "artifact page limit must be positive",
         ));
     }
+    file.seek(SeekFrom::Start(0))?;
     let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut after_first_read = Some(after_first_read);
     let mut line = Vec::new();
-    for _ in 0..offset_lines {
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(ArtifactPage {
-                content: String::new(),
-                next_offset_lines: None,
-            });
-        }
-    }
+    let mut line_index = 0_u64;
     let mut content = Vec::new();
     let mut read_lines = 0_u64;
-    while read_lines < limit_lines {
+    let mut has_more = false;
+    loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
-        content.extend_from_slice(&line);
-        read_lines += 1;
+        hasher.update(&line);
+        if let Some(after_first_read) = after_first_read.take() {
+            after_first_read()?;
+        }
+        if line_index >= offset_lines {
+            if read_lines < limit_lines {
+                content.extend_from_slice(&line);
+                read_lines += 1;
+            } else {
+                has_more = true;
+            }
+        }
+        line_index = line_index.saturating_add(1);
     }
-    line.clear();
-    let has_more = reader.read_until(b'\n', &mut line)? != 0;
+    if format!("{:x}", hasher.finalize()) != digest {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "artifact content does not match its digest",
+        ));
+    }
     Ok(ArtifactPage {
         content: String::from_utf8_lossy(&content).into_owned(),
         next_offset_lines: has_more.then_some(offset_lines.saturating_add(read_lines)),
@@ -165,7 +193,6 @@ fn read_file_paged(
 #[cfg(unix)]
 mod unix {
     use std::{
-        collections::HashMap,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -184,8 +211,8 @@ mod unix {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactFileFingerprint, ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
-        artifact_file_fingerprint, expand_transitive_artifact_references, read_file_paged,
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedFileCache,
+        expand_transitive_artifact_references, read_verified_file_paged,
         scan_durable_artifact_references,
     };
 
@@ -195,7 +222,7 @@ mod unix {
     pub(crate) struct ArtifactStore {
         directory_handle: Arc<fs::File>,
         writes: Mutex<()>,
-        verified_reads: Mutex<HashMap<String, ArtifactFileFingerprint>>,
+        verified_reads: Mutex<VerifiedFileCache>,
     }
 
     impl ArtifactStore {
@@ -210,7 +237,7 @@ mod unix {
             let store = Arc::new(Self {
                 directory_handle: Arc::new(handle),
                 writes: Mutex::new(()),
-                verified_reads: Mutex::new(HashMap::new()),
+                verified_reads: Mutex::new(VerifiedFileCache::default()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -319,11 +346,12 @@ mod unix {
                     report.retained += 1;
                     continue;
                 }
-                unlinkat(&*self.directory_handle, &digest, AtFlags::empty())?;
-                self.verified_reads
+                let mut verified = self
+                    .verified_reads
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&digest);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                verified.evict(&digest);
+                unlinkat(&*self.directory_handle, &digest, AtFlags::empty())?;
                 report.deleted += 1;
             }
             if report.deleted > 0 {
@@ -368,32 +396,50 @@ mod unix {
                     "invalid artifact digest",
                 ));
             }
-            let mut file = self.open_existing(digest)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-            })?;
-            let fingerprint = artifact_file_fingerprint(&file)?;
             let mut verified = self
                 .verified_reads
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if verified.get(digest) != Some(&fingerprint) {
-                if hash_file(&mut file)?.0 != digest {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "artifact content does not match its digest",
-                    ));
-                }
-                if artifact_file_fingerprint(&file)? != fingerprint {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "artifact changed while it was being verified",
-                    ));
-                }
-                verified.insert(digest.to_owned(), fingerprint);
+            let mut file = match verified.take(digest) {
+                Some(file) => file,
+                None => self.open_existing(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?,
+            };
+            let page =
+                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
+            verified.insert(digest.to_owned(), file);
+            Ok(page)
+        }
+
+        #[cfg(test)]
+        pub(super) fn read_paged_with_hook(
+            &self,
+            digest: &str,
+            offset_lines: u64,
+            limit_lines: u64,
+            hook: impl FnOnce() -> std::io::Result<()>,
+        ) -> std::io::Result<ArtifactPage> {
+            if !is_digest_name(digest) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid artifact digest",
+                ));
             }
-            drop(verified);
-            file.seek(SeekFrom::Start(0))?;
-            read_file_paged(file, offset_lines, limit_lines)
+            let mut verified = self
+                .verified_reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut file = match verified.take(digest) {
+                Some(file) => file,
+                None => self.open_existing(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?,
+            };
+            let page =
+                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
+            verified.insert(digest.to_owned(), file);
+            Ok(page)
         }
 
         fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
@@ -871,6 +917,44 @@ mod unix {
         }
 
         #[test]
+        fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
+            let directory = tempfile::tempdir().expect("temporary artifact root");
+            let artifacts = directory.path().join("artifacts");
+            let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
+            let original = b"verified\ncontent\n";
+            let (_, digest) = store.retain(original).expect("retain artifact");
+            let path = artifacts.join(&digest);
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .expect("artifact mtime");
+            assert_eq!(
+                store
+                    .read_paged(&digest, 0, 2)
+                    .expect("verify artifact")
+                    .content,
+                String::from_utf8_lossy(original)
+            );
+
+            let replacement = artifacts.join("replacement");
+            std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&replacement)
+                .expect("open replacement")
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .expect("preserve replacement mtime");
+            std::fs::rename(&replacement, &path).expect("replace artifact path");
+
+            assert_eq!(
+                store
+                    .read_paged(&digest, 0, 2)
+                    .expect("read pinned artifact")
+                    .content,
+                String::from_utf8_lossy(original)
+            );
+        }
+
+        #[test]
         fn bash_capture_composes_stdout_and_stderr_once() {
             let (_directory, capture) = capture();
             let stdout = "stdout-unique\n";
@@ -923,7 +1007,6 @@ pub(crate) use unix::*;
 #[cfg(windows)]
 mod windows {
     use std::{
-        collections::HashMap,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -941,8 +1024,8 @@ mod windows {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactFileFingerprint, ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES,
-        artifact_file_fingerprint, expand_transitive_artifact_references, read_file_paged,
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedFileCache,
+        expand_transitive_artifact_references, read_verified_file_paged,
         scan_durable_artifact_references,
     };
 
@@ -952,7 +1035,7 @@ mod windows {
     pub(crate) struct ArtifactStore {
         directory: PathBuf,
         writes: Mutex<()>,
-        verified_reads: Mutex<HashMap<String, ArtifactFileFingerprint>>,
+        verified_reads: Mutex<VerifiedFileCache>,
     }
 
     impl ArtifactStore {
@@ -963,7 +1046,7 @@ mod windows {
             let store = Arc::new(Self {
                 directory,
                 writes: Mutex::new(()),
-                verified_reads: Mutex::new(HashMap::new()),
+                verified_reads: Mutex::new(VerifiedFileCache::default()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -1061,11 +1144,12 @@ mod windows {
                     report.retained += 1;
                     continue;
                 }
-                fs::remove_file(entry.path())?;
-                self.verified_reads
+                let mut verified = self
+                    .verified_reads
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&digest);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                verified.evict(&digest);
+                fs::remove_file(entry.path())?;
                 report.deleted += 1;
             }
             Ok(report)
@@ -1135,26 +1219,65 @@ mod windows {
             if !is_digest_name(digest) {
                 return Err(invalid("invalid artifact digest"));
             }
-            let mut file = self.open_existing(digest)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-            })?;
-            let fingerprint = artifact_file_fingerprint(&file)?;
             let mut verified = self
                 .verified_reads
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if verified.get(digest) != Some(&fingerprint) {
-                if hash_file(&mut file)?.0 != digest {
-                    return Err(invalid("artifact content does not match its digest"));
-                }
-                if artifact_file_fingerprint(&file)? != fingerprint {
-                    return Err(invalid("artifact changed while it was being verified"));
-                }
-                verified.insert(digest.to_owned(), fingerprint);
+            let mut file = match verified.take(digest) {
+                Some(file) => file,
+                None => self.open_paged(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?,
+            };
+            let page =
+                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
+            verified.insert(digest.to_owned(), file);
+            Ok(page)
+        }
+
+        #[cfg(test)]
+        pub(super) fn read_paged_with_hook(
+            &self,
+            digest: &str,
+            offset_lines: u64,
+            limit_lines: u64,
+            hook: impl FnOnce() -> std::io::Result<()>,
+        ) -> std::io::Result<ArtifactPage> {
+            if !is_digest_name(digest) {
+                return Err(invalid("invalid artifact digest"));
             }
-            drop(verified);
-            file.seek(SeekFrom::Start(0))?;
-            read_file_paged(file, offset_lines, limit_lines)
+            let mut verified = self
+                .verified_reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut file = match verified.take(digest) {
+                Some(file) => file,
+                None => self.open_paged(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?,
+            };
+            let page =
+                read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
+            verified.insert(digest.to_owned(), file);
+            Ok(page)
+        }
+
+        fn open_paged(&self, name: &str) -> std::io::Result<Option<fs::File>> {
+            use std::os::windows::fs::OpenOptionsExt as _;
+
+            // FILE_SHARE_READ | FILE_SHARE_WRITE. Omitting FILE_SHARE_DELETE pins the path
+            // until the cache evicts and closes this handle.
+            const PAGED_READ_SHARE_MODE: u32 = 0x1 | 0x2;
+            let path = self.directory.join(name);
+            match fs::OpenOptions::new()
+                .read(true)
+                .share_mode(PAGED_READ_SHARE_MODE)
+                .open(path)
+            {
+                Ok(file) => Ok(Some(file)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
         }
 
         fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
@@ -1498,11 +1621,132 @@ mod windows {
                 std::io::ErrorKind::InvalidData
             );
         }
+
+        #[test]
+        fn cached_handle_blocks_same_length_replacement_with_preserved_mtime() {
+            let temporary = tempfile::tempdir().expect("temporary root");
+            let artifacts = temporary.path().join("artifacts");
+            let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+            let original = b"verified\ncontent\n";
+            let (_, digest) = store.retain(original).expect("retain artifact");
+            let path = artifacts.join(&digest);
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .expect("artifact mtime");
+            assert_eq!(
+                store
+                    .read_paged(&digest, 0, 2)
+                    .expect("verify artifact")
+                    .content,
+                String::from_utf8_lossy(original)
+            );
+
+            let replacement = artifacts.join("replacement");
+            std::fs::write(&replacement, vec![b'x'; original.len()]).expect("stage replacement");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&replacement)
+                .expect("open replacement")
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .expect("preserve replacement mtime");
+            assert!(
+                cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
+                    .is_err()
+            );
+
+            assert_eq!(
+                store
+                    .read_paged(&digest, 0, 2)
+                    .expect("read pinned artifact")
+                    .content,
+                String::from_utf8_lossy(original)
+            );
+        }
     }
 }
 
 #[cfg(windows)]
 pub(crate) use windows::*;
+
+#[cfg(test)]
+mod verified_read_cache_tests {
+    use std::io::Write as _;
+
+    use super::{ArtifactStore, VERIFIED_FILE_CACHE_CAPACITY};
+
+    #[test]
+    fn same_length_in_place_rewrite_with_preserved_mtime_is_never_served() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        let original = b"verified\ncontent\n";
+        let (_, digest) = store.retain(original).expect("retain artifact");
+        let path = artifacts.join(&digest);
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("artifact mtime");
+        store.read_paged(&digest, 0, 2).expect("verify artifact");
+
+        std::fs::write(&path, vec![b'x'; original.len()]).expect("rewrite artifact");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open rewritten artifact")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("restore artifact mtime");
+
+        assert_eq!(
+            store.read_paged(&digest, 0, 2).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn mutation_during_paged_read_is_never_served() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        let original = format!("first\n{}\n", "a".repeat(128 * 1024));
+        let (_, digest) = store.retain(original.as_bytes()).expect("retain artifact");
+        let path = artifacts.join(&digest);
+        store.read_paged(&digest, 0, 1).expect("verify artifact");
+
+        let replacement = vec![b'x'; original.len()];
+        let error = store
+            .read_paged_with_hook(&digest, 0, 2, || {
+                let mut writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)?;
+                writer.write_all(&replacement)
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn lru_eviction_closes_handle_and_reopens_digest_path() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        let mut digests = Vec::new();
+        for index in 0..=VERIFIED_FILE_CACHE_CAPACITY {
+            let (_, digest) = store
+                .retain(format!("artifact {index}\n").as_bytes())
+                .expect("retain artifact");
+            digests.push(digest);
+        }
+        for digest in &digests {
+            store.read_paged(digest, 0, 1).expect("cache artifact");
+        }
+
+        std::fs::remove_file(artifacts.join(&digests[0])).expect("remove evicted artifact");
+        assert_eq!(
+            store.read_paged(&digests[0], 0, 1).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+}
 
 #[cfg(test)]
 mod gc_tests {
@@ -1559,6 +1803,9 @@ mod gc_tests {
         ] {
             age(&artifacts_dir.join(digest));
         }
+        store
+            .read_paged(&unreferenced_digest, 0, 1)
+            .expect("cache unreferenced artifact");
         let line = serde_json::json!({
             "payload":{
                 "result":{"attachments":[{"reference":referenced}]},
