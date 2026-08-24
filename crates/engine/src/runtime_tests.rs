@@ -5122,6 +5122,14 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         let owner_policy = frozen_root_policy(&fixture, &selection);
         let binding = owner_policy.selected_suffix.first().expect("binding");
+        let internal_policy = fixture
+            .engine
+            .internal_agent_policy(
+                InternalAgentKind::ContextCompaction,
+                &owner_policy,
+                Some(binding),
+            )
+            .expect("compaction policy");
         let output = format!(
             "{RAW_MARKER}{}",
             "x".repeat(output_bytes - RAW_MARKER.len())
@@ -5177,6 +5185,11 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         )
         .expect("selected compaction context");
         let mut history = context.history;
+        history[0] = oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                internal_policy.agent.composed_prompt,
+            )),
+        ]));
         history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
             vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
                 crate::runtime::compaction::COMPACTION_INSTRUCTION,
@@ -5748,6 +5761,30 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     assert_eq!(shared_run.agent.description, "Primary test agent");
     assert_eq!(preset_run.selection.preset.as_deref(), Some("python"));
     assert_eq!(preset_run.agent.description, "Python preset primary");
+    let mut legacy_events = parent_projection.log.events();
+    for event in &mut legacy_events {
+        if event.run_id == Some(preset_run.id)
+            && let EventPayload::RunStarted {
+                internal_agents, ..
+            } = &mut event.payload
+        {
+            internal_agents.clear();
+        }
+    }
+    let legacy_policy = fixture
+        .engine
+        .historical_title_policy(&legacy_events, preset_run.id)
+        .expect("legacy preset policy");
+    let current_runtime = fixture.engine.current_runtime();
+    assert!(legacy_policy.internal_agents.is_empty());
+    assert!(!legacy_policy.historical_delegation);
+    assert!(Arc::ptr_eq(
+        &legacy_policy.registry,
+        current_runtime
+            .agent_presets
+            .get("python")
+            .expect("live python preset registry")
+    ));
 
     let child_projection = fixture
         .engine
@@ -5794,21 +5831,40 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     assert_eq!(replayed_run.selection.preset.as_deref(), Some("python"));
     assert_eq!(replayed_run.agent.description, "Python preset primary");
     let replayed_events = replayed.log.events();
-    let frozen_compaction = replayed_events
+    let frozen_run_started = replayed_events
         .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::RunStarted {
-                internal_agents, ..
-            } if event.run_id == Some(replayed_run.id) => internal_agents
-                .iter()
-                .find(|definition| definition.kind == InternalAgentKind::ContextCompaction),
-            _ => None,
+        .find(|event| {
+            event.run_id == Some(replayed_run.id)
+                && matches!(event.payload, EventPayload::RunStarted { .. })
         })
+        .expect("frozen preset run start");
+    let EventPayload::RunStarted {
+        internal_agents, ..
+    } = &frozen_run_started.payload
+    else {
+        unreachable!("matched run start")
+    };
+    let frozen_compaction = internal_agents
+        .iter()
+        .find(|definition| definition.kind == InternalAgentKind::ContextCompaction)
         .expect("frozen preset compaction definition");
     assert_eq!(
         frozen_compaction.composed_prompt,
         "Python preset compaction prompt.\n"
     );
+    for partial_len in [1, 2] {
+        let mut partial = frozen_run_started.clone();
+        let EventPayload::RunStarted {
+            internal_agents, ..
+        } = &mut partial.payload
+        else {
+            unreachable!("cloned run start")
+        };
+        internal_agents.truncate(partial_len);
+        assert!(partial.validate().is_err());
+        let encoded = serde_json::to_value(partial).expect("serialize partial run start");
+        assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(encoded).is_err());
+    }
     assert!(
         !reopened
             .get_history(parent.session_id, EngineHistoryView::Assembled)
@@ -5825,7 +5881,13 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     let requests = server.await.expect("preset switch server");
     assert_eq!(requests.len(), 5);
     assert!(
-        requests[4].contains("Create a detailed technical summary"),
+        requests[4].contains("Python preset compaction prompt"),
+        "{}",
+        requests[4]
+    );
+    assert!(
+        !requests[4]
+            .contains("Summarize conversation context faithfully within the supplied bounds"),
         "{}",
         requests[4]
     );

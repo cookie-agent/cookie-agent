@@ -2006,7 +2006,7 @@ impl EventPayload {
                 agent
                     .validate_selected_suffix(selection, selected_suffix)
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
-                if internal_agents.len() > 3
+                if !matches!(internal_agents.len(), 0 | 3)
                     || internal_agents
                         .windows(2)
                         .any(|pair| pair[0].kind >= pair[1].kind)

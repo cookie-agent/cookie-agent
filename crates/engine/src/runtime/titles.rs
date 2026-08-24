@@ -30,7 +30,12 @@ impl Engine {
     ) -> Result<FrozenRunPolicy, EngineError> {
         let (agent, suffix, internal_agents, preset) = latest_run_policy(events, run)?;
         let runtime = self.historical_run_runtime(run)?;
-        let agents = Arc::clone(&runtime.agents);
+        let fully_frozen = !internal_agents.is_empty();
+        let agents = if fully_frozen {
+            Arc::clone(&runtime.agents)
+        } else {
+            runtime.agents_for_preset(preset.as_deref())?
+        };
         let mut policy = policy_from_snapshot(
             agent,
             suffix,
@@ -42,7 +47,7 @@ impl Engine {
         )?;
         policy.preset = preset;
         policy.internal_agents = internal_agents;
-        policy.historical_delegation = true;
+        policy.historical_delegation = fully_frozen;
         Ok(policy)
     }
 

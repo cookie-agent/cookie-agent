@@ -279,8 +279,11 @@ impl Engine {
             {
                 self.estimated_request_tokens(input.session, &context.history, input.tools)?
             } else {
-                let (history, _) =
-                    compaction_history(context.history.clone(), compaction_focus.as_deref());
+                let (history, _) = compaction_history(
+                    context.history.clone(),
+                    compaction_focus.as_deref(),
+                    &input.internal_policy.agent.composed_prompt,
+                );
                 self.estimated_request_tokens(input.session, &history, input.tools)?
             };
             compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
@@ -412,8 +415,11 @@ impl Engine {
             }
         }
 
-        let (history, instruction) =
-            compaction_history(context.history, compaction_focus.as_deref());
+        let (history, instruction) = compaction_history(
+            context.history,
+            compaction_focus.as_deref(),
+            &input.internal_policy.agent.composed_prompt,
+        );
         let input_tokens_before =
             self.estimated_request_tokens(input.session, &history, input.tools)?;
         let summary = self
@@ -880,7 +886,16 @@ fn compaction_instruction(focus: Option<&str>) -> String {
 fn compaction_history(
     mut history: Vec<oven_sdk::HistoryTurn>,
     focus: Option<&str>,
+    system_prompt: &str,
 ) -> (Vec<oven_sdk::HistoryTurn>, String) {
+    let system = oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+        oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(system_prompt)),
+    ]));
+    if matches!(history.first(), Some(oven_sdk::HistoryTurn::System(_))) {
+        history[0] = system;
+    } else {
+        history.insert(0, system);
+    }
     let instruction = compaction_instruction(focus);
     history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
         vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
@@ -1208,7 +1223,7 @@ mod tests {
         let model = runtime.resolve(&binding.selection).expect("resolved model");
         let normal_request = model
             .prepare_request(ModelRequest::new(context.history.clone()).with_tools(tools.clone()));
-        let (compact_history, _) = compaction_history(context.history, None);
+        let (compact_history, _) = compaction_history(context.history, None, "system");
         let compact_request =
             model.prepare_request(ModelRequest::new(compact_history).with_tools(tools));
         let normal = serde_json::to_value(normal_request).expect("normal provider request");
