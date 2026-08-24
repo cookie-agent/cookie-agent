@@ -2,8 +2,9 @@
 
 ## Install
 
-The workspace requires Rust 1.88 or newer. Build the `cookie` binary from the
-repository:
+The workspace requires Rust 1.88 or newer. Cargo fetches the locked, git-pinned
+Oven SDK dependencies automatically, so a fresh repository clone can build the
+`cookie` binary directly:
 
 ```sh
 cargo build --locked -p cookie_agent

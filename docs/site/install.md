@@ -15,13 +15,14 @@ SHA256 checksum, and installs `cookie` under `$CARGO_HOME/bin` (normally
 
 ## PowerShell installer
 
-Windows installers will be available starting with the next Windows-enabled
-tagged release. Once that release is published, Windows x86_64 and ARM64 users
-can run the PowerShell installer:
+CI publishes Windows x86_64 and ARM64 installers with nightly prereleases. The
+latest tagged release, `v0.2.0`, predates those assets, so Windows installers
+currently ship through nightly prereleases and will also ship with the next
+tagged release.
 
-```powershell
-irm https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.ps1 | iex
-```
+Open a nightly prerelease and run its generated, tag-pinned PowerShell installer
+command. After the next tagged release, the stable `releases/latest` installer
+URL will work for Windows as well.
 
 The installer selects the matching MSVC ZIP archive, verifies its SHA256
 checksum, and installs `cookie.exe` under `%CARGO_HOME%\bin` (normally
@@ -29,8 +30,8 @@ checksum, and installs `cookie.exe` under `%CARGO_HOME%\bin` (normally
 
 ## Release archives
 
-Each [GitHub release](https://github.com/cookie-agent/cookie-agent/releases)
-provides an archive and `.sha256` checksum for:
+Current nightly [GitHub releases](https://github.com/cookie-agent/cookie-agent/releases)
+provide an archive and `.sha256` checksum for:
 
 - Linux x86_64 with glibc
 - Linux x86_64 with musl
@@ -59,8 +60,9 @@ command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 
 ## Build from source
 
-Install Rust 1.88 or newer, clone the repository, and install the locked
-workspace version:
+Install Rust 1.88 or newer and clone the repository. Cargo fetches the locked,
+git-pinned Oven SDK dependencies automatically. Install the locked workspace
+version with:
 
 ```sh
 cargo install --locked --path crates/cookie_agent

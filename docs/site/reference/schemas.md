@@ -1,13 +1,16 @@
 # Schema Compatibility
 
-Session event history is versionless and read best-effort. Other writers emit
-the current version and reject unsupported versions.
+Runtime configuration and agent documents are unversioned authored files parsed
+against the current shape. They reject `schema` and `schema_version` fields as
+hard errors rather than migrating or ignoring them. Session event history is
+also versionless and read best-effort. Versioned persisted and wire surfaces
+emit only their current version and reject unsupported versions.
 
 | Surface | Current write | Accepted reads |
 |---|---:|---:|
-| Runtime configuration | 10 | 10 |
-| Agent document | 5 | 5 |
-| Protocol | 10 | 10 |
+| Runtime configuration | unversioned | unversioned current shape |
+| Agent document | unversioned | unversioned current shape |
+| Protocol | 11 | 11 |
 | Events and session JSONL | versionless | versionless plus legacy schema markers |
 | Session metadata | 10 | 10 |
 | Runtime snapshot | 5 | 5 |

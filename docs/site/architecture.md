@@ -1,6 +1,6 @@
 # Architecture
 
-cookie agent is a subagent-first coding harness built as a Rust workspace of nine
+cookie agent is a subagent-first coding harness built as a Rust workspace of ten
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
 JSON-RPC WebSocket protocol. Session history is a versionless, best-effort-read
@@ -8,22 +8,25 @@ event log; other persisted and wire surfaces remain current-only.
 
 ## Process model
 
-The `cookie` binary (`crates/cookie_agent`) is a thin composition root. Its CLI has
-four subcommands plus a default mode:
+The `cookie` binary (`crates/cookie_agent`) is a thin composition root. Its CLI
+has six top-level subcommands plus a default mode:
 
 | Command | Behavior |
 |---|---|
 | *(none)* | Start an in-process daemon and open the TUI over an in-memory stream |
+| `run [options] <prompt>` | Run one prompt headlessly through the local engine |
 | `daemon` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default |
 | `attach [--url]` | Attach the TUI to an existing daemon WebSocket |
 | `connect [provider_id]` | Interactive durable managed-provider connection (TTY only) |
 | `disconnect [provider_id]` | Interactive durable managed-provider disconnection (TTY only) |
+| `mcp list` | List configured MCP servers |
+| `mcp auth <server>` | Start OAuth authorization for a remote MCP server |
 
 The daemon binds only to the configured port and authenticates every WebSocket
 with a bearer token stored at `~/.cookie_agent/daemon/token-v1`.
-`attach`, `connect`, and `disconnect` accept only loopback `ws`/`wss` URLs whose
-path is exactly `/ws`. All three use the same shared protocol client as the TUI,
-so the CLI keeps working even when built without the `tui` feature.
+`attach`, `connect`, `disconnect`, and `mcp` accept only loopback `ws`/`wss`
+URLs whose path is exactly `/ws`. They use the same shared protocol client as
+the TUI, so the CLI keeps working even when built without the `tui` feature.
 
 ## Crate layering
 
@@ -32,6 +35,7 @@ The workspace is layered bottom-up by dependency:
 ```text
 identity
   └─ protocol        (wire types + session transport/client/server traits)
+       ├─ plugin_sdk
        ├─ models
        │    └─ config
        │         └─ engine
@@ -45,6 +49,7 @@ identity
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
 | `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema and TypeScript bindings, the frame-level `Transport` trait, the `ClientProtocol`/`ServerProtocol` traits, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. Re-exports `identity` and hosts the unified wire types. |
+| `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
@@ -164,10 +169,10 @@ See [Configuration](guide/configuration.md) and the
    authored overrides) and authored custom providers into
    `CompiledDynamicModel` entries with concrete endpoints, validated setup,
    authentication, capabilities, request defaults, and variants.
-4. **Executable adapters.** The Oven SDK crates
-   (`oven-sdk-openai`, `oven-sdk-anthropic`, `oven-sdk-google`,
-    `oven-sdk-google-vertex`, `oven-sdk-bedrock`, `oven-sdk-azure`, and
-    `oven-sdk-cohere`) provide normalized language-model
+4. **Executable adapters.** The Oven crates (`oven-sdk`, `oven-sdk-openai`,
+   `oven-sdk-anthropic`, `oven-sdk-google`, `oven-sdk-google-vertex`,
+   `oven-sdk-bedrock`, `oven-sdk-azure`, `oven-sdk-cohere`, and the
+   `reqwest-oven` HTTP transport) provide normalized language-model
    implementations. The `models` crate selects the adapter for each compiled
    model and freezes it into project manifests.
 5. **Provider store.** Managed connections live in a global per-user provider

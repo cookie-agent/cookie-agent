@@ -44,8 +44,9 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cookie-agent/cookie-age
 ```
 
 See the [installation guide](https://cookie-agent.github.io/cookie-agent/install/)
-for direct binary downloads, nightly builds, and building from source. Building
-requires Rust 1.88 or newer:
+for direct binary downloads, nightly builds, and building from source. A fresh
+clone requires Rust 1.88 or newer; Cargo fetches the locked, git-pinned Oven SDK
+dependencies automatically:
 
 ```sh
 cargo build --locked -p cookie_agent

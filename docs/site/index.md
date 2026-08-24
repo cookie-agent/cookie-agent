@@ -11,7 +11,8 @@ turns that implementation into task-oriented guides and reference material.
 
 ## Quickstart
 
-You need Rust 1.88 or newer and Python 3 for the documentation tooling.
+You need Rust 1.88 or newer and Python 3 for the documentation tooling. Cargo
+fetches the locked, git-pinned Oven SDK dependencies when it builds the clone.
 
 ```sh
 git clone https://github.com/cookie-agent/cookie-agent.git
@@ -42,6 +43,7 @@ options, [Plugins](guide/plugins.md) for executable extensions, and
 
 ## Workspace crates
 
-The Rust workspace contains nine crates: `config`, `cookie_agent`, `engine`,
-`identity`, `models`, `protocol`, `server`, `tools`, and `tui`. Browse their
-public interfaces in the [Rust API documentation](reference/api.md).
+The Rust workspace contains ten crates: `config`, `cookie_agent`, `engine`,
+`identity`, `models`, `plugin_sdk`, `protocol`, `server`, `tools`, and `tui`.
+Browse their public interfaces in the
+[Rust API documentation](reference/api.md).
