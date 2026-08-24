@@ -1,6 +1,60 @@
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct ArtifactPage {
+    pub(crate) content: String,
+    pub(crate) next_offset_lines: Option<u64>,
+}
+
+#[allow(dead_code)]
+fn read_file_paged(
+    file: File,
+    offset_lines: u64,
+    limit_lines: u64,
+) -> std::io::Result<ArtifactPage> {
+    if limit_lines == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact page limit must be positive",
+        ));
+    }
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    for _ in 0..offset_lines {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(ArtifactPage {
+                content: String::new(),
+                next_offset_lines: None,
+            });
+        }
+    }
+    let mut content = Vec::new();
+    let mut read_lines = 0_u64;
+    while read_lines < limit_lines {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        content.extend_from_slice(&line);
+        read_lines += 1;
+    }
+    line.clear();
+    let has_more = reader.read_until(b'\n', &mut line)? != 0;
+    Ok(ArtifactPage {
+        content: String::from_utf8_lossy(&content).into_owned(),
+        next_offset_lines: has_more.then_some(offset_lines.saturating_add(read_lines)),
+    })
+}
+
 #[cfg(unix)]
 mod unix {
     use std::{
+        collections::HashSet,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -18,6 +72,7 @@ mod unix {
     use uuid::Uuid;
 
     use super::super::tool_execution::truncate_tool_output;
+    use super::{ArtifactPage, read_file_paged};
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -25,6 +80,8 @@ mod unix {
     pub(crate) struct ArtifactStore {
         directory_handle: Arc<fs::File>,
         writes: Mutex<()>,
+        #[allow(dead_code)]
+        verified_reads: Mutex<HashSet<String>>,
     }
 
     impl ArtifactStore {
@@ -39,9 +96,9 @@ mod unix {
             let store = Arc::new(Self {
                 directory_handle: Arc::new(handle),
                 writes: Mutex::new(()),
+                verified_reads: Mutex::new(HashSet::new()),
             });
             store.cleanup_temporary_artifacts()?;
-            store.verify_existing_artifact_hashes()?;
             Ok(store)
         }
 
@@ -126,24 +183,38 @@ mod unix {
             Ok(())
         }
 
-        fn verify_existing_artifact_hashes(&self) -> std::io::Result<()> {
-            for name in directory_names(&self.directory_handle)? {
-                if is_digest_name(&name) {
-                    let mut file = self.open_existing(&name)?.ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            "existing artifact disappeared during validation",
-                        )
-                    })?;
-                    if hash_file(&mut file)?.0 != name {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "existing artifact content does not match its digest name",
-                        ));
-                    }
-                }
+        #[allow(dead_code)]
+        pub(crate) fn read_paged(
+            &self,
+            digest: &str,
+            offset_lines: u64,
+            limit_lines: u64,
+        ) -> std::io::Result<ArtifactPage> {
+            if !is_digest_name(digest) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid artifact digest",
+                ));
             }
-            Ok(())
+            let mut file = self.open_existing(digest)?.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+            })?;
+            let mut verified = self
+                .verified_reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !verified.contains(digest) {
+                if hash_file(&mut file)?.0 != digest {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "artifact content does not match its digest",
+                    ));
+                }
+                verified.insert(digest.to_owned());
+            }
+            drop(verified);
+            file.seek(SeekFrom::Start(0))?;
+            read_file_paged(file, offset_lines, limit_lines)
         }
 
         fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
@@ -580,6 +651,39 @@ mod unix {
         }
 
         #[test]
+        fn paged_reads_verify_lazily_and_report_missing_or_corrupt_blobs() {
+            let directory = tempfile::tempdir().expect("temporary artifact root");
+            let artifacts = directory.path().join("artifacts");
+            let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
+            let (_, digest) = store
+                .retain(b"zero\none\ntwo\nthree")
+                .expect("retain artifact");
+            assert_eq!(
+                store.read_paged(&digest, 1, 2).expect("paged read"),
+                super::ArtifactPage {
+                    content: "one\ntwo\n".into(),
+                    next_offset_lines: Some(3),
+                }
+            );
+            assert_eq!(
+                store.read_paged(&digest, 3, 2).expect("last page"),
+                super::ArtifactPage {
+                    content: "three".into(),
+                    next_offset_lines: None,
+                }
+            );
+            assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
+
+            drop(store);
+            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt artifact");
+            let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
+            assert_eq!(
+                reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+
+        #[test]
         fn bash_capture_composes_stdout_and_stderr_once() {
             let (_directory, capture) = capture();
             let stdout = "stdout-unique\n";
@@ -632,6 +736,7 @@ pub(crate) use unix::*;
 #[cfg(windows)]
 mod windows {
     use std::{
+        collections::HashSet,
         fs,
         io::{Read, Seek, SeekFrom, Write},
         path::PathBuf,
@@ -648,6 +753,7 @@ mod windows {
     use uuid::Uuid;
 
     use super::super::tool_execution::truncate_tool_output;
+    use super::{ArtifactPage, read_file_paged};
 
     pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -655,6 +761,8 @@ mod windows {
     pub(crate) struct ArtifactStore {
         directory: PathBuf,
         writes: Mutex<()>,
+        #[allow(dead_code)]
+        verified_reads: Mutex<HashSet<String>>,
     }
 
     impl ArtifactStore {
@@ -665,9 +773,9 @@ mod windows {
             let store = Arc::new(Self {
                 directory,
                 writes: Mutex::new(()),
+                verified_reads: Mutex::new(HashSet::new()),
             });
             store.cleanup_temporary_artifacts()?;
-            store.verify_existing_artifact_hashes()?;
             Ok(store)
         }
 
@@ -774,20 +882,32 @@ mod windows {
             Ok(())
         }
 
-        fn verify_existing_artifact_hashes(&self) -> std::io::Result<()> {
-            for entry in fs::read_dir(&self.directory)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if is_digest_name(&name) {
-                    let mut file = self
-                        .open_existing(&name)?
-                        .ok_or_else(|| invalid("existing artifact disappeared"))?;
-                    if hash_file(&mut file)?.0 != name {
-                        return Err(invalid("existing artifact content does not match its name"));
-                    }
-                }
+        #[allow(dead_code)]
+        pub(crate) fn read_paged(
+            &self,
+            digest: &str,
+            offset_lines: u64,
+            limit_lines: u64,
+        ) -> std::io::Result<ArtifactPage> {
+            if !is_digest_name(digest) {
+                return Err(invalid("invalid artifact digest"));
             }
-            Ok(())
+            let mut file = self.open_existing(digest)?.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+            })?;
+            let mut verified = self
+                .verified_reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !verified.contains(digest) {
+                if hash_file(&mut file)?.0 != digest {
+                    return Err(invalid("artifact content does not match its digest"));
+                }
+                verified.insert(digest.to_owned());
+            }
+            drop(verified);
+            file.seek(SeekFrom::Start(0))?;
+            read_file_paged(file, offset_lines, limit_lines)
         }
 
         fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
@@ -1088,7 +1208,7 @@ mod windows {
 
     #[cfg(test)]
     mod tests {
-        use super::ArtifactStore;
+        use super::{ArtifactPage, ArtifactStore};
 
         #[test]
         fn uses_preexisting_artifact_directory_without_acl_validation() {
@@ -1096,6 +1216,31 @@ mod windows {
             let artifacts = temporary.path().join("artifacts");
             std::fs::create_dir(&artifacts).expect("ordinary artifact directory");
             ArtifactStore::open(artifacts).expect("existing artifact directory");
+        }
+
+        #[test]
+        fn paged_reads_verify_lazily_and_report_missing_or_corrupt_blobs() {
+            let temporary = tempfile::tempdir().expect("temporary root");
+            let artifacts = temporary.path().join("artifacts");
+            let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+            let (_, digest) = store
+                .retain(b"zero\none\ntwo\nthree")
+                .expect("retain artifact");
+            assert_eq!(
+                store.read_paged(&digest, 1, 2).expect("paged read"),
+                ArtifactPage {
+                    content: "one\ntwo\n".into(),
+                    next_offset_lines: Some(3),
+                }
+            );
+            assert!(store.read_paged(&"a".repeat(64), 0, 1).is_err());
+            drop(store);
+            std::fs::write(artifacts.join(&digest), b"corrupt").expect("corrupt artifact");
+            let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
+            assert_eq!(
+                reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
         }
     }
 }
