@@ -969,12 +969,15 @@ pub(super) fn truncate_tool_output(
 
 pub(super) fn bound_tool_result(
     mut result: ToolResult,
-    _tool_name: &str,
+    tool_name: &str,
     _call_id: ToolCallId,
     artifacts: &ArtifactStore,
     max_lines: usize,
     max_bytes: usize,
 ) -> std::io::Result<ToolResult> {
+    if tool_name == "read_tool_result" {
+        return Ok(result);
+    }
     let Some(preview) = truncate_tool_output(&result.output, max_lines, max_bytes) else {
         return Ok(result);
     };
@@ -1013,9 +1016,9 @@ pub(crate) fn validate_attachment(
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::ToolCallId;
+    use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText, ToolCallId};
 
-    use super::{ToolCall, fallback_operation_fingerprint};
+    use super::{ArtifactStore, ToolCall, bound_tool_result, fallback_operation_fingerprint};
 
     #[test]
     fn discovery_failure_fingerprints_keep_known_tool_actions() {
@@ -1039,5 +1042,30 @@ mod tests {
                 "{tool_name}"
             );
         }
+    }
+
+    #[test]
+    fn read_tool_result_is_never_retruncated() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let output = "line\n".repeat(1_000);
+        let result = PersistedToolResult {
+            title: SafeDisplayText::new("Retained output").unwrap(),
+            output: output.clone(),
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: Vec::new(),
+        };
+        let bounded = bound_tool_result(
+            result,
+            "read_tool_result",
+            ToolCallId::new_v7(),
+            &artifacts,
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(bounded.output, output);
+        assert!(bounded.truncation.is_none());
     }
 }
