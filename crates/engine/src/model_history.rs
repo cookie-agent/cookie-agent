@@ -464,7 +464,7 @@ fn assemble_history_with_replay(
             {
                 if let Some(result) = &termination.result {
                     let result = elisions.get(&termination.tool_call_id).map_or_else(
-                        || tool_result_part(result, store),
+                        || tool_result_part(result, termination.tool_call_id, store),
                         |(original_bytes, retained)| {
                             Ok(ToolResultPart::new(
                                 String::new(),
@@ -748,14 +748,26 @@ fn denied_failure(message: &str) -> Option<DeniedToolFailure> {
 
 fn tool_result_part(
     result: &PersistedToolResult,
+    tool_call_id: ToolCallId,
     store: &ArtifactStore,
 ) -> Result<ToolResultPart, HistoryError> {
+    let truncation = result.truncation.as_ref().map(|truncation| {
+        serde_json::json!({
+            "original_bytes":truncation.original_bytes,
+            "original_lines":truncation.original_lines,
+            "retained":truncation.retained,
+            "read_more":{
+                "tool":"read_tool_result",
+                "arguments":{"tool_call_id":tool_call_id}
+            }
+        })
+    });
     let mut values = vec![
         ContentValue::Text(result.output.clone()),
         ContentValue::Json(serde_json::json!({
             "title": result.title,
             "metadata": result.metadata,
-            "truncation": result.truncation,
+            "truncation": truncation,
         })),
     ];
     for attachment in &result.attachments {
@@ -1371,7 +1383,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cookie_agent_protocol::{
-        AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
+        ArtifactReference, AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
         ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, InternalAgentInvocationId,
         InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey,
         ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
@@ -1380,7 +1392,7 @@ mod tests {
         PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
         ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
         SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolTerminationOutcome, Usage,
+        ToolCallStart, ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -1393,8 +1405,33 @@ mod tests {
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_full_history,
         assemble_model_context, checkpoint_retained_history, framed_compaction_summary,
         replay_decisions, replay_decisions_with_preflight, restore_replay,
-        tool_output_elision_marker, wire_model,
+        tool_output_elision_marker, tool_result_part, wire_model,
     };
+
+    #[test]
+    fn truncated_tool_result_names_the_readback_tool() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let call_id = ToolCallId::new_v7();
+        let result = PersistedToolResult {
+            title: SafeDisplayText::new("Truncated").unwrap(),
+            output: "preview".into(),
+            metadata: serde_json::Value::Null,
+            truncation: Some(ToolOutputTruncation {
+                original_bytes: 100,
+                original_lines: 10,
+                retained: ArtifactReference {
+                    uri: format!("artifact://sha256/{}", "a".repeat(64)),
+                },
+            }),
+            attachments: Vec::new(),
+        };
+        let encoded = serde_json::to_value(tool_result_part(&result, call_id, &store).unwrap())
+            .unwrap()
+            .to_string();
+        assert!(encoded.contains("read_tool_result"));
+        assert!(encoded.contains(&call_id.to_string()));
+    }
 
     #[test]
     fn compaction_summary_framing_is_byte_stable() {
