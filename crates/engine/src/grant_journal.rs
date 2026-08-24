@@ -8,7 +8,7 @@ use std::{
 #[cfg(test)]
 use std::{fs::OpenOptions, io::Write};
 
-use cookie_agent_protocol::{EventSchemaVersion, SessionId, Sha256Digest, TreeApprovalGrantId};
+use cookie_agent_protocol::{SessionId, Sha256Digest, TreeApprovalGrantId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -18,7 +18,6 @@ use crate::events::{EventLogError, append_jsonl, load_jsonl};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GrantInvalidationRecord {
-    schema_version: EventSchemaVersion,
     seq: u64,
     timestamp: Timestamp,
     root_session_id: SessionId,
@@ -130,7 +129,6 @@ impl GrantInvalidationJournal {
                 }
             })?;
         let record = GrantInvalidationRecord {
-            schema_version: EventSchemaVersion::current(),
             seq,
             timestamp: Timestamp::now(),
             root_session_id,

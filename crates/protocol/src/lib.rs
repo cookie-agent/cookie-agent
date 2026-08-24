@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 11, event schemas 15-21, and session metadata schema 10.
+//! Exact cookie-agent protocol 11 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -127,9 +127,6 @@ pub use setup_value::*;
 
 /// The only protocol version supported by this build.
 pub const PROTOCOL_VERSION: u32 = 11;
-// Retained for the grant-invalidation journal until that journal is folded
-// into session events. Stored session events are versionless.
-pub const EVENT_SCHEMA_VERSION: u32 = 21;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
@@ -206,47 +203,6 @@ exact_numeric_wire_type!(
     "11",
     "The exact protocol wire version."
 );
-/// Legacy schema marker used only by the grant-invalidation journal.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, TS)]
-#[ts(type = "15 | 16 | 17 | 18 | 19 | 20 | 21")]
-pub struct EventSchemaVersion(u32);
-
-impl EventSchemaVersion {
-    #[must_use]
-    pub const fn current() -> Self {
-        Self(EVENT_SCHEMA_VERSION)
-    }
-
-    #[must_use]
-    pub const fn value(self) -> u32 {
-        self.0
-    }
-}
-
-impl Serialize for EventSchemaVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for EventSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if matches!(value, 15..=21) {
-            Ok(Self(value))
-        } else {
-            Err(serde::de::Error::custom(
-                "unsupported legacy journal schema",
-            ))
-        }
-    }
-}
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     5,
