@@ -252,16 +252,7 @@ impl Engine {
         Ok(delegation
             .targets
             .iter()
-            .filter(|target| {
-                active.policy.registry.get(target).is_some_and(|agent| {
-                    agent.document.frontmatter.enabled
-                        && matches!(
-                            agent.document.frontmatter.mode,
-                            cookie_agent_config::AgentMode::Subagent
-                                | cookie_agent_config::AgentMode::All
-                        )
-                })
-            })
+            .filter(|target| active.policy.delegation_target_available(target))
             .cloned()
             .collect())
     }

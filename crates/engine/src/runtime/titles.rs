@@ -28,19 +28,10 @@ impl Engine {
         events: &[StoredEvent],
         run: RunId,
     ) -> Result<FrozenRunPolicy, EngineError> {
-        let (agent, suffix) = latest_run_policy(events, run)?;
+        let (agent, suffix, internal_agents, preset) = latest_run_policy(events, run)?;
         let runtime = self.historical_run_runtime(run)?;
-        let preset = events.iter().find_map(|event| {
-            if event.run_id != Some(run) {
-                return None;
-            }
-            let crate::runtime::Event::RunStarted { selection, .. } = &event.payload else {
-                return None;
-            };
-            Some(selection.preset.as_deref())
-        });
-        let agents = runtime.agents_for_preset(preset.flatten())?;
-        policy_from_snapshot(
+        let agents = Arc::clone(&runtime.agents);
+        let mut policy = policy_from_snapshot(
             agent,
             suffix,
             agents,
@@ -48,7 +39,11 @@ impl Engine {
             self.inner.config.runtime.tool_output.max_lines,
             self.inner.config.runtime.tool_output.max_bytes,
             self.inner.config.runtime.prompt_caching.strategy(),
-        )
+        )?;
+        policy.preset = preset;
+        policy.internal_agents = internal_agents;
+        policy.historical_delegation = true;
+        Ok(policy)
     }
 
     pub(super) async fn maybe_generate_session_title(
@@ -194,26 +189,32 @@ fn title_prompt<'a>(
     )
 }
 
+type PersistedRunPolicy = (
+    cookie_agent_protocol::AgentSnapshot,
+    Vec<cookie_agent_protocol::FrozenModelBinding>,
+    Vec<cookie_agent_protocol::FrozenInternalAgentDefinition>,
+    Option<String>,
+);
+
 pub(super) fn latest_run_policy(
     events: &[StoredEvent],
     run_id: RunId,
-) -> Result<
-    (
-        cookie_agent_protocol::AgentSnapshot,
-        Vec<cookie_agent_protocol::FrozenModelBinding>,
-    ),
-    EngineError,
-> {
+) -> Result<PersistedRunPolicy, EngineError> {
     events
         .iter()
         .find_map(|event| match &event.payload {
             Event::RunStarted {
                 agent,
                 selected_suffix,
+                internal_agents,
+                selection,
                 ..
-            } if event.run_id == Some(run_id) => {
-                Some((agent.as_ref().clone(), selected_suffix.clone()))
-            }
+            } if event.run_id == Some(run_id) => Some((
+                agent.as_ref().clone(),
+                selected_suffix.clone(),
+                internal_agents.clone(),
+                selection.preset.clone(),
+            )),
             _ => None,
         })
         .ok_or(EngineError::MissingRun(run_id))

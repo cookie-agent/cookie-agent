@@ -53,7 +53,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "preset",
         aliases: &[],
         usage: "/preset",
-        description: "choose the agent preset for new sessions",
+        description: "select the preset for the next root run and future new sessions",
         requires_arguments: false,
     },
     CommandSpec {

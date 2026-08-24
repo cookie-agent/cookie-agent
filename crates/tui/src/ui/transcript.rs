@@ -4419,6 +4419,7 @@ mod tests {
                 recipe_registry_revision: recipe_registry_revision.clone(),
                 manifest_revision: manifest_revision.clone(),
                 selected_suffix: vec![binding],
+                internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
         );
@@ -7473,6 +7474,7 @@ mod tests {
                 recipe_registry_revision: protocol_revision("6"),
                 manifest_revision: protocol_revision("7"),
                 selected_suffix: snapshot_chain,
+                internal_agents: Vec::new(),
                 input_through_seq: seq,
             },
         )
@@ -8693,7 +8695,7 @@ mod tests {
         for expected in [
             "/quit — exit the TUI",
             "/new — start a new root session",
-            "/preset — choose the agent preset for new sessions",
+            "/preset — select the preset for the next root run and future new sessions",
             "/approve once|all|reject|cancel — answer an approval",
             "/events debug|info|warning|error — set the diagnostic level filter for this view",
             "/help — show command help",

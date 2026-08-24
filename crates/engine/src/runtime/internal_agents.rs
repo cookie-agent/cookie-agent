@@ -1,7 +1,8 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
-    AgentId, AgentMode, ApprovalInternalDecisionKind, InternalAgentBackend, InternalAgentFailure,
+    AgentId, AgentMode, ApprovalInternalDecisionKind, FrozenInternalAgentDefinition,
+    FrozenInternalAgentFallback, InternalAgentBackend, InternalAgentFailure,
     InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, RunId, SafeInternalAgentCall,
     SafeInternalAgentResult, SessionId, Sha256Digest,
 };
@@ -357,20 +358,92 @@ impl Engine {
         )
     }
 
+    pub(crate) fn freeze_internal_agent_definitions(
+        &self,
+        owner: &FrozenRunPolicy,
+    ) -> Result<Vec<FrozenInternalAgentDefinition>, EngineError> {
+        [
+            InternalAgentKind::Approval,
+            InternalAgentKind::ContextCompaction,
+            InternalAgentKind::SessionTitle,
+        ]
+        .into_iter()
+        .map(|kind| {
+            let id = internal_agent_id(kind)?;
+            let resolved = owner
+                .registry
+                .get(&id)
+                .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))?;
+            if resolved.document.frontmatter.mode != cookie_agent_config::AgentMode::Internal {
+                return Err(EngineError::InvalidRuntimeAgent(id));
+            }
+            let fallbacks = resolved
+                .resolved_fallback
+                .iter()
+                .filter_map(|fallback| match fallback {
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => {
+                        Some(Ok(FrozenInternalAgentFallback::ParentModel))
+                    }
+                    crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => owner
+                        .runtime
+                        .models
+                        .model(&selection.model)
+                        .is_some_and(|model| {
+                            model.model.status
+                                == cookie_agent_models::compiler::CompiledModelStatus::Available
+                        })
+                        .then(|| {
+                            crate::model_snapshots::binding_for_selection(
+                                &owner.runtime.current_manifest,
+                                &owner.runtime.models,
+                                selection,
+                            )
+                            .map(|binding| {
+                                FrozenInternalAgentFallback::Model {
+                                    binding: Box::new(binding),
+                                }
+                            })
+                        }),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let document = &resolved.document;
+            let definition = FrozenInternalAgentDefinition {
+                kind,
+                agent: document.id.clone(),
+                description: document.frontmatter.description.clone(),
+                document_source: document.source,
+                document_fingerprint: Sha256Digest::new(document.document_fingerprint.as_str())
+                    .map_err(|_| EngineError::RuntimeCompileFailed)?,
+                composed_prompt: document.body.clone(),
+                prompt_fingerprint: Sha256Digest::new(document.prompt_fingerprint.as_str())
+                    .map_err(|_| EngineError::RuntimeCompileFailed)?,
+                enabled: document.frontmatter.enabled,
+                max_output_tokens: document.frontmatter.limits.max_output_tokens,
+                timeout_ms: document.frontmatter.limits.timeout_ms,
+                fallbacks,
+            };
+            definition
+                .validate()
+                .map_err(|_| EngineError::RuntimeCompileFailed)?;
+            Ok(definition)
+        })
+        .collect()
+    }
+
     pub(crate) fn internal_agent_policy(
         &self,
         kind: InternalAgentKind,
         owner: &FrozenRunPolicy,
         parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
     ) -> Result<FrozenInternalAgentPolicy, EngineError> {
-        let id = AgentId::new(match kind {
-            InternalAgentKind::Approval => cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
-            InternalAgentKind::ContextCompaction => {
-                cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
-            }
-            InternalAgentKind::SessionTitle => cookie_agent_config::BUILT_IN_TITLE_AGENT_ID,
-        })
-        .map_err(|_| EngineError::RuntimeCompileFailed)?;
+        if let Some(definition) = owner
+            .internal_agents
+            .iter()
+            .find(|definition| definition.kind == kind)
+        {
+            return frozen_internal_policy_from_definition(definition, owner, parent_binding);
+        }
+        let id = internal_agent_id(kind)?;
         let resolved = owner
             .registry
             .get(&id)
@@ -458,6 +531,67 @@ impl Engine {
             prompt_cache_strategy,
         })
     }
+}
+
+fn internal_agent_id(kind: InternalAgentKind) -> Result<AgentId, EngineError> {
+    AgentId::new(match kind {
+        InternalAgentKind::Approval => cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID,
+        InternalAgentKind::ContextCompaction => cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID,
+        InternalAgentKind::SessionTitle => cookie_agent_config::BUILT_IN_TITLE_AGENT_ID,
+    })
+    .map_err(|_| EngineError::RuntimeCompileFailed)
+}
+
+fn frozen_internal_policy_from_definition(
+    definition: &FrozenInternalAgentDefinition,
+    owner: &FrozenRunPolicy,
+    parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
+) -> Result<FrozenInternalAgentPolicy, EngineError> {
+    let models = if definition.enabled {
+        definition
+            .fallbacks
+            .iter()
+            .filter_map(|fallback| match fallback {
+                FrozenInternalAgentFallback::ParentModel => parent_binding.cloned(),
+                FrozenInternalAgentFallback::Model { binding } => Some(binding.as_ref().clone()),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let agent = cookie_agent_protocol::AgentSnapshot {
+        agent: definition.agent.clone(),
+        schema: cookie_agent_protocol::AgentSchemaVersion::current(),
+        mode: AgentMode::Internal,
+        description: definition.description.clone(),
+        document_source: definition.document_source,
+        document_fingerprint: definition.document_fingerprint.clone(),
+        composed_prompt: definition.composed_prompt.clone(),
+        prompt_fingerprint: definition.prompt_fingerprint.clone(),
+        max_output_tokens: definition.max_output_tokens,
+        permissions: Vec::new(),
+        delegation: None,
+        fallback_chain: models.clone(),
+        selected_suffix_start: 0,
+    };
+    let mut prompt_cache_strategy = owner.prompt_cache_strategy.clone();
+    if matches!(
+        definition.kind,
+        InternalAgentKind::Approval | InternalAgentKind::SessionTitle
+    ) && let Some(strategy) = &mut prompt_cache_strategy
+    {
+        strategy.rolling = None;
+    }
+    Ok(FrozenInternalAgentPolicy {
+        agent,
+        models,
+        runtime: Some(Arc::clone(&owner.runtime)),
+        limits: InternalAgentLimits {
+            max_output_tokens: definition.max_output_tokens,
+            timeout_ms: definition.timeout_ms,
+        },
+        prompt_cache_strategy,
+    })
 }
 
 fn internal_agent_max_input_limit(policy: &FrozenInternalAgentPolicy) -> u64 {

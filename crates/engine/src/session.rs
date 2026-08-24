@@ -1349,6 +1349,7 @@ mod tests {
                     recipe_registry_revision,
                     manifest_revision: binding.manifest_revision.clone(),
                     selected_suffix: vec![binding],
+                    internal_agents: Vec::new(),
                     input_through_seq: 1,
                 },
             )
@@ -1635,6 +1636,7 @@ mod tests {
                 recipe_registry_revision,
                 manifest_revision: binding.manifest_revision.clone(),
                 selected_suffix: vec![binding],
+                internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
         )
@@ -1880,6 +1882,7 @@ mod tests {
                 recipe_registry_revision,
                 manifest_revision: binding.manifest_revision.clone(),
                 selected_suffix: vec![binding],
+                internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
         )
@@ -2188,6 +2191,7 @@ mod windows_tests {
                     recipe_registry_revision,
                     manifest_revision: binding.manifest_revision.clone(),
                     selected_suffix: vec![binding],
+                    internal_agents: Vec::new(),
                     input_through_seq: 1,
                 },
             )

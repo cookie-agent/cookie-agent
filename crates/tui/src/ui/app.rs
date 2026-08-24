@@ -5075,7 +5075,7 @@ impl App {
                         self.draft_status("Draft run preset")
                     } else {
                         format!(
-                            "Agent preset for future root sessions: {}; delegated session remains pinned",
+                            "Agent preset for the next root run and future new sessions: {}; delegated session remains pinned",
                             self.selected_preset_label()
                         )
                     };
@@ -5650,7 +5650,8 @@ impl App {
             SlashCommand::Preset => {
                 self.modal = Modal::Presets;
                 self.picker_state.select(Some(0));
-                self.status = "Select the agent preset used for new sessions.".into();
+                self.status =
+                    "Select the preset for the next root run and future new sessions.".into();
             }
             SlashCommand::Connect => {
                 self.clear_connect_secrets();
@@ -6298,7 +6299,7 @@ impl App {
                 entries.extend(self.preset_names());
                 self.render_picker(
                     frame,
-                    "Agent preset — new sessions",
+                    "Agent preset — next root run and future new sessions",
                     entries,
                     None,
                     centered(frame.area(), 48, 40),

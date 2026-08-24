@@ -3455,7 +3455,7 @@ async fn scripted_background_delegation_server() -> (String, tokio::task::JoinHa
 
 async fn scripted_preset_switch_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>)
 {
-    let (endpoint, responses, task) = scripted_channel_server(4).await;
+    let (endpoint, responses, task) = scripted_channel_server(5).await;
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "complete the shared run",
@@ -3489,6 +3489,12 @@ async fn scripted_preset_switch_delegation_server() -> (String, tokio::task::Joi
             scripted_text_body("preset parent complete"),
         ))
         .expect("preset parent response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("historical preset summary"),
+        ))
+        .expect("historical compaction response");
     (endpoint, task)
 }
 
@@ -5658,6 +5664,20 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .expect("preset worker")
         .frontmatter
         .description = "Python preset worker".into();
+    let mut compaction = fixture.config.agents[&primary_id].clone();
+    compaction.id = AgentId::new("compaction").expect("compaction ID");
+    compaction.frontmatter.description = "Python preset compaction".into();
+    compaction.frontmatter.mode = cookie_agent_config::AgentMode::Internal;
+    compaction.frontmatter.models = vec![cookie_agent_config::AgentModelFallback {
+        model: cookie_agent_config::AgentModelRef::ParentModel,
+        variant: None,
+    }];
+    compaction.frontmatter.limits = cookie_agent_config::AgentLimits {
+        timeout_ms: 30_000,
+        max_output_tokens: 2_048,
+    };
+    compaction.body = "Python preset compaction prompt.\n".into();
+    python_agents.insert(compaction.id.clone(), compaction);
     fixture
         .config
         .agent_presets
@@ -5758,7 +5778,6 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         Err(EngineError::NoRunnableModel)
     ));
 
-    assert_eq!(server.await.expect("preset switch server").len(), 4);
     fixture.engine.shutdown().await;
     fixture.config.agent_presets.clear();
     let reopened = reopen_engine(&fixture);
@@ -5774,6 +5793,42 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .expect("replayed preset run");
     assert_eq!(replayed_run.selection.preset.as_deref(), Some("python"));
     assert_eq!(replayed_run.agent.description, "Python preset primary");
+    let replayed_events = replayed.log.events();
+    let frozen_compaction = replayed_events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::RunStarted {
+                internal_agents, ..
+            } if event.run_id == Some(replayed_run.id) => internal_agents
+                .iter()
+                .find(|definition| definition.kind == InternalAgentKind::ContextCompaction),
+            _ => None,
+        })
+        .expect("frozen preset compaction definition");
+    assert_eq!(
+        frozen_compaction.composed_prompt,
+        "Python preset compaction prompt.\n"
+    );
+    assert!(
+        !reopened
+            .get_history(parent.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("historical assembled history")
+            .is_empty()
+    );
+    assert!(
+        reopened
+            .compact_session(parent.session_id, None)
+            .await
+            .expect("historical manual compaction")
+    );
+    let requests = server.await.expect("preset switch server");
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[4].contains("Create a detailed technical summary"),
+        "{}",
+        requests[4]
+    );
     reopened.shutdown().await;
 }
 
