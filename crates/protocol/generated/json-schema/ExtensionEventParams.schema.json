@@ -135,7 +135,7 @@
         },
         "schema": {
           "type": "integer",
-          "const": 6
+          "const": 7
         },
         "selected_suffix_start": {
           "type": "integer",
@@ -1168,6 +1168,14 @@
               "type": "integer",
               "format": "uint64",
               "minimum": 0
+            },
+            "internal_agents": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/FrozenInternalAgentDefinition"
+              },
+              "maxItems": 3
             },
             "manifest_revision": {
               "type": "string",
@@ -2893,6 +2901,113 @@
       "required": [
         "targets",
         "effective_depth_ceiling"
+      ]
+    },
+    "FrozenInternalAgentDefinition": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "composed_prompt": {
+          "type": "string",
+          "maxLength": 131072,
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "document_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "document_source": {
+          "$ref": "#/$defs/AgentDocumentSource"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrozenInternalAgentFallback"
+          },
+          "maxItems": 256
+        },
+        "kind": {
+          "$ref": "#/$defs/InternalAgentKind"
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "prompt_fingerprint": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "agent",
+        "description",
+        "document_source",
+        "document_fingerprint",
+        "composed_prompt",
+        "prompt_fingerprint",
+        "enabled",
+        "max_output_tokens",
+        "timeout_ms",
+        "fallbacks"
+      ]
+    },
+    "FrozenInternalAgentFallback": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "parent_model"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "binding": {
+              "$ref": "#/$defs/FrozenModelBinding"
+            },
+            "type": {
+              "type": "string",
+              "const": "model"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "binding"
+          ]
+        }
       ]
     },
     "FrozenModelBinding": {
@@ -5197,6 +5312,15 @@
             "model",
             "variant"
           ]
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         }
       },
       "additionalProperties": false,

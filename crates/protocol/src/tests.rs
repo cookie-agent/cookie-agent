@@ -195,10 +195,10 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 9);
+    assert_eq!(PROTOCOL_VERSION, 10);
     assert_eq!(EVENT_SCHEMA_VERSION, 21);
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 4);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(8)).is_err());
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(9)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     for version in [15, 16, 17, 18, 19, 20, 21] {
         assert_eq!(
@@ -210,8 +210,39 @@ fn wire_versions_accept_only_documented_history() {
     }
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(14)).is_err());
     assert!(serde_json::from_value::<EventSchemaVersion>(json!(22)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(3)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn run_selection_preset_is_optional_and_uses_the_authored_name_grammar() {
+    let selection = json!({
+        "agent": "primary",
+        "model": {"model": "custom.test/model", "variant": null}
+    });
+    assert_eq!(
+        serde_json::from_value::<RunSelection>(selection.clone())
+            .unwrap()
+            .preset,
+        None
+    );
+    let mut valid = selection.clone();
+    valid["preset"] = json!("python-3");
+    assert_eq!(
+        serde_json::from_value::<RunSelection>(valid)
+            .unwrap()
+            .preset
+            .as_deref(),
+        Some("python-3")
+    );
+    for invalid in ["", "Python", "python--3", "python_3"] {
+        let mut value = selection.clone();
+        value["preset"] = json!(invalid);
+        assert!(serde_json::from_value::<RunSelection>(value).is_err());
+    }
+    let mut oversized = selection;
+    oversized["preset"] = json!("a".repeat(65));
+    assert!(serde_json::from_value::<RunSelection>(oversized).is_err());
 }
 
 #[test]
@@ -266,16 +297,19 @@ fn session_tree_usage_result_round_trips() {
 }
 
 #[test]
-fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
+fn prior_agent_snapshots_upconvert_exactly_and_write_schema_seven() {
     let current = serde_json::to_value(child_agent(frozen_binding())).unwrap();
     let mut previous = current.clone();
-    previous["schema"] = json!(5);
-    previous
-        .as_object_mut()
-        .unwrap()
-        .remove("max_output_tokens");
+    previous["schema"] = json!(6);
     let converted = serde_json::from_value::<AgentSnapshot>(previous).unwrap();
-    assert_eq!(converted.schema.value(), 6);
+    assert_eq!(converted.schema.value(), 7);
+    assert_eq!(converted.max_output_tokens, 0);
+
+    let mut older = current.clone();
+    older["schema"] = json!(5);
+    older.as_object_mut().unwrap().remove("max_output_tokens");
+    let converted = serde_json::from_value::<AgentSnapshot>(older).unwrap();
+    assert_eq!(converted.schema.value(), 7);
     assert_eq!(converted.max_output_tokens, 0);
 
     let mut legacy = current;
@@ -284,9 +318,9 @@ fn prior_agent_snapshots_upconvert_exactly_and_write_schema_six() {
     legacy["tools"] = json!(["read", "write", "edit", "bash"]);
 
     let converted = serde_json::from_value::<AgentSnapshot>(legacy.clone()).unwrap();
-    assert_eq!(converted.schema.value(), 6);
+    assert_eq!(converted.schema.value(), 7);
     let current = serde_json::to_value(converted).unwrap();
-    assert_eq!(current["schema"], 6);
+    assert_eq!(current["schema"], 7);
     assert_eq!(current["max_output_tokens"], 0);
     assert!(current.get("tools").is_none());
 
@@ -729,6 +763,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
                 model: "openai/gpt-5.6-sol".parse().expect("model key"),
                 variant: None,
             },
+            preset: None,
         },
         runtime_revision: runtime.runtime_revision,
         catalog_revision: runtime.catalog_revision,

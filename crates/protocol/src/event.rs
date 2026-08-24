@@ -1189,12 +1189,63 @@ pub struct ModelErrorSummary {
     pub retry_after_ms: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum InternalAgentKind {
     Approval,
     ContextCompaction,
     SessionTitle,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FrozenInternalAgentFallback {
+    ParentModel,
+    Model { binding: Box<FrozenModelBinding> },
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenInternalAgentDefinition {
+    pub kind: InternalAgentKind,
+    #[ts(type = "AgentId")]
+    pub agent: AgentId,
+    #[schemars(length(min = 1, max = 512))]
+    pub description: String,
+    pub document_source: AgentDocumentSource,
+    pub document_fingerprint: Sha256Digest,
+    #[schemars(length(min = 1, max = 131_072))]
+    pub composed_prompt: String,
+    pub prompt_fingerprint: Sha256Digest,
+    pub enabled: bool,
+    pub max_output_tokens: u64,
+    pub timeout_ms: u64,
+    #[schemars(length(max = 256))]
+    pub fallbacks: Vec<FrozenInternalAgentFallback>,
+}
+
+impl FrozenInternalAgentDefinition {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.description.trim().is_empty()
+            || self.description.len() > 512
+            || self.description.chars().any(char::is_control)
+            || self.composed_prompt.trim().is_empty()
+            || self.composed_prompt.len() > AgentSnapshot::MAX_PROMPT_BYTES
+            || self.fallbacks.len() > 256
+        {
+            return Err("invalid frozen internal agent definition");
+        }
+        for fallback in &self.fallbacks {
+            if let FrozenInternalAgentFallback::Model { binding } = fallback {
+                binding
+                    .validate()
+                    .map_err(|_| "invalid frozen internal agent binding")?;
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -1564,6 +1615,9 @@ pub enum EventPayload {
         manifest_revision: ModelSnapshotRevision,
         #[schemars(length(min = 1, max = 256))]
         selected_suffix: Vec<FrozenModelBinding>,
+        #[serde(default)]
+        #[schemars(length(max = 3))]
+        internal_agents: Vec<FrozenInternalAgentDefinition>,
         input_through_seq: u64,
     },
     MessageInjected {
@@ -1946,11 +2000,28 @@ impl EventPayload {
                 selection,
                 agent,
                 selected_suffix,
+                internal_agents,
                 ..
             } => {
                 agent
                     .validate_selected_suffix(selection, selected_suffix)
                     .map_err(|_| EventSchemaError::InvalidSelectedSuffix)?;
+                if !matches!(internal_agents.len(), 0 | 3)
+                    || internal_agents
+                        .windows(2)
+                        .any(|pair| pair[0].kind >= pair[1].kind)
+                    || internal_agents.iter().any(|definition| {
+                        definition.validate().is_err()
+                            || definition.agent.as_str()
+                                != match definition.kind {
+                                    InternalAgentKind::Approval => "approval",
+                                    InternalAgentKind::ContextCompaction => "compaction",
+                                    InternalAgentKind::SessionTitle => "title",
+                                }
+                    })
+                {
+                    return Err(EventSchemaError::InvalidAgentSnapshot);
+                }
             }
             Self::MessageInjected { role, input }
                 if input.trim().is_empty() || *role == crate::ExtensionMessageRole::Tool =>
@@ -2063,6 +2134,7 @@ impl EventPayload {
                                 .ok_or(EventSchemaError::InvalidDelegationLifecycle)?
                                 .selection
                                 .clone(),
+                            preset: None,
                         },
                         selected_suffix,
                     )

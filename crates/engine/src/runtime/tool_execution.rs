@@ -149,16 +149,10 @@ impl Engine {
         let grants = self.skill_grants_for_session(session_id);
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
-                && delegation.targets.iter().any(|target| {
-                    policy.registry.get(target).is_some_and(|agent| {
-                        agent.document.frontmatter.enabled
-                            && matches!(
-                                agent.document.frontmatter.mode,
-                                cookie_agent_config::AgentMode::Subagent
-                                    | cookie_agent_config::AgentMode::All
-                            )
-                    })
-                })
+                && delegation
+                    .targets
+                    .iter()
+                    .any(|target| policy.delegation_target_available(target))
         });
         let providers = self
             .inner
@@ -760,16 +754,10 @@ impl Engine {
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
             depth < delegation.effective_depth_ceiling
-                && delegation.targets.iter().any(|target| {
-                    policy.registry.get(target).is_some_and(|agent| {
-                        agent.document.frontmatter.enabled
-                            && matches!(
-                                agent.document.frontmatter.mode,
-                                cookie_agent_config::AgentMode::Subagent
-                                    | cookie_agent_config::AgentMode::All
-                            )
-                    })
-                })
+                && delegation
+                    .targets
+                    .iter()
+                    .any(|target| policy.delegation_target_available(target))
         });
         let mut names = HashSet::new();
         let mut output = Vec::new();

@@ -2014,6 +2014,7 @@ mod tests {
                 providers: BTreeMap::new(),
             },
             agents: BTreeMap::new(),
+            agent_presets: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             user_mcp_servers: BTreeMap::new(),
             workspace_mcp_servers: BTreeMap::new(),
@@ -2359,6 +2360,7 @@ mod tests {
         let selection = RunSelection {
             agent: AgentId::new(agent).expect("agent id"),
             model: chain[suffix_start as usize].selection.clone(),
+            preset: None,
         };
         let chain = chain.into_iter().map(frozen_binding).collect::<Vec<_>>();
         session_created_from_bindings(session_id, seq, selection, chain, suffix_start)
@@ -2443,7 +2445,7 @@ mod tests {
         )
     }
 
-    // Test fixtures stay explicit about each protocol-9 turn field; grouping them
+    // Test fixtures stay explicit about each protocol-10 turn field; grouping them
     // would obscure the event shape without reducing call-site complexity.
     #[allow(clippy::too_many_arguments)]
     fn turn_committed(
@@ -2630,7 +2632,7 @@ mod tests {
         )
     }
 
-    // Fixture mirrors the exact protocol-9 ownership/presentation fields; grouping
+    // Fixture mirrors the exact protocol-10 ownership/presentation fields; grouping
     // them would obscure the event shape.
     #[allow(clippy::too_many_arguments)]
     fn tool_started_at(
@@ -2721,6 +2723,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             },
             runtime_revision: protocol_revision("1"),
             catalog_revision: protocol_revision("2"),
@@ -2814,6 +2817,7 @@ mod tests {
     fn descriptor(agent: &str, runnable: bool) -> cookie_agent_protocol::AgentDescriptor {
         cookie_agent_protocol::AgentDescriptor {
             id: AgentId::new(agent).expect("agent id"),
+            preset: None,
             description: format!("Test {agent} agent"),
             mode: cookie_agent_protocol::AgentMode::Primary,
             enabled: runnable,
@@ -2824,6 +2828,13 @@ mod tests {
             }],
             delegation_targets: Vec::new(),
         }
+    }
+
+    fn preset_descriptor(preset: &str, agent: &str) -> cookie_agent_protocol::AgentDescriptor {
+        let mut descriptor = descriptor(agent, true);
+        descriptor.preset = Some(preset.into());
+        descriptor.description = format!("{preset} {agent} agent");
+        descriptor
     }
 
     fn model_descriptor() -> cookie_agent_protocol::AvailableModelDescriptor {
@@ -3305,6 +3316,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         let wide = rendered_row(&mut app, 100, 24, 23);
@@ -4373,6 +4385,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent_id(),
             model: resolved.selection.clone(),
+            preset: None,
         };
         let created =
             session_created_from_bindings(session, 1, selection.clone(), vec![binding.clone()], 0);
@@ -4406,6 +4419,7 @@ mod tests {
                 recipe_registry_revision: recipe_registry_revision.clone(),
                 manifest_revision: manifest_revision.clone(),
                 selected_suffix: vec![binding],
+                internal_agents: Vec::new(),
                 input_through_seq: 1,
             },
         );
@@ -5176,7 +5190,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Streaming reduction against protocol-9 events
+    // Streaming reduction against protocol-10 events
     // ------------------------------------------------------------------
 
     #[test]
@@ -6185,6 +6199,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         let rendered = frame_rows(&mut app, 100, 30).join("\n");
@@ -6413,6 +6428,7 @@ mod tests {
                 model: model_key(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("primary • gateway/arbitrary-model[high]"));
@@ -6479,6 +6495,7 @@ mod tests {
                 model: model_key(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -6548,6 +6565,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             });
             app.input
                 .set_buffer("zero\none\ntwo\nthree\nfour\nfive\nsix".into());
@@ -6718,6 +6736,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         rendered_frame(&mut app, 100, 30);
         let agent = app
@@ -6760,6 +6779,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         assert_eq!(app.draft_models().len(), app.models.len());
         let variants = app.draft_variants();
@@ -6960,6 +6980,7 @@ mod tests {
                 model: first.key.clone(),
                 variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
             },
+            preset: None,
         });
 
         app.set_draft_model(first.key.clone());
@@ -7099,6 +7120,7 @@ mod tests {
                     model: model_key(),
                     variant: None,
                 },
+                preset: None,
             },
             ..session_meta(session_id)
         }
@@ -7122,6 +7144,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         assert!(app.watching_root_session());
         assert!(app.agent_switching_allowed());
@@ -7253,6 +7276,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         app.revalidate_draft();
         assert_eq!(
@@ -7266,6 +7290,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         app.revalidate_draft();
         assert_eq!(
@@ -7417,6 +7442,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent_id(),
             model: suffix[0].selection.clone(),
+            preset: None,
         };
         event(
             session_id,
@@ -7448,6 +7474,7 @@ mod tests {
                 recipe_registry_revision: protocol_revision("6"),
                 manifest_revision: protocol_revision("7"),
                 selected_suffix: snapshot_chain,
+                internal_agents: Vec::new(),
                 input_through_seq: seq,
             },
         )
@@ -8667,7 +8694,8 @@ mod tests {
         );
         for expected in [
             "/quit — exit the TUI",
-            "/new — choose the next run agent",
+            "/new — start a new root session",
+            "/preset — select the preset for the next root run and future new sessions",
             "/approve once|all|reject|cancel — answer an approval",
             "/events debug|info|warning|error — set the diagnostic level filter for this view",
             "/help — show command help",
@@ -8804,6 +8832,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
         rendered_frame(&mut models, 100, 30);
         let model_hit = models
@@ -8832,10 +8861,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preset_picker_updates_root_drafts_and_future_new_sessions() {
+        let mut app = test_app().await;
+        let session_id = SessionId::new_v7();
+        app.sessions.push(session_meta(session_id));
+        app.selected = Some(session_id);
+        app.agents.extend([
+            descriptor("reviewer", true),
+            preset_descriptor("python", "primary"),
+            preset_descriptor("python", "reviewer"),
+            preset_descriptor("rust", "primary"),
+        ]);
+
+        app.run_command(SlashCommand::Preset).await;
+        assert_eq!(app.modal, Modal::Presets);
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("None (shared)"));
+        assert!(rendered.contains("python"));
+        assert!(rendered.contains("rust"));
+        app.choose_picker_entry(1).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("python"));
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+        assert!(app.status.contains("Draft run preset"));
+        app.cycle_agent(false);
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(2).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("rust"));
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("primary")
+        );
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("rust")
+        );
+
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(1).await;
+
+        app.run_command(SlashCommand::New).await;
+        assert!(app.new_session_draft);
+        assert_eq!(app.modal, Modal::Agents);
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+        assert_eq!(
+            app.selectable_agents()
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            ["primary", "reviewer"]
+        );
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("preset: python"));
+        app.cycle_agent(false);
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(!app.new_session_draft);
+        let fresh = test_app().await;
+        assert_eq!(fresh.selected_preset, None);
+    }
+
+    #[tokio::test]
     async fn every_slash_command_variant_dispatches_from_key_events_without_starting_a_run() {
         let cases = [
             ("/quit", None),
             ("/new", Some("Agent")),
+            ("/preset", Some("Agent preset")),
             ("/connect", Some("Connect provider")),
             ("/sessions", Some("Sessions")),
             ("/cancel", Some("no active run")),
@@ -9340,6 +9450,7 @@ mod tests {
                 model: model_key(),
                 variant: None,
             },
+            preset: None,
         });
 
         type_input(&mut app, "/connect").await;

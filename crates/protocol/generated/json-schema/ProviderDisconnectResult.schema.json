@@ -66,6 +66,15 @@
         "mode": {
           "$ref": "#/$defs/AgentMode"
         },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
         "resolved_fallback": {
           "type": "array",
           "items": {
@@ -864,7 +873,7 @@
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 4
+          "const": 5
         }
       },
       "additionalProperties": false,

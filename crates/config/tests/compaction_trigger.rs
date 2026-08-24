@@ -18,8 +18,9 @@ fn write_config(root: &Path, text: &str) {
 }
 
 fn write_agent(root: &Path, name: &str, text: &str) {
-    create_dir(&root.join("agents"));
-    fs::write(root.join("agents").join(name), text).unwrap();
+    let path = root.join("agents").join(name);
+    create_dir(path.parent().unwrap());
+    fs::write(path, text).unwrap();
 }
 
 fn agent(description: &str, fallback: &str) -> String {
@@ -577,4 +578,194 @@ fn interpolated_secret_is_redacted_on_success_and_configuration_drop() {
         assert!(!format!("{loaded:?}").contains(SECRET_SENTINEL));
     }
     unsafe { std::env::remove_var("P1_SUCCESS_SECRET") };
+}
+
+#[test]
+fn agent_presets_replace_shared_documents_and_add_agents() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("presets");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        &agent("Shared primary", "[{ model: \"custom.test/shared\" }]"),
+    );
+    write_agent(
+        &root,
+        "shared-only.md",
+        &agent("Shared only", "[{ model: \"custom.test/shared\" }]"),
+    );
+    write_agent(
+        &root,
+        "python/primary.md",
+        "---\ndescription: Python primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/python\" }]\npermissions:\n  delegate:\n    python-only: allow\n---\nPython prompt.\n",
+    );
+    write_agent(
+        &root,
+        "python/python-only.md",
+        "---\ndescription: Python only\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/python\" }]\npermissions: {}\n---\nPython worker.\n",
+    );
+
+    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    assert_eq!(loaded.agents.len(), 2);
+    assert_eq!(
+        loaded.agents[&AgentId::new("primary").unwrap()]
+            .frontmatter
+            .description,
+        "Shared primary"
+    );
+    let python = &loaded.agent_presets["python"];
+    assert_eq!(python.len(), 3);
+    assert_eq!(
+        python[&AgentId::new("primary").unwrap()]
+            .frontmatter
+            .description,
+        "Python primary"
+    );
+    assert!(python.contains_key(&AgentId::new("shared-only").unwrap()));
+    assert!(python.contains_key(&AgentId::new("python-only").unwrap()));
+}
+
+#[test]
+fn unused_agent_presets_are_loaded_strictly() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("invalid-unused-preset");
+    write_config(&root, "");
+    write_agent(&root, "unused/broken.md", "not frontmatter");
+    assert!(matches!(
+        load_from_roots(None, Some(&root)),
+        Err(ConfigError::AgentDocument { .. })
+    ));
+}
+
+#[test]
+fn regular_non_markdown_files_at_the_agent_root_are_ignored() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("agent-readme");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        &agent("Primary", "[{ model: \"custom.test/model\" }]"),
+    );
+    write_agent(&root, "README.txt", "Agent authoring notes");
+    let loaded = load_from_roots(None, Some(&root)).expect("root README is ignored");
+    assert!(
+        loaded
+            .agents
+            .contains_key(&AgentId::new("primary").unwrap())
+    );
+}
+
+#[test]
+fn preset_override_cannot_disable_a_shared_delegation_target() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("disabled-preset-target");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "primary.md",
+        "---\ndescription: Delegator\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    worker: allow\n---\nDelegate.\n",
+    );
+    write_agent(
+        &root,
+        "worker.md",
+        "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nWork.\n",
+    );
+    write_agent(
+        &root,
+        "python/worker.md",
+        "---\ndescription: Disabled worker\nmode: subagent\nenabled: false\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nDisabled.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&root)),
+        Err(ConfigError::IneligibleDelegationTarget { agent, target })
+            if agent.as_str() == "primary" && target.as_str() == "worker"
+    ));
+}
+
+#[test]
+fn reserved_agent_rules_apply_inside_presets() {
+    let temp = TempDir::new().unwrap();
+    let default_root = temp.path().join("preset-default");
+    write_config(&default_root, "");
+    write_agent(
+        &default_root,
+        "python/default.md",
+        &agent("Reserved", "[{ model: \"custom.test/model\" }]"),
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&default_root)),
+        Err(ConfigError::ReservedAgentId(id)) if id.as_str() == "default"
+    ));
+
+    let internal_root = temp.path().join("preset-internal");
+    write_config(&internal_root, "");
+    write_agent(
+        &internal_root,
+        "python/approval.md",
+        &agent("Approval", "[{ model: \"custom.test/model\" }]"),
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&internal_root)),
+        Err(ConfigError::AgentField { agent, field: "mode" }) if agent.as_str() == "approval"
+    ));
+}
+
+#[test]
+fn preset_names_and_directory_depth_are_strict() {
+    let temp = TempDir::new().unwrap();
+    let invalid_name = temp.path().join("invalid-preset-name");
+    write_config(&invalid_name, "");
+    write_agent(
+        &invalid_name,
+        "Python/primary.md",
+        &agent("Primary", "[{ model: \"custom.test/model\" }]"),
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&invalid_name)),
+        Err(ConfigError::AgentPresetName { .. })
+    ));
+
+    let nested = temp.path().join("nested-preset");
+    write_config(&nested, "");
+    write_agent(
+        &nested,
+        "python/deeper/primary.md",
+        &agent("Primary", "[{ model: \"custom.test/model\" }]"),
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&nested)),
+        Err(ConfigError::UnsafePath)
+    ));
+
+    let non_markdown = temp.path().join("non-markdown-preset");
+    write_config(&non_markdown, "");
+    write_agent(&non_markdown, "python/readme.txt", "ignored");
+    assert!(matches!(
+        load_from_roots(None, Some(&non_markdown)),
+        Err(ConfigError::UnsafePath)
+    ));
+}
+
+#[test]
+fn preset_agents_match_shared_crlf_and_byte_limits() {
+    let temp = TempDir::new().unwrap();
+    let crlf = temp.path().join("preset-crlf");
+    write_config(&crlf, "");
+    let document = agent("CRLF preset", "[{ model: \"custom.test/model\" }]").replace('\n', "\r\n");
+    write_agent(&crlf, "python/primary.md", &document);
+    let loaded = load_from_roots(None, Some(&crlf)).unwrap();
+    assert_eq!(
+        loaded.agent_presets["python"][&AgentId::new("primary").unwrap()].body,
+        "Prompt.\n"
+    );
+
+    let oversized = temp.path().join("preset-oversized");
+    write_config(&oversized, "");
+    write_agent(&oversized, "python/primary.md", &"x".repeat(256 * 1024 + 1));
+    assert!(matches!(
+        load_from_roots(None, Some(&oversized)),
+        Err(ConfigError::TooLarge(_))
+    ));
 }

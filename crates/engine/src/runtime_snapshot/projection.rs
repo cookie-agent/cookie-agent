@@ -17,6 +17,7 @@ use crate::EngineError;
 pub(crate) fn build_runtime_snapshot(
     models: &CompiledModelRuntime,
     agents: &AgentRegistry,
+    agent_presets: &BTreeMap<String, std::sync::Arc<AgentRegistry>>,
 ) -> Result<protocol::RuntimeSnapshotV1, EngineError> {
     let providers = models
         .providers()
@@ -29,7 +30,16 @@ pub(crate) fn build_runtime_snapshot(
         .filter(|model| model.model.status == CompiledModelStatus::Available)
         .map(model_descriptor)
         .collect::<Result<Vec<_>, _>>()?;
-    let agent_descriptors = agents.descriptors().to_vec();
+    let agent_descriptors = agents
+        .descriptors()
+        .iter()
+        .cloned()
+        .chain(
+            agent_presets
+                .values()
+                .flat_map(|registry| registry.descriptors().iter().cloned()),
+        )
+        .collect::<Vec<_>>();
     let agent_revision = revision::<protocol::AgentRevision, _>(
         "cookie-agent/agent-runtime/v1",
         &agent_descriptors,

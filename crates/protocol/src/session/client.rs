@@ -1,4 +1,4 @@
-//! Shared protocol-9 JSON-RPC client session.
+//! Shared protocol-10 JSON-RPC client session.
 
 mod runtime;
 
@@ -2406,6 +2406,7 @@ mod tests {
                                         .expect("model key"),
                                     variant: None,
                                 },
+                                preset: None,
                             },
                         }),
                     )

@@ -30,6 +30,7 @@ pub(crate) enum ResolvedAgentFallback {
 
 #[derive(Clone, Debug)]
 pub struct AgentRegistry {
+    preset: Option<String>,
     agents: BTreeMap<AgentId, ResolvedAgent>,
     descriptors: Vec<AgentDescriptor>,
 }
@@ -38,6 +39,7 @@ impl AgentRegistry {
     pub(crate) fn resolve(
         authored: &ConfigAgentRegistry,
         models: &CompiledModelRuntime,
+        preset: Option<String>,
     ) -> Result<Self, EngineError> {
         let mut documents = built_in_internal_documents()?;
         documents.extend(
@@ -113,6 +115,7 @@ impl AgentRegistry {
             .iter()
             .map(|(id, agent)| AgentDescriptor {
                 id: id.clone(),
+                preset: preset.clone(),
                 description: agent.document.frontmatter.description.clone(),
                 mode: agent.document.frontmatter.mode,
                 enabled: agent.document.frontmatter.enabled,
@@ -129,6 +132,7 @@ impl AgentRegistry {
             })
             .collect();
         Ok(Self {
+            preset,
             agents,
             descriptors,
         })
@@ -140,6 +144,10 @@ impl AgentRegistry {
 
     pub(crate) fn descriptors(&self) -> &[AgentDescriptor] {
         &self.descriptors
+    }
+
+    pub(crate) fn preset(&self) -> Option<&str> {
+        self.preset.as_deref()
     }
 }
 

@@ -155,6 +155,8 @@ pub enum EngineError {
     ActorStopped,
     #[error("no_runnable_model")]
     NoRunnableModel,
+    #[error("unknown agent preset `{0}`")]
+    UnknownAgentPreset(String),
     #[error("provider_store_reload_failed")]
     ProviderStoreReloadFailed,
     #[error("runtime_compile_failed")]
@@ -1086,15 +1088,15 @@ impl Engine {
         let skills = Arc::new(options.config.skills.clone());
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
-        let authored_agents = options.config.agent_registry();
-        let agents = Arc::new(AgentRegistry::resolve(&authored_agents, &current_models)?);
+        let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
         let manifest_store = ModelSnapshotManifestStore::open(&options.cwd)?;
         let prepared_manifest = prepare_runtime_manifest(&manifest_store, &current_models)?;
-        let snapshot = build_runtime_snapshot(&current_models, &agents)?;
+        let snapshot = build_runtime_snapshot(&current_models, &agents, &agent_presets)?;
         let published_runtime = Arc::new(PublishedRuntime {
             result: RuntimeSnapshotResult { snapshot },
             models: Arc::clone(&current_models),
             agents,
+            agent_presets,
             manifests: prepared_manifest.index,
             current_manifest: prepared_manifest.manifest,
         });
@@ -1543,10 +1545,9 @@ impl Engine {
         if self.inner.publication_failure.swap(false, Ordering::AcqRel) {
             return Err(EngineError::RuntimeCompileFailed);
         }
-        let authored_agents = self.inner.config.agent_registry();
-        let agents = Arc::new(AgentRegistry::resolve(&authored_agents, models)?);
+        let (agents, agent_presets) = resolve_agent_registries(&self.inner.config, models)?;
         let prepared = prepare_runtime_manifest(&self.inner.manifest_store, models)?;
-        let snapshot = build_runtime_snapshot(models, &agents)?;
+        let snapshot = build_runtime_snapshot(models, &agents, &agent_presets)?;
         self.inner
             .runtime_revision_index
             .lock()
@@ -1567,6 +1568,7 @@ impl Engine {
                 result: RuntimeSnapshotResult { snapshot },
                 models: Arc::clone(models),
                 agents,
+                agent_presets,
                 manifests: prepared.index,
                 current_manifest: prepared.manifest,
             }),
@@ -1832,6 +1834,28 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
+}
+
+type ResolvedAgentRegistries = (Arc<AgentRegistry>, BTreeMap<String, Arc<AgentRegistry>>);
+
+fn resolve_agent_registries(
+    config: &LoadedConfiguration,
+    models: &Arc<cookie_agent_models::CompiledModelRuntime>,
+) -> Result<ResolvedAgentRegistries, EngineError> {
+    let shared = Arc::new(AgentRegistry::resolve(
+        &config.agent_registry(),
+        models,
+        None,
+    )?);
+    let presets = config
+        .agent_preset_registries()
+        .into_iter()
+        .map(|(name, authored)| {
+            AgentRegistry::resolve(&authored, models, Some(name.clone()))
+                .map(|registry| (name, Arc::new(registry)))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((shared, presets))
 }
 
 #[cfg(test)]

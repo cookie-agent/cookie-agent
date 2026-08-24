@@ -25,6 +25,9 @@ pub(crate) struct FreezeOptions {
 #[derive(Clone)]
 pub(crate) struct FrozenRunPolicy {
     pub agent: protocol::AgentSnapshot,
+    pub preset: Option<String>,
+    pub internal_agents: Vec<protocol::FrozenInternalAgentDefinition>,
+    pub historical_delegation: bool,
     pub selected_suffix: Vec<protocol::FrozenModelBinding>,
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
@@ -37,6 +40,8 @@ impl std::fmt::Debug for FrozenRunPolicy {
         formatter
             .debug_struct("FrozenRunPolicy")
             .field("agent", &self.agent.agent)
+            .field("preset", &self.preset)
+            .field("internal_agents", &self.internal_agents.len())
             .field("selected_suffix", &self.selected_suffix)
             .field(
                 "runtime_revision",
@@ -64,6 +69,23 @@ impl FrozenRunPolicy {
             .iter()
             .find(|model| model.key == binding.selection.model)
             .map(|model| model.capabilities.clone())
+    }
+
+    pub(crate) fn delegation_target_available(&self, target: &protocol::AgentId) -> bool {
+        if self.historical_delegation {
+            return self
+                .agent
+                .delegation
+                .as_ref()
+                .is_some_and(|delegation| delegation.targets.contains(target));
+        }
+        self.registry.get(target).is_some_and(|agent| {
+            agent.document.frontmatter.enabled
+                && matches!(
+                    agent.document.frontmatter.mode,
+                    cookie_agent_config::AgentMode::Subagent | cookie_agent_config::AgentMode::All
+                )
+        })
     }
 }
 
@@ -249,12 +271,17 @@ fn freeze_with_bindings(
     let run_selection = protocol::RunSelection {
         agent: document.id.clone(),
         model: selection.clone(),
+        preset: registry.preset().map(str::to_owned),
     };
     snapshot
         .validate_selected_suffix(&run_selection, &bindings)
         .map_err(|_| EngineError::NoRunnableModel)?;
+    let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent: snapshot,
+        preset,
+        internal_agents: Vec::new(),
+        historical_delegation: false,
         selected_suffix: bindings,
         runtime,
         registry,
@@ -272,7 +299,7 @@ pub(crate) fn policy_for_session_selection(
     tool_output_max_bytes: usize,
     prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
 ) -> Result<FrozenRunPolicy, EngineError> {
-    if selection.agent != agent.agent {
+    if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
         return Err(EngineError::NoRunnableModel);
     }
     let index = agent
@@ -305,8 +332,12 @@ pub(crate) fn policy_from_snapshot(
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
     }
+    let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent,
+        preset,
+        internal_agents: Vec::new(),
+        historical_delegation: false,
         selected_suffix,
         runtime,
         registry,

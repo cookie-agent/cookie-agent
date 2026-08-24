@@ -942,8 +942,9 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
         }
     };
     println!(
-        "cookie daemon listening on ws://{}/ws (protocol 9)",
-        listener.address()
+        "cookie daemon listening on ws://{}/ws (protocol {})",
+        listener.address(),
+        cookie_agent_protocol::PROTOCOL_VERSION
     );
     let signal = tokio::signal::ctrl_c().await;
     runtime.server.shutdown();
@@ -1207,6 +1208,8 @@ mod tests {
                 "json",
                 "--agent",
                 "primary",
+                "--preset",
+                "python",
                 "--model",
                 "custom.local/test",
                 "--variant",
@@ -1223,6 +1226,7 @@ mod tests {
                     prompt: None,
                     prompt_file: None,
                     agent: Some("primary".parse().unwrap()),
+                    preset: Some("python".into()),
                     model: Some("custom.local/test".parse().unwrap()),
                     variant: Some("base".into()),
                     permission_mode: run::PermissionModeArg::Ask,

@@ -133,6 +133,8 @@ export * from "./ExtensionUserBeforeInputResult.js";
 export * from "./FrozenCredentialBinding.js";
 export * from "./FrozenCredentialSource.js";
 export * from "./FrozenDelegationPolicy.js";
+export * from "./FrozenInternalAgentDefinition.js";
+export * from "./FrozenInternalAgentFallback.js";
 export * from "./FrozenModelBinding.js";
 export * from "./FrozenProviderSource.js";
 export * from "./FrozenRequestDefaults.js";

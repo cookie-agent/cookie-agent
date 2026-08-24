@@ -149,6 +149,15 @@
             "model",
             "variant"
           ]
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         }
       },
       "additionalProperties": false,

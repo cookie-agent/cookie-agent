@@ -572,6 +572,77 @@ async fn headless_outputs_prompt_sources_selection_and_verbose_tool_output() {
 }
 
 #[tokio::test]
+async fn headless_preset_is_persisted_and_resume_can_override_the_next_run() {
+    let fixture = Fixture::new().await;
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("preset run")));
+    let mut args = run_args("use the preset");
+    args.preset = Some("python".into());
+    args.output = Some(OutputMode::Json);
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let records = parse_json_lines(&result.stdout);
+    let summary = records.last().expect("preset summary");
+    let session_id: SessionId =
+        serde_json::from_value(summary["session_id"].clone()).expect("session ID");
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(session_id)
+            .expect("preset session")
+            .creation_selection
+            .preset
+            .as_deref(),
+        Some("python")
+    );
+
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("preset resumed")));
+    let mut resumed = run_args("resume the preset");
+    resumed.resume_session = Some(session_id);
+    assert_eq!(fixture.run(resumed, "").await.code, 0);
+
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("preset switched")));
+    let mut override_preset = run_args("switch preset");
+    override_preset.resume_session = Some(session_id);
+    override_preset.preset = Some("rust".into());
+    override_preset.output = Some(OutputMode::Json);
+    let switched = fixture.run(override_preset, "").await;
+    assert_eq!(switched.code, 0, "{}", switched.stderr);
+    let records = parse_json_lines(&switched.stdout);
+    assert!(records.iter().any(|record| {
+        record["type"] == "event"
+            && record["event"]["payload"]["type"] == "run_started"
+            && record["event"]["payload"]["selection"]["preset"] == "rust"
+    }));
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(session_id)
+            .expect("creation preset remains stable")
+            .creation_selection
+            .preset
+            .as_deref(),
+        Some("python")
+    );
+
+    let mut missing = run_args("missing preset");
+    missing.preset = Some("missing".into());
+    let rejected = fixture.run(missing, "").await;
+    assert_ne!(rejected.code, 0);
+    assert!(
+        rejected
+            .stderr
+            .contains("agent preset `missing` is not available")
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn headless_skill_is_permission_checked_and_injected_before_the_prompt() {
     let fixture = Fixture::new().await;
     fixture
@@ -605,6 +676,7 @@ async fn model_disabled_skill_lookup_rejects_without_leaking_hidden_hints() {
                 model: "custom.local/test".parse().expect("model"),
                 variant: None,
             },
+            preset: None,
         })
         .expect("session");
     assert!(
@@ -713,6 +785,7 @@ async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
                     model: "custom.local/test".parse().expect("model"),
                     variant: None,
                 },
+                preset: None,
             },
             input: cookie_agent_protocol::encode_skill_submission_with_prompt(
                 "release-check",
@@ -1067,6 +1140,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
                 model: "custom.local/test".parse().expect("model"),
                 variant: None,
             },
+            preset: None,
         })
         .expect("gap session");
     let coordination_deadline = Instant::now() + Duration::from_secs(30);
@@ -1188,6 +1262,7 @@ async fn start_run_admission_failures_map_to_one() {
         .create_session(RunSelection {
             agent: agent.id.clone(),
             model,
+            preset: None,
         })
         .expect("running session");
     fixture
@@ -1378,6 +1453,7 @@ fn run_args(prompt: &str) -> RunArgs {
         prompt: None,
         prompt_file: None,
         agent: None,
+        preset: None,
         model: None,
         variant: None,
         permission_mode: PermissionModeArg::AutoApprove,
@@ -1460,8 +1536,12 @@ fn assert_jsonl_structure(records: &[serde_json::Value]) {
 fn write_workspace(workspace: &Path, endpoint: &str) {
     let root = workspace.join(".cookie-agent");
     let agents = root.join("agents");
+    let python_agents = agents.join("python");
+    let rust_agents = agents.join("rust");
     let skills = root.join("skills");
     fs::create_dir_all(&agents).expect("agent directory");
+    fs::create_dir_all(&python_agents).expect("preset agent directory");
+    fs::create_dir_all(&rust_agents).expect("preset agent directory");
     for skill in [
         "release-check",
         "hidden-model",
@@ -1474,6 +1554,8 @@ fn write_workspace(workspace: &Path, endpoint: &str) {
     }
     make_private(&root);
     make_private(&agents);
+    make_private(&python_agents);
+    make_private(&rust_agents);
     make_private(&skills);
     for skill in [
         "release-check",
@@ -1597,6 +1679,34 @@ Answer the user directly.
 "#,
     )
     .expect("primary agent");
+    fs::write(
+        python_agents.join("primary.md"),
+        r#"---
+description: Python preset integration agent
+mode: primary
+enabled: true
+models:
+  - { model: "custom.local/test", variant: null }
+permissions: {}
+---
+Answer as the Python preset agent.
+"#,
+    )
+    .expect("preset primary agent");
+    fs::write(
+        rust_agents.join("primary.md"),
+        r#"---
+description: Rust preset integration agent
+mode: primary
+enabled: true
+models:
+  - { model: "custom.local/test", variant: null }
+permissions: {}
+---
+Answer as the Rust preset agent.
+"#,
+    )
+    .expect("preset primary agent");
     fs::write(
         agents.join("reviewer.md"),
         r#"---

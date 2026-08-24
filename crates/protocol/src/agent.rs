@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "6")]
+#[ts(type = "7")]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -16,7 +16,7 @@ impl AgentSchemaVersion {
     }
     #[must_use]
     pub const fn value(self) -> u32 {
-        6
+        7
     }
 }
 impl Serialize for AgentSchemaVersion {
@@ -24,7 +24,7 @@ impl Serialize for AgentSchemaVersion {
     where
         S: serde::Serializer,
     {
-        s.serialize_u32(6)
+        s.serialize_u32(7)
     }
 }
 impl<'de> Deserialize<'de> for AgentSchemaVersion {
@@ -33,11 +33,11 @@ impl<'de> Deserialize<'de> for AgentSchemaVersion {
         D: serde::Deserializer<'de>,
     {
         let v = u32::deserialize(d)?;
-        if v == 6 {
+        if v == 7 {
             Ok(Self::current())
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported exact agent schema {v}; expected 6"
+                "unsupported exact agent schema {v}; expected 7"
             )))
         }
     }
@@ -50,7 +50,7 @@ impl JsonSchema for AgentSchemaVersion {
         Cow::Borrowed("AgentSchemaVersion")
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"integer","const":6})
+        json_schema!({"type":"integer","const":7})
     }
 }
 
@@ -60,7 +60,26 @@ struct LegacyAgentSchemaVersion;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PreviousAgentSchemaVersion;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OlderAgentSchemaVersion;
+
 impl<'de> Deserialize<'de> for PreviousAgentSchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = u32::deserialize(deserializer)?;
+        if value == 6 {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "unsupported previous agent schema {value}; expected 6"
+            )))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OlderAgentSchemaVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -70,7 +89,7 @@ impl<'de> Deserialize<'de> for PreviousAgentSchemaVersion {
             Ok(Self)
         } else {
             Err(serde::de::Error::custom(format!(
-                "unsupported previous agent schema {value}; expected 5"
+                "unsupported older agent schema {value}; expected 5"
             )))
         }
     }
@@ -386,6 +405,26 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             document_fingerprint: Sha256Digest,
             composed_prompt: String,
             prompt_fingerprint: Sha256Digest,
+            max_output_tokens: u64,
+            permissions: Vec<PermissionRule>,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            delegation: Option<FrozenDelegationPolicy>,
+            fallback_chain: Vec<FrozenModelBinding>,
+            selected_suffix_start: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OlderWire {
+            agent: AgentId,
+            #[serde(rename = "schema")]
+            _schema: OlderAgentSchemaVersion,
+            mode: AgentMode,
+            description: String,
+            document_source: AgentDocumentSource,
+            document_fingerprint: Sha256Digest,
+            composed_prompt: String,
+            prompt_fingerprint: Sha256Digest,
             permissions: Vec<PermissionRule>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             delegation: Option<FrozenDelegationPolicy>,
@@ -418,6 +457,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
         enum Wire {
             Current(CurrentWire),
             Previous(PreviousWire),
+            Older(OlderWire),
             Legacy(LegacyWire),
         }
 
@@ -438,6 +478,21 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
                 selected_suffix_start: w.selected_suffix_start,
             },
             Wire::Previous(w) => Self {
+                agent: w.agent,
+                schema: AgentSchemaVersion::current(),
+                mode: w.mode,
+                description: w.description,
+                document_source: w.document_source,
+                document_fingerprint: w.document_fingerprint,
+                composed_prompt: w.composed_prompt,
+                prompt_fingerprint: w.prompt_fingerprint,
+                max_output_tokens: w.max_output_tokens,
+                permissions: w.permissions,
+                delegation: w.delegation,
+                fallback_chain: w.fallback_chain,
+                selected_suffix_start: w.selected_suffix_start,
+            },
+            Wire::Older(w) => Self {
                 agent: w.agent,
                 schema: AgentSchemaVersion::current(),
                 mode: w.mode,
@@ -505,6 +560,14 @@ pub struct RunSelection {
     #[schemars(with = "crate::RequiredModelSelectionSchema")]
     #[ts(type = "ModelSelection")]
     pub model: ModelSelection,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_preset",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<AgentPresetNameSchema>")]
+    #[ts(optional = nullable)]
+    pub preset: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
@@ -512,6 +575,10 @@ pub struct RunSelection {
 pub struct AgentDescriptor {
     #[ts(type = "AgentId")]
     pub id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<AgentPresetNameSchema>")]
+    #[ts(optional = nullable)]
+    pub preset: Option<String>,
     #[schemars(with = "AgentDescriptionSchema")]
     pub description: String,
     pub mode: AgentMode,
@@ -527,6 +594,7 @@ pub struct AgentDescriptor {
 }
 
 struct AgentDescriptionSchema;
+struct AgentPresetNameSchema;
 struct AgentPromptSchema;
 impl JsonSchema for AgentDescriptionSchema {
     fn inline_schema() -> bool {
@@ -537,6 +605,17 @@ impl JsonSchema for AgentDescriptionSchema {
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({"type":"string","minLength":1,"maxLength":512,"pattern":"^(?=.*\\S)[^\\p{Cc}\\p{Cf}]+$"})
+    }
+}
+impl JsonSchema for AgentPresetNameSchema {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AgentPresetName")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*$"})
     }
 }
 impl JsonSchema for AgentPromptSchema {
@@ -552,6 +631,13 @@ impl JsonSchema for AgentPromptSchema {
 }
 impl AgentDescriptor {
     pub fn validate(&self) -> Result<(), AgentSchemaError> {
+        if self
+            .preset
+            .as_deref()
+            .is_some_and(|name| !valid_preset_name(name))
+        {
+            return Err(AgentSchemaError::InvalidPreset);
+        }
         if self.description.trim().is_empty()
             || self.description.len() > 512
             || self.description.chars().any(char::is_control)
@@ -586,6 +672,31 @@ impl AgentDescriptor {
         Ok(())
     }
 }
+
+fn valid_preset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
+fn deserialize_optional_preset<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let preset = Option::<String>::deserialize(deserializer)?;
+    if preset
+        .as_deref()
+        .is_some_and(|name| !valid_preset_name(name))
+    {
+        return Err(serde::de::Error::custom(AgentSchemaError::InvalidPreset));
+    }
+    Ok(preset)
+}
 impl<'de> Deserialize<'de> for AgentDescriptor {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
@@ -595,6 +706,8 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
         #[serde(deny_unknown_fields)]
         struct Wire {
             id: AgentId,
+            #[serde(default)]
+            preset: Option<String>,
             description: String,
             mode: AgentMode,
             enabled: bool,
@@ -606,6 +719,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
         let w = Wire::deserialize(d)?;
         let value = Self {
             id: w.id,
+            preset: w.preset,
             description: w.description,
             mode: w.mode,
             enabled: w.enabled,
@@ -622,6 +736,7 @@ impl<'de> Deserialize<'de> for AgentDescriptor {
 pub enum AgentSchemaError {
     InvalidDelegationTargets,
     InvalidDescription,
+    InvalidPreset,
     InvalidPrompt,
     InvalidListBounds,
     DuplicatePermissionRule,
@@ -634,7 +749,7 @@ pub enum AgentSchemaError {
 }
 impl fmt::Display for AgentSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicatePermissionRule=>"session permission overlay rules must be unique by action and resource",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
+        f.write_str(match self{Self::InvalidDelegationTargets=>"delegation targets must be a nonempty, strictly sorted unique list of at most 256 IDs",Self::InvalidDescription=>"agent description must be nonblank, control-free, and 1..=512 bytes",Self::InvalidPreset=>"agent preset must use lowercase alphanumeric segments separated by hyphens and contain at most 64 bytes",Self::InvalidPrompt=>"composed prompt must be nonblank and at most 128 KiB",Self::InvalidListBounds=>"agent list exceeds bounds or frozen fallback is empty",Self::DuplicatePermissionRule=>"session permission overlay rules must be unique by action and resource",Self::DuplicateFallbackModel=>"fallback chains may contain each model key at most once",Self::InvalidModelBinding=>"agent snapshot contains an invalid frozen model binding",Self::InvalidSuffixStart=>"selected_suffix_start must index the frozen fallback chain",Self::SelectionMismatch=>"run selection does not match the snapshot agent and selected fallback start",Self::SelectedSuffixMismatch=>"selected suffix does not exactly match the frozen fallback order and selected head",Self::InvalidRootRunnable=>"runnable_as_root contradicts enabled mode or fallback state"})
     }
 }
 impl std::error::Error for AgentSchemaError {}

@@ -39,17 +39,10 @@ impl Engine {
     pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
-        if runtime.result.snapshot.models.is_empty()
-            || !runtime
-                .result
-                .snapshot
-                .agents
-                .iter()
-                .any(|agent| agent.runnable_as_root)
-        {
+        if runtime.result.snapshot.models.is_empty() {
             return Err(EngineError::NoRunnableModel);
         }
-        let agents = Arc::clone(&runtime.agents);
+        let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?.clone();
         if !agent.runnable_as_root {
             return Err(EngineError::NoRunnableModel);
@@ -259,16 +252,7 @@ impl Engine {
         Ok(delegation
             .targets
             .iter()
-            .filter(|target| {
-                active.policy.registry.get(target).is_some_and(|agent| {
-                    agent.document.frontmatter.enabled
-                        && matches!(
-                            agent.document.frontmatter.mode,
-                            cookie_agent_config::AgentMode::Subagent
-                                | cookie_agent_config::AgentMode::All
-                        )
-                })
-            })
+            .filter(|target| active.policy.delegation_target_available(target))
             .cloned()
             .collect())
     }

@@ -1,4 +1,4 @@
-//! Coherent protocol-9 runtime snapshot state machine.
+//! Coherent protocol-10 runtime snapshot state machine.
 
 use cookie_agent_protocol::{
     CatalogSource, RuntimeChangedNotification, RuntimeRevision, RuntimeSnapshotV1,
@@ -206,6 +206,7 @@ mod tests {
             agents: if with_model {
                 vec![cookie_agent_protocol::AgentDescriptor {
                     id: cookie_agent_protocol::AgentId::new("default").expect("agent ID"),
+                    preset: None,
                     description: "Built-in default coding agent".to_owned(),
                     mode: cookie_agent_protocol::AgentMode::Primary,
                     enabled: true,

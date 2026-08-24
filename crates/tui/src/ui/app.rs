@@ -87,6 +87,7 @@ use super::transcript::{
 pub(super) enum Modal {
     None,
     Sessions,
+    Presets,
     Agents,
     Models,
     ConnectProviders,
@@ -421,6 +422,9 @@ pub struct App {
     pub(super) sessions: Vec<SessionMeta>,
     pub(super) runtime: RuntimeState,
     pub(super) agents: Vec<AgentDescriptor>,
+    /// Client-local preset used only when creating a new root session.
+    pub(super) selected_preset: Option<String>,
+    pub(super) new_session_draft: bool,
     /// Revision of the current agent descriptor snapshot; refreshed
     /// coherently with the model revision.
     pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
@@ -787,6 +791,8 @@ impl App {
             sessions: Vec::new(),
             runtime: RuntimeState::default(),
             agents: Vec::new(),
+            selected_preset: None,
+            new_session_draft: false,
             agent_revision: None,
             models: Vec::new(),
             model_revision: None,
@@ -889,6 +895,10 @@ impl App {
             self.status = self.setup_status();
             return;
         };
+        self.create_root_session(selection).await;
+    }
+
+    async fn create_root_session(&mut self, selection: RunSelection) {
         let agent = selection.agent.clone();
         match self
             .client
@@ -900,6 +910,7 @@ impl App {
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.open_session(session_id).await;
+                self.new_session_draft = false;
                 self.status =
                     format!("New root session opened with agent {agent}. Type /help for commands.");
             }
@@ -1024,7 +1035,7 @@ impl App {
         self.refresh_coherent_lists().await;
     }
 
-    /// Fetch and install the sole protocol-9 discovery object.
+    /// Fetch and install the sole protocol-10 discovery object.
     pub(super) async fn refresh_coherent_lists(&mut self) {
         match self.client.runtime_snapshot().await {
             Ok(result) => self.install_initial_runtime(result.snapshot),
@@ -1078,6 +1089,13 @@ impl App {
         self.providers = snapshot.providers;
         self.models = snapshot.models;
         self.agents = snapshot.agents;
+        if self
+            .selected_preset
+            .as_ref()
+            .is_some_and(|selected| !self.preset_names().contains(selected))
+        {
+            self.selected_preset = None;
+        }
         self.revalidate_draft();
         if self.runtime.is_empty() && self.watching_root_session() {
             self.draft = None;
@@ -1090,12 +1108,83 @@ impl App {
     /// Root-selectable agents: exactly the descriptors with
     /// `runnable_as_root = true`.
     pub(super) fn selectable_agents(&self) -> Vec<&AgentDescriptor> {
+        let preset = if self.new_session_draft {
+            self.selected_preset.as_deref()
+        } else {
+            self.draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref())
+                .or_else(|| {
+                    self.selected_session_meta()
+                        .and_then(|session| session.creation_selection.preset.as_deref())
+                })
+        };
         self.agents
             .iter()
             .filter(|agent| {
-                agent.runnable_as_root && agent.mode != cookie_agent_protocol::AgentMode::Internal
+                agent.runnable_as_root
+                    && agent.mode != cookie_agent_protocol::AgentMode::Internal
+                    && agent.preset.as_deref() == preset
             })
             .collect()
+    }
+
+    pub(super) fn preset_names(&self) -> Vec<String> {
+        let mut names = self
+            .agents
+            .iter()
+            .filter_map(|agent| agent.preset.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn selected_preset_label(&self) -> &str {
+        self.selected_preset.as_deref().unwrap_or("shared")
+    }
+
+    fn draft_selection_for_preset(
+        &self,
+        preset: Option<&str>,
+        preferred_agent: Option<&AgentId>,
+        preferred_model: Option<&ModelSelection>,
+    ) -> Option<RunSelection> {
+        let candidates = self
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent.runnable_as_root
+                    && agent.mode != cookie_agent_protocol::AgentMode::Internal
+                    && agent.preset.as_deref() == preset
+            })
+            .collect::<Vec<_>>();
+        let agent = preferred_agent
+            .and_then(|id| candidates.iter().find(|agent| agent.id == *id).copied())
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find(|agent| agent.id.as_str() == "primary")
+                    .copied()
+            })
+            .or_else(|| candidates.first().copied())?;
+        let model = preferred_model
+            .filter(|selection| self.selection_is_live(selection))
+            .cloned()
+            .or_else(|| {
+                agent
+                    .resolved_fallback
+                    .iter()
+                    .find(|selection| self.selection_is_live(selection))
+                    .cloned()
+            })
+            .or_else(|| self.models.first().map(Self::default_model_selection))?;
+        Some(RunSelection {
+            agent: agent.id.clone(),
+            model,
+            preset: preset.map(str::to_owned),
+        })
     }
 
     pub(super) fn default_draft_selection(&self) -> Option<RunSelection> {
@@ -1113,6 +1202,7 @@ impl App {
         Some(RunSelection {
             agent: agent.id.clone(),
             model,
+            preset: agent.preset.clone(),
         })
     }
 
@@ -1203,17 +1293,15 @@ impl App {
             self.draft = self.default_draft_selection();
             return;
         };
-        if !self
-            .agents
-            .iter()
-            .any(|agent| agent.runnable_as_root && agent.id == draft.agent)
-        {
+        if !self.agents.iter().any(|agent| {
+            agent.runnable_as_root && agent.id == draft.agent && agent.preset == draft.preset
+        }) {
             self.draft = self.default_draft_selection();
             return;
         }
         let Some(descriptor) = self.model_descriptor(&draft.model.model) else {
             draft.model = self
-                .preferred_model_for_agent(&draft.agent)
+                .preferred_model_for_agent(&draft.agent, draft.preset.as_deref())
                 .or_else(|| self.models.first().map(Self::default_model_selection))
                 .unwrap_or(draft.model);
             self.draft = Some(draft);
@@ -1278,10 +1366,14 @@ impl App {
             })
     }
 
-    fn preferred_model_for_agent(&self, agent: &AgentId) -> Option<ModelSelection> {
+    fn preferred_model_for_agent(
+        &self,
+        agent: &AgentId,
+        preset: Option<&str>,
+    ) -> Option<ModelSelection> {
         self.agents
             .iter()
-            .find(|candidate| candidate.id == *agent)
+            .find(|candidate| candidate.id == *agent && candidate.preset.as_deref() == preset)
             .and_then(|descriptor| {
                 descriptor
                     .resolved_fallback
@@ -1424,11 +1516,18 @@ impl App {
     }
 
     pub(super) fn set_draft_agent(&mut self, agent: AgentId) {
-        let Some(descriptor) = self
-            .agents
-            .iter()
-            .find(|candidate| candidate.id == agent && candidate.runnable_as_root)
-        else {
+        let preset = if self.new_session_draft {
+            self.selected_preset.as_deref()
+        } else {
+            self.draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref())
+        };
+        let Some(descriptor) = self.agents.iter().find(|candidate| {
+            candidate.id == agent
+                && candidate.runnable_as_root
+                && candidate.preset.as_deref() == preset
+        }) else {
             return;
         };
         let model = self
@@ -1447,7 +1546,11 @@ impl App {
         let Some(model) = model else {
             return;
         };
-        self.draft = Some(RunSelection { agent, model });
+        self.draft = Some(RunSelection {
+            agent,
+            model,
+            preset: descriptor.preset.clone(),
+        });
         self.status = self.draft_status("Draft run agent");
     }
 
@@ -1475,6 +1578,7 @@ impl App {
         self.draft = Some(RunSelection {
             agent: draft.agent,
             model: selection,
+            preset: draft.preset,
         });
         self.status = self.draft_status("Draft run model");
     }
@@ -1489,6 +1593,7 @@ impl App {
                 model: draft.model.model,
                 variant,
             },
+            preset: draft.preset,
         });
         self.status = self.draft_status("Draft run variant");
     }
@@ -1585,13 +1690,14 @@ impl App {
         let Some(draft) = &self.draft else {
             return "no draft selection".into();
         };
+        let preset = draft.preset.as_deref().unwrap_or("shared");
         if self.active_run_agent().is_some() {
             format!(
-                "{action}: {}; applies to the next run — the active run is unchanged",
-                draft_title(draft)
+                "{action}: {} · preset {preset}; applies to the next run — the active run is unchanged",
+                draft_title(draft),
             )
         } else {
-            format!("{action}: {}", draft_title(draft))
+            format!("{action}: {} · preset {preset}", draft_title(draft))
         }
     }
 
@@ -2248,6 +2354,7 @@ impl App {
                     self.draft = Some(RunSelection {
                         agent: creation.agent,
                         model,
+                        preset: creation.preset,
                     });
                 } else {
                     self.draft = Some(creation);
@@ -2996,7 +3103,9 @@ impl App {
         }
         match self.modal {
             Modal::Sessions => self.handle_session_picker(key).await,
-            Modal::Agents | Modal::Models => self.handle_selection_picker(key).await,
+            Modal::Presets | Modal::Agents | Modal::Models => {
+                self.handle_selection_picker(key).await
+            }
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectDetails => self.handle_connect_details_key(key),
             Modal::ConnectSetup => self.handle_connect_setup_key(key),
@@ -3192,6 +3301,7 @@ impl App {
     pub(super) fn picker_entry_count(&self) -> usize {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
+            Modal::Presets => self.preset_names().len() + 1,
             Modal::Agents => self.selectable_agents().len(),
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
@@ -4083,7 +4193,7 @@ impl App {
                         self.session_search.focus_list();
                         self.session_search_ids().len()
                     }
-                    Modal::Agents | Modal::Models => self.picker_entry_count(),
+                    Modal::Presets | Modal::Agents | Modal::Models => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails
@@ -4496,7 +4606,10 @@ impl App {
     pub(super) async fn handle_selection_picker(&mut self, key: KeyEvent) {
         let count = self.picker_entry_count();
         match key.code {
-            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Esc => {
+                self.modal = Modal::None;
+                self.new_session_draft = false;
+            }
             KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
             KeyCode::Down => move_picker_selection(&mut self.picker_state, count, false),
             KeyCode::Tab | KeyCode::BackTab => {
@@ -4929,6 +5042,43 @@ impl App {
                 if let Some(agent) = agent {
                     self.set_draft_agent(agent);
                     self.modal = Modal::None;
+                    if self.new_session_draft
+                        && let Some(selection) = self.draft.clone()
+                    {
+                        self.create_root_session(selection).await;
+                    }
+                }
+            }
+            Modal::Presets => {
+                let preset = if index == 0 {
+                    Some(None)
+                } else {
+                    self.preset_names().get(index - 1).cloned().map(Some)
+                };
+                if let Some(preset) = preset {
+                    let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
+                    let preferred_model = self.draft.as_ref().map(|draft| draft.model.clone());
+                    self.selected_preset = preset;
+                    if self.new_session_draft || self.watching_root_session() {
+                        self.draft = self.draft_selection_for_preset(
+                            self.selected_preset.as_deref(),
+                            preferred_agent.as_ref(),
+                            preferred_model.as_ref(),
+                        );
+                    }
+                    self.modal = if self.draft.is_none() && self.watching_root_session() {
+                        Modal::Agents
+                    } else {
+                        Modal::None
+                    };
+                    self.status = if self.watching_root_session() {
+                        self.draft_status("Draft run preset")
+                    } else {
+                        format!(
+                            "Agent preset for the next root run and future new sessions: {}; delegated session remains pinned",
+                            self.selected_preset_label()
+                        )
+                    };
                 }
             }
             Modal::Models => {
@@ -5490,10 +5640,18 @@ impl App {
                     self.status = EMPTY_RUNTIME_GUIDANCE.into();
                     return;
                 }
+                self.new_session_draft = true;
+                self.draft = self.default_draft_selection();
                 self.open_selection_modal(Modal::Agents);
                 if self.modal == Modal::Agents {
-                    self.status = "Select the draft agent for the next run.".into();
+                    self.status = "Select the agent for the new root session.".into();
                 }
+            }
+            SlashCommand::Preset => {
+                self.modal = Modal::Presets;
+                self.picker_state.select(Some(0));
+                self.status =
+                    "Select the preset for the next root run and future new sessions.".into();
             }
             SlashCommand::Connect => {
                 self.clear_connect_secrets();
@@ -6094,7 +6252,13 @@ impl App {
                     let description = self
                         .agents
                         .iter()
-                        .find(|candidate| candidate.id.as_str() == agent)
+                        .find(|candidate| {
+                            candidate.id.as_str() == agent
+                                && candidate.preset
+                                    == self
+                                        .selected_session_meta()
+                                        .and_then(|meta| meta.creation_selection.preset.clone())
+                        })
                         .map(|candidate| candidate.description.clone())
                         .unwrap_or_else(|| "frozen child agent".into());
                     (
@@ -6107,7 +6271,15 @@ impl App {
                             .iter()
                             .map(|agent| format!("{} — {}", agent.id, agent.description))
                             .collect(),
-                        format!("Agent — {}", self.descriptor_revisions_label()),
+                        if self.new_session_draft {
+                            format!(
+                                "Agent — preset: {} · {}",
+                                self.selected_preset_label(),
+                                self.descriptor_revisions_label()
+                            )
+                        } else {
+                            format!("Agent — {}", self.descriptor_revisions_label())
+                        },
                     )
                 };
                 let empty_message = entries
@@ -6119,6 +6291,18 @@ impl App {
                     entries,
                     empty_message,
                     centered(frame.area(), 56, 44),
+                    Some("↑↓ move · enter: select · esc: close"),
+                );
+            }
+            Modal::Presets => {
+                let mut entries = vec!["None (shared)".to_owned()];
+                entries.extend(self.preset_names());
+                self.render_picker(
+                    frame,
+                    "Agent preset — next root run and future new sessions",
+                    entries,
+                    None,
+                    centered(frame.area(), 48, 40),
                     Some("↑↓ move · enter: select · esc: close"),
                 );
             }

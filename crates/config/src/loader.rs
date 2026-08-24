@@ -34,6 +34,7 @@ const MAX_AGENT_BYTES: u64 = 256 * 1024;
 pub struct LoadedConfiguration {
     pub runtime: RuntimeConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
+    pub agent_presets: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
     pub user_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
     pub workspace_mcp_servers: BTreeMap<String, crate::McpServerConfig>,
@@ -65,6 +66,14 @@ impl LoadedConfiguration {
     #[must_use]
     pub fn agent_registry(&self) -> AgentRegistry {
         AgentRegistry::from_validated(self.agents.clone())
+    }
+
+    #[must_use]
+    pub fn agent_preset_registries(&self) -> BTreeMap<String, AgentRegistry> {
+        self.agent_presets
+            .iter()
+            .map(|(name, agents)| (name.clone(), AgentRegistry::from_validated(agents.clone())))
+            .collect()
     }
 }
 
@@ -102,6 +111,7 @@ pub fn load_from_roots(
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
+    let mut preset_agents = BTreeMap::<String, BTreeMap<AgentId, AgentDocument>>::new();
     let mut mcp_servers = BTreeMap::new();
     let mut user_mcp_servers = BTreeMap::new();
     let mut workspace_mcp_servers = BTreeMap::new();
@@ -160,11 +170,24 @@ pub fn load_from_roots(
                 runtime.providers.insert(id, provider);
             }
         }
-        for (id, document) in root.load_agents()? {
+        let layer_agents = root.load_agents()?;
+        for (id, document) in layer_agents.shared {
             agents.insert(id, document);
+        }
+        for (preset, documents) in layer_agents.presets {
+            preset_agents.entry(preset).or_default().extend(documents);
         }
     }
     AgentRegistry::validate_ref(&agents)?;
+    let agent_presets = preset_agents
+        .into_iter()
+        .map(|(preset, documents)| {
+            let mut effective = agents.clone();
+            effective.extend(documents);
+            AgentRegistry::validate_ref(&effective)?;
+            Ok((preset, effective))
+        })
+        .collect::<Result<_, ConfigError>>()?;
     validate_runtime(&runtime)?;
     for (name, server) in &mcp_servers {
         server.config.validate(name)?;
@@ -185,6 +208,7 @@ pub fn load_from_roots(
     Ok(LoadedConfiguration {
         runtime,
         agents,
+        agent_presets,
         mcp_servers,
         user_mcp_servers,
         workspace_mcp_servers,
@@ -243,36 +267,82 @@ impl LayerRoot {
         Ok(Some((layer, Arc::from(text))))
     }
 
-    fn load_agents(&self) -> Result<BTreeMap<AgentId, AgentDocument>, ConfigError> {
+    fn load_agents(&self) -> Result<AgentLayer, ConfigError> {
         let Some(directory) = open_optional_directory(&self.path, "agents")? else {
-            return Ok(BTreeMap::new());
+            return Ok(AgentLayer::default());
         };
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&directory).map_err(ConfigError::Io)? {
-            let entry = entry.map_err(ConfigError::Io)?;
-            let name = entry
+        let names = sorted_entry_names(&directory)?;
+        let mut layer = AgentLayer::default();
+        for name in names {
+            if name.ends_with(".md") {
+                load_agent_document(&directory, &name, self.source, &mut layer.shared)?;
+                continue;
+            }
+            if regular_file_at(&directory, &name)? {
+                continue;
+            }
+            let preset_directory =
+                open_optional_directory(&directory, &name)?.ok_or(ConfigError::UnsafePath)?;
+            AgentId::new(&name).map_err(|_| ConfigError::AgentPresetName {
+                path: preset_directory.clone(),
+                name: name.clone(),
+            })?;
+            let mut documents = BTreeMap::new();
+            for document_name in sorted_entry_names(&preset_directory)? {
+                if !document_name.ends_with(".md") {
+                    return Err(ConfigError::UnsafePath);
+                }
+                load_agent_document(
+                    &preset_directory,
+                    &document_name,
+                    self.source,
+                    &mut documents,
+                )?;
+            }
+            layer.presets.insert(name, documents);
+        }
+        Ok(layer)
+    }
+}
+
+#[derive(Default)]
+struct AgentLayer {
+    shared: BTreeMap<AgentId, AgentDocument>,
+    presets: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
+}
+
+fn sorted_entry_names(directory: &Path) -> Result<Vec<String>, ConfigError> {
+    let mut names = std::fs::read_dir(directory)
+        .map_err(ConfigError::Io)?
+        .map(|entry| {
+            entry
+                .map_err(ConfigError::Io)?
                 .file_name()
                 .into_string()
-                .map_err(|_| ConfigError::UnsafePath)?;
-            if name.ends_with(".md") {
-                names.push(name);
-            } else if !regular_file_at(&directory, &name)? {
-                return Err(ConfigError::UnsafePath);
-            }
-        }
-        names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-        let mut documents = BTreeMap::new();
-        for name in names {
-            let stem = name.strip_suffix(".md").expect("suffix checked");
-            let id = AgentId::new(stem).map_err(|_| ConfigError::AgentFilename(name.clone()))?;
-            let bytes = read_required_file(&directory, &name, MAX_AGENT_BYTES)?;
-            let document = parse_agent(id.clone(), &bytes, self.source, &directory.join(&name))?;
-            if documents.insert(id.clone(), document).is_some() {
-                return Err(ConfigError::DuplicateAgent(id));
-            }
-        }
-        Ok(documents)
+                .map_err(|_| ConfigError::UnsafePath)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    Ok(names)
+}
+
+fn load_agent_document(
+    directory: &Path,
+    name: &str,
+    source: AgentDocumentSource,
+    documents: &mut BTreeMap<AgentId, AgentDocument>,
+) -> Result<(), ConfigError> {
+    if !regular_file_at(directory, name)? {
+        return Err(ConfigError::UnsafePath);
     }
+    let stem = name.strip_suffix(".md").expect("suffix checked");
+    let id = AgentId::new(stem).map_err(|_| ConfigError::AgentFilename(name.to_owned()))?;
+    let bytes = read_required_file(directory, name, MAX_AGENT_BYTES)?;
+    let document = parse_agent(id.clone(), &bytes, source, &directory.join(name))?;
+    if documents.insert(id.clone(), document).is_some() {
+        return Err(ConfigError::DuplicateAgent(id));
+    }
+    Ok(())
 }
 
 fn decode_runtime_layer(
@@ -398,4 +468,36 @@ fn key_line(text: &str, key: &str) -> Option<usize> {
 
 fn user_root() -> Option<PathBuf> {
     paths::user_data_root().ok()
+}
+
+#[cfg(test)]
+mod agent_loader_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_agent_ids_in_one_preset_map_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("worker.md"),
+            "---\ndescription: Worker\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nPrompt.\n",
+        )
+        .unwrap();
+        let mut documents = BTreeMap::new();
+        load_agent_document(
+            directory.path(),
+            "worker.md",
+            AgentDocumentSource::Workspace,
+            &mut documents,
+        )
+        .unwrap();
+        assert!(matches!(
+            load_agent_document(
+                directory.path(),
+                "worker.md",
+                AgentDocumentSource::Workspace,
+                &mut documents,
+            ),
+            Err(ConfigError::DuplicateAgent(id)) if id.as_str() == "worker"
+        ));
+    }
 }

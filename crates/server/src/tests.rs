@@ -162,6 +162,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        agent_presets: BTreeMap::new(),
         mcp_servers,
         user_mcp_servers,
         workspace_mcp_servers,
@@ -376,6 +377,7 @@ fn harness_with_catalog(
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),
@@ -434,10 +436,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 9 }),
+        json!({ "protocol_version": 10 }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], 9);
+    assert_eq!(hello["result"]["protocol_version"], 10);
     client
 }
 

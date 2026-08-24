@@ -168,6 +168,69 @@ additional asks and secret-file denies, while write, bash, and delegate ask by
 default. MCP remains omitted. User agents do not inherit this list and must
 declare their own tool permissions.
 
+## Agent presets
+
+Agent presets provide named, complete agent sets without duplicating every
+shared document. Markdown files directly under `agents/` are shared and are
+available when no preset is selected. A directory exactly one level below
+`agents/` defines a preset:
+
+```text
+.cookie-agent/agents/
+├── primary.md
+├── reviewer.md
+├── python/
+│   ├── primary.md
+│   └── test-writer.md
+└── rust/
+    ├── primary.md
+    └── unsafe-reviewer.md
+```
+
+Selecting `python` produces an effective set containing every shared agent,
+then fully replaces shared documents whose IDs also exist in `agents/python/`,
+and finally adds preset-only IDs such as `test-writer`. Selecting `rust` applies
+the same rule independently. Replacement is whole-document replacement: fields,
+permissions, model chains, and prompt bodies never merge between same-ID files.
+
+Preset names use the same lowercase alphanumeric and hyphen grammar as agent
+IDs, with at most 64 bytes. Presets may add new IDs. The `default` ID remains
+non-authorable, and authored `approval`, `compaction`, and `title` documents must
+remain internal. Every shared and effective preset set is validated separately,
+including delegation targets. Internal built-ins and the synthesized `default`
+agent are resolved independently for each effective set.
+
+Only one directory level is supported. Nested directories, non-Markdown entries,
+invalid names, malformed documents in unselected presets, and files over 256
+KiB are hard configuration errors.
+
+No preset is selected by default. In the TUI, run `/preset` and choose either
+`None (shared)` or a discovered preset. The choice updates the active root
+session's draft for its next run and is also used by `/new` when creating future
+root sessions. If the current draft agent is not root-runnable in the new
+effective set, the TUI selects that preset's `primary` or first runnable agent.
+The choice is in memory only: it is not written to configuration and resets to
+shared when the TUI restarts.
+
+For headless runs, pass the preset explicitly:
+
+```bash
+cookie run --preset python --agent primary "Implement the data pipeline"
+cookie run --preset rust --agent unsafe-reviewer "Review the FFI boundary"
+```
+
+The selected preset is stored in the session's creation selection and is the
+default when the session is resumed. Root sessions may select another preset for
+any later run; `cookie run --resume-session <id> --preset rust ...` applies
+`rust` to that run without rewriting the creation selection. Each run persists
+its exact preset, agent snapshot, and model bindings, so replay does not consult
+the live preset registry.
+
+Delegated sessions are different: they inherit the preset from the parent run
+that created them, including when the parent switched presets after session
+creation. Their agent is resolved and frozen from that effective set, and later
+runs of the delegated session remain pinned to the inherited preset.
+
 ## Internal agents
 
 The harness runs three internal agents. They are stateless, tool-less model
@@ -217,6 +280,7 @@ Summarize conversation context faithfully within the supplied bounds. Return sum
 
 ## Selecting an agent
 
-In the TUI, `/new` chooses the next root-run agent from the agents that are
-runnable as a root (`primary` or `all`, enabled, with at least one available
-model). If none are runnable, the built-in `default` agent is used.
+In the TUI, `/new` creates a root session after choosing from agents in the
+selected effective set that are runnable as a root (`primary` or `all`, enabled,
+with at least one available model). If none are runnable, that effective set's
+built-in `default` agent is used.

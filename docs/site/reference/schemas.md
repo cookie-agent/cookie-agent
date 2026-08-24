@@ -7,10 +7,10 @@ the current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | 10 | 10 |
 | Agent document | 5 | 5 |
-| Protocol | 9 | 9 |
+| Protocol | 10 | 10 |
 | Events and session JSONL | versionless | versionless plus legacy schema markers |
-| Session metadata | 9 | 9 |
-| Runtime snapshot | 4 | 4 |
+| Session metadata | 10 | 10 |
+| Runtime snapshot | 5 | 5 |
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
 | Family recipe registry | 1 | 1 |

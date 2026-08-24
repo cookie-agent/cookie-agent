@@ -1856,6 +1856,7 @@ fn fixture() -> Fixture {
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),
+        agent_presets: BTreeMap::new(),
         mcp_servers: BTreeMap::new(),
         user_mcp_servers: BTreeMap::new(),
         workspace_mcp_servers: BTreeMap::new(),
@@ -2136,6 +2137,7 @@ compaction = "openai-responses-compact"
                 model: "openai/gpt-test".parse().unwrap(),
                 variant: None,
             },
+            preset: None,
         },
     )
 }
@@ -2662,6 +2664,7 @@ media = {}
             model: "custom.test/group/model".parse().expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     (
         Fixture {
@@ -2679,7 +2682,9 @@ fn frozen_root_policy(
     selection: &RunSelection,
 ) -> crate::policy::FrozenRunPolicy {
     let runtime = fixture.engine.current_runtime();
-    let registry = Arc::clone(&runtime.agents);
+    let registry = runtime
+        .agents_for_preset(selection.preset.as_deref())
+        .expect("selected agent preset");
     let agent = crate::policy::resolve_agent(&registry, &selection.agent).expect("resolved agent");
     crate::policy::freeze_root_agent_policy(
         agent,
@@ -2867,6 +2872,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let owner = frozen_root_policy(&fixture, &selection);
     let parent = owner.selected_suffix[0].clone();
@@ -3003,6 +3009,7 @@ fn model_capabilities_follow_the_exact_fallback_binding() {
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
@@ -3036,6 +3043,7 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     let selection = RunSelection {
         agent: descriptor.id,
         model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut owner = frozen_root_policy(&fixture, &selection);
     let fallback = crate::test_support::model_binding_named("fallback-one");
@@ -3442,6 +3450,51 @@ async fn scripted_background_delegation_server() -> (String, tokio::task::JoinHa
             scripted_text_body("parent continued after admission"),
         ))
         .expect("background parent response");
+    (endpoint, task)
+}
+
+async fn scripted_preset_switch_delegation_server() -> (String, tokio::task::JoinHandle<Vec<String>>)
+{
+    let (endpoint, responses, task) = scripted_channel_server(5).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "complete the shared run",
+            scripted_text_body("shared run complete"),
+        ))
+        .expect("shared response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "delegate after switching presets",
+            scripted_tool_body(
+                "preset-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Preset child",
+                    "prompt":"preset child task",
+                    "background":true
+                }),
+            ),
+        ))
+        .expect("preset delegation response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "preset child task",
+            scripted_text_body("preset child complete"),
+        ))
+        .expect("preset child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("preset parent complete"),
+        ))
+        .expect("preset parent response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body("historical preset summary"),
+        ))
+        .expect("historical compaction response");
     (endpoint, task)
 }
 
@@ -4442,6 +4495,7 @@ lazy = true
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let session = fixture
         .engine
@@ -5068,6 +5122,14 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         let owner_policy = frozen_root_policy(&fixture, &selection);
         let binding = owner_policy.selected_suffix.first().expect("binding");
+        let internal_policy = fixture
+            .engine
+            .internal_agent_policy(
+                InternalAgentKind::ContextCompaction,
+                &owner_policy,
+                Some(binding),
+            )
+            .expect("compaction policy");
         let output = format!(
             "{RAW_MARKER}{}",
             "x".repeat(output_bytes - RAW_MARKER.len())
@@ -5123,6 +5185,11 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         )
         .expect("selected compaction context");
         let mut history = context.history;
+        history[0] = oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
+                internal_policy.agent.composed_prompt,
+            )),
+        ]));
         history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
             vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
                 crate::runtime::compaction::COMPACTION_INSTRUCTION,
@@ -5194,6 +5261,7 @@ fn empty_startup_is_coherent_and_rejects_fabricated_sessions() {
             model: "openai/model".parse().expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     assert!(matches!(
         fixture.engine.create_session(selection),
@@ -5232,6 +5300,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -5365,6 +5434,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     let selection = RunSelection {
         agent: agent.id.clone(),
         model: agent.resolved_fallback[0].clone(),
+        preset: None,
     };
     let mut policy = frozen_root_policy(&fixture, &selection);
     let session = fixture
@@ -5397,6 +5467,7 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     let selection = RunSelection {
         agent: default.id.clone(),
         model: default.resolved_fallback[0].clone(),
+        preset: None,
     };
     policy = frozen_root_policy(&fixture, &selection);
     // The default document has delegate permission but no named target; supply
@@ -5481,6 +5552,346 @@ fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_o
             .iter()
             .any(|agent| agent.id.as_str() == "default")
     );
+}
+
+#[tokio::test]
+async fn agent_presets_materialize_effective_registries_and_persist_selection() {
+    let (mut fixture, shared_selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+
+    let primary_id = AgentId::new("primary").expect("primary agent ID");
+    let mut python_agents = fixture.config.agents.clone();
+    let mut python_primary = python_agents[&primary_id].clone();
+    python_primary.frontmatter.description = "Python preset primary".into();
+    python_primary.body = "Use Python for this task.\n".into();
+    python_agents.insert(primary_id.clone(), python_primary);
+    let reviewer_id = AgentId::new("reviewer").expect("reviewer agent ID");
+    let mut reviewer = fixture.config.agents[&primary_id].clone();
+    reviewer.id = reviewer_id.clone();
+    reviewer.frontmatter.description = "Python-only reviewer".into();
+    reviewer.body = "Review Python code.\n".into();
+    python_agents.insert(reviewer_id.clone(), reviewer);
+    fixture
+        .config
+        .agent_presets
+        .insert("python".into(), python_agents);
+
+    let mut no_root_agents = fixture.config.agents.clone();
+    no_root_agents
+        .get_mut(&primary_id)
+        .expect("primary agent")
+        .frontmatter
+        .enabled = false;
+    fixture
+        .config
+        .agent_presets
+        .insert("no-root".into(), no_root_agents);
+    fixture.engine = reopen_engine(&fixture);
+
+    let snapshot = &fixture.engine.current_runtime().result.snapshot;
+    let shared_primary = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.preset.is_none() && agent.id == primary_id)
+        .expect("shared primary descriptor");
+    assert_eq!(shared_primary.description, "Primary test agent");
+    let python_primary = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.preset.as_deref() == Some("python") && agent.id == primary_id)
+        .expect("Python primary descriptor");
+    assert_eq!(python_primary.description, "Python preset primary");
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| { agent.preset.as_deref() == Some("python") && agent.id == reviewer_id })
+    );
+    assert!(snapshot.agents.iter().any(|agent| {
+        agent.preset.as_deref() == Some("no-root") && agent.id.as_str() == "default"
+    }));
+    assert!(snapshot.agents.iter().any(|agent| {
+        agent.preset.as_deref() == Some("python") && agent.id.as_str() == "approval"
+    }));
+
+    let preset_selection = RunSelection {
+        agent: reviewer_id,
+        model: shared_selection.model.clone(),
+        preset: Some("python".into()),
+    };
+    let created = fixture
+        .engine
+        .create_session(preset_selection.clone())
+        .expect("preset session");
+    assert_eq!(created.creation_selection, preset_selection);
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(created.session_id)
+            .expect("preset projection")
+            .creation_agent
+            .description,
+        "Python-only reviewer"
+    );
+    let unavailable = fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: created.session_id,
+            client_run_id: ClientRunId::new("unavailable-preset-agent").expect("run ID"),
+            selection: RunSelection {
+                preset: Some("no-root".into()),
+                ..preset_selection.clone()
+            },
+            input: "agent is absent in this preset".into(),
+        })
+        .await
+        .expect_err("missing preset agent is rejected");
+    assert!(matches!(unavailable, EngineError::InvalidRuntimeAgent(_)));
+    assert!(matches!(
+        fixture.engine.create_session(RunSelection {
+            preset: Some("missing".into()),
+            ..shared_selection
+        }),
+        Err(EngineError::UnknownAgentPreset(name)) if name == "missing"
+    ));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
+    let (endpoint, server) = scripted_preset_switch_delegation_server().await;
+    let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture.engine.shutdown().await;
+    let primary_id = AgentId::new("primary").expect("primary ID");
+    let worker_id = AgentId::new("worker").expect("worker ID");
+    let mut python_agents = fixture.config.agents.clone();
+    python_agents
+        .get_mut(&primary_id)
+        .expect("preset primary")
+        .frontmatter
+        .description = "Python preset primary".into();
+    python_agents
+        .get_mut(&worker_id)
+        .expect("preset worker")
+        .frontmatter
+        .description = "Python preset worker".into();
+    let mut compaction = fixture.config.agents[&primary_id].clone();
+    compaction.id = AgentId::new("compaction").expect("compaction ID");
+    compaction.frontmatter.description = "Python preset compaction".into();
+    compaction.frontmatter.mode = cookie_agent_config::AgentMode::Internal;
+    compaction.frontmatter.models = vec![cookie_agent_config::AgentModelFallback {
+        model: cookie_agent_config::AgentModelRef::ParentModel,
+        variant: None,
+    }];
+    compaction.frontmatter.limits = cookie_agent_config::AgentLimits {
+        timeout_ms: 30_000,
+        max_output_tokens: 2_048,
+    };
+    compaction.body = "Python preset compaction prompt.\n".into();
+    python_agents.insert(compaction.id.clone(), compaction);
+    fixture
+        .config
+        .agent_presets
+        .insert("python".into(), python_agents);
+    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+
+    let parent = fixture
+        .engine
+        .create_session(shared_selection.clone())
+        .expect("shared parent");
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
+            selection: shared_selection.clone(),
+            input: "complete the shared run".into(),
+        })
+        .await
+        .expect("shared run");
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    let preset_selection = RunSelection {
+        preset: Some("python".into()),
+        ..shared_selection
+    };
+    fixture
+        .engine
+        .start_run(RunStartParams {
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
+            selection: preset_selection,
+            input: "delegate after switching presets".into(),
+        })
+        .await
+        .expect("preset run");
+    let child = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "preset child completion",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await;
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    let parent_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("parent projection");
+    let shared_run = parent_projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "shared-before-preset")
+        .expect("shared run projection");
+    let preset_run = parent_projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "preset-delegation-run")
+        .expect("preset run projection");
+    assert_eq!(shared_run.selection.preset, None);
+    assert_eq!(shared_run.agent.description, "Primary test agent");
+    assert_eq!(preset_run.selection.preset.as_deref(), Some("python"));
+    assert_eq!(preset_run.agent.description, "Python preset primary");
+    let mut legacy_events = parent_projection.log.events();
+    for event in &mut legacy_events {
+        if event.run_id == Some(preset_run.id)
+            && let EventPayload::RunStarted {
+                internal_agents, ..
+            } = &mut event.payload
+        {
+            internal_agents.clear();
+        }
+    }
+    let legacy_policy = fixture
+        .engine
+        .historical_title_policy(&legacy_events, preset_run.id)
+        .expect("legacy preset policy");
+    let current_runtime = fixture.engine.current_runtime();
+    assert!(legacy_policy.internal_agents.is_empty());
+    assert!(!legacy_policy.historical_delegation);
+    assert!(Arc::ptr_eq(
+        &legacy_policy.registry,
+        current_runtime
+            .agent_presets
+            .get("python")
+            .expect("live python preset registry")
+    ));
+
+    let child_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(child.session_id)
+        .expect("preset child projection");
+    assert_eq!(
+        child_projection.meta.creation_selection.preset.as_deref(),
+        Some("python")
+    );
+    assert_eq!(
+        child_projection.creation_agent.description,
+        "Python preset worker"
+    );
+    let mut switched_child = child_projection.meta.creation_selection.clone();
+    switched_child.preset = None;
+    assert!(matches!(
+        fixture
+            .engine
+            .start_run(RunStartParams {
+                session_id: child.session_id,
+                client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
+                selection: switched_child,
+                input: "must remain pinned".into(),
+            })
+            .await,
+        Err(EngineError::NoRunnableModel)
+    ));
+
+    fixture.engine.shutdown().await;
+    fixture.config.agent_presets.clear();
+    let reopened = reopen_engine(&fixture);
+    let replayed = reopened
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("replayed parent");
+    let replayed_run = replayed
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "preset-delegation-run")
+        .expect("replayed preset run");
+    assert_eq!(replayed_run.selection.preset.as_deref(), Some("python"));
+    assert_eq!(replayed_run.agent.description, "Python preset primary");
+    let replayed_events = replayed.log.events();
+    let frozen_run_started = replayed_events
+        .iter()
+        .find(|event| {
+            event.run_id == Some(replayed_run.id)
+                && matches!(event.payload, EventPayload::RunStarted { .. })
+        })
+        .expect("frozen preset run start");
+    let EventPayload::RunStarted {
+        internal_agents, ..
+    } = &frozen_run_started.payload
+    else {
+        unreachable!("matched run start")
+    };
+    let frozen_compaction = internal_agents
+        .iter()
+        .find(|definition| definition.kind == InternalAgentKind::ContextCompaction)
+        .expect("frozen preset compaction definition");
+    assert_eq!(
+        frozen_compaction.composed_prompt,
+        "Python preset compaction prompt.\n"
+    );
+    for partial_len in [1, 2] {
+        let mut partial = frozen_run_started.clone();
+        let EventPayload::RunStarted {
+            internal_agents, ..
+        } = &mut partial.payload
+        else {
+            unreachable!("cloned run start")
+        };
+        internal_agents.truncate(partial_len);
+        assert!(partial.validate().is_err());
+        let encoded = serde_json::to_value(partial).expect("serialize partial run start");
+        assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(encoded).is_err());
+    }
+    assert!(
+        !reopened
+            .get_history(parent.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("historical assembled history")
+            .is_empty()
+    );
+    assert!(
+        reopened
+            .compact_session(parent.session_id, None)
+            .await
+            .expect("historical manual compaction")
+    );
+    let requests = server.await.expect("preset switch server");
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[4].contains("Python preset compaction prompt"),
+        "{}",
+        requests[4]
+    );
+    assert!(
+        !requests[4]
+            .contains("Summarize conversation context faithfully within the supplied bounds"),
+        "{}",
+        requests[4]
+    );
+    reopened.shutdown().await;
 }
 
 // This regression asserts exact POSIX mode bits for a shared workspace.
@@ -5688,6 +6099,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
                 .expect("model key"),
             variant: None,
         },
+        preset: None,
     };
     manager_two
         .current()
@@ -6244,7 +6656,7 @@ fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
         else {
             panic!("first event must be session creation");
         };
-        assert_eq!(creation_agent.schema.value(), 6);
+        assert_eq!(creation_agent.schema.value(), 7);
         assert!(
             serde_json::to_value(creation_agent)
                 .expect("serialize up-converted creation agent")
@@ -10790,25 +11202,30 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
     let worker = AgentId::new("worker").expect("worker agent");
     let self_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, parent.session_id, &worker)
+        .validate_resume_target(parent.session_id, parent.session_id, &worker, None)
         .expect_err("self resume is rejected");
     assert!(self_error.to_string().contains("itself"));
     let foreign_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, foreign.session_id, &worker)
+        .validate_resume_target(parent.session_id, foreign.session_id, &worker, None)
         .expect_err("foreign resume is rejected");
     assert!(foreign_error.to_string().contains("prior direct child"));
     let missing_id = SessionId::new_v7();
     let missing_error = fixture
         .engine
-        .validate_resume_target(parent.session_id, missing_id, &worker)
+        .validate_resume_target(parent.session_id, missing_id, &worker, None)
         .expect_err("unknown resume is rejected");
     assert!(missing_error.to_string().contains("was not found"));
     let ancestor_error = fixture
         .engine
-        .validate_resume_target(child_session_id, parent.session_id, &worker)
+        .validate_resume_target(child_session_id, parent.session_id, &worker, None)
         .expect_err("ancestor resume is rejected");
     assert!(ancestor_error.to_string().contains("ancestor"));
+    let preset_error = fixture
+        .engine
+        .validate_resume_target(parent.session_id, child_session_id, &worker, Some("python"))
+        .expect_err("cross-preset child resume is rejected");
+    assert!(preset_error.to_string().contains("different agent preset"));
 
     responses
         .send(MatchedScriptedResponse::last_message_contains(

@@ -2681,6 +2681,7 @@ mod tests {
         let selection = RunSelection {
             agent: agent.agent.clone(),
             model: suffix[0].selection.clone(),
+            preset: None,
         };
         let prompt_fingerprint = agent.prompt_fingerprint.clone();
         let mut records = vec![
@@ -2701,6 +2702,7 @@ mod tests {
                     recipe_registry_revision: registry_revision(),
                     manifest_revision: suffix[0].manifest_revision.clone(),
                     selected_suffix: suffix.to_vec(),
+                    internal_agents: Vec::new(),
                     input_through_seq: 1,
                 },
             ),
@@ -3633,7 +3635,7 @@ mod tests {
                 cookie_agent_protocol::SessionStatus::Idle
             );
             assert_eq!(projected.meta.last_event_seq, 1);
-            assert_eq!(projected.creation_agent.schema.value(), 6);
+            assert_eq!(projected.creation_agent.schema.value(), 7);
         }
     }
 
@@ -3690,6 +3692,7 @@ mod tests {
                     recipe_registry_revision: registry_revision(),
                     manifest_revision: agent.fallback_chain[0].manifest_revision.clone(),
                     selected_suffix: agent.fallback_chain.clone(),
+                    internal_agents: Vec::new(),
                     agent: Box::new(agent),
                     input_through_seq: 1,
                 },

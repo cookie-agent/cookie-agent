@@ -1,4 +1,4 @@
-//! Protocol-9 coherent runtime and provider mutation RPCs.
+//! Protocol-10 coherent runtime and provider mutation RPCs.
 
 use crate::{
     ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,

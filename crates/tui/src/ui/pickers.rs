@@ -439,6 +439,7 @@ mod tests {
                     model: "provider/model".parse().expect("model key"),
                     variant: None,
                 },
+                preset: None,
             },
             runtime_revision: revision("1"),
             catalog_revision: revision("2"),
