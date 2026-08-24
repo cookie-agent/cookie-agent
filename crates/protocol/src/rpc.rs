@@ -265,10 +265,8 @@ pub struct ModelUsageRollup {
 }
 
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UsageCostProvenance {
-    #[default]
-    Legacy,
     Stamped(Option<u64>),
 }
 

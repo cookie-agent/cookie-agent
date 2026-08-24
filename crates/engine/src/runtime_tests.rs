@@ -10022,7 +10022,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
 }
 
 #[tokio::test]
-async fn session_tree_usage_aggregates_nested_mixed_provenance_and_evicted_children() {
+async fn session_tree_usage_aggregates_nested_and_evicted_children() {
     let bodies = vec![
         scripted_tool_usage_body(
             "tree-root-child",
@@ -10127,60 +10127,9 @@ async fn session_tree_usage_aggregates_nested_mixed_provenance_and_evicted_child
     wait_for_session_not_running(&fixture.engine, unrelated.session_id).await;
     assert_eq!(captured.await.expect("tree usage requests").len(), 6);
 
-    let root_events = fixture
-        .engine
-        .inner
-        .store
-        .get(root.session_id)
-        .expect("root projection")
-        .log
-        .path()
-        .to_owned();
     fixture.engine.shutdown().await;
-    let mut made_legacy = false;
-    let rewritten = fs::read_to_string(&root_events)
-        .expect("root events")
-        .lines()
-        .map(|line| {
-            let mut value: serde_json::Value = serde_json::from_str(line).expect("event JSON");
-            if !made_legacy && value["payload"]["type"] == "model_usage_recorded" {
-                value["payload"]
-                    .as_object_mut()
-                    .expect("usage payload")
-                    .remove("estimated_cost_pico_usd");
-                made_legacy = true;
-            }
-            serde_json::to_string(&value).expect("rewritten event")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    assert!(made_legacy);
-    fs::write(root_events, rewritten).expect("write legacy root event");
 
     let reopened = reopen_engine(&fixture);
-    let model: cookie_agent_protocol::ModelKey =
-        "custom.test/group/model".parse().expect("model key");
-    let provenances = [root.session_id, child_id, grandchild_id]
-        .into_iter()
-        .flat_map(|session_id| {
-            reopened
-                .inner
-                .store
-                .summary(session_id)
-                .expect("tree summary")
-                .usage_rollup
-                .by_model
-                .remove(&model)
-                .expect("model rollup")
-                .cost_provenance
-        })
-        .collect::<Vec<_>>();
-    assert!(provenances.contains(&cookie_agent_protocol::UsageCostProvenance::Legacy));
-    assert!(provenances.iter().any(|provenance| matches!(
-        provenance,
-        cookie_agent_protocol::UsageCostProvenance::Stamped(_)
-    )));
     assert!(reopened.inner.store.evict(child_id).expect("evict child"));
     assert!(!reopened.inner.store.is_resident(child_id));
 

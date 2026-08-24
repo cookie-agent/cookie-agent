@@ -9,11 +9,6 @@ use cookie_agent_protocol::{
 const PICO_USD_PER_USD: u128 = 1_000_000_000_000;
 const TOKENS_PER_MILLION: u128 = 1_000_000;
 
-pub(crate) fn record(rollup: &mut UsageRollup, model: &ResolvedModelRef, usage: &Usage) {
-    record_with_provenance(rollup, model, usage, UsageCostProvenance::Legacy);
-}
-
-#[cfg(test)]
 pub(crate) fn record_stamped(
     rollup: &mut UsageRollup,
     model: &ResolvedModelRef,
@@ -28,7 +23,7 @@ pub(crate) fn record_stamped(
     );
 }
 
-pub(crate) fn record_with_provenance(
+fn record_with_provenance(
     rollup: &mut UsageRollup,
     model: &ResolvedModelRef,
     usage: &Usage,
@@ -199,8 +194,8 @@ pub(crate) fn merge(target: &mut UsageRollup, source: &UsageRollup) {
 
 pub(crate) fn with_pricing(
     mut rollup: UsageRollup,
-    pricing: &PricingConfig,
-    catalog: &BTreeMap<ModelKey, CatalogModelCost>,
+    _pricing: &PricingConfig,
+    _catalog: &BTreeMap<ModelKey, CatalogModelCost>,
 ) -> UsageRollup {
     rollup.cache_hit_rate = (!rollup.arithmetic_overflow)
         .then(|| {
@@ -214,7 +209,7 @@ pub(crate) fn with_pricing(
         .flatten();
     let mut total_cost_numerator = 0_u128;
     let mut all_priced = rollup.request_count > 0 && !rollup.arithmetic_overflow;
-    for (model, usage) in &mut rollup.by_model {
+    for usage in rollup.by_model.values_mut() {
         usage.cache_hit_rate = (!usage.arithmetic_overflow)
             .then(|| hit_rate(usage.observations.iter()))
             .flatten();
@@ -225,14 +220,7 @@ pub(crate) fn with_pricing(
         {
             None
         } else {
-            observations_cost(&usage.observations, &usage.cost_provenance, |reported| {
-                if let Some(rates) = pricing.models.get(model) {
-                    return Some(*rates);
-                }
-                let schedule = catalog.get(model)?;
-                let input = reported.input_tokens?;
-                Some(catalog_rates(schedule.rates_for_input(input)))
-            })
+            observations_cost(&usage.cost_provenance)
         };
         usage.estimated_cost_usd = cost.map(cost_numerator_to_usd);
         if let Some(cost) = cost {
@@ -287,15 +275,10 @@ fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
     }
 }
 
-fn observations_cost(
-    observations: &[Usage],
-    cost_provenance: &[UsageCostProvenance],
-    rates: impl Fn(&Usage) -> Option<ModelPricing>,
-) -> Option<u128> {
+fn observations_cost(cost_provenance: &[UsageCostProvenance]) -> Option<u128> {
     let mut total = 0_u128;
-    for (usage, provenance) in observations.iter().zip(cost_provenance) {
+    for provenance in cost_provenance {
         let cost = match provenance {
-            UsageCostProvenance::Legacy => request_cost(usage, rates(usage)?)?,
             UsageCostProvenance::Stamped(Some(pico_usd)) => {
                 u128::from(*pico_usd).checked_mul(TOKENS_PER_MILLION)?
             }
@@ -421,17 +404,19 @@ mod tests {
     #[test]
     fn records_multiple_turns_and_models_without_mixing_inclusive_totals() {
         let mut rollup = UsageRollup::default();
-        super::record(
+        super::record_stamped(
             &mut rollup,
             &model("fallback-zero"),
             &reported(Some(100), Some(20), Some(40)),
+            None,
         );
-        super::record(
+        super::record_stamped(
             &mut rollup,
             &model("fallback-zero"),
             &reported(Some(50), Some(10), None),
+            None,
         );
-        super::record(
+        super::record_stamped(
             &mut rollup,
             &model("fallback-one"),
             &Usage {
@@ -440,6 +425,7 @@ mod tests {
                 input_tokens_cache_write: Some(25),
                 ..Usage::default()
             },
+            None,
         );
         assert_eq!(rollup.input_tokens, 350);
         assert_eq!(rollup.output_tokens, 60);
@@ -462,20 +448,36 @@ mod tests {
             )]),
         };
         let mut missing = UsageRollup::default();
-        super::record(
+        let missing_usage = reported(Some(100), Some(10), None);
+        let missing_cost = super::estimated_cost_pico_usd(
+            &model("fallback-zero"),
+            &missing_usage,
+            &pricing,
+            &BTreeMap::new(),
+        );
+        super::record_stamped(
             &mut missing,
             &model("fallback-zero"),
-            &reported(Some(100), Some(10), None),
+            &missing_usage,
+            missing_cost,
         );
         let missing = super::with_pricing(missing, &pricing, &BTreeMap::new());
         assert_eq!(missing.cache_hit_rate, None);
         assert_eq!(missing.estimated_cost_usd, None);
 
         let mut observed_zero = UsageRollup::default();
-        super::record(
+        let observed_usage = reported(Some(100), Some(10), Some(0));
+        let observed_cost = super::estimated_cost_pico_usd(
+            &model("fallback-zero"),
+            &observed_usage,
+            &pricing,
+            &BTreeMap::new(),
+        );
+        super::record_stamped(
             &mut observed_zero,
             &model("fallback-zero"),
-            &reported(Some(100), Some(10), Some(0)),
+            &observed_usage,
+            observed_cost,
         );
         let observed_zero = super::with_pricing(observed_zero, &pricing, &BTreeMap::new());
         assert_eq!(observed_zero.cache_hit_rate, Some(0.0));
@@ -506,20 +508,6 @@ mod tests {
                 }],
             },
         )]);
-        let mut rollup = UsageRollup::default();
-        super::record(
-            &mut rollup,
-            &model("fallback-zero"),
-            &reported(Some(199_999), Some(1), Some(0)),
-        );
-        super::record(
-            &mut rollup,
-            &model("fallback-zero"),
-            &reported(Some(200_000), Some(1), Some(0)),
-        );
-        let priced = super::with_pricing(rollup, &PricingConfig::default(), &catalog);
-        assert_eq!(priced.estimated_cost_usd, Some(0.800005));
-
         let stamped = super::estimated_cost_pico_usd(
             &model("fallback-zero"),
             &reported(Some(200_000), Some(1), Some(0)),
@@ -539,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn stamped_costs_override_current_pricing_and_legacy_costs_are_recomputed() {
+    fn stamped_costs_override_current_pricing() {
         let mut fully_stamped = UsageRollup::default();
         for cost in [500_000_000_000, 250_000_000_000] {
             super::record_stamped(
@@ -570,26 +558,6 @@ mod tests {
             super::with_pricing(stamped_unpriced, &pricing, &BTreeMap::new()).estimated_cost_usd,
             None
         );
-
-        let mut rollup = UsageRollup::default();
-        super::record_stamped(
-            &mut rollup,
-            &model("fallback-zero"),
-            &reported(Some(100), Some(10), Some(0)),
-            Some(500_000_000_000),
-        );
-        super::record(
-            &mut rollup,
-            &model("fallback-zero"),
-            &reported(Some(1_000_000), Some(0), Some(0)),
-        );
-
-        let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
-        assert_eq!(priced.estimated_cost_usd, Some(1.5));
-        assert_eq!(
-            priced.by_model[&"custom.test/fallback-zero".parse().unwrap()].estimated_cost_usd,
-            Some(1.5)
-        );
     }
 
     #[test]
@@ -600,14 +568,17 @@ mod tests {
         };
         let mut rollup = UsageRollup::default();
         for _ in 0..3 {
-            super::record(
-                &mut rollup,
+            let usage = reported(Some(1), Some(0), Some(0));
+            let cost = super::estimated_cost_pico_usd(
                 &model("fallback-zero"),
-                &reported(Some(1), Some(0), Some(0)),
+                &usage,
+                &pricing,
+                &BTreeMap::new(),
             );
+            super::record_stamped(&mut rollup, &model("fallback-zero"), &usage, cost);
         }
         let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
-        assert_eq!(priced.estimated_cost_usd, Some(0.000000999999999999));
+        assert_eq!(priced.estimated_cost_usd, Some(0.000000999999));
     }
 
     #[test]
@@ -617,11 +588,14 @@ mod tests {
             models: BTreeMap::from([(key, flat_rates("0.000000000001", "0"))]),
         };
         let mut rollup = UsageRollup::default();
-        super::record(
-            &mut rollup,
+        let usage = reported(Some(1_000_000), Some(0), Some(0));
+        let cost = super::estimated_cost_pico_usd(
             &model("fallback-zero"),
-            &reported(Some(1_000_000), Some(0), Some(0)),
+            &usage,
+            &pricing,
+            &BTreeMap::new(),
         );
+        super::record_stamped(&mut rollup, &model("fallback-zero"), &usage, cost);
         let priced = super::with_pricing(rollup, &pricing, &BTreeMap::new());
         assert_eq!(priced.estimated_cost_usd, Some(0.000000000001));
     }
@@ -640,10 +614,11 @@ mod tests {
             )]),
         };
         let mut currency = UsageRollup::default();
-        super::record(
+        super::record_stamped(
             &mut currency,
             &model("fallback-zero"),
             &reported(Some(2), Some(0), Some(0)),
+            None,
         );
         assert_eq!(
             super::with_pricing(currency, &pricing, &BTreeMap::new()).estimated_cost_usd,
@@ -651,15 +626,17 @@ mod tests {
         );
 
         let mut tokens = UsageRollup::default();
-        super::record(
+        super::record_stamped(
             &mut tokens,
             &model("fallback-zero"),
             &reported(Some(u64::MAX), Some(0), Some(0)),
+            None,
         );
-        super::record(
+        super::record_stamped(
             &mut tokens,
             &model("fallback-zero"),
             &reported(Some(1), Some(0), Some(0)),
+            None,
         );
         assert!(tokens.arithmetic_overflow);
         assert_eq!(
