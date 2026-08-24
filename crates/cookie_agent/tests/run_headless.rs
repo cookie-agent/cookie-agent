@@ -33,7 +33,10 @@ use cookie_agent_protocol::{
     ClientRunId, EventPayload, EventSubscriptionMessage, PermissionAction, PermissionEffect,
     RunSelection, RunStartParams, SessionId, StoredEvent,
 };
-use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
+use cookie_agent_tools::{
+    BuiltinTools, delegate::DelegateToolProvider, read_tool_result::ReadToolResultProvider,
+    skill::SkillTool,
+};
 use tempfile::TempDir;
 
 const PLUGIN_FIXTURE: &str = concat!(
@@ -262,6 +265,9 @@ impl Fixture {
         engine
             .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
             .expect("delegate tools");
+        engine
+            .try_register_tool_provider(Arc::new(ReadToolResultProvider::new(engine.clone())))
+            .expect("tool result readback");
         engine
             .try_register_tool_provider(Arc::new(SkillTool::new(engine.clone())))
             .expect("skill tool");

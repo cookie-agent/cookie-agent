@@ -25,7 +25,9 @@ use cookie_agent_protocol::{
 use cookie_agent_server::{
     Client, ClientProtocol, Server, in_process_pair, validate_websocket_url,
 };
-use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
+use cookie_agent_tools::{
+    BuiltinTools, delegate::DelegateToolProvider, read_tool_result::ReadToolResultProvider,
+};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -351,6 +353,13 @@ async fn compose_with<T: CatalogTransport + 'static>(
     if let Err(error) = engine
         .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
         .context("register delegate tools")
+    {
+        engine.shutdown().await;
+        return Err(error);
+    }
+    if let Err(error) = engine
+        .try_register_tool_provider(Arc::new(ReadToolResultProvider::new(engine.clone())))
+        .context("register tool result readback")
     {
         engine.shutdown().await;
         return Err(error);

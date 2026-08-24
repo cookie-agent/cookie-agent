@@ -251,6 +251,11 @@ mod tests {
             tools: Vec::new(),
         })
         .expect("open engine");
+        engine
+            .try_register_tool_provider(Arc::new(
+                cookie_agent_tools::read_tool_result::ReadToolResultProvider::new(engine.clone()),
+            ))
+            .expect("tool result readback");
         if with_skills {
             engine
                 .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(

@@ -20,6 +20,7 @@ pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
 pub mod read;
+pub mod read_tool_result;
 pub mod skill;
 pub mod write;
 
@@ -403,7 +404,7 @@ mod tests {
 
     use super::{
         BuiltinTools, bash::BashTool, delegate::DelegateToolProvider, edit::EditTool,
-        read::ReadTool, write::WriteTool,
+        read::ReadTool, read_tool_result::ReadToolResultProvider, write::WriteTool,
     };
 
     #[test]
@@ -412,6 +413,10 @@ mod tests {
         assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
         assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
         assert_eq!(BashTool::get_permission_name("bash").unwrap(), "bash");
+        assert_eq!(
+            ReadToolResultProvider::get_permission_name("read_tool_result").unwrap(),
+            "read_tool_result"
+        );
         for name in [
             "delegate_subagent",
             "get_subagent_result",

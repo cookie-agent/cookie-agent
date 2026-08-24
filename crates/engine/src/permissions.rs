@@ -120,7 +120,7 @@ impl PermissionPipeline {
         permission_name: &str,
     ) -> Result<PermissionAction, PermissionError> {
         match permission_name {
-            "read" => Ok(PermissionAction::Read),
+            "read" | "read_tool_result" => Ok(PermissionAction::Read),
             "write" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),

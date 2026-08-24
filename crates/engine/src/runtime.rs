@@ -74,6 +74,7 @@ mod sessions;
 mod skills;
 mod titles;
 pub(crate) mod tool_execution;
+mod tool_results;
 
 use admission::InflightDelegation;
 pub(crate) use artifacts::{ArtifactStore, OutputCapture};
@@ -81,6 +82,7 @@ use delegation::DelegationRecord;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
 pub use skills::SkillInvocation;
+pub use tool_results::ToolResultReadPage;
 
 use crate::tool_api::{
     PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,

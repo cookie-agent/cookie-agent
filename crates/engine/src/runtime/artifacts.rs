@@ -4,13 +4,11 @@ use std::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub(crate) struct ArtifactPage {
     pub(crate) content: String,
     pub(crate) next_offset_lines: Option<u64>,
 }
 
-#[allow(dead_code)]
 fn read_file_paged(
     file: File,
     offset_lines: u64,
@@ -80,7 +78,6 @@ mod unix {
     pub(crate) struct ArtifactStore {
         directory_handle: Arc<fs::File>,
         writes: Mutex<()>,
-        #[allow(dead_code)]
         verified_reads: Mutex<HashSet<String>>,
     }
 
@@ -183,7 +180,6 @@ mod unix {
             Ok(())
         }
 
-        #[allow(dead_code)]
         pub(crate) fn read_paged(
             &self,
             digest: &str,
@@ -761,7 +757,6 @@ mod windows {
     pub(crate) struct ArtifactStore {
         directory: PathBuf,
         writes: Mutex<()>,
-        #[allow(dead_code)]
         verified_reads: Mutex<HashSet<String>>,
     }
 
@@ -882,7 +877,6 @@ mod windows {
             Ok(())
         }
 
-        #[allow(dead_code)]
         pub(crate) fn read_paged(
             &self,
             digest: &str,

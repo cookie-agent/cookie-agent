@@ -32,6 +32,7 @@ pub use media::approved_media_type;
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::{
     ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
+    ToolResultReadPage,
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
