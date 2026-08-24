@@ -12,7 +12,7 @@ emit only their current version and reject unsupported versions.
 | Agent document | unversioned | unversioned current shape |
 | Protocol | 11 | 11 |
 | Events and session JSONL | versionless | versionless plus legacy schema markers |
-| Session metadata | 10 | 10 |
+| Session metadata | unversioned | unversioned current shape |
 | Runtime snapshot | 5 | 5 |
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
