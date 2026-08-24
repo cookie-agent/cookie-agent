@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/reference/schemas/">
       
       
-        <link rel="prev" href="../events/">
+        <link rel="prev" href="../tools/">
       
       
         <link rel="next" href="../api/">
@@ -918,6 +918,29 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -1037,8 +1060,11 @@
 
 
 <h1 id="schema-compatibility">Schema Compatibility<a class="headerlink" href="#schema-compatibility" title="Permanent link">&para;</a></h1>
-<p>Session event history is versionless and read best-effort. Other writers emit
-the current version and reject unsupported versions.</p>
+<p>Runtime configuration and agent documents are unversioned authored files parsed
+against the current shape. They reject <code>schema</code> and <code>schema_version</code> fields as
+hard errors rather than migrating or ignoring them. Session event history is
+also versionless and read best-effort. Versioned persisted and wire surfaces
+emit only their current version and reject unsupported versions.</p>
 <table>
 <thead>
 <tr>
@@ -1050,18 +1076,18 @@ the current version and reject unsupported versions.</p>
 <tbody>
 <tr>
 <td>Runtime configuration</td>
-<td style="text-align: right;">10</td>
-<td style="text-align: right;">10</td>
+<td style="text-align: right;">unversioned</td>
+<td style="text-align: right;">unversioned current shape</td>
 </tr>
 <tr>
 <td>Agent document</td>
-<td style="text-align: right;">5</td>
-<td style="text-align: right;">5</td>
+<td style="text-align: right;">unversioned</td>
+<td style="text-align: right;">unversioned current shape</td>
 </tr>
 <tr>
 <td>Protocol</td>
-<td style="text-align: right;">10</td>
-<td style="text-align: right;">10</td>
+<td style="text-align: right;">11</td>
+<td style="text-align: right;">11</td>
 </tr>
 <tr>
 <td>Events and session JSONL</td>
@@ -1070,8 +1096,8 @@ the current version and reject unsupported versions.</p>
 </tr>
 <tr>
 <td>Session metadata</td>
-<td style="text-align: right;">10</td>
-<td style="text-align: right;">10</td>
+<td style="text-align: right;">unversioned</td>
+<td style="text-align: right;">unversioned current shape</td>
 </tr>
 <tr>
 <td>Runtime snapshot</td>

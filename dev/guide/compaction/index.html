@@ -1017,6 +1017,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/schemas/" class="md-nav__link">
         
   
@@ -1247,7 +1270,10 @@ model.</p>
    (8 KiB or more) from turns older than the last two are replaced with
    content-addressed artifact references. The context is then reassembled from
    the elided events. If elision brings an automatic compaction below its trigger
-   threshold, no summarizer call is made.</li>
+    threshold, no summarizer call is made.
+    The original truncation artifact remains preferred by
+    <a href="../../reference/tools/#retained-tool-output"><code>read_tool_result</code></a>, so elision
+    of its preview does not discard the retained full output.</li>
 <li><strong>Native or summarizer call.</strong> An opted-in Responses model first attempts
    native compaction. Otherwise, or after any native failure, the internal
    <code>compaction</code> agent (see

@@ -693,6 +693,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Private state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#retained-tool-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Retained tool output
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1023,6 +1038,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/schemas/" class="md-nav__link">
         
   
@@ -1166,6 +1204,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Private state">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#retained-tool-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      Retained tool output
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1260,6 +1313,14 @@ writes through a symlink or provide loose/foreign-owned storage; cookie agent
 will use that path. Treat the parent storage location as trusted and remove
 unexpected state before starting the daemon. Neither platform protects secrets
 from privileged code such as <code>root</code>, <code>SYSTEM</code>, or an elevated administrator.</p>
+<h3 id="retained-tool-output">Retained tool output<a class="headerlink" href="#retained-tool-output" title="Permanent link">&para;</a></h3>
+<p>Tool-output truncation is a presentation bound, not redaction. The preview shown
+to a model or user can omit bytes that remain in the content-addressed artifact
+store, and those retained bytes may contain secrets. <code>read_tool_result</code> can read
+that content only for a visible call in the same session and remains subject to
+the agent's protocol <code>Read</code> permission on the <code>tool_result:&lt;uuid&gt;</code> resource, but
+it does not retroactively redact the artifact. See the
+<a href="../../reference/tools/#retained-tool-output">tool artifact lifecycle</a>.</p>
 <h2 id="process-boundary">Process boundary<a class="headerlink" href="#process-boundary" title="Permanent link">&para;</a></h2>
 <p>On Unix, Bash commands run in a new session so cancellation and timeout can kill
 the process group. On Windows, Bash commands are assigned to a Job Object before

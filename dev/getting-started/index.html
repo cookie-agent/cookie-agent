@@ -1003,6 +1003,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/schemas/" class="md-nav__link">
         
   
@@ -1163,8 +1186,9 @@
 
 <h1 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h1>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
-<p>The workspace requires Rust 1.88 or newer. Build the <code>cookie</code> binary from the
-repository:</p>
+<p>The workspace requires Rust 1.88 or newer. Cargo fetches the locked, git-pinned
+Oven SDK dependencies automatically, so a fresh repository clone can build the
+<code>cookie</code> binary directly:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>build<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent
 </code></pre></div>
 <p>The binary is <code>target/debug/cookie</code>. Running it without a subcommand starts a

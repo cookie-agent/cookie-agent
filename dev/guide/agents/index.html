@@ -1041,6 +1041,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/schemas/" class="md-nav__link">
         
   
@@ -1235,8 +1258,9 @@
 <h1 id="agents">Agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h1>
 <p>Agents are Markdown documents with YAML frontmatter. The filename is the agent
 ID. An agent defines the system prompt, permission-controlled tool access, its
-model fallback chain, and its runtime limits. The engine also runs
-four built-in agents that are part of the harness itself.</p>
+model fallback chain, and its runtime limits. The harness supplies four agents:
+three internal agents plus the synthesized <code>default</code> coding agent when no
+authored root agent is runnable.</p>
 <h2 id="agent-document-structure">Agent document structure<a class="headerlink" href="#agent-document-structure" title="Permanent link">&para;</a></h2>
 <p>Each file has strict YAML frontmatter and a nonempty Markdown body:</p>
 <p>Agent documents do not declare a schema or version. A leftover <code>schema</code> field is

@@ -1003,6 +1003,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/schemas/" class="md-nav__link">
         
   
@@ -1171,17 +1194,19 @@ installer:</p>
 SHA256 checksum, and installs <code>cookie</code> under <code>$CARGO_HOME/bin</code> (normally
 <code>~/.cargo/bin</code>).</p>
 <h2 id="powershell-installer">PowerShell installer<a class="headerlink" href="#powershell-installer" title="Permanent link">&para;</a></h2>
-<p>Windows installers will be available starting with the next Windows-enabled
-tagged release. Once that release is published, Windows x86_64 and ARM64 users
-can run the PowerShell installer:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">irm </span><span class="n">https</span><span class="p">://</span><span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">cookie-agent</span><span class="p">/</span><span class="n">cookie-agent</span><span class="p">/</span><span class="n">releases</span><span class="p">/</span><span class="n">latest</span><span class="p">/</span><span class="n">download</span><span class="p">/</span><span class="n">cookie_agent-installer</span><span class="p">.</span><span class="n">ps1</span> <span class="p">|</span> <span class="nb">iex</span>
-</code></pre></div>
+<p>CI publishes Windows x86_64 and ARM64 installers with nightly prereleases. The
+latest tagged release, <code>v0.2.0</code>, predates those assets, so Windows installers
+currently ship through nightly prereleases and will also ship with the next
+tagged release.</p>
+<p>Open a nightly prerelease and run its generated, tag-pinned PowerShell installer
+command. After the next tagged release, the stable <code>releases/latest</code> installer
+URL will work for Windows as well.</p>
 <p>The installer selects the matching MSVC ZIP archive, verifies its SHA256
 checksum, and installs <code>cookie.exe</code> under <code>%CARGO_HOME%\bin</code> (normally
 <code>%USERPROFILE%\.cargo\bin</code>).</p>
 <h2 id="release-archives">Release archives<a class="headerlink" href="#release-archives" title="Permanent link">&para;</a></h2>
-<p>Each <a href="https://github.com/cookie-agent/cookie-agent/releases">GitHub release</a>
-provides an archive and <code>.sha256</code> checksum for:</p>
+<p>Current nightly <a href="https://github.com/cookie-agent/cookie-agent/releases">GitHub releases</a>
+provide an archive and <code>.sha256</code> checksum for:</p>
 <ul>
 <li>Linux x86_64 with glibc</li>
 <li>Linux x86_64 with musl</li>
@@ -1205,9 +1230,10 @@ and select a nightly to download an archive or use its generated installer
 command. Each prerelease provides PowerShell (<code>irm ... | iex</code>) and shell
 (<code>curl ... | sh</code>) installers pinned to that prerelease.</p>
 <h2 id="build-from-source">Build from source<a class="headerlink" href="#build-from-source" title="Permanent link">&para;</a></h2>
-<p>Install Rust 1.88 or newer, clone the repository, and install the locked
-workspace version:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--path<span class="w"> </span>crates/cookie_agent
+<p>Install Rust 1.88 or newer and clone the repository. Cargo fetches the locked,
+git-pinned Oven SDK dependencies automatically. Install the locked workspace
+version with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--path<span class="w"> </span>crates/cookie_agent
 </code></pre></div>
 <p>For development, <code>cargo build --locked -p cookie_agent</code> writes the binary to
 <code>target/debug/cookie</code>.</p>

@@ -914,6 +914,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/schemas/" class="md-nav__link">
         
   
@@ -1340,14 +1363,14 @@
 
 
 <h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
-<p>cookie agent is a subagent-first coding harness built as a Rust workspace of nine
+<p>cookie agent is a subagent-first coding harness built as a Rust workspace of ten
 crates. A local daemon owns provider connections, sessions, model execution,
 permissions, and persistence; a terminal UI communicates with it over a versioned
 JSON-RPC WebSocket protocol. Session history is a versionless, best-effort-read
 event log; other persisted and wire surfaces remain current-only.</p>
 <h2 id="process-model">Process model<a class="headerlink" href="#process-model" title="Permanent link">&para;</a></h2>
-<p>The <code>cookie</code> binary (<code>crates/cookie_agent</code>) is a thin composition root. Its CLI has
-four subcommands plus a default mode:</p>
+<p>The <code>cookie</code> binary (<code>crates/cookie_agent</code>) is a thin composition root. Its CLI
+has six top-level subcommands plus a default mode:</p>
 <table>
 <thead>
 <tr>
@@ -1359,6 +1382,10 @@ four subcommands plus a default mode:</p>
 <tr>
 <td><em>(none)</em></td>
 <td>Start an in-process daemon and open the TUI over an in-memory stream</td>
+</tr>
+<tr>
+<td><code>run [options] &lt;prompt&gt;</code></td>
+<td>Run one prompt headlessly through the local engine</td>
 </tr>
 <tr>
 <td><code>daemon</code></td>
@@ -1376,24 +1403,33 @@ four subcommands plus a default mode:</p>
 <td><code>disconnect [provider_id]</code></td>
 <td>Interactive durable managed-provider disconnection (TTY only)</td>
 </tr>
+<tr>
+<td><code>mcp list</code></td>
+<td>List configured MCP servers</td>
+</tr>
+<tr>
+<td><code>mcp auth &lt;server&gt;</code></td>
+<td>Start OAuth authorization for a remote MCP server</td>
+</tr>
 </tbody>
 </table>
 <p>The daemon binds only to the configured port and authenticates every WebSocket
 with a bearer token stored at <code>~/.cookie_agent/daemon/token-v1</code>.
-<code>attach</code>, <code>connect</code>, and <code>disconnect</code> accept only loopback <code>ws</code>/<code>wss</code> URLs whose
-path is exactly <code>/ws</code>. All three use the same shared protocol client as the TUI,
-so the CLI keeps working even when built without the <code>tui</code> feature.</p>
+<code>attach</code>, <code>connect</code>, <code>disconnect</code>, and <code>mcp</code> accept only loopback <code>ws</code>/<code>wss</code>
+URLs whose path is exactly <code>/ws</code>. They use the same shared protocol client as
+the TUI, so the CLI keeps working even when built without the <code>tui</code> feature.</p>
 <h2 id="crate-layering">Crate layering<a class="headerlink" href="#crate-layering" title="Permanent link">&para;</a></h2>
 <p>The workspace is layered bottom-up by dependency:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>identity
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  └─ protocol        (wire types + session transport/client/server traits)
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>       ├─ models
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>       │    └─ config
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>       │         └─ engine
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>       │              ├─ tools
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>       │              └─ server
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>       │                   └─ tui
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>       └─ cookie_agent (binary: composes every layer)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>       ├─ plugin_sdk
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>       ├─ models
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>       │    └─ config
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>       │         └─ engine
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>       │              ├─ tools
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>       │              └─ server
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>       │                   └─ tui
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>       └─ cookie_agent (binary: composes every layer)
 </code></pre></div>
 <table>
 <thead>
@@ -1410,6 +1446,10 @@ so the CLI keeps working even when built without the <code>tui</code> feature.</
 <tr>
 <td><code>protocol</code></td>
 <td>Current-only wire contracts <strong>and the protocol session layer</strong>: RPC roots, events, session metadata, agent snapshots, JSON Schema and TypeScript bindings, the frame-level <code>Transport</code> trait, the <code>ClientProtocol</code>/<code>ServerProtocol</code> traits, the shared <code>Client</code>, <code>ServerContext</code>, protocol-owned <code>serve</code>, and shared setup-value parsing. Re-exports <code>identity</code> and hosts the unified wire types.</td>
+</tr>
+<tr>
+<td><code>plugin_sdk</code></td>
+<td>Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks.</td>
 </tr>
 <tr>
 <td><code>models</code></td>
@@ -1536,10 +1576,10 @@ The TUI additionally reads an independent <code>~/.cookie_agent/tui.toml</code>.
    authored overrides) and authored custom providers into
    <code>CompiledDynamicModel</code> entries with concrete endpoints, validated setup,
    authentication, capabilities, request defaults, and variants.</li>
-<li><strong>Executable adapters.</strong> The Oven SDK crates
-   (<code>oven-sdk-openai</code>, <code>oven-sdk-anthropic</code>, <code>oven-sdk-google</code>,
-    <code>oven-sdk-google-vertex</code>, <code>oven-sdk-bedrock</code>, <code>oven-sdk-azure</code>, and
-    <code>oven-sdk-cohere</code>) provide normalized language-model
+<li><strong>Executable adapters.</strong> The Oven crates (<code>oven-sdk</code>, <code>oven-sdk-openai</code>,
+   <code>oven-sdk-anthropic</code>, <code>oven-sdk-google</code>, <code>oven-sdk-google-vertex</code>,
+   <code>oven-sdk-bedrock</code>, <code>oven-sdk-azure</code>, <code>oven-sdk-cohere</code>, and the
+   <code>reqwest-oven</code> HTTP transport) provide normalized language-model
    implementations. The <code>models</code> crate selects the adapter for each compiled
    model and freezes it into project manifests.</li>
 <li><strong>Provider store.</strong> Managed connections live in a global per-user provider

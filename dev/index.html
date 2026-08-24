@@ -974,6 +974,29 @@
   
   
     <li class="md-nav__item">
+      <a href="reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="reference/schemas/" class="md-nav__link">
         
   
@@ -1114,7 +1137,8 @@ persisted and wire surfaces remain current-only.
 <a href="architecture/">Architecture</a> describes how the pieces fit together; this site
 turns that implementation into task-oriented guides and reference material.</p>
 <h2 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h2>
-<p>You need Rust 1.88 or newer and Python 3 for the documentation tooling.</p>
+<p>You need Rust 1.88 or newer and Python 3 for the documentation tooling. Cargo
+fetches the locked, git-pinned Oven SDK dependencies when it builds the clone.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cookie-agent/cookie-agent.git
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>cookie-agent
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
@@ -1137,9 +1161,10 @@ options, <a href="guide/plugins/">Plugins</a> for executable extensions, and
 credential-bearing config, or provider-store data.</p>
 </div>
 <h2 id="workspace-crates">Workspace crates<a class="headerlink" href="#workspace-crates" title="Permanent link">&para;</a></h2>
-<p>The Rust workspace contains nine crates: <code>config</code>, <code>cookie_agent</code>, <code>engine</code>,
-<code>identity</code>, <code>models</code>, <code>protocol</code>, <code>server</code>, <code>tools</code>, and <code>tui</code>. Browse their
-public interfaces in the <a href="reference/api/">Rust API documentation</a>.</p>
+<p>The Rust workspace contains ten crates: <code>config</code>, <code>cookie_agent</code>, <code>engine</code>,
+<code>identity</code>, <code>models</code>, <code>plugin_sdk</code>, <code>protocol</code>, <code>server</code>, <code>tools</code>, and <code>tui</code>.
+Browse their public interfaces in the
+<a href="reference/api/">Rust API documentation</a>.</p>
 
 
 

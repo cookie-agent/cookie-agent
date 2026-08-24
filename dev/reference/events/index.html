@@ -16,7 +16,7 @@
         <link rel="prev" href="../protocol/">
       
       
-        <link rel="next" href="../schemas/">
+        <link rel="next" href="../tools/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -981,6 +981,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../schemas/" class="md-nav__link">
         
   
@@ -1134,6 +1157,8 @@ is additive only. Existing variant tags and fields are never removed or renamed,
 existing required fields remain required, and new fields must be optional. New
 behavior that cannot fit an optional field uses a new variant tag. CI compares
 the generated <code>EventPayload</code> schema with the committed additive baseline.</p>
+<p>Terminal tool-result truncation and <code>tool_output_elided</code> references use the
+<a href="../tools/#retained-tool-output">retained-output readback lifecycle</a>.</p>
 <h2 id="payloads">Payloads<a class="headerlink" href="#payloads" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

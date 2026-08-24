@@ -1017,6 +1017,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/schemas/" class="md-nav__link">
         
   
@@ -1201,14 +1224,18 @@ other. <code>-</code> reads standard input for any of them.</p>
 <p>The default agent is the root-runnable <code>primary</code> agent, or the first
 root-runnable agent. The default model is its first live fallback, including a
 valid variant; if none is live, the first available model and its default
-variant are used. Override these with <code>-a/--agent</code>, <code>-m/--model</code>, and
-<code>--variant</code>; use <code>--variant base</code> to select no named variant. Every override is
-validated against the current coherent runtime before a session starts.</p>
-<p><code>--resume-session &lt;id&gt;</code> continues an existing session. <code>--data-dir &lt;path&gt;</code>
-selects the session and artifact store. <code>--max-turns</code> and <code>--timeout</code> are
-positive guards and default to 100 root model turns and 600 seconds. Reaching
-either guard cancels the run and waits for its terminal event. <code>SIGINT</code> follows
-the same cancellation path.</p>
+variant are used. Select an agent preset with <code>--preset</code>; override the effective
+selection with <code>-a/--agent</code>, <code>-m/--model</code>, and <code>--variant</code>. Use <code>--variant base</code>
+to select no named variant. Every override is validated against the current
+coherent runtime before a session starts.</p>
+<p><code>--resume-session &lt;id&gt;</code> continues an existing session and defaults to its
+creation preset. Supplying <code>--preset</code> selects a different preset for that run
+without rewriting the session's creation selection. See
+<a href="../agents/#agent-presets">Agent presets</a> for resolution and persistence details.
+<code>--data-dir &lt;path&gt;</code> selects the session and artifact store. <code>--max-turns</code> and
+<code>--timeout</code> are positive guards and default to 100 root model turns and 600
+seconds. Reaching either guard cancels the run and waits for its terminal event.
+<code>SIGINT</code> follows the same cancellation path.</p>
 <h2 id="permissions">Permissions<a class="headerlink" href="#permissions" title="Permanent link">&para;</a></h2>
 <p><code>--permission-mode</code> accepts <code>auto-approve</code> (<code>auto_approve</code>), <code>auto-approve-n</code>
 (<code>auto_approve_n</code>), <code>auto-approve-y</code> (<code>auto_approve_y</code>), <code>ask</code>, or <code>yolo</code>.
