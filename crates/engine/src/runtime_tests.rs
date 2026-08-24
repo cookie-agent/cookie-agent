@@ -45,7 +45,6 @@ use cookie_agent_protocol::{
 use jiff::Timestamp;
 use tempfile::TempDir;
 
-use crate::events::EventLog;
 use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
     PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
@@ -6601,72 +6600,6 @@ fn external_store_generation_is_reloaded_before_discovery() {
     );
     assert_eq!(changed.previous_revision, Some(before));
     assert_eq!(changed.snapshot.runtime_revision, after.runtime_revision);
-}
-
-#[test]
-fn accepted_event_logs_reopen_schema_four_agent_snapshots() {
-    let (fixture, selection) = custom_fixture();
-    let session = fixture
-        .engine
-        .create_session(selection)
-        .expect("legacy event session");
-    let events = fixture
-        .engine
-        .inner
-        .store
-        .get(session.session_id)
-        .expect("legacy event projection")
-        .log
-        .events();
-    for version in [15, 16, 17] {
-        let directory = TempDir::new().expect("legacy event directory");
-        let path = directory.path().join("events.jsonl");
-        let contents = events
-            .iter()
-            .map(|event| {
-                let mut value = serde_json::to_value(event).expect("serialize legacy event");
-                value
-                    .as_object_mut()
-                    .expect("event envelope")
-                    .remove("engine_version");
-                value["event_schema_version"] = serde_json::json!(version);
-                if value["payload"]["type"] == "session_created" {
-                    value["payload"]["creation_agent"]["schema"] = serde_json::json!(4);
-                    value["payload"]["creation_agent"]
-                        .as_object_mut()
-                        .expect("creation agent object")
-                        .remove("max_output_tokens");
-                    value["payload"]["creation_agent"]["tools"] =
-                        serde_json::json!(["read", "write", "edit", "bash"]);
-                }
-                serde_json::to_string(&value).expect("serialize legacy event envelope")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        fs::write(&path, contents).expect("write legacy event log");
-        let reopened = EventLog::open(path, session.session_id).expect("reopen legacy event log");
-        assert!(
-            reopened
-                .events()
-                .iter()
-                .all(|event| event.engine_version.is_none())
-        );
-        let EventPayload::SessionCreated { creation_agent, .. } = &reopened.events()[0].payload
-        else {
-            panic!("first event must be session creation");
-        };
-        assert_eq!(creation_agent.schema.value(), 7);
-        assert!(
-            serde_json::to_value(creation_agent)
-                .expect("serialize up-converted creation agent")
-                .get("tools")
-                .is_none()
-        );
-    }
-    let mut unsupported = serde_json::to_value(&events[0]).expect("serialize unsupported event");
-    unsupported["event_schema_version"] = serde_json::json!(14);
-    assert!(serde_json::from_value::<cookie_agent_protocol::StoredEvent>(unsupported).is_ok());
 }
 
 #[test]

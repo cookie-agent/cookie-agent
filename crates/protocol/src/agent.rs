@@ -55,9 +55,6 @@ impl JsonSchema for AgentSchemaVersion {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LegacyAgentSchemaVersion;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PreviousAgentSchemaVersion;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,31 +90,6 @@ impl<'de> Deserialize<'de> for OlderAgentSchemaVersion {
             )))
         }
     }
-}
-
-impl<'de> Deserialize<'de> for LegacyAgentSchemaVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = u32::deserialize(deserializer)?;
-        if value == 4 {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "unsupported legacy agent schema {value}; expected 4"
-            )))
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-enum LegacyToolName {
-    Read,
-    Write,
-    Edit,
-    Bash,
 }
 
 #[derive(
@@ -433,32 +405,11 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
         }
 
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct LegacyWire {
-            agent: AgentId,
-            #[serde(rename = "schema")]
-            _schema: LegacyAgentSchemaVersion,
-            mode: AgentMode,
-            description: String,
-            document_source: AgentDocumentSource,
-            document_fingerprint: Sha256Digest,
-            composed_prompt: String,
-            prompt_fingerprint: Sha256Digest,
-            tools: Vec<LegacyToolName>,
-            permissions: Vec<PermissionRule>,
-            #[serde(deserialize_with = "crate::deserialize_required_option")]
-            delegation: Option<FrozenDelegationPolicy>,
-            fallback_chain: Vec<FrozenModelBinding>,
-            selected_suffix_start: u32,
-        }
-
-        #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
             Current(CurrentWire),
             Previous(PreviousWire),
             Older(OlderWire),
-            Legacy(LegacyWire),
         }
 
         let value = match Wire::deserialize(d)? {
@@ -507,44 +458,6 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
                 fallback_chain: w.fallback_chain,
                 selected_suffix_start: w.selected_suffix_start,
             },
-            Wire::Legacy(w) => {
-                let mut tools = BTreeSet::new();
-                if w.tools.len() > 256 || !w.tools.iter().all(|tool| tools.insert(*tool)) {
-                    return Err(serde::de::Error::custom(
-                        "legacy agent tools must be unique and contain at most 256 entries",
-                    ));
-                }
-                let LegacyWire {
-                    agent,
-                    _schema: _,
-                    mode,
-                    description,
-                    document_source,
-                    document_fingerprint,
-                    composed_prompt,
-                    prompt_fingerprint,
-                    tools: _,
-                    permissions,
-                    delegation,
-                    fallback_chain,
-                    selected_suffix_start,
-                } = w;
-                Self {
-                    agent,
-                    schema: AgentSchemaVersion::current(),
-                    mode,
-                    description,
-                    document_source,
-                    document_fingerprint,
-                    composed_prompt,
-                    prompt_fingerprint,
-                    max_output_tokens: 0,
-                    permissions,
-                    delegation,
-                    fallback_chain,
-                    selected_suffix_start,
-                }
-            }
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

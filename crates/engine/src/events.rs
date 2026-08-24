@@ -4015,7 +4015,7 @@ mod tests {
     #[test]
     fn historical_era_fixtures_open_with_stable_projection_invariants() {
         let session = SessionId(Uuid::from_u128(99));
-        for schema in [15, 17, 18, 20, 21] {
+        for schema in [18, 20, 21] {
             let source = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures")
                 .join(format!("events-schema-{schema}.jsonl"));

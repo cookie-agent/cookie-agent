@@ -311,34 +311,6 @@ fn prior_agent_snapshots_upconvert_exactly_and_write_schema_seven() {
     let converted = serde_json::from_value::<AgentSnapshot>(older).unwrap();
     assert_eq!(converted.schema.value(), 7);
     assert_eq!(converted.max_output_tokens, 0);
-
-    let mut legacy = current;
-    legacy["schema"] = json!(4);
-    legacy.as_object_mut().unwrap().remove("max_output_tokens");
-    legacy["tools"] = json!(["read", "write", "edit", "bash"]);
-
-    let converted = serde_json::from_value::<AgentSnapshot>(legacy.clone()).unwrap();
-    assert_eq!(converted.schema.value(), 7);
-    let current = serde_json::to_value(converted).unwrap();
-    assert_eq!(current["schema"], 7);
-    assert_eq!(current["max_output_tokens"], 0);
-    assert!(current.get("tools").is_none());
-
-    let mut unknown_field = legacy.clone();
-    unknown_field["legacy_extra"] = json!(true);
-    assert!(serde_json::from_value::<AgentSnapshot>(unknown_field).is_err());
-
-    let mut missing_tools = legacy.clone();
-    missing_tools.as_object_mut().unwrap().remove("tools");
-    assert!(serde_json::from_value::<AgentSnapshot>(missing_tools).is_err());
-
-    let mut duplicate_tools = legacy.clone();
-    duplicate_tools["tools"] = json!(["read", "read"]);
-    assert!(serde_json::from_value::<AgentSnapshot>(duplicate_tools).is_err());
-
-    let mut unknown_tool = legacy;
-    unknown_tool["tools"] = json!(["grep"]);
-    assert!(serde_json::from_value::<AgentSnapshot>(unknown_tool).is_err());
 }
 
 #[test]
