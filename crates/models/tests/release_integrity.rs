@@ -154,17 +154,17 @@ fn owned_source_files() -> Vec<PathBuf> {
 }
 
 #[test]
-fn published_oven_dependencies_are_exactly_pinned() {
+fn oven_dependencies_use_local_paths_with_exact_publish_versions() {
     let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     for pin in [
-        "oven-sdk = \"=0.5.0\"",
-        "oven-sdk-anthropic = \"=0.6.0\"",
-        "oven-sdk-openai = \"=0.5.0\"",
-        "oven-sdk-google = \"=0.5.0\"",
-        "oven-sdk-google-vertex = \"=0.5.0\"",
-        "oven-sdk-bedrock = \"=0.4.0\"",
-        "oven-sdk-azure = \"=0.4.0\"",
-        "oven-sdk-cohere = \"=0.3.0\"",
+        "oven-sdk = { version = \"=0.5.0\", path = \"../oven_sdk/crates/oven-sdk\" }",
+        "oven-sdk-anthropic = { version = \"=0.6.0\", path = \"../oven_sdk/crates/oven-sdk-anthropic\" }",
+        "oven-sdk-openai = { version = \"=0.5.0\", path = \"../oven_sdk/crates/oven-sdk-openai\" }",
+        "oven-sdk-google = { version = \"=0.5.0\", path = \"../oven_sdk/crates/oven-sdk-google\" }",
+        "oven-sdk-google-vertex = { version = \"=0.5.0\", path = \"../oven_sdk/crates/oven-sdk-google-vertex\" }",
+        "oven-sdk-bedrock = { version = \"=0.4.0\", path = \"../oven_sdk/crates/oven-sdk-bedrock\" }",
+        "oven-sdk-azure = { version = \"=0.4.0\", path = \"../oven_sdk/crates/oven-sdk-azure\" }",
+        "oven-sdk-cohere = { version = \"=0.3.0\", path = \"../oven_sdk/crates/oven-sdk-cohere\" }",
     ] {
         assert!(manifest.contains(pin), "missing exact pin: {pin}");
     }
@@ -340,7 +340,28 @@ fn every_internal_path_dependency_has_its_exact_package_version() {
                     .unwrap()
                     .parse::<toml::Value>()
                     .unwrap();
-                let target_version = target["package"]["version"].as_str().unwrap();
+                let target_version = target["package"]["version"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        target_manifest
+                            .parent()
+                            .unwrap()
+                            .ancestors()
+                            .skip(1)
+                            .map(|ancestor| ancestor.join("Cargo.toml"))
+                            .filter(|candidate| candidate.is_file())
+                            .find_map(|candidate| {
+                                let workspace = fs::read_to_string(candidate)
+                                    .ok()?
+                                    .parse::<toml::Value>()
+                                    .ok()?;
+                                workspace["workspace"]["package"]["version"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            })
+                    })
+                    .expect("path dependency package version");
                 let expected = format!("={target_version}");
                 assert_eq!(
                     dependency.get("version").and_then(toml::Value::as_str),

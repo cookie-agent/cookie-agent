@@ -2495,8 +2495,6 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 [[package]]
 name = "oven-sdk"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87c155094c230dc1b14cf57d773fcab95caf6e5a1a52bc9a0ec9143b4229ff1b"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
@@ -2513,8 +2511,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-anthropic"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95512fbe9105b39ba1353de0fce4ff866dd8f03643b3911d9762a11057ecde14"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2535,8 +2531,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-azure"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19c29c0817d5b763abf5982f637c14c921b67f34431145bc3a73d248a03088f9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2554,8 +2548,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-bedrock"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b070fc38e8a2ee270c1364ada7290cba458f665b7226dc15e48ecd394fa1a8e0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2577,8 +2569,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-cohere"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b060f33d211e437a26fc7d9d9c4e5672b0320eca627579851e9bf115381d3994"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2596,8 +2586,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-google"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "959ae307a1f9a10d114ee0e3bf3101e6f5ccd865d75aac1a529c25f321436e6b"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2616,8 +2604,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-google-vertex"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae782dd737b871cdb17bcc0e3b034d159d6d2c999454a0dbadac033def5e4b40"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2634,8 +2620,6 @@ dependencies = [
 [[package]]
 name = "oven-sdk-openai"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e666d327faed1bc74890f5b3408c860946fe3acc7c4f5c80aecf55d273b2192"
 dependencies = [
  "base64 0.22.1",
  "bytes",

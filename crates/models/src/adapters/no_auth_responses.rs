@@ -58,8 +58,8 @@ struct NoAuthResponsesModel {
 }
 
 impl LanguageModel for NoAuthResponsesModel {
-    fn descriptor(&self) -> LanguageModelDescriptor {
-        self.descriptor.clone()
+    fn descriptor(&self) -> &LanguageModelDescriptor {
+        &self.descriptor
     }
 
     fn validate_request(&self, request: &Request) -> Result<(), ModelError> {

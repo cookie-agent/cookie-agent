@@ -56,8 +56,8 @@ impl ScriptedModel {
 }
 
 impl LanguageModel for ScriptedModel {
-    fn descriptor(&self) -> LanguageModelDescriptor {
-        self.descriptor.clone()
+    fn descriptor(&self) -> &LanguageModelDescriptor {
+        &self.descriptor
     }
 
     fn stream<'a>(

@@ -68,14 +68,14 @@ tempfile = "3.27.0"
 http = "1.4.0"
 url = "2.5.7"
 windows-sys = "0.61.2"
-oven-sdk = "=0.5.0"
-oven-sdk-anthropic = "=0.6.0"
-oven-sdk-openai = "=0.5.0"
-oven-sdk-google = "=0.5.0"
-oven-sdk-google-vertex = "=0.5.0"
-oven-sdk-bedrock = "=0.4.0"
-oven-sdk-azure = "=0.4.0"
-oven-sdk-cohere = "=0.3.0"
+oven-sdk = { version = "=0.5.0", path = "../oven_sdk/crates/oven-sdk" }
+oven-sdk-anthropic = { version = "=0.6.0", path = "../oven_sdk/crates/oven-sdk-anthropic" }
+oven-sdk-openai = { version = "=0.5.0", path = "../oven_sdk/crates/oven-sdk-openai" }
+oven-sdk-google = { version = "=0.5.0", path = "../oven_sdk/crates/oven-sdk-google" }
+oven-sdk-google-vertex = { version = "=0.5.0", path = "../oven_sdk/crates/oven-sdk-google-vertex" }
+oven-sdk-bedrock = { version = "=0.4.0", path = "../oven_sdk/crates/oven-sdk-bedrock" }
+oven-sdk-azure = { version = "=0.4.0", path = "../oven_sdk/crates/oven-sdk-azure" }
+oven-sdk-cohere = { version = "=0.3.0", path = "../oven_sdk/crates/oven-sdk-cohere" }
 reqwest-oven = { package = "reqwest", version = "=0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
 rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
 
