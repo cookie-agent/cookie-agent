@@ -2721,10 +2721,7 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
-    use super::{
-        EventLog, EventStorage, OutputHub, OutputMessage, ValidationState, load_jsonl,
-        validate_record_incremental, validate_records,
-    };
+    use super::*;
     use crate::{
         policy::wire_resolved,
         test_support::{agent_snapshot, model_binding_named, run_selection},
@@ -2994,39 +2991,1157 @@ mod tests {
         records
     }
 
+    // Copied from 0384899fe647c26aa54932b1ca92fc42b6d3668e, the parent of a05eedc9;
+    // only the function name and rustfmt layout differ from the historical validator.
+    fn reference_validate_records(
+        path: &Path,
+        session_id: SessionId,
+        records: &[StoredEvent],
+        initial_taint: &ValidationTaint,
+        strict_from_seq: Option<u64>,
+    ) -> Result<ValidationTaint, EventLogError> {
+        validate_observed_duplicates(path, records)?;
+        let mut taint = initial_taint.clone();
+        let mut runs = HashMap::<RunId, RunAttribution>::new();
+        let mut approval_owners = HashMap::new();
+        let mut attempts = HashMap::<AttemptId, AttemptAttribution>::new();
+        let mut turns = HashMap::<u64, (RunId, cookie_agent_protocol::PersistedModelTurn)>::new();
+        let mut turn_models = HashMap::<u64, cookie_agent_protocol::ResolvedModelRef>::new();
+        let mut usage_turns = HashSet::<u64>::new();
+        let mut internal_runs =
+            HashMap::<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>::new();
+        let mut delegations =
+            HashMap::<cookie_agent_protocol::InvocationId, DelegationAttribution>::new();
+        let mut model_call_owners = HashMap::<(RunId, ModelCallId), AssistantToolCallRef>::new();
+        let mut provider_item_owners =
+            HashMap::<(RunId, ProviderItemId), AssistantToolCallRef>::new();
+        let mut tool_starts = HashMap::<ToolCallId, (RunId, ToolCallStart)>::new();
+        let mut terminated_tools = HashSet::<ToolCallId>::new();
+        let mut elided_tools = HashSet::<ToolCallId>::new();
+        let mut next_model_turn_seq = 1_u64;
+        let mut previous_timestamp = None;
+        let mut active_run = None;
+        for (index, record) in records.iter().enumerate() {
+            if index > 0 && record.seq <= records[index - 1].seq {
+                return corrupt(
+                    path,
+                    format!(
+                        "event sequence {} is not strictly greater than {}",
+                        record.seq,
+                        records[index - 1].seq
+                    ),
+                );
+            }
+            if record.session_id != session_id {
+                return corrupt(
+                    path,
+                    "event envelope session ID does not match its directory",
+                );
+            }
+            if previous_timestamp.is_some_and(|timestamp| record.timestamp < timestamp) {
+                return corrupt(path, "event timestamps are not monotonic");
+            }
+            previous_timestamp = Some(record.timestamp);
+            if index == 0 {
+                let EventPayload::SessionCreated { .. } = &record.payload else {
+                    return Err(EventLogError::MissingCreation(path.to_owned()));
+                };
+                if record.run_id.is_some() {
+                    return corrupt(path, "invalid initial SessionCreated record");
+                }
+                continue;
+            }
+            if matches!(record.payload, EventPayload::SessionCreated { .. }) {
+                return corrupt(path, "SessionCreated appeared after sequence 1");
+            }
+            validate_record_local(path, record)?;
+            let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
+            let missing_admission = |user_input_seq: u64, run_id: RunId, input: &str| {
+                !records[..index].iter().any(|prior| {
+                    prior.seq == user_input_seq
+                        && prior.run_id == Some(run_id)
+                        && matches!(
+                            &prior.payload,
+                            EventPayload::UserInputAdmitted { input: admitted } if admitted == input
+                        )
+                })
+            };
+            let tainted_prerequisite = if strict {
+                false
+            } else {
+                match &record.payload {
+                    EventPayload::SkillLoaded { .. }
+                    | EventPayload::SkillInvocationNoted { .. }
+                        if record.run_id.is_some() =>
+                    {
+                        record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                    }
+                    EventPayload::SessionTitleCommitted { .. } if record.run_id.is_some() => {
+                        record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                    }
+                    EventPayload::UserInputRecalledV2 {
+                        user_input_seq,
+                        input,
+                    } => record.run_id.is_some_and(|run_id| {
+                        missing_admission(*user_input_seq, run_id, input)
+                            && taint.admission_before(*user_input_seq, record.seq)
+                    }),
+                    EventPayload::ModelAttemptStarted { .. }
+                    | EventPayload::InternalAgentStarted { .. }
+                    | EventPayload::ModelFallback { .. }
+                    | EventPayload::ApprovalRequested { .. } => {
+                        record.run_id.is_some_and(|run_id| {
+                            !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                        })
+                    }
+                    EventPayload::TextDelta { attempt_id, .. }
+                    | EventPayload::ReasoningDelta { attempt_id, .. }
+                    | EventPayload::ModelRequestPrepared { attempt_id, .. }
+                    | EventPayload::AttemptAbandoned { attempt_id }
+                    | EventPayload::ModelReplayEvaluated { attempt_id, .. }
+                    | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
+                        (!attempts.contains_key(attempt_id)
+                            && taint.attempt_before(*attempt_id, record.seq))
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::ModelUsageRecorded { model_turn_seq, .. } => {
+                        (!turns.contains_key(model_turn_seq)
+                            && taint.turn_before(*model_turn_seq, record.seq))
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::InternalAgentFallback {
+                        internal_run_id, ..
+                    }
+                    | EventPayload::InternalAgentUsageRecorded {
+                        internal_run_id, ..
+                    } => {
+                        (!internal_runs.contains_key(internal_run_id)
+                            && taint.internal_run_before(*internal_run_id, record.seq))
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::ToolCallStarted { start } => {
+                        (!turns.contains_key(&start.owner.model_turn_seq)
+                            && taint.turn_before(start.owner.model_turn_seq, record.seq))
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::ToolCallTerminated { termination } => {
+                        !tool_starts.contains_key(&termination.tool_call_id)
+                            && taint.tool_before(termination.tool_call_id, record.seq)
+                    }
+                    EventPayload::ToolOutputElided { tool_call_id, .. }
+                    | EventPayload::ToolCallProgress { tool_call_id, .. }
+                    | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
+                    | EventPayload::ToolCallLinked { tool_call_id, .. } => {
+                        !tool_starts.contains_key(tool_call_id)
+                            && taint.tool_before(*tool_call_id, record.seq)
+                    }
+                    EventPayload::ApprovalEvaluated { approval_id, .. }
+                    | EventPayload::ApprovalEscalated { approval_id, .. }
+                    | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
+                    | EventPayload::ApprovalFinalized { approval_id, .. }
+                    | EventPayload::ApprovalCancelled { approval_id, .. }
+                    | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+                        !approval_owners.contains_key(approval_id)
+                            && taint.approval_before(*approval_id, record.seq)
+                    }
+                    EventPayload::TreeApprovalGrantCommitted { grant } => {
+                        !approval_owners.contains_key(&grant.approval_id)
+                            && taint.approval_before(grant.approval_id, record.seq)
+                    }
+                    EventPayload::DelegationReserved { reservation, .. } => {
+                        taint.delegation_before(reservation.invocation_id, record.seq)
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::DelegationStarted { invocation_id, .. }
+                    | EventPayload::DelegationRunStarted { invocation_id, .. }
+                    | EventPayload::DelegationRunAttached { invocation_id, .. } => {
+                        taint.delegation_before(*invocation_id, record.seq)
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    EventPayload::DelegationFinished {
+                        invocation_id,
+                        child_session_id,
+                        child_run_id,
+                        ..
+                    } => {
+                        let repair_matches =
+                            delegations.get(invocation_id).is_some_and(|delegation| {
+                                record.run_id == Some(delegation.parent_run_id)
+                                    && *child_session_id == delegation.child_session_id
+                                    && *child_run_id == delegation.child_run_id
+                                    && !delegation.finished
+                            });
+                        (taint.delegation_before(*invocation_id, record.seq) && !repair_matches)
+                            || record.run_id.is_some_and(|run_id| {
+                                !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                            })
+                    }
+                    _ => record.run_id.is_some_and(|run_id| {
+                        !runs.contains_key(&run_id) && taint.run_before(run_id, record.seq)
+                    }),
+                }
+            };
+            if tainted_prerequisite {
+                taint
+                    .mark_event(record)
+                    .map_err(|message| EventLogError::Corrupt {
+                        path: path.to_owned(),
+                        message: message.into(),
+                    })?;
+                continue;
+            }
+            match &record.payload {
+                EventPayload::SessionReverted { through_seq } => {
+                    if record.run_id.is_some() || *through_seq == 0 || *through_seq >= record.seq {
+                        return corrupt(
+                            path,
+                            "SessionReverted target is not an existing prior event",
+                        );
+                    }
+                }
+                EventPayload::SessionPermissionOverlaySet { .. } => {
+                    if record.run_id.is_some() {
+                        return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
+                    }
+                }
+                EventPayload::DelegationReserved {
+                    reservation,
+                    request,
+                    ..
+                } => {
+                    if record.run_id != Some(reservation.parent_run_id)
+                        || record.session_id != reservation.parent_session_id
+                        || !runs.contains_key(&reservation.parent_run_id)
+                        || delegations
+                            .insert(
+                                reservation.invocation_id,
+                                DelegationAttribution {
+                                    parent_run_id: reservation.parent_run_id,
+                                    child_session_id: reservation.child_session_id,
+                                    resume: request.resume_session_id.is_some(),
+                                    started: false,
+                                    child_run_id: None,
+                                    finished: false,
+                                },
+                            )
+                            .is_some()
+                    {
+                        return corrupt(path, "delegation reservation ownership is invalid");
+                    }
+                }
+                EventPayload::DelegationStarted {
+                    invocation_id,
+                    child_session_id,
+                } => {
+                    let Some(delegation) = delegations.get_mut(invocation_id) else {
+                        return corrupt(path, "delegation start appeared before its reservation");
+                    };
+                    if record.run_id != Some(delegation.parent_run_id)
+                        || *child_session_id != delegation.child_session_id
+                        || delegation.started
+                        || delegation.finished
+                    {
+                        return corrupt(path, "delegation start ownership is invalid");
+                    }
+                    delegation.started = true;
+                }
+                EventPayload::DelegationRunStarted {
+                    invocation_id,
+                    child_run_id,
+                }
+                | EventPayload::DelegationRunAttached {
+                    invocation_id,
+                    child_run_id,
+                } => {
+                    let attached =
+                        matches!(&record.payload, EventPayload::DelegationRunAttached { .. });
+                    let Some(delegation) = delegations.get_mut(invocation_id) else {
+                        return corrupt(path, "delegation run appeared before its reservation");
+                    };
+                    if record.run_id != Some(delegation.parent_run_id)
+                        || delegation.child_run_id.is_some()
+                        || delegation.finished
+                        || (attached && !delegation.resume)
+                    {
+                        return corrupt(path, "delegation run ownership is invalid");
+                    }
+                    delegation.child_run_id = Some(*child_run_id);
+                }
+                EventPayload::DelegationFinished {
+                    invocation_id,
+                    child_session_id,
+                    child_run_id,
+                    ..
+                } => {
+                    let Some(delegation) = delegations.get_mut(invocation_id) else {
+                        return corrupt(path, "delegation finish appeared before its reservation");
+                    };
+                    if record.run_id != Some(delegation.parent_run_id)
+                        || *child_session_id != delegation.child_session_id
+                        || *child_run_id != delegation.child_run_id
+                        || delegation.finished
+                    {
+                        return corrupt(path, "delegation finish ownership is invalid");
+                    }
+                    if taint.delegation_unrepaired_before(*invocation_id, record.seq) {
+                        taint.delegation_repairs.insert(*invocation_id, record.seq);
+                    }
+                    delegation.finished = true;
+                }
+                EventPayload::SkillLoaded { .. } | EventPayload::SkillInvocationNoted { .. } => {
+                    if record.run_id.is_some() {
+                        require_started_run(path, &runs, record.run_id)?;
+                    }
+                }
+                EventPayload::DelegateChildTerminated { .. } => {
+                    if record.run_id.is_some() {
+                        return corrupt(path, "DelegateChildTerminated must not have run_id");
+                    }
+                }
+                EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputRecalled { .. }
+                    if record.run_id.is_none() =>
+                {
+                    if active_run.is_some() && !taint.active_run_ordering_before(record.seq) {
+                        return corrupt(path, "runless UserInputAdmitted requires no active run");
+                    }
+                    if taint.active_run_ordering_before(record.seq) {
+                        active_run = None;
+                    }
+                }
+                EventPayload::UserInputRecalledV2 {
+                    user_input_seq,
+                    input,
+                } => {
+                    let Some(run_id) = record.run_id else {
+                        return corrupt(path, "UserInputRecalledV2 is missing run_id");
+                    };
+                    if !records[..index].iter().any(|prior| {
+                        prior.seq == *user_input_seq
+                            && prior.run_id == Some(run_id)
+                            && matches!(
+                                &prior.payload,
+                                EventPayload::UserInputAdmitted { input: admitted }
+                                    if admitted == input
+                            )
+                    }) {
+                        return corrupt(
+                            path,
+                            "UserInputRecalledV2 target is not a prior admission",
+                        );
+                    }
+                }
+                EventPayload::DelegatedContextSeeded { .. } => {
+                    if record.run_id.is_some() || !runs.is_empty() {
+                        return corrupt(
+                            path,
+                            "DelegatedContextSeeded must be runless and precede the first run",
+                        );
+                    }
+                }
+                EventPayload::RunStarted {
+                    agent,
+                    selected_suffix,
+                    ..
+                } => {
+                    let Some(run_id) = record.run_id else {
+                        return corrupt(path, "RunStarted is missing run_id");
+                    };
+                    let attribution = RunAttribution {
+                        start_seq: record.seq,
+                        agent_id: agent.agent.clone(),
+                        prompt_fingerprint: agent.prompt_fingerprint.clone(),
+                        selected_suffix: selected_suffix
+                            .iter()
+                            .map(crate::policy::wire_resolved)
+                            .collect(),
+                        active_fallback_index: 0,
+                        next_attempt_ordinal: 1,
+                        attempts_on_active: 0,
+                        active_attempt: None,
+                        ordering_tainted: false,
+                    };
+                    if runs.insert(run_id, attribution).is_some() {
+                        return corrupt(path, "run_id has more than one RunStarted event");
+                    }
+                    active_run = Some(run_id);
+                }
+                EventPayload::SessionTitleCommitted { change, .. } => {
+                    let user = matches!(
+                        change,
+                        cookie_agent_protocol::SessionTitleChange::UserSet { .. }
+                            | cookie_agent_protocol::SessionTitleChange::UserClear { .. }
+                            | cookie_agent_protocol::SessionTitleChange::UserReset { .. }
+                            | cookie_agent_protocol::SessionTitleChange::DelegatedSet { .. }
+                    );
+                    if user != record.run_id.is_none() {
+                        return corrupt(
+                            path,
+                            "SessionTitleCommitted has inconsistent run ownership",
+                        );
+                    }
+                    if let Some(run_id) = record.run_id
+                        && !runs.contains_key(&run_id)
+                    {
+                        return corrupt(path, "session title references a run before RunStarted");
+                    }
+                }
+                EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal,
+                    fallback_index,
+                    retry_ordinal,
+                    resolved_model,
+                    prompt_fingerprint,
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    if attempts.contains_key(attempt_id) {
+                        return corrupt(path, "attempt_id has more than one ModelAttemptStarted");
+                    }
+                    let run = runs.get_mut(&run_id).expect("started run is indexed");
+                    run.ordering_tainted |=
+                        taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                    if strict && run.ordering_tainted {
+                        return corrupt(
+                            path,
+                            "cannot strictly append an attempt after missing run-order prerequisites",
+                        );
+                    }
+                    if !run.ordering_tainted && run.active_attempt.is_some() {
+                        return corrupt(
+                            path,
+                            "ModelAttemptStarted appeared before the prior attempt ended",
+                        );
+                    }
+                    if !run.ordering_tainted && *attempt_ordinal != run.next_attempt_ordinal {
+                        return corrupt(path, "attempt_ordinal is not contiguous within its run");
+                    }
+                    let Ok(fallback_index) = usize::try_from(*fallback_index) else {
+                        return corrupt(path, "fallback_index does not index the frozen suffix");
+                    };
+                    if !run.ordering_tainted && fallback_index != run.active_fallback_index {
+                        return corrupt(
+                            path,
+                            "attempt fallback_index is not the active frozen suffix entry",
+                        );
+                    }
+                    let Some(expected_model) = run.selected_suffix.get(fallback_index) else {
+                        return corrupt(path, "fallback_index does not index the frozen suffix");
+                    };
+                    if resolved_model != expected_model {
+                        return corrupt(
+                            path,
+                            "attempt resolved model does not match its frozen suffix entry",
+                        );
+                    }
+                    if prompt_fingerprint != &run.prompt_fingerprint {
+                        return corrupt(
+                            path,
+                            "attempt prompt fingerprint does not match RunStarted",
+                        );
+                    }
+                    if !run.ordering_tainted && *retry_ordinal != run.attempts_on_active {
+                        return corrupt(
+                            path,
+                            "retry_ordinal is not contiguous for the active fallback entry",
+                        );
+                    }
+                    run.next_attempt_ordinal = attempt_ordinal.saturating_add(1);
+                    run.active_fallback_index = fallback_index;
+                    run.attempts_on_active = retry_ordinal.saturating_add(1);
+                    run.active_attempt = Some(*attempt_id);
+                    attempts.insert(
+                        *attempt_id,
+                        AttemptAttribution {
+                            run_id,
+                            resolved_model: resolved_model.clone(),
+                            finished: false,
+                        },
+                    );
+                }
+                EventPayload::ModelRequestPrepared { attempt_id, .. }
+                | EventPayload::TextDelta { attempt_id, .. }
+                | EventPayload::ReasoningDelta { attempt_id, .. } => {
+                    validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
+                }
+                EventPayload::AttemptAbandoned { attempt_id } => {
+                    let run_id =
+                        validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
+                    let run = runs.get_mut(&run_id).expect("started run is indexed");
+                    run.ordering_tainted |=
+                        taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                    if strict && run.ordering_tainted {
+                        return corrupt(
+                            path,
+                            "cannot strictly append an attempt terminal after missing prerequisites",
+                        );
+                    }
+                    finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, false)?;
+                }
+                EventPayload::ModelReplayEvaluated {
+                    attempt_id,
+                    resolved_model,
+                    ..
+                } => {
+                    validate_attempt_model(
+                        path,
+                        &attempts,
+                        *attempt_id,
+                        record.run_id,
+                        resolved_model,
+                    )?;
+                }
+                EventPayload::ModelTurnCommitted {
+                    attempt_id,
+                    model_turn_seq,
+                    resolved_model,
+                    turn,
+                    ..
+                } => {
+                    let run_id = validate_attempt_model(
+                        path,
+                        &attempts,
+                        *attempt_id,
+                        record.run_id,
+                        resolved_model,
+                    )?;
+                    let run = runs.get_mut(&run_id).expect("started run is indexed");
+                    run.ordering_tainted |=
+                        taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                    if strict && run.ordering_tainted {
+                        return corrupt(
+                            path,
+                            "cannot strictly append a model turn after missing prerequisites",
+                        );
+                    }
+                    finish_attempt(path, &mut runs, &mut attempts, run_id, *attempt_id, true)?;
+                    let turn_ordering_tainted = taint.turn_ordering_before(record.seq);
+                    if *model_turn_seq != next_model_turn_seq && (strict || !turn_ordering_tainted)
+                    {
+                        return corrupt(path, "model_turn_seq is not contiguous");
+                    }
+                    next_model_turn_seq = model_turn_seq.saturating_add(1);
+                    for (content_index, part) in turn.content.iter().enumerate() {
+                        if let cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                            id,
+                            provider_item_id,
+                            ..
+                        } = part
+                        {
+                            let owner = AssistantToolCallRef {
+                                model_turn_seq: *model_turn_seq,
+                                content_index: content_index as u32,
+                                model_call_id: id.clone(),
+                                provider_item_id: provider_item_id.clone(),
+                            };
+                            if model_call_owners
+                                .insert((run_id, id.clone()), owner.clone())
+                                .is_some()
+                            {
+                                return corrupt(path, "model call id is reused within a run");
+                            }
+                            if let Some(provider_item_id) = provider_item_id
+                                && provider_item_owners
+                                    .insert((run_id, provider_item_id.clone()), owner)
+                                    .is_some()
+                            {
+                                return corrupt(path, "provider item id is reused within a run");
+                            }
+                        }
+                    }
+                    if turns
+                        .insert(*model_turn_seq, (run_id, turn.clone()))
+                        .is_some()
+                    {
+                        return corrupt(path, "model turn sequence is duplicated");
+                    }
+                    turn_models.insert(*model_turn_seq, resolved_model.clone());
+                }
+                EventPayload::ModelUsageRecorded {
+                    model_turn_seq,
+                    agent_id,
+                    resolved_model,
+                    ..
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    let Some((turn_run, _)) = turns.get(model_turn_seq) else {
+                        return corrupt(path, "usage references an unknown committed model turn");
+                    };
+                    if *turn_run != run_id
+                        || turn_models.get(model_turn_seq) != Some(resolved_model)
+                        || runs.get(&run_id).map(|run| &run.agent_id) != Some(agent_id)
+                        || !usage_turns.insert(*model_turn_seq)
+                    {
+                        return corrupt(path, "usage ownership does not match its model turn");
+                    }
+                }
+                EventPayload::InternalAgentStarted {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    backend,
+                    ..
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    let active_model = match backend {
+                        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                            Some(resolved_model.clone())
+                        }
+                        cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                    };
+                    if internal_runs
+                        .insert(
+                            *internal_run_id,
+                            InternalRunAttribution {
+                                start_seq: record.seq,
+                                invocation_id: *invocation_id,
+                                kind: *kind,
+                                run_id,
+                                active_model,
+                                usage_recorded_in_phase: false,
+                                model_phase_taint_seen: 0,
+                                usage_phase_taint_seen: 0,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return corrupt(path, "internal_run_id has more than one start");
+                    }
+                }
+                EventPayload::InternalAgentFallback {
+                    invocation_id,
+                    internal_run_id,
+                    kind,
+                    from,
+                    to,
+                    ..
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                        return corrupt(path, "internal fallback appeared before its start");
+                    };
+                    let from_model = match from {
+                        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                            Some(resolved_model)
+                        }
+                        cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                    };
+                    let model_phase_taint = taint
+                        .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                        .filter(|tainted| {
+                            *tainted > internal.start_seq
+                                && *tainted > internal.model_phase_taint_seen
+                        });
+                    if strict && model_phase_taint.is_some() {
+                        return corrupt(
+                            path,
+                            "cannot strictly append internal fallback after a missing phase transition",
+                        );
+                    }
+                    if internal.invocation_id != *invocation_id
+                        || internal.kind != *kind
+                        || internal.run_id != run_id
+                        || (model_phase_taint.is_none()
+                            && internal.active_model.as_ref() != from_model)
+                    {
+                        return corrupt(path, "internal fallback ownership does not match its run");
+                    }
+                    internal.active_model = match to {
+                        cookie_agent_protocol::InternalAgentBackend::Model { resolved_model } => {
+                            Some(resolved_model.clone())
+                        }
+                        cookie_agent_protocol::InternalAgentBackend::Builtin { .. } => None,
+                    };
+                    internal.usage_recorded_in_phase = false;
+                    if let Some(tainted) = model_phase_taint {
+                        internal.model_phase_taint_seen = tainted;
+                    }
+                    if let Some(tainted) = taint
+                        .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                        .filter(|tainted| *tainted > internal.start_seq)
+                    {
+                        internal.usage_phase_taint_seen = tainted;
+                    }
+                }
+                EventPayload::InternalAgentUsageRecorded {
+                    internal_run_id,
+                    kind,
+                    agent_id,
+                    resolved_model,
+                    ..
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    let Some(internal) = internal_runs.get_mut(internal_run_id) else {
+                        return corrupt(path, "internal usage appeared before its start");
+                    };
+                    let expected_agent = cookie_agent_protocol::AgentId::new(match kind {
+                        cookie_agent_protocol::InternalAgentKind::Approval => {
+                            cookie_agent_config::BUILT_IN_APPROVAL_AGENT_ID
+                        }
+                        cookie_agent_protocol::InternalAgentKind::ContextCompaction => {
+                            cookie_agent_config::BUILT_IN_COMPACTION_AGENT_ID
+                        }
+                        cookie_agent_protocol::InternalAgentKind::SessionTitle => {
+                            cookie_agent_config::BUILT_IN_TITLE_AGENT_ID
+                        }
+                    })
+                    .expect("built-in internal agent IDs are valid");
+                    let model_phase_taint = taint
+                        .internal_model_phase_taint_before(*internal_run_id, record.seq)
+                        .filter(|tainted| {
+                            *tainted > internal.start_seq
+                                && *tainted > internal.model_phase_taint_seen
+                        });
+                    let usage_phase_taint = taint
+                        .internal_usage_phase_taint_before(*internal_run_id, record.seq)
+                        .filter(|tainted| {
+                            *tainted > internal.start_seq
+                                && *tainted > internal.usage_phase_taint_seen
+                        });
+                    if strict && (model_phase_taint.is_some() || usage_phase_taint.is_some()) {
+                        return corrupt(
+                            path,
+                            "cannot strictly append internal usage after a missing phase transition",
+                        );
+                    }
+                    if internal.kind != *kind
+                        || internal.run_id != run_id
+                        || (model_phase_taint.is_none()
+                            && internal.active_model.as_ref() != Some(resolved_model))
+                        || *agent_id != expected_agent
+                        || (usage_phase_taint.is_none() && internal.usage_recorded_in_phase)
+                    {
+                        return corrupt(path, "internal usage ownership does not match its run");
+                    }
+                    internal.active_model = Some(resolved_model.clone());
+                    internal.usage_recorded_in_phase = true;
+                    if let Some(tainted) = model_phase_taint {
+                        internal.model_phase_taint_seen = tainted;
+                    }
+                    if let Some(tainted) = usage_phase_taint {
+                        internal.usage_phase_taint_seen = tainted;
+                    }
+                }
+                EventPayload::ModelFallback {
+                    from,
+                    to,
+                    from_fallback_index,
+                    to_fallback_index,
+                    attempts_on_from,
+                    ..
+                } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    let run = runs.get_mut(&run_id).expect("started run is indexed");
+                    run.ordering_tainted |=
+                        taint.run_ordering_between(run_id, run.start_seq, record.seq);
+                    if strict && run.ordering_tainted {
+                        return corrupt(
+                            path,
+                            "cannot strictly append fallback after missing run-order prerequisites",
+                        );
+                    }
+                    if !run.ordering_tainted && run.active_attempt.is_some() {
+                        return corrupt(
+                            path,
+                            "ModelFallback appeared before the active attempt ended",
+                        );
+                    }
+                    let Ok(from_index) = usize::try_from(*from_fallback_index) else {
+                        return corrupt(
+                            path,
+                            "ModelFallback index does not index the frozen suffix",
+                        );
+                    };
+                    let Ok(to_index) = usize::try_from(*to_fallback_index) else {
+                        return corrupt(
+                            path,
+                            "ModelFallback index does not index the frozen suffix",
+                        );
+                    };
+                    let Some(adjacent_index) = from_index.checked_add(1) else {
+                        return corrupt(path, "ModelFallback source index cannot advance");
+                    };
+                    if (!run.ordering_tainted && from_index != run.active_fallback_index)
+                        || to_index != adjacent_index
+                    {
+                        return corrupt(
+                            path,
+                            "ModelFallback transition is not adjacent from the active entry",
+                        );
+                    }
+                    let Some(expected_from) = run.selected_suffix.get(from_index) else {
+                        return corrupt(
+                            path,
+                            "ModelFallback source does not index the frozen suffix",
+                        );
+                    };
+                    let Some(expected_to) = run.selected_suffix.get(to_index) else {
+                        return corrupt(
+                            path,
+                            "ModelFallback target does not index the frozen suffix",
+                        );
+                    };
+                    if from != expected_from || to != expected_to {
+                        return corrupt(
+                            path,
+                            "ModelFallback models do not match the frozen suffix transition",
+                        );
+                    }
+                    if *attempts_on_from == 0
+                        || (!run.ordering_tainted && *attempts_on_from != run.attempts_on_active)
+                    {
+                        return corrupt(
+                            path,
+                            "ModelFallback attempt count does not match started attempts",
+                        );
+                    }
+                    run.active_fallback_index = to_index;
+                    run.attempts_on_active = 0;
+                }
+                EventPayload::ToolCallStarted { start } => {
+                    let run_id = require_started_run(path, &runs, record.run_id)?;
+                    validate_tool_owner(
+                        path,
+                        run_id,
+                        &turns,
+                        &model_call_owners,
+                        &provider_item_owners,
+                        &start.owner,
+                    )?;
+                    if tool_starts
+                        .insert(start.tool_call_id, (run_id, start.clone()))
+                        .is_some()
+                    {
+                        return corrupt(path, "tool_call_id has more than one start");
+                    }
+                }
+                EventPayload::ToolCallTerminated { termination } => {
+                    let Some((run_id, start)) = tool_starts.get(&termination.tool_call_id) else {
+                        return corrupt(path, "tool termination appeared before its start");
+                    };
+                    if record.run_id != Some(*run_id) || !termination.matches_start(start) {
+                        return corrupt(
+                            path,
+                            "tool termination ownership does not match its start",
+                        );
+                    }
+                    if strict && taint.tool_terminal_before(termination.tool_call_id, record.seq) {
+                        return corrupt(
+                            path,
+                            "cannot strictly append tool termination after a missing terminal transition",
+                        );
+                    }
+                    if !terminated_tools.insert(termination.tool_call_id) {
+                        return corrupt(path, "tool call has more than one terminal event");
+                    }
+                }
+                EventPayload::ToolOutputElided { tool_call_id, .. } => {
+                    let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
+                        return corrupt(path, "tool elision appeared before its start");
+                    };
+                    let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
+                    if record.run_id != Some(*run_id)
+                        || (!terminated_tools.contains(tool_call_id) && !terminal_tainted)
+                        || (strict && terminal_tainted)
+                        || !elided_tools.insert(*tool_call_id)
+                    {
+                        return corrupt(path, "tool elision ownership or ordering is invalid");
+                    }
+                }
+                EventPayload::ToolCallProgress { tool_call_id, .. }
+                | EventPayload::ToolStdinSubmitted { tool_call_id, .. }
+                | EventPayload::ToolCallLinked { tool_call_id, .. } => {
+                    let Some((run_id, _)) = tool_starts.get(tool_call_id) else {
+                        return corrupt(path, "tool lifecycle event appeared before its start");
+                    };
+                    let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
+                    if record.run_id != Some(*run_id)
+                        || terminated_tools.contains(tool_call_id)
+                        || (strict && terminal_tainted)
+                    {
+                        return corrupt(
+                            path,
+                            "tool lifecycle event has invalid ownership or ordering",
+                        );
+                    }
+                }
+                EventPayload::ApprovalRequested { request } => {
+                    let Some(run_id) = record.run_id else {
+                        return corrupt(path, "ApprovalRequested is missing run_id");
+                    };
+                    if !runs.contains_key(&run_id) {
+                        return corrupt(path, "approval references a run before RunStarted");
+                    }
+                    if approval_owners
+                        .insert(request.approval_id(), run_id)
+                        .is_some()
+                    {
+                        return corrupt(
+                            path,
+                            "approval_id has more than one ApprovalRequested event",
+                        );
+                    }
+                }
+                EventPayload::ApprovalEvaluated { approval_id, .. }
+                | EventPayload::ApprovalEscalated { approval_id, .. }
+                | EventPayload::ApprovalUserDecisionRecorded { approval_id, .. }
+                | EventPayload::ApprovalFinalized { approval_id, .. }
+                | EventPayload::ApprovalCancelled { approval_id, .. }
+                | EventPayload::ApprovalDoomLoopDetected { approval_id, .. } => {
+                    validate_approval_owner(path, &approval_owners, *approval_id, record.run_id)?;
+                }
+                EventPayload::TreeApprovalGrantCommitted { grant } => {
+                    validate_approval_owner(
+                        path,
+                        &approval_owners,
+                        grant.approval_id,
+                        record.run_id,
+                    )?;
+                }
+                EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
+                    if record.run_id.is_some() {
+                        return corrupt(path, "plugin events must be runless");
+                    }
+                }
+                _ => {
+                    require_started_run(path, &runs, record.run_id)?;
+                }
+            }
+            if matches!(
+                record.payload,
+                EventPayload::RunCompleted { .. }
+                    | EventPayload::RunFailed { .. }
+                    | EventPayload::RunCancelled { .. }
+                    | EventPayload::RunInterrupted { .. }
+            ) && record.run_id == active_run
+            {
+                active_run = None;
+            }
+        }
+        Ok(taint)
+    }
+
+    fn assert_storage_matches_full_projection(storage: &mut EventStorage) {
+        let expected = cookie_agent_protocol::visible_events(&storage.all);
+        let actual = storage
+            .visible
+            .iter()
+            .map(|index| storage.all[*index].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        let expected_run = expected
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted { selection, .. } => event
+                    .run_id
+                    .map(|run| (event.seq, run, selection.model.clone())),
+                _ => None,
+            });
+        let expected_checkpoint = expected
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::ContextCheckpointCommitted { commit } => {
+                    Some((event.seq, commit.boundaries.input_through_seq))
+                }
+                _ => None,
+            });
+        let expected_usage = expected
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::ModelUsageRecorded { usage, .. } => {
+                    super::usage_total(event.seq, usage)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                expected
+                    .iter()
+                    .rev()
+                    .find_map(|event| match &event.payload {
+                        EventPayload::ModelTurnCommitted { turn, .. } => {
+                            super::usage_total(event.seq, &turn.usage)
+                        }
+                        _ => None,
+                    })
+            });
+        assert_eq!(storage.index.last_run_started, expected_run);
+        assert_eq!(
+            (
+                storage.index.last_checkpoint_seq,
+                storage.index.last_checkpoint_input_through_seq
+            ),
+            expected_checkpoint.unwrap_or_default()
+        );
+        assert_eq!(storage.index.latest_real_usage(), expected_usage);
+        let first = storage.snapshot();
+        let second = storage.snapshot();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.as_ref(), expected);
+    }
+
     #[test]
-    fn incremental_validation_matches_full_validation_corpus() {
+    fn incremental_validation_matches_historical_reference_corpus() {
         let valid = attribution_records();
         let session_id = valid[0].session_id;
+        let run_id = valid[1].run_id.expect("run id");
         let path = Path::new("differential-events.jsonl");
-        let mut out_of_order = valid.clone();
-        out_of_order.swap(2, 3);
+
+        let mut attempt_reordered = valid.clone();
+        let first_payload = attempt_reordered[2].payload.clone();
+        attempt_reordered[2].payload = attempt_reordered[3].payload.clone();
+        attempt_reordered[3].payload = first_payload;
+
         let mut duplicate_attempt = valid.clone();
         let mut duplicate = duplicate_attempt[2].clone();
         duplicate.seq = duplicate_attempt.last().expect("last event").seq + 1;
-        duplicate.timestamp = duplicate_attempt.last().expect("last event").timestamp;
+        duplicate.timestamp = jiff::Timestamp::new(duplicate.seq as i64, 0).unwrap();
         duplicate_attempt.push(duplicate);
+
         let mut attempt_before_run = vec![valid[0].clone(), valid[2].clone()];
         attempt_before_run[1].seq = 2;
-        attempt_before_run[1].timestamp = attempt_before_run[0].timestamp;
+        attempt_before_run[1].timestamp = jiff::Timestamp::new(2, 0).unwrap();
 
-        for (label, records) in [
-            ("valid", valid),
-            ("out_of_order", out_of_order),
-            ("duplicate_attempt", duplicate_attempt),
-            ("attempt_before_run", attempt_before_run),
-        ] {
+        let mut timestamp_reversal = valid.clone();
+        timestamp_reversal[2].timestamp = jiff::Timestamp::new(1, 0).unwrap();
+
+        let mut sequence_gap = valid.clone();
+        for record in &mut sequence_gap[2..] {
+            record.seq += 1;
+            record.timestamp = jiff::Timestamp::new(record.seq as i64, 0).unwrap();
+        }
+
+        let admitted = event(
+            session_id,
+            Some(run_id),
+            3,
+            EventPayload::UserInputAdmitted {
+                input: "admitted".into(),
+            },
+        );
+        let recalled = event(
+            session_id,
+            Some(run_id),
+            4,
+            EventPayload::UserInputRecalledV2 {
+                user_input_seq: 3,
+                input: "admitted".into(),
+            },
+        );
+        let admission = vec![
+            valid[0].clone(),
+            valid[1].clone(),
+            admitted,
+            recalled.clone(),
+        ];
+        let missing_admission = vec![valid[0].clone(), valid[1].clone(), recalled];
+
+        let mut revert = valid.clone();
+        let revert_seq = revert.last().expect("last event").seq + 1;
+        revert.push(event(
+            session_id,
+            None,
+            revert_seq,
+            EventPayload::SessionReverted { through_seq: 4 },
+        ));
+
+        let mut broad_taint = ValidationTaint::default();
+        broad_taint.mark_broad(3, 3);
+        let mut tainted_attempt = valid[..3].to_vec();
+        tainted_attempt[2].seq = 4;
+        tainted_attempt[2].timestamp = jiff::Timestamp::new(4, 0).unwrap();
+
+        let mut admission_taint = ValidationTaint::default();
+        admission_taint.admissions.insert(3, 3);
+        let tainted_recall = vec![
+            valid[0].clone(),
+            valid[1].clone(),
+            event(
+                session_id,
+                Some(run_id),
+                4,
+                EventPayload::UserInputRecalledV2 {
+                    user_input_seq: 3,
+                    input: "missing but tainted".into(),
+                },
+            ),
+        ];
+
+        let cases = vec![
+            ("valid", valid, ValidationTaint::default(), true),
+            (
+                "attempt_reordered",
+                attempt_reordered,
+                ValidationTaint::default(),
+                true,
+            ),
+            (
+                "duplicate_attempt",
+                duplicate_attempt,
+                ValidationTaint::default(),
+                true,
+            ),
+            (
+                "attempt_before_run",
+                attempt_before_run,
+                ValidationTaint::default(),
+                true,
+            ),
+            (
+                "timestamp_reversal",
+                timestamp_reversal,
+                ValidationTaint::default(),
+                true,
+            ),
+            (
+                "sequence_gap",
+                sequence_gap,
+                ValidationTaint::default(),
+                true,
+            ),
+            ("admission", admission, ValidationTaint::default(), true),
+            (
+                "missing_admission",
+                missing_admission,
+                ValidationTaint::default(),
+                true,
+            ),
+            ("revert", revert, ValidationTaint::default(), true),
+            ("broad_taint", tainted_attempt, broad_taint, false),
+            ("admission_taint", tainted_recall, admission_taint, false),
+        ];
+
+        for (label, records, initial_taint, strict) in cases {
             let mut accepted = Vec::new();
-            let mut incremental = ValidationState::default();
+            let mut incremental = ValidationState::new(initial_taint.clone());
+            let mut storage = EventStorage::new(Vec::new());
             for record in records {
+                let snapshot_before = storage.snapshot();
                 let mut full_candidate = accepted.clone();
                 full_candidate.push(record.clone());
-                let full = validate_records(
+                let reference = reference_validate_records(
                     path,
                     session_id,
                     &full_candidate,
-                    &Default::default(),
-                    Some(record.seq),
+                    &initial_taint,
+                    strict.then_some(record.seq),
                 );
                 let mut incremental_candidate = incremental.clone();
                 let one = validate_record_incremental(
@@ -3034,97 +4149,123 @@ mod tests {
                     session_id,
                     &record,
                     &mut incremental_candidate,
-                    true,
+                    strict,
                 );
                 assert_eq!(
                     one.is_ok(),
-                    full.is_ok(),
-                    "{label} diverged at sequence {}: incremental={one:?}, full={full:?}",
+                    reference.is_ok(),
+                    "{label} diverged at sequence {}: incremental={one:?}, reference={reference:?}",
                     record.seq
                 );
-                if let (Ok(()), Ok(full_state)) = (one, full) {
-                    assert_eq!(incremental_candidate, full_state, "{label} state");
+                if let (Ok(()), Ok(reference_taint)) = (one, reference) {
+                    assert_eq!(
+                        incremental_candidate.taint, reference_taint,
+                        "{label} taint"
+                    );
                     incremental = incremental_candidate;
-                    accepted.push(record);
+                    accepted.push(record.clone());
+                    storage.push(record);
+                    assert_storage_matches_full_projection(&mut storage);
+                } else {
+                    assert_eq!(storage.snapshot(), snapshot_before, "{label} snapshot");
+                    let retained_reference = reference_validate_records(
+                        path,
+                        session_id,
+                        &accepted,
+                        &initial_taint,
+                        if strict {
+                            accepted.last().map(|event| event.seq)
+                        } else {
+                            None
+                        },
+                    )
+                    .expect("retained prefix remains valid");
+                    assert_eq!(
+                        incremental.taint, retained_reference,
+                        "{label} retained taint"
+                    );
+                    assert_storage_matches_full_projection(&mut storage);
                 }
             }
         }
+    }
+
+    fn assert_log_rebuilt_against_reference(log: &EventLog) {
+        let records = log.all_events();
+        let reference = reference_validate_records(
+            log.path(),
+            log.session_id,
+            &records,
+            &log.initial_validation_taint,
+            None,
+        )
+        .expect("reference accepts retained log");
+        assert_eq!(
+            log.validation.lock().unwrap().taint,
+            reference,
+            "rebuilt taint"
+        );
+        let mut events = log.events.lock().unwrap();
+        assert_storage_matches_full_projection(&mut events);
+    }
+
+    #[test]
+    fn rejected_append_and_persistence_failure_rebuild_incremental_state() {
+        let records = attribution_records();
+        let creation = records[0].clone();
+        let run = records[1].run_id.expect("run id");
+        let directory = tempdir().unwrap();
+        let rejected = EventLog::create_buffered(
+            directory.path().join("buffered.jsonl"),
+            creation.session_id,
+            creation.payload.clone(),
+        )
+        .unwrap();
+        rejected
+            .append(Some(run), records[1].payload.clone())
+            .unwrap();
+        let before = rejected.event_snapshot();
+        assert!(
+            rejected
+                .append(Some(run), records[1].payload.clone())
+                .is_err()
+        );
+        assert_eq!(rejected.event_snapshot(), before);
+        assert_log_rebuilt_against_reference(&rejected);
+        rejected
+            .append(Some(run), records[2].payload.clone())
+            .expect("valid append succeeds after rejected duplicate rebuild");
+        assert_log_rebuilt_against_reference(&rejected);
+
+        let persisted_directory = tempdir().unwrap();
+        let persisted_path = persisted_directory.path().join("events.jsonl");
+        let persisted =
+            EventLog::create(persisted_path, creation.session_id, creation.payload).unwrap();
+        let before = persisted.event_snapshot();
+        fs::remove_dir_all(persisted_directory.path()).unwrap();
+        assert!(
+            persisted
+                .append(Some(run), records[1].payload.clone())
+                .is_err()
+        );
+        assert_eq!(persisted.event_snapshot(), before);
+        assert_log_rebuilt_against_reference(&persisted);
     }
 
     #[test]
     fn event_storage_snapshot_and_indexes_match_full_projection() {
         let mut records = attribution_records();
         let revert_seq = records.last().expect("last event").seq + 1;
-        records.push(StoredEvent {
-            engine_version: None,
-            session_id: records[0].session_id,
-            run_id: None,
-            seq: revert_seq,
-            timestamp: records.last().expect("last event").timestamp,
-            payload: EventPayload::SessionReverted { through_seq: 4 },
-        });
+        records.push(event(
+            records[0].session_id,
+            None,
+            revert_seq,
+            EventPayload::SessionReverted { through_seq: 4 },
+        ));
         let mut storage = EventStorage::new(Vec::new());
         for record in records {
             storage.push(record);
-            let expected = cookie_agent_protocol::visible_events(&storage.all);
-            let actual = storage
-                .visible
-                .iter()
-                .map(|index| storage.all[*index].clone())
-                .collect::<Vec<_>>();
-            assert_eq!(actual, expected);
-            let expected_run = expected
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    EventPayload::RunStarted { selection, .. } => event
-                        .run_id
-                        .map(|run| (event.seq, run, selection.model.clone())),
-                    _ => None,
-                });
-            let expected_checkpoint =
-                expected
-                    .iter()
-                    .rev()
-                    .find_map(|event| match &event.payload {
-                        EventPayload::ContextCheckpointCommitted { commit } => {
-                            Some((event.seq, commit.boundaries.input_through_seq))
-                        }
-                        _ => None,
-                    });
-            let expected_usage = expected
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    EventPayload::ModelUsageRecorded { usage, .. } => {
-                        super::usage_total(event.seq, usage)
-                    }
-                    _ => None,
-                })
-                .or_else(|| {
-                    expected
-                        .iter()
-                        .rev()
-                        .find_map(|event| match &event.payload {
-                            EventPayload::ModelTurnCommitted { turn, .. } => {
-                                super::usage_total(event.seq, &turn.usage)
-                            }
-                            _ => None,
-                        })
-                });
-            assert_eq!(storage.index.last_run_started, expected_run);
-            assert_eq!(
-                (
-                    storage.index.last_checkpoint_seq,
-                    storage.index.last_checkpoint_input_through_seq
-                ),
-                expected_checkpoint.unwrap_or_default()
-            );
-            assert_eq!(storage.index.latest_real_usage(), expected_usage);
-            let first = storage.snapshot();
-            let second = storage.snapshot();
-            assert!(Arc::ptr_eq(&first, &second));
-            assert_eq!(first.as_ref(), expected);
+            assert_storage_matches_full_projection(&mut storage);
         }
     }
 
