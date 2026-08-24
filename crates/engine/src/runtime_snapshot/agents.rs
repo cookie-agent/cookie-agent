@@ -280,6 +280,11 @@ fn fingerprint(
 fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, PermissionValue>, EngineError>
 {
     let definitions = [
+        (
+            PermissionAction::Read,
+            "tool_result:*",
+            PermissionEffect::Allow,
+        ),
         (PermissionAction::Read, "*?*", PermissionEffect::Allow),
         (PermissionAction::Write, "*", PermissionEffect::Ask),
         (PermissionAction::Bash, "*", PermissionEffect::Ask),
