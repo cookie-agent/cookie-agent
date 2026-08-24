@@ -18,9 +18,9 @@ use std::fs::File;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    AssistantToolCallRef, AttemptId, EventPayload, ModelCallId, OutputDelta, OutputGap,
-    OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent, ToolCallId,
-    ToolCallStart, deserialize_event_payload_best_effort,
+    AssistantToolCallRef, AttemptId, EventOrigin, EventPayload, ModelCallId, OutputDelta,
+    OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent,
+    ToolCallId, ToolCallStart, deserialize_event_payload_best_effort,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -474,6 +474,7 @@ impl EventLog {
     pub fn create(
         path: PathBuf,
         session_id: SessionId,
+        origin: EventOrigin,
         creation: EventPayload,
     ) -> Result<Arc<Self>, EventLogError> {
         let log = Arc::new(Self {
@@ -491,13 +492,14 @@ impl EventLog {
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
         }
-        log.append_inner(None, creation)?;
+        log.append_inner(None, origin, creation)?;
         Ok(log)
     }
 
     pub fn create_buffered(
         path: PathBuf,
         session_id: SessionId,
+        origin: EventOrigin,
         creation: EventPayload,
     ) -> Result<Arc<Self>, EventLogError> {
         let log = Arc::new(Self {
@@ -515,7 +517,7 @@ impl EventLog {
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
         }
-        log.append_inner(None, creation)?;
+        log.append_inner(None, origin, creation)?;
         Ok(log)
     }
 
@@ -547,14 +549,16 @@ impl EventLog {
     pub fn append(
         &self,
         run_id: Option<RunId>,
+        origin: EventOrigin,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
-        self.append_inner(run_id, payload)
+        self.append_inner(run_id, origin, payload)
     }
 
     fn append_inner(
         &self,
         run_id: Option<RunId>,
+        origin: EventOrigin,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
         let _append = self
@@ -567,6 +571,7 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let event = StoredEvent {
             engine_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            origin: Some(origin),
             session_id: self.session_id,
             run_id,
             seq: self.next_seq.load(Ordering::Acquire),
@@ -2549,6 +2554,7 @@ fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
                 !matches!(
                     key.as_str(),
                     "engine_version"
+                        | "origin"
                         | "event_schema_version"
                         | "session_id"
                         | "run_id"
@@ -3218,6 +3224,7 @@ mod tests {
         let agent = agent_snapshot("test", AgentMode::Primary);
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq: 1,
@@ -3246,6 +3253,7 @@ mod tests {
     ) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id,
             seq,
@@ -4679,29 +4687,47 @@ mod tests {
         let rejected = EventLog::create_buffered(
             directory.path().join("buffered.jsonl"),
             creation.session_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             creation.payload.clone(),
         )
         .unwrap();
         rejected
-            .append(Some(run), records[1].payload.clone())
+            .append(
+                Some(run),
+                EventOrigin::new("engine:test").unwrap(),
+                records[1].payload.clone(),
+            )
             .unwrap();
         let before = rejected.event_snapshot();
         assert!(
             rejected
-                .append(Some(run), records[1].payload.clone())
+                .append(
+                    Some(run),
+                    EventOrigin::new("engine:test").unwrap(),
+                    records[1].payload.clone(),
+                )
                 .is_err()
         );
         assert_eq!(rejected.event_snapshot(), before);
         assert_log_rebuilt_against_reference(&rejected);
         rejected
-            .append(Some(run), records[2].payload.clone())
+            .append(
+                Some(run),
+                EventOrigin::new("engine:test").unwrap(),
+                records[2].payload.clone(),
+            )
             .expect("valid append succeeds after rejected duplicate rebuild");
         assert_log_rebuilt_against_reference(&rejected);
 
         let persisted_directory = tempdir().unwrap();
         let persisted_path = persisted_directory.path().join("events.jsonl");
-        let persisted =
-            EventLog::create(persisted_path, creation.session_id, creation.payload).unwrap();
+        let persisted = EventLog::create(
+            persisted_path,
+            creation.session_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            creation.payload,
+        )
+        .unwrap();
         let before = persisted.event_snapshot();
         let writer = persisted.persistent_writer().expect("event log writer");
         writer.shared.state.lock().unwrap().background_error = Some(WriterFailure {
@@ -4710,7 +4736,11 @@ mod tests {
         });
         assert!(
             persisted
-                .append(Some(run), records[1].payload.clone())
+                .append(
+                    Some(run),
+                    EventOrigin::new("engine:test").unwrap(),
+                    records[1].payload.clone(),
+                )
                 .is_err()
         );
         assert_eq!(persisted.event_snapshot(), before);
@@ -4957,14 +4987,20 @@ mod tests {
         let directory = tempdir().expect("temporary directory");
         let path = directory.path().join("events.jsonl");
         let creation = stored_event();
-        let log = EventLog::create(path.clone(), creation.session_id, creation.payload)
-            .expect("create event log");
+        let log = EventLog::create(
+            path.clone(),
+            creation.session_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            creation.payload,
+        )
+        .expect("create event log");
         let (sync_reached, release_sync) = log.install_sync_hook_for_test();
         let appending = {
             let log = log.clone();
             thread::spawn(move || {
                 log.append(
                     None,
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::UserInputAdmitted {
                         input: "steer".into(),
                     },
@@ -5028,6 +5064,7 @@ mod tests {
         let attempt_id = AttemptId(Uuid::from_u128(6));
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ModelAttemptStarted {
                 attempt_id,
                 attempt_ordinal: 6,
@@ -5041,6 +5078,7 @@ mod tests {
         log.pause_background_sync_for_test();
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::TextDelta {
                 attempt_id,
                 text: "buffered text".into(),
@@ -5049,6 +5087,7 @@ mod tests {
         .expect("append text delta");
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ReasoningDelta {
                 attempt_id,
                 text: "buffered reasoning".into(),
@@ -5059,7 +5098,11 @@ mod tests {
         let barrier = {
             let log = log.clone();
             thread::spawn(move || {
-                log.append(Some(run_id), EventPayload::AttemptAbandoned { attempt_id })
+                log.append(
+                    Some(run_id),
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                    EventPayload::AttemptAbandoned { attempt_id },
+                )
             })
         };
 
@@ -5161,6 +5204,26 @@ mod tests {
         let mut value = serde_json::to_value(stored_event()).expect("serialize record");
         value["event_schema_version"] = Value::from(3);
         assert!(serde_json::from_value::<StoredEvent>(value).is_ok());
+    }
+
+    #[test]
+    fn tolerant_loader_accepts_origin_as_a_known_envelope_field() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let mut creation = stored_event();
+        creation.origin = Some(EventOrigin::new("engine:recovery").unwrap());
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&creation).unwrap()),
+        )
+        .expect("write originated event");
+
+        let log = EventLog::open(path, creation.session_id).expect("load originated event");
+        assert_eq!(
+            log.events()[0].origin.as_ref().map(EventOrigin::as_str),
+            Some("engine:recovery")
+        );
+        assert!(log.diagnostics().is_empty());
     }
 
     #[test]
@@ -5322,6 +5385,7 @@ mod tests {
         let appended = log
             .append(
                 None,
+                EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputAdmitted {
                     input: "after skipped tail".into(),
                 },
@@ -5419,8 +5483,12 @@ mod tests {
         .expect("write skipped start log");
         let log = EventLog::open(path, session).expect("open skipped start log");
         assert!(
-            log.append(Some(run), orphan_termination(tool_call_id))
-                .is_err()
+            log.append(
+                Some(run),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                orphan_termination(tool_call_id)
+            )
+            .is_err()
         );
         assert_eq!(log.all_events().len(), 1);
     }

@@ -4,10 +4,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, AgentUsageResult, ChildSummary, GlobalUsageResult, InvocationId, PermissionMode,
-    RunSelection, SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionTreeUsageResult,
-    SessionUsageResult, UsageRollup,
+    AgentId, AgentUsageResult, ChildSummary, EventOrigin, GlobalUsageResult, InvocationId,
+    PermissionMode, RunSelection, SessionForkResult, SessionId, SessionMeta, SessionOrigin,
+    SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionRevertResult,
+    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -74,7 +74,11 @@ impl Engine {
             recipe_registry_revision: runtime.result.snapshot.recipe_registry_revision.clone(),
             manifest_revision: runtime.current_manifest.revision.clone(),
         };
-        self.inner.store.create(id, creation)?;
+        self.inner.store.create(
+            id,
+            EventOrigin::new("user").expect("static event origin is valid"),
+            creation,
+        )?;
         self.spawn_actor(id);
         Ok(self.inner.store.get(id)?.metadata())
     }
@@ -326,6 +330,7 @@ impl Engine {
         &self,
         session_id: SessionId,
         through_seq: u64,
+        origin: EventOrigin,
     ) -> Result<SessionRevertResult, EngineError> {
         let context_id = crate::plugin::plugin_context_id();
         let mut instructions = self
@@ -404,6 +409,7 @@ impl Engine {
         }
         self.request(session_id, |reply| SessionCommand::Revert {
             through_seq,
+            origin,
             instructions_override,
             reply,
         })
@@ -413,6 +419,7 @@ impl Engine {
         &self,
         session_id: SessionId,
         through_seq: u64,
+        origin: EventOrigin,
     ) -> Result<SessionForkResult, EngineError> {
         let context_id = crate::plugin::plugin_context_id();
         for plugin in self.inner.plugins.interception_plugins(
@@ -454,6 +461,7 @@ impl Engine {
         }
         self.request(session_id, |reply| SessionCommand::Fork {
             through_seq,
+            origin,
             reply,
         })
         .await
@@ -483,11 +491,16 @@ impl Engine {
     pub async fn rename_session(
         &self,
         params: SessionRenameParams,
+        origin: EventOrigin,
     ) -> Result<SessionRenameResult, EngineError> {
         let session_id = params.session_id;
         let reset = matches!(params.change, SessionRenameChange::Reset);
         let mut result = self
-            .request(session_id, |reply| SessionCommand::Rename { params, reply })
+            .request(session_id, |reply| SessionCommand::Rename {
+                params,
+                origin,
+                reply,
+            })
             .await?;
         if reset {
             self.generate_title_after_reset(session_id).await?;

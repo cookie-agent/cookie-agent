@@ -484,13 +484,16 @@ async fn prepare_run(
             PrepareError::setup(anyhow!(error).context("subscribe to headless session events"))
         })?;
     let run_id = engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new(Uuid::now_v7().to_string())
-                .expect("UUID is a valid client run ID"),
-            selection,
-            input: prompt,
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(Uuid::now_v7().to_string())
+                    .expect("UUID is a valid client run ID"),
+                selection,
+                input: prompt,
+            },
+            headless_origin(),
+        )
         .await
         .map_err(|error| match error {
             EngineError::InputHandled(reason) => PrepareError::handled(reason),
@@ -669,11 +672,17 @@ async fn apply_allowed_tools(
                 action,
                 WildcardPattern::new(resource).context("parse allowed-tools resource")?,
                 PermissionEffect::Allow,
+                headless_origin(),
             )
             .await
             .context("apply headless allowed-tools policy")?;
     }
     Ok(())
+}
+
+fn headless_origin() -> cookie_agent_protocol::EventOrigin {
+    cookie_agent_protocol::EventOrigin::new("client:headless")
+        .expect("static event origin is valid")
 }
 
 async fn drive_run<F>(
@@ -906,16 +915,19 @@ async fn reject_escalated(
             .as_u64()
             .ok_or_else(|| anyhow!("approval revision is unavailable"))?;
         engine
-            .approval_respond(ApprovalRespondParams {
-                session_id: approval.session_id,
-                approval_id,
-                request_revision,
-                operation_fingerprint: approval.request.operation_fingerprint().clone(),
-                client_response_id: ClientResponseId::new(Uuid::now_v7().to_string())
-                    .expect("UUID is a valid client response ID"),
-                decision: ApprovalUserDecision::Reject,
-                feedback: None,
-            })
+            .approval_respond(
+                ApprovalRespondParams {
+                    session_id: approval.session_id,
+                    approval_id,
+                    request_revision,
+                    operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                    client_response_id: ClientResponseId::new(Uuid::now_v7().to_string())
+                        .expect("UUID is a valid client response ID"),
+                    decision: ApprovalUserDecision::Reject,
+                    feedback: None,
+                },
+                headless_origin(),
+            )
             .await
             .context("reject escalated headless approval")?;
         state.approval_rejections = state.approval_rejections.saturating_add(1);
@@ -1071,6 +1083,7 @@ mod tests {
         let session_id = SessionId::new_v7();
         let event = |seq| StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq,

@@ -775,30 +775,37 @@ async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
     assert!(
         fixture
             .engine
-            .steer(first_run, "unconfirmed steer".into())
+            .steer(
+                first_run,
+                "unconfirmed steer".into(),
+                cookie_agent_protocol::EventOrigin::new("client:headless").unwrap(),
+            )
             .await
             .is_err()
     );
     let failed_start = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id,
-            client_run_id: ClientRunId::new(uuid::Uuid::now_v7().to_string())
-                .expect("client run ID"),
-            selection: RunSelection {
-                agent: "missing-agent".parse().expect("agent"),
-                model: cookie_agent_protocol::ModelSelection {
-                    model: "custom.local/test".parse().expect("model"),
-                    variant: None,
+        .start_run(
+            RunStartParams {
+                session_id,
+                client_run_id: ClientRunId::new(uuid::Uuid::now_v7().to_string())
+                    .expect("client run ID"),
+                selection: RunSelection {
+                    agent: "missing-agent".parse().expect("agent"),
+                    model: cookie_agent_protocol::ModelSelection {
+                        model: "custom.local/test".parse().expect("model"),
+                        variant: None,
+                    },
+                    preset: None,
                 },
-                preset: None,
+                input: cookie_agent_protocol::encode_skill_submission_with_prompt(
+                    "release-check",
+                    "failed",
+                    Some("must not install"),
+                ),
             },
-            input: cookie_agent_protocol::encode_skill_submission_with_prompt(
-                "release-check",
-                "failed",
-                Some("must not install"),
-            ),
-        })
+            cookie_agent_protocol::EventOrigin::new("client:headless").unwrap(),
+        )
         .await;
     assert!(failed_start.is_err());
 
@@ -1276,12 +1283,15 @@ async fn start_run_admission_failures_map_to_one() {
         .enqueue(MockResponse::Delay(Duration::from_millis(500)));
     let running = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("already-running").expect("client run ID"),
-            selection: session.creation_selection,
-            input: "keep running".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("already-running").expect("client run ID"),
+                selection: session.creation_selection,
+                input: "keep running".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:headless").unwrap(),
+        )
         .await
         .expect("active run");
     let mut args = run_args("conflicting run");

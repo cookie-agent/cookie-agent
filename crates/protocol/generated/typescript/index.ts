@@ -71,6 +71,7 @@ export * from "./EffectiveAuthState.js";
 export * from "./EffectivePermissionAction.js";
 export * from "./EffectivePermissionRule.js";
 export * from "./ErrorResponse.js";
+export * from "./EventOrigin.js";
 export * from "./EventPayload.js";
 export * from "./EventSubscriptionMessage.js";
 export * from "./EventsSubscribeParams.js";

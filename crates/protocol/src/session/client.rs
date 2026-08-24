@@ -2188,6 +2188,7 @@ mod tests {
     fn event(session_id: SessionId, seq: u64) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(crate::RunId::new_v7()),
             seq,
@@ -2805,6 +2806,7 @@ mod tests {
         let mut tools = HashMap::new();
         let started = StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 1,

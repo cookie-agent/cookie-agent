@@ -397,6 +397,16 @@ impl std::fmt::Debug for PluginRegistry {
     }
 }
 
+pub(crate) fn plugin_event_origin(name: &str) -> cookie_agent_protocol::EventOrigin {
+    cookie_agent_protocol::EventOrigin::new(format!("plugin:{name}")).unwrap_or_else(|_| {
+        cookie_agent_protocol::EventOrigin::new(format!(
+            "plugin:{}",
+            cookie_agent_protocol::Sha256Digest::of_bytes(name.as_bytes())
+        ))
+        .expect("SHA-256 digest is a valid event origin slug")
+    })
+}
+
 impl PluginRegistry {
     pub(crate) fn new(
         plugins: IndexMap<String, PluginConfig>,
@@ -625,9 +635,16 @@ impl PluginRegistry {
     pub(crate) fn stream_session_event(
         &self,
         event: &cookie_agent_protocol::StoredEvent,
-        source_plugin: Option<&str>,
+        origin: Option<&cookie_agent_protocol::EventOrigin>,
     ) -> Vec<PluginDeliveryDrop> {
         let context_id = plugin_context_id();
+        let source_plugin = origin.and_then(|origin| {
+            self.inner
+                .plugins
+                .keys()
+                .find(|name| plugin_event_origin(name) == *origin)
+                .map(String::as_str)
+        });
         let params = ExtensionEventParams {
             session_id: event.session_id,
             context_id: context_id.clone(),
@@ -2079,7 +2096,18 @@ mod tests {
     use serde_json::Value;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Control, PluginDeliveryClass, PluginRegistry, PluginState, plugin_context_id};
+    use super::{
+        Control, PluginDeliveryClass, PluginRegistry, PluginState, plugin_context_id,
+        plugin_event_origin,
+    };
+
+    #[test]
+    fn plugin_event_origins_preserve_valid_names_and_hash_legacy_names() {
+        assert_eq!(plugin_event_origin("fixture").as_str(), "plugin:fixture");
+        let legacy = plugin_event_origin("command_handler");
+        assert_eq!(legacy.plugin_name().expect("plugin origin").len(), 64);
+        assert_eq!(legacy, plugin_event_origin("command_handler"));
+    }
     use crate::{
         ArtifactStore,
         events::OutputHub,
@@ -2420,6 +2448,7 @@ mod tests {
         for seq in [2, 3] {
             let event = StoredEvent {
                 engine_version: None,
+                origin: None,
                 session_id,
                 run_id: None,
                 seq,
@@ -2491,6 +2520,7 @@ mod tests {
 
         let self_event = StoredEvent {
             engine_version: None,
+            origin: Some(cookie_agent_protocol::EventOrigin::new("plugin:fixture").unwrap()),
             session_id,
             run_id: None,
             seq: 4,
@@ -2503,7 +2533,7 @@ mod tests {
         };
         harness
             .registry
-            .stream_session_event(&self_event, Some("fixture"));
+            .stream_session_event(&self_event, self_event.origin.as_ref());
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(
             std::fs::read_to_string(event_file)
@@ -2836,6 +2866,7 @@ mod tests {
             Arc::new(super::PluginNotificationQueue::new(1));
         let event = StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: SessionId::new_v7(),
             run_id: None,
             seq: 2,
@@ -2897,6 +2928,7 @@ mod tests {
         };
         let event = |seq, payload| StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq,

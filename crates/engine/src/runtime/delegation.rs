@@ -190,6 +190,7 @@ impl Engine {
             self.append(
                 parent_session_id,
                 Some(parent_run_id),
+                super::event_origin("engine:delegation"),
                 Event::ToolCallTerminated {
                     termination: ToolCallTermination {
                         tool_call_id: parent_tool_call_id,
@@ -804,6 +805,7 @@ impl Engine {
                 .append(
                     invocation.parent_session_id,
                     Some(invocation.parent_run_id),
+                    super::event_origin("engine:delegation"),
                     Event::DelegateQueued {
                         session_id: child.session_id,
                         position,
@@ -1101,6 +1103,7 @@ impl Engine {
         self.append_direct(
             session_id,
             Some(run_id),
+            super::event_origin("engine:tool-execution"),
             Event::ToolCallTerminated {
                 termination: ToolCallTermination {
                     tool_call_id,
@@ -1225,6 +1228,7 @@ impl Engine {
                             selection: child.meta.creation_selection.clone(),
                             input: render_delegate_input(&entry.request),
                         },
+                        origin: super::event_origin("engine:delegation"),
                         admission,
                         reply,
                     }
@@ -1635,6 +1639,7 @@ impl Engine {
                 .append(
                     parent_session_id,
                     Some(parent_run_id),
+                    super::event_origin("engine:delegation"),
                     Event::DelegateFinishedV2 {
                         invocation_id,
                         session_id: child_session_id,
@@ -1697,6 +1702,7 @@ impl Engine {
             self.append(
                 child_session_id,
                 None,
+                super::event_origin("engine:delegation"),
                 Event::DelegateChildTerminated {
                     status,
                     reason: Some(safe_error(reason)),
@@ -1739,8 +1745,13 @@ impl Engine {
             }
         }
         for input in pending.into_iter().rev() {
-            self.append(child_session_id, None, Event::UserInputRecalled { input })
-                .await?;
+            self.append(
+                child_session_id,
+                None,
+                super::event_origin("engine:delegation"),
+                Event::UserInputRecalled { input },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1777,7 +1788,12 @@ impl Engine {
             }
         }
         for input in pending.into_iter().rev() {
-            self.append_blocking(child_session_id, None, Event::UserInputRecalled { input })?;
+            self.append_blocking(
+                child_session_id,
+                None,
+                super::event_origin("engine:delegation"),
+                Event::UserInputRecalled { input },
+            )?;
         }
         Ok(())
     }
@@ -2041,6 +2057,7 @@ impl Engine {
                 self.append(
                     child_session_id,
                     None,
+                    super::event_origin("engine:delegation"),
                     Event::UserInputAdmitted { input: message },
                 )
                 .await?;
@@ -2068,6 +2085,7 @@ impl Engine {
                 let result = self
                     .request(child_session_id, |reply| SessionCommand::Steer {
                         run: child_run_id,
+                        origin: super::event_origin("engine:delegation"),
                         input: message,
                         original_input: None,
                         reply,
@@ -2406,6 +2424,7 @@ impl Engine {
                 self.append_blocking(
                     entry.reservation.parent_session_id,
                     Some(entry.reservation.parent_run_id),
+                    super::event_origin("engine:delegation"),
                     Event::DelegateFinishedV2 {
                         invocation_id: entry.reservation.invocation_id,
                         session_id: child.meta.session_id,
@@ -2528,6 +2547,7 @@ impl Engine {
                 self.append_blocking(
                     entry.reservation.parent_session_id,
                     Some(entry.reservation.parent_run_id),
+                    super::event_origin("engine:delegation"),
                     Event::DelegateFinishedV2 {
                         invocation_id: entry.reservation.invocation_id,
                         session_id: child.meta.session_id,

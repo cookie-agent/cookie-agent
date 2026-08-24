@@ -339,9 +339,20 @@ impl Engine {
         actor_direct: bool,
     ) -> Result<(), EngineError> {
         if actor_direct {
-            self.append_direct(session, run, event)
+            self.append_direct(
+                session,
+                run,
+                super::event_origin("engine:internal-agent"),
+                event,
+            )
         } else {
-            self.append(session, run, event).await
+            self.append(
+                session,
+                run,
+                super::event_origin("engine:internal-agent"),
+                event,
+            )
+            .await
         }
     }
 

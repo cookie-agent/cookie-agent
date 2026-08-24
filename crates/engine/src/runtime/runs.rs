@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use cookie_agent_protocol::{
-    RunCancelResult, RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
+    EventOrigin, RunCancelResult, RunId, RunRecallSteerResult, RunStartParams, RunStartResult,
+    RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
 };
 
 use super::{
@@ -11,10 +11,15 @@ use super::{
 };
 
 impl Engine {
-    pub async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult, EngineError> {
+    pub async fn start_run(
+        &self,
+        params: RunStartParams,
+        origin: EventOrigin,
+    ) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
         self.request(session, |reply| SessionCommand::Start {
             params,
+            origin,
             admission: None,
             reply,
         })
@@ -25,16 +30,23 @@ impl Engine {
     pub fn start_run_blocking(
         &self,
         params: RunStartParams,
+        origin: EventOrigin,
     ) -> Result<RunStartResult, EngineError> {
         let session = params.session_id;
         self.request_blocking(session, |reply| SessionCommand::Start {
             params,
+            origin,
             admission: None,
             reply,
         })
     }
 
-    pub async fn steer(&self, run_id: RunId, input: String) -> Result<RunSteerResult, EngineError> {
+    pub async fn steer(
+        &self,
+        run_id: RunId,
+        input: String,
+        origin: EventOrigin,
+    ) -> Result<RunSteerResult, EngineError> {
         let active = self
             .inner
             .active
@@ -50,6 +62,7 @@ impl Engine {
             } => {
                 self.request(active.session, |reply| SessionCommand::Steer {
                     run: run_id,
+                    origin,
                     input,
                     original_input,
                     reply,
@@ -68,6 +81,7 @@ impl Engine {
         &self,
         run_id: RunId,
         input: String,
+        origin: EventOrigin,
     ) -> Result<RunSteerResult, EngineError> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -75,7 +89,7 @@ impl Engine {
             .map_err(|error| {
                 EngineError::Mcp(format!("create blocking steering runtime: {error}"))
             })?
-            .block_on(self.steer(run_id, input))
+            .block_on(self.steer(run_id, input, origin))
     }
 
     pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {
@@ -287,6 +301,7 @@ impl Engine {
         match self.append_direct(
             session,
             Some(run_id),
+            super::event_origin("engine:model-loop"),
             Event::RunCancelled {
                 reason: reason.as_deref().map(safe_error),
             },

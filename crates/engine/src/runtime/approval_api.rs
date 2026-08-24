@@ -1,5 +1,6 @@
 use cookie_agent_protocol::{
-    ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, SessionId,
+    ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, EventOrigin,
+    SessionId,
 };
 
 use super::{
@@ -13,6 +14,7 @@ impl Engine {
     pub async fn approval_respond(
         &self,
         params: ApprovalRespondParams,
+        origin: EventOrigin,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let _permission_guard = self.inner.permission_overlay_mutation.lock().await;
         let pending = self
@@ -26,6 +28,7 @@ impl Engine {
             return self
                 .request(params.session_id, |reply| SessionCommand::ApprovalRespond {
                     params,
+                    origin,
                     reply,
                 })
                 .await;
@@ -58,6 +61,7 @@ impl Engine {
         }
         self.request(params.session_id, |reply| SessionCommand::ApprovalRespond {
             params,
+            origin,
             reply,
         })
         .await

@@ -195,7 +195,7 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 11);
+    assert_eq!(PROTOCOL_VERSION, 12);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
@@ -328,6 +328,7 @@ fn pending_input_events_and_recall_rpc_round_trip() {
     }
     let runless_admission = StoredEvent {
         engine_version: None,
+        origin: None,
         session_id: SessionId::new_v7(),
         run_id: None,
         seq: 1,
@@ -359,6 +360,75 @@ fn pending_input_events_and_recall_rpc_round_trip() {
             recalled
         );
     }
+}
+
+#[test]
+fn event_origin_grammar_accepts_only_documented_values() {
+    for valid in [
+        "user".to_owned(),
+        "engine:model-loop".to_owned(),
+        "plugin:a".to_owned(),
+        "client:rpc2".to_owned(),
+        format!("engine:{}", "a".repeat(64)),
+    ] {
+        let origin = EventOrigin::new(valid.clone()).expect("valid event origin");
+        assert_eq!(origin.as_str(), valid);
+    }
+    for invalid in [
+        "",
+        "User",
+        "engine",
+        "other:value",
+        "engine:",
+        "engine:-bad",
+        "engine:Bad",
+        "engine:bad_slug",
+        "engine:bad:slug",
+    ] {
+        assert_eq!(
+            EventOrigin::new(invalid),
+            Err(EventSchemaError::InvalidOrigin)
+        );
+    }
+    assert_eq!(
+        EventOrigin::new(format!("client:{}", "a".repeat(65))),
+        Err(EventSchemaError::InvalidOrigin)
+    );
+    assert_eq!(
+        EventOrigin::new("plugin:fixture").unwrap().plugin_name(),
+        Some("fixture")
+    );
+    assert_eq!(EventOrigin::new("user").unwrap().plugin_name(), None);
+}
+
+#[test]
+fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
+    let base = json!({
+        "session_id": SessionId::new_v7(),
+        "run_id": null,
+        "seq": 1,
+        "timestamp": jiff::Timestamp::now(),
+        "payload": {"type":"user_input_admitted","input":"legacy"}
+    });
+    let legacy = serde_json::from_value::<StoredEvent>(base.clone()).expect("pre-origin event");
+    assert_eq!(legacy.origin, None);
+    let serialized = serde_json::to_value(&legacy).expect("serialize legacy event");
+    assert!(serialized.get("origin").is_none());
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(serialized).expect("round trip legacy event"),
+        legacy
+    );
+
+    let mut unknown = base.clone();
+    unknown["future_envelope_field"] = json!(true);
+    assert!(serde_json::from_value::<StoredEvent>(unknown).is_err());
+
+    let mut invalid_origin = base;
+    invalid_origin["origin"] = json!("engine:Bad");
+    invalid_origin["payload"] = json!({"type":"run_cancelled","reason":42});
+    let error = serde_json::from_value::<StoredEvent>(invalid_origin)
+        .expect_err("invalid origin must fail before payload degradation");
+    assert!(error.to_string().contains("event origin is invalid"));
 }
 
 #[test]
@@ -421,6 +491,7 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
     let session_id = SessionId::new_v7();
     let event = |seq, payload| StoredEvent {
         engine_version: None,
+        origin: None,
         session_id,
         run_id: None,
         seq,
@@ -467,6 +538,7 @@ fn session_revert_reduces_visible_branch_and_rpc_types_round_trip() {
     );
     let invalid = StoredEvent {
         engine_version: None,
+        origin: None,
         session_id,
         run_id: None,
         seq: 6,

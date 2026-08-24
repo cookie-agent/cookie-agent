@@ -297,7 +297,8 @@ impl Engine {
                 supporting_files: plan.supporting_files.clone(),
             }
         };
-        self.append(session, run, event).await?;
+        self.append(session, run, super::event_origin("engine:skills"), event)
+            .await?;
         let mut overlays = self
             .inner
             .skill_grants

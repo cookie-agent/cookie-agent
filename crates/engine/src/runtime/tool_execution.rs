@@ -48,7 +48,12 @@ async fn append_tool_progress(
     progress: ToolProgress,
 ) -> Result<(), EngineError> {
     engine
-        .append(session, Some(run), tool_progress_event(&progress))
+        .append(
+            session,
+            Some(run),
+            super::event_origin("engine:tool-execution"),
+            tool_progress_event(&progress),
+        )
         .await
 }
 
@@ -70,7 +75,12 @@ async fn enqueue_cleanup_tool_progress(
         block.notified().await;
     }
     let completion = engine
-        .enqueue_append(session, Some(run), tool_progress_event(&progress))
+        .enqueue_append(
+            session,
+            Some(run),
+            super::event_origin("engine:tool-execution"),
+            tool_progress_event(&progress),
+        )
         .await?;
     drop(completion);
     Ok(())

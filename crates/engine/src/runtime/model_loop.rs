@@ -23,6 +23,7 @@ use super::{
     SessionCommand, ToolCallFailureCode, ToolFailure, UserInputInterception,
     approval_projection::denied_tool_failure,
     compaction::{CompactionInput, resolve_compaction_trigger},
+    event_origin,
     helpers::safe_error,
     should_run_predictive_compaction,
     tool_execution::fallback_operation_fingerprint,
@@ -45,6 +46,7 @@ impl Engine {
     pub(super) async fn start_run_direct(
         &self,
         mut params: RunStartParams,
+        origin: cookie_agent_protocol::EventOrigin,
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunStartResult, EngineError> {
         self.inner.mcp.await_eager_ready().await;
@@ -291,6 +293,7 @@ impl Engine {
         self.append(
             params.session_id,
             Some(run_id),
+            origin.clone(),
             Event::RunStarted {
                 client_run_id: params.client_run_id.clone(),
                 selection: params.selection.clone(),
@@ -336,6 +339,7 @@ impl Engine {
                 .append(
                     params.session_id,
                     Some(run_id),
+                    event_origin("engine:model-loop"),
                     Event::MessageInjected {
                         role: message.role,
                         input: message.content,
@@ -386,6 +390,7 @@ impl Engine {
                 self.append(
                     params.session_id,
                     Some(run_id),
+                    origin.clone(),
                     Event::UserInputTransformed {
                         original_input,
                         input: params.input.clone(),
@@ -396,6 +401,7 @@ impl Engine {
             self.append(
                 params.session_id,
                 Some(run_id),
+                origin,
                 Event::UserInputSubmitted {
                     input: params.input,
                 },
@@ -458,21 +464,22 @@ impl Engine {
             {
                 if matches!(error, EngineError::Permission(_)) {
                     tokio::select! {
-                        () = active.cancellation.cancelled() => {
-                            let _ = engine.append_run_cancelled_once(&active, run_id, None);
-                        }
-                        () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                            let _ = engine
-                                .append(
-                                    active.session,
-                                    Some(run_id),
-                                    Event::RunFailed {
-                                        error: safe_error(&error.to_string()),
-                                    },
-                                )
-                                .await;
-                        }
-                    }
+                                            () = active.cancellation.cancelled() => {
+                                                let _ = engine.append_run_cancelled_once(&active, run_id, None);
+                                            }
+                                            () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                                                let _ = engine
+                                                    .append(
+                                                        active.session,
+                                                        Some(run_id),
+                                                        event_origin("engine:model-loop"),
+                    Event::RunFailed {
+                                                            error: safe_error(&error.to_string()),
+                                                        },
+                                                    )
+                                                    .await;
+                                            }
+                                        }
                 } else if active.cancellation.is_cancelled() {
                     let _ = engine.append_run_cancelled_once(&active, run_id, None);
                 } else {
@@ -480,6 +487,7 @@ impl Engine {
                         .append(
                             active.session,
                             Some(run_id),
+                            event_origin("engine:model-loop"),
                             Event::RunFailed {
                                 error: safe_error(&error.to_string()),
                             },
@@ -559,6 +567,7 @@ impl Engine {
                 overflow_recovery: false,
                 focus: None,
                 actor_direct: input.actor_direct,
+                origin: event_origin("engine:auto-compact"),
             })
             .await
         {
@@ -651,6 +660,7 @@ impl Engine {
             .append(
                 active.session,
                 Some(run_id),
+                event_origin("engine:model-loop"),
                 Event::RunFailed {
                     error: safe_error(&setup_error.to_string()),
                 },
@@ -694,6 +704,7 @@ impl Engine {
         self.append(
             active.session,
             Some(run_id),
+            event_origin("engine:model-loop"),
             Event::RunFailed {
                 error: safe_error("run setup terminalization retried"),
             },
@@ -769,6 +780,7 @@ impl Engine {
                     self.append(
                         active.session,
                         Some(run_id),
+                        event_origin("engine:model-loop"),
                         Event::RunFailed {
                             error: safe_error(&error.to_string()),
                         },
@@ -905,6 +917,7 @@ impl Engine {
                 self.append(
                     active.session,
                     Some(run_id),
+                    event_origin("engine:model-loop"),
                     Event::ToolCallStarted {
                         start: ToolCallStart {
                             tool_call_id: *id,
@@ -1138,6 +1151,7 @@ impl Engine {
                 self.append(
                     session,
                     Some(run),
+                    event_origin("engine:model-loop"),
                     Event::ModelAttemptStarted {
                         attempt_id,
                         attempt_ordinal,
@@ -1174,6 +1188,7 @@ impl Engine {
                         overflow_recovery: false,
                         focus: None,
                         actor_direct: false,
+                        origin: event_origin("engine:auto-compact"),
                     })
                     .await
                 {
@@ -1343,6 +1358,7 @@ impl Engine {
                 self.append(
                     session,
                     Some(run),
+                    event_origin("engine:model-loop"),
                     Event::ModelRequestPrepared {
                         attempt_id,
                         prompt_fingerprint: Sha256Digest::of_bytes(&authoritative_prompt),
@@ -1392,6 +1408,7 @@ impl Engine {
                         self.append(
                             session,
                             Some(run),
+                            event_origin("engine:model-loop"),
                             Event::ModelReplayEvaluated {
                                 attempt_id,
                                 resolved_model: wire_model(binding),
@@ -1424,6 +1441,7 @@ impl Engine {
                                             self.append(
                                                 session,
                                                 Some(run),
+                                                event_origin("engine:model-loop"),
                                                 Event::TextDelta { attempt_id, text },
                                             )
                                             .await?;
@@ -1432,6 +1450,7 @@ impl Engine {
                                             self.append(
                                                 session,
                                                 Some(run),
+                                                event_origin("engine:model-loop"),
                                                 Event::ReasoningDelta { attempt_id, text },
                                             )
                                             .await?;
@@ -1526,6 +1545,7 @@ impl Engine {
                         self.append(
                             session,
                             Some(run),
+                            event_origin("engine:model-loop"),
                             Event::ModelTurnCommitted {
                                 attempt_id,
                                 model_turn_seq,
@@ -1539,6 +1559,7 @@ impl Engine {
                         self.append(
                             session,
                             Some(run),
+                            event_origin("engine:model-loop"),
                             Event::ModelUsageRecorded {
                                 model_turn_seq,
                                 agent_id: policy.agent.agent.clone(),
@@ -1587,8 +1608,13 @@ impl Engine {
                             && !meaningful_output
                             && !context_recovery_attempted =>
                     {
-                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
-                            .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
                         context_recovery_attempted = true;
                         let before = self.inner.store.get(session)?.log.latest_checkpoint_seq();
                         let recovery_events = self.prompt_events(session, run).await?;
@@ -1611,6 +1637,7 @@ impl Engine {
                                 overflow_recovery: true,
                                 focus: None,
                                 actor_direct: false,
+                                origin: event_origin("engine:auto-compact"),
                             })
                             .await
                         {
@@ -1624,8 +1651,13 @@ impl Engine {
                         return Err(EngineError::Model(error));
                     }
                     Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {
-                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
-                            .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
                         return Err(EngineError::Model(error));
                     }
                     Err(error)
@@ -1633,16 +1665,26 @@ impl Engine {
                             && attempts <= 2
                             && !meaningful_output =>
                     {
-                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
-                            .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(100_u64 << (attempts - 1))) => {}
                             _ = cancellation.cancelled() => return Err(ModelError::abort("model retry was cancelled").into()),
                         }
                     }
                     Err(error) => {
-                        self.append(session, Some(run), Event::AttemptAbandoned { attempt_id })
-                            .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
                         last_error = *error;
                         break;
                     }
@@ -1701,6 +1743,7 @@ impl Engine {
             self.append(
                 session,
                 Some(run),
+                event_origin("engine:model-loop"),
                 Event::ModelFallback {
                     from: wire_model(binding),
                     to: wire_model(next),

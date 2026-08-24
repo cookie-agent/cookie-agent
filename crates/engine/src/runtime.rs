@@ -231,6 +231,7 @@ struct PredictiveCompactionInput<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingInput {
     admission_seq: u64,
+    origin: cookie_agent_protocol::EventOrigin,
     input: String,
 }
 
@@ -719,6 +720,10 @@ const PLUGIN_DIAGNOSTIC_BATCH_DELAY: std::time::Duration = std::time::Duration::
 /// This is intentionally independent of the protocol and event schema version.
 pub(crate) const UNAVAILABLE_BUILTIN_REVISION: &str = "internal-agent.unavailable.runtime.1";
 
+pub(super) fn event_origin(value: &'static str) -> cookie_agent_protocol::EventOrigin {
+    cookie_agent_protocol::EventOrigin::new(value).expect("static event origin is valid")
+}
+
 async fn run_plugin_diagnostic_aggregator(
     inner: Weak<Inner>,
     diagnostics: Arc<PluginDiagnosticAccumulator>,
@@ -754,9 +759,10 @@ async fn run_plugin_diagnostic_aggregator(
                     block.notified().await;
                 }
                 engine
-                    .request(session_id, |reply| SessionCommand::AppendPluginEvent {
-                        plugin: plugin.clone(),
-                        session: session_id,
+                    .request(session_id, |reply| SessionCommand::Append {
+                        run: None,
+                        origin: cookie_agent_protocol::EventOrigin::new("engine:plugin-host")
+                            .expect("static event origin is valid"),
                         event: Event::PluginDiagnostic {
                             plugin: plugin.clone(),
                             kind,
@@ -791,6 +797,7 @@ async fn run_plugin_diagnostic_aggregator(
 enum SessionCommand {
     Append {
         run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
         event: Event,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -808,11 +815,13 @@ enum SessionCommand {
     },
     Start {
         params: RunStartParams,
+        origin: cookie_agent_protocol::EventOrigin,
         admission: Option<(InvocationId, u64)>,
         reply: oneshot::Sender<Result<RunStartResult, EngineError>>,
     },
     Steer {
         run: RunId,
+        origin: cookie_agent_protocol::EventOrigin,
         input: String,
         original_input: Option<String>,
         reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
@@ -841,15 +850,18 @@ enum SessionCommand {
     },
     Compact {
         focus: Option<String>,
+        origin: cookie_agent_protocol::EventOrigin,
         reply: oneshot::Sender<Result<cookie_agent_protocol::SessionCompactResult, EngineError>>,
     },
     Revert {
         through_seq: u64,
+        origin: cookie_agent_protocol::EventOrigin,
         instructions_override: Option<String>,
         reply: oneshot::Sender<Result<SessionRevertResult, EngineError>>,
     },
     Fork {
         through_seq: u64,
+        origin: cookie_agent_protocol::EventOrigin,
         reply: oneshot::Sender<Result<SessionForkResult, EngineError>>,
     },
     CompactionFinished {
@@ -880,10 +892,12 @@ enum SessionCommand {
     },
     Rename {
         params: SessionRenameParams,
+        origin: cookie_agent_protocol::EventOrigin,
         reply: oneshot::Sender<Result<SessionRenameResult, EngineError>>,
     },
     ApprovalRespond {
         params: ApprovalRespondParams,
+        origin: cookie_agent_protocol::EventOrigin,
         reply: oneshot::Sender<Result<ApprovalRespondResult, EngineError>>,
     },
     ApprovalCapabilityInvalid {

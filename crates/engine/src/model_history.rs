@@ -1509,6 +1509,7 @@ mod tests {
     fn event(seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: SessionId(uuid::Uuid::from_u128(1)),
             run_id: Some(run),
             seq,
@@ -2123,6 +2124,7 @@ mod tests {
         ];
         events.push(StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: None,
             seq: 5,

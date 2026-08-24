@@ -185,9 +185,10 @@ impl SessionStore {
     pub fn create(
         &self,
         session_id: SessionId,
+        origin: cookie_agent_protocol::EventOrigin,
         creation: EventPayload,
     ) -> Result<Arc<EventLog>, SessionError> {
-        self.create_with_status(session_id, creation)
+        self.create_with_status(session_id, origin, creation)
             .map(|(log, _)| log)
     }
 
@@ -195,6 +196,7 @@ impl SessionStore {
     pub fn create_with_status(
         &self,
         session_id: SessionId,
+        origin: cookie_agent_protocol::EventOrigin,
         creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
         let _mutation = self
@@ -223,7 +225,12 @@ impl SessionStore {
             residency.evicted.remove(&session_id);
             return Ok((log, false));
         }
-        let log = EventLog::create_buffered(final_dir.join("events.jsonl"), session_id, creation)?;
+        let log = EventLog::create_buffered(
+            final_dir.join("events.jsonl"),
+            session_id,
+            origin,
+            creation,
+        )?;
         let result = projection(log.clone())?;
         let mut residency = self
             .residency
@@ -354,6 +361,7 @@ impl SessionStore {
         &self,
         id: SessionId,
         run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
         event: EventPayload,
     ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
         let _mutation = self
@@ -370,7 +378,7 @@ impl SessionStore {
                     | EventPayload::SessionPermissionOverlaySet { .. }
                     | EventPayload::SkillLoaded { .. }
             );
-        let envelope = current.log.append(run, event)?;
+        let envelope = current.log.append(run, origin, event)?;
         let rebuilt = projection(current.log.clone())?;
         if first_user_message {
             self.persist_buffered(id, &rebuilt)?;
@@ -389,7 +397,12 @@ impl SessionStore {
         Ok(envelope)
     }
 
-    pub fn fork(&self, source_id: SessionId, through_seq: u64) -> Result<SessionId, SessionError> {
+    pub fn fork(
+        &self,
+        source_id: SessionId,
+        through_seq: u64,
+        origin: cookie_agent_protocol::EventOrigin,
+    ) -> Result<SessionId, SessionError> {
         let _mutation = self
             .mutation
             .lock()
@@ -459,11 +472,13 @@ impl SessionStore {
                 },
             )?;
             let log = EventLog::open(log_path, session_id)?;
-            log.append(None, EventPayload::SessionReverted { through_seq })?;
+            log.append(None, origin, EventPayload::SessionReverted { through_seq })?;
             let prefix_projection = projection(log.clone())?;
             let title = fork_title(prefix_projection.meta.title.as_ref())?;
             log.append(
                 None,
+                cookie_agent_protocol::EventOrigin::new("user")
+                    .expect("static event origin is valid"),
                 EventPayload::SessionTitleCommitted {
                     change: SessionTitleChange::UserSet {
                         title,
@@ -1316,6 +1331,7 @@ mod tests {
         store
             .create(
                 session_id,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
                     origin: SessionOrigin::Root,
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
@@ -1337,6 +1353,7 @@ mod tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::RunStarted {
                     client_run_id: ClientRunId::new("private-session-test").unwrap(),
                     selection,
@@ -1358,6 +1375,7 @@ mod tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputSubmitted {
                     input: "persist me".into(),
                 },
@@ -1399,6 +1417,7 @@ mod tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::ModelAttemptStarted {
                     attempt_id,
                     attempt_ordinal: 1,
@@ -1415,6 +1434,7 @@ mod tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::TextDelta {
                     attempt_id,
                     text: text.into(),
@@ -1487,7 +1507,11 @@ mod tests {
             let store = store.clone();
             thread::spawn(move || {
                 fork_done
-                    .send(store.fork(session_id, delta_seq))
+                    .send(store.fork(
+                        session_id,
+                        delta_seq,
+                        cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                    ))
                     .expect("report fork result");
             })
         };
@@ -1514,6 +1538,7 @@ mod tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::ReasoningDelta {
                     attempt_id,
                     text: "reopened after fork".into(),
@@ -1765,6 +1790,7 @@ mod tests {
         let log = crate::events::EventLog::create(
             path.clone(),
             session_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -1782,6 +1808,7 @@ mod tests {
         .unwrap();
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::RunStarted {
                 client_run_id: ClientRunId::new("usage-replay").unwrap(),
                 selection,
@@ -1801,6 +1828,7 @@ mod tests {
         .unwrap();
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputSubmitted {
                 input: "question".into(),
             },
@@ -1808,6 +1836,7 @@ mod tests {
         .unwrap();
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ModelAttemptStarted {
                 attempt_id,
                 attempt_ordinal: 1,
@@ -1828,6 +1857,7 @@ mod tests {
         };
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ModelTurnCommitted {
                 attempt_id,
                 model_turn_seq: 1,
@@ -1849,6 +1879,7 @@ mod tests {
         let usage_event = log
             .append(
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::ModelUsageRecorded {
                     model_turn_seq: 1,
                     agent_id: agent.agent.clone(),
@@ -1946,8 +1977,20 @@ mod tests {
             write_private_test_file(&directory.join("events.jsonl"), contents);
         }
         let store = SessionStore::open(&data, &cwd).unwrap();
-        let stamped_fork = store.fork(stamped_source, through_seq).unwrap();
-        let unpriced_fork = store.fork(unpriced_source, through_seq).unwrap();
+        let stamped_fork = store
+            .fork(
+                stamped_source,
+                through_seq,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .unwrap();
+        let unpriced_fork = store
+            .fork(
+                unpriced_source,
+                through_seq,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .unwrap();
         assert_eq!(
             crate::usage::with_pricing(
                 store.get(stamped_fork).unwrap().usage_rollup,
@@ -1996,6 +2039,7 @@ mod tests {
         let log = crate::events::EventLog::create(
             path.clone(),
             session_id,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
@@ -2013,6 +2057,7 @@ mod tests {
         .unwrap();
         log.append(
             Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::RunStarted {
                 client_run_id: ClientRunId::new("internal-usage-replay").unwrap(),
                 selection,
@@ -2051,6 +2096,7 @@ mod tests {
             let agent_id = AgentId::new(agent_name).unwrap();
             log.append(
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::InternalAgentStarted {
                     invocation_id,
                     internal_run_id,
@@ -2075,6 +2121,7 @@ mod tests {
             };
             log.append(
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::InternalAgentUsageRecorded {
                     internal_run_id,
                     kind,
@@ -2089,6 +2136,7 @@ mod tests {
                 assert!(
                     log.append(
                         Some(run_id),
+                        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                         EventPayload::InternalAgentUsageRecorded {
                             internal_run_id,
                             kind,
@@ -2108,6 +2156,7 @@ mod tests {
                 };
                 log.append(
                     Some(run_id),
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::InternalAgentFallback {
                         invocation_id,
                         internal_run_id,
@@ -2125,6 +2174,7 @@ mod tests {
                 .unwrap();
                 log.append(
                     Some(run_id),
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::InternalAgentUsageRecorded {
                         internal_run_id,
                         kind,
@@ -2137,6 +2187,7 @@ mod tests {
                 .unwrap();
                 log.append(
                     Some(run_id),
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::InternalAgentFallback {
                         invocation_id,
                         internal_run_id,
@@ -2154,6 +2205,7 @@ mod tests {
                 .unwrap();
                 log.append(
                     Some(run_id),
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                     EventPayload::InternalAgentUsageRecorded {
                         internal_run_id,
                         kind,
@@ -2167,6 +2219,7 @@ mod tests {
             }
             log.append(
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::InternalAgentCompleted {
                     invocation_id,
                     internal_run_id,
@@ -2302,6 +2355,7 @@ mod windows_tests {
         store
             .create(
                 session_id,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
@@ -2322,6 +2376,7 @@ mod windows_tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::RunStarted {
                     client_run_id: ClientRunId::new("windows-buffered-session").unwrap(),
                     selection,
@@ -2343,6 +2398,7 @@ mod windows_tests {
             .append(
                 session_id,
                 Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::UserInputSubmitted {
                     input: "persist me".into(),
                 },

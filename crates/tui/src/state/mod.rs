@@ -2986,6 +2986,7 @@ mod tests {
         };
         let event = |seq, payload| StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(run_id),
             seq,
@@ -3245,6 +3246,7 @@ mod tests {
         let run_id = RunId::new_v7();
         let event = |seq, payload| StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(run_id),
             seq,

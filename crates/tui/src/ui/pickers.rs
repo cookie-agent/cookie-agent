@@ -501,6 +501,7 @@ mod tests {
     ) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq,

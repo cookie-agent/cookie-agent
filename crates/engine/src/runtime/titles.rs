@@ -129,6 +129,7 @@ impl Engine {
             self.append(
                 session,
                 Some(run),
+                super::event_origin("engine:session-title"),
                 Event::SessionTitleCommitted {
                     input_through_seq,
                     change: commit,

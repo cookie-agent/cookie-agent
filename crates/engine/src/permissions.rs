@@ -746,6 +746,7 @@ impl crate::Engine {
         action: PermissionAction,
         resource: WildcardPattern,
         effect: PermissionEffect,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
         let _mutation = self.inner.permission_overlay_mutation.lock().await;
         let session = self.inner.store.get(session_id)?;
@@ -782,6 +783,7 @@ impl crate::Engine {
         self.append(
             session_id,
             None,
+            origin,
             EventPayload::SessionPermissionOverlaySet { overlay },
         )
         .await?;
@@ -796,6 +798,7 @@ impl crate::Engine {
         session_id: SessionId,
         action: PermissionAction,
         resource: &WildcardPattern,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
         let _mutation = self.inner.permission_overlay_mutation.lock().await;
         let session = self.inner.store.get(session_id)?;
@@ -826,6 +829,7 @@ impl crate::Engine {
             self.append(
                 session_id,
                 None,
+                origin,
                 EventPayload::SessionPermissionOverlaySet { overlay },
             )
             .await?;

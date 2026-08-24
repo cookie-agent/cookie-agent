@@ -58,6 +58,7 @@ pub(super) struct CompactionInput<'a> {
     pub(super) overflow_recovery: bool,
     pub(super) focus: Option<&'a str>,
     pub(super) actor_direct: bool,
+    pub(super) origin: cookie_agent_protocol::EventOrigin,
 }
 
 struct RehydrationInput<'a> {
@@ -74,8 +75,9 @@ impl Engine {
         &self,
         session: SessionId,
         focus: Option<&str>,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<bool, EngineError> {
-        self.compact_session_result(session, focus)
+        self.compact_session_result(session, focus, origin)
             .await
             .map(|result| result.compacted)
     }
@@ -84,10 +86,15 @@ impl Engine {
         &self,
         session: SessionId,
         focus: Option<&str>,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionCompactResult, EngineError> {
         let focus = focus.map(str::to_owned);
-        self.request(session, |reply| SessionCommand::Compact { focus, reply })
-            .await
+        self.request(session, |reply| SessionCommand::Compact {
+            focus,
+            origin,
+            reply,
+        })
+        .await
     }
 
     pub(super) async fn compact_session_direct(
@@ -128,6 +135,7 @@ impl Engine {
                 overflow_recovery: false,
                 focus,
                 actor_direct: false,
+                origin: super::event_origin("engine:compaction"),
             })
             .await
         {
@@ -298,7 +306,12 @@ impl Engine {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         } else {
             events = self
-                .stage_tool_output_elision(input.session, events, input.actor_direct)
+                .stage_tool_output_elision(
+                    input.session,
+                    events,
+                    input.actor_direct,
+                    input.origin.clone(),
+                )
                 .await?;
             context = assemble_model_context(
                 &events,
@@ -408,6 +421,7 @@ impl Engine {
                     Some(input.run),
                     Event::ContextCheckpointCommitted { commit },
                     input.actor_direct,
+                    input.origin.clone(),
                 )
                 .await?;
                 return self
@@ -487,6 +501,7 @@ impl Engine {
             Some(input.run),
             Event::ContextCheckpointCommitted { commit },
             input.actor_direct,
+            input.origin.clone(),
         )
         .await?;
         self.finalize_context_checkpoint(
@@ -528,6 +543,7 @@ impl Engine {
                 Some(input.run),
                 Event::ContextRehydrated { files },
                 input.actor_direct,
+                input.origin.clone(),
             )
             .await?;
         }
@@ -539,6 +555,7 @@ impl Engine {
         session: SessionId,
         events: Vec<StoredEvent>,
         actor_direct: bool,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<Vec<StoredEvent>, EngineError> {
         let protected_turns = events
             .iter()
@@ -593,6 +610,7 @@ impl Engine {
                     retained,
                 },
                 actor_direct,
+                origin.clone(),
             )
             .await?;
         }
@@ -729,11 +747,12 @@ impl Engine {
         run: Option<RunId>,
         event: Event,
         actor_direct: bool,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<(), EngineError> {
         if actor_direct {
-            self.append_direct(session, run, event)
+            self.append_direct(session, run, origin, event)
         } else {
-            self.append(session, run, event).await
+            self.append(session, run, origin, event).await
         }
     }
 }
@@ -1141,6 +1160,7 @@ mod tests {
         .unwrap();
         let events = vec![StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: Some(run),
             seq: 11,
@@ -1187,6 +1207,7 @@ mod tests {
         let run = RunId::new_v7();
         let events = vec![StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: Some(run),
             seq: 1,
@@ -1291,6 +1312,7 @@ mod tests {
             };
             events.push(StoredEvent {
                 engine_version: None,
+                origin: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,
@@ -1321,6 +1343,7 @@ mod tests {
             });
             events.push(StoredEvent {
                 engine_version: None,
+                origin: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,
@@ -1346,6 +1369,7 @@ mod tests {
             });
             events.push(StoredEvent {
                 engine_version: None,
+                origin: None,
                 session_id: session,
                 run_id: Some(run),
                 seq: events.len() as u64 + 1,

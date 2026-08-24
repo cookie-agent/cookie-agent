@@ -5,12 +5,12 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    ApprovalStatus, EventSubscriptionMessage, EventsSubscribeResult, ExtensionBusEventParams,
-    ExtensionEmitStatus, PersistedToolResult as ToolResult, PluginDiagnosticKind, RunCancelResult,
-    RunId, RunRecallSteerResult, RunSteerResult, RunToolStdinResult, SafeToolError,
-    SessionForkResult, SessionId, SessionRenameChange, SessionRenameResult, SessionRevertResult,
-    SessionStatus, SessionTitleChange, StoredEvent, ToolCallId, ToolCallTermination,
-    ToolTerminationOutcome,
+    ApprovalStatus, EventOrigin, EventSubscriptionMessage, EventsSubscribeResult,
+    ExtensionBusEventParams, ExtensionEmitStatus, PersistedToolResult as ToolResult,
+    PluginDiagnosticKind, RunCancelResult, RunId, RunRecallSteerResult, RunSteerResult,
+    RunToolStdinResult, SafeToolError, SessionForkResult, SessionId, SessionRenameChange,
+    SessionRenameResult, SessionRevertResult, SessionStatus, SessionTitleChange, StoredEvent,
+    ToolCallId, ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -85,10 +85,12 @@ impl Engine {
         &self,
         session: SessionId,
         run: Option<RunId>,
+        origin: EventOrigin,
         event: Event,
     ) -> Result<(), EngineError> {
         self.request(session, |reply| SessionCommand::Append {
             run,
+            origin,
             event,
             reply,
         })
@@ -99,6 +101,7 @@ impl Engine {
         &self,
         session: SessionId,
         run: Option<RunId>,
+        origin: EventOrigin,
         event: Event,
     ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
         let (reply, receiver) = oneshot::channel();
@@ -114,7 +117,12 @@ impl Engine {
             .cloned()
             .ok_or(EngineError::MissingActor(session))?;
         actor
-            .send(SessionCommand::Append { run, event, reply })
+            .send(SessionCommand::Append {
+                run,
+                origin,
+                event,
+                reply,
+            })
             .await
             .map_err(|_| EngineError::ActorStopped)?;
         Ok(receiver)
@@ -125,10 +133,12 @@ impl Engine {
         &self,
         session: SessionId,
         run: Option<RunId>,
+        origin: EventOrigin,
         event: Event,
     ) -> Result<(), EngineError> {
         self.request_blocking(session, |reply| SessionCommand::Append {
             run,
+            origin,
             event,
             reply,
         })
@@ -175,34 +185,25 @@ impl Engine {
         &self,
         session: SessionId,
         run: Option<RunId>,
+        origin: EventOrigin,
         event: Event,
-    ) -> Result<(), EngineError> {
-        self.append_direct_with_source(session, run, event, None)
-    }
-
-    fn append_direct_with_source(
-        &self,
-        session: SessionId,
-        run: Option<RunId>,
-        event: Event,
-        source_plugin: Option<&str>,
     ) -> Result<(), EngineError> {
         let was_persisted = self.inner.store.is_persisted(session)?;
-        let envelope = self.inner.store.append(session, run, event)?;
+        let envelope = self.inner.store.append(session, run, origin, event)?;
         self.publish_stored_event(&envelope);
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.get(session)?.log.all_events() {
                 let drops = self
                     .inner
                     .plugins
-                    .stream_session_event(&durable, source_plugin);
+                    .stream_session_event(&durable, durable.origin.as_ref());
                 self.record_plugin_drops(session, drops);
             }
         } else {
             let drops = self
                 .inner
                 .plugins
-                .stream_session_event(&envelope, source_plugin);
+                .stream_session_event(&envelope, envelope.origin.as_ref());
             self.record_plugin_drops(session, drops);
         }
         Ok(())
@@ -553,7 +554,11 @@ impl Engine {
             .ok_or(EngineError::MissingActor(session))?;
         let (reply, receiver) = oneshot::channel();
         actor
-            .send(SessionCommand::Compact { focus: None, reply })
+            .send(SessionCommand::Compact {
+                focus: None,
+                origin: super::event_origin("engine:auto-compact"),
+                reply,
+            })
             .await
             .map_err(|_| EngineError::ActorStopped)?;
         Ok(receiver)
@@ -684,7 +689,12 @@ impl Engine {
             SessionCommand::EvictionBarrier { reply } => {
                 let _ = reply.send(Ok(()));
             }
-            SessionCommand::Append { run, event, reply } => {
+            SessionCommand::Append {
+                run,
+                origin,
+                event,
+                reply,
+            } => {
                 #[cfg(test)]
                 if matches!(
                     &event,
@@ -712,7 +722,7 @@ impl Engine {
                     ))));
                     return;
                 }
-                let _ = reply.send(self.append_direct(session, run, event));
+                let _ = reply.send(self.append_direct(session, run, origin, event));
             }
             SessionCommand::AppendPluginEvent {
                 plugin,
@@ -721,8 +731,8 @@ impl Engine {
                 reply,
             } => {
                 debug_assert_eq!(session, event_session);
-                let _ =
-                    reply.send(self.append_direct_with_source(session, None, event, Some(&plugin)));
+                let origin = crate::plugin::plugin_event_origin(&plugin);
+                let _ = reply.send(self.append_direct(session, None, origin, event));
             }
             SessionCommand::EnsureToolCallLinked {
                 run,
@@ -746,6 +756,7 @@ impl Engine {
                         self.append_direct(
                             session,
                             Some(run),
+                            super::event_origin("engine:delegation"),
                             Event::ToolCallLinked {
                                 tool_call_id,
                                 child_session_id,
@@ -758,6 +769,7 @@ impl Engine {
             }
             SessionCommand::Start {
                 params,
+                origin,
                 admission,
                 reply,
             } => {
@@ -767,7 +779,7 @@ impl Engine {
                     let engine = self.clone();
                     tokio::spawn(async move {
                         let child_session_id = params.session_id;
-                        let mut result = engine.start_run_direct(params, admission).await;
+                        let mut result = engine.start_run_direct(params, origin, admission).await;
                         if let (Some((invocation_id, generation)), Ok(started)) =
                             (admission, result.as_ref())
                             && let Err(error) = engine.publish_admission_run(
@@ -803,6 +815,7 @@ impl Engine {
             }
             SessionCommand::Steer {
                 run,
+                origin,
                 input,
                 original_input,
                 reply,
@@ -838,6 +851,7 @@ impl Engine {
                                     self.append_direct(
                                         session,
                                         Some(run),
+                                        origin.clone(),
                                         Event::UserInputTransformed {
                                             original_input,
                                             input: input.clone(),
@@ -847,6 +861,7 @@ impl Engine {
                                 self.append_direct(
                                     session,
                                     Some(run),
+                                    origin,
                                     Event::UserInputAdmitted { input },
                                 )?;
                                 self.clear_skill_turn_state(session);
@@ -891,6 +906,7 @@ impl Engine {
                                 .append_direct(
                                     session,
                                     Some(run),
+                                    super::event_origin("engine:delegation"),
                                     Event::UserInputAdmitted { input },
                                 )
                                 .and_then(|()| {
@@ -924,6 +940,7 @@ impl Engine {
                         self.append_direct(
                             session,
                             Some(run),
+                            super::event_origin("engine:delegation"),
                             Event::UserInputRecalledV2 {
                                 user_input_seq: admission_seq,
                                 input: pending.input,
@@ -961,6 +978,7 @@ impl Engine {
                         self.append_direct(
                             session,
                             Some(run),
+                            super::event_origin("user"),
                             Event::UserInputRecalled {
                                 input: input.clone(),
                             },
@@ -999,6 +1017,7 @@ impl Engine {
                         self.append_direct(
                             session,
                             Some(run),
+                            pending.origin.clone(),
                             Event::UserInputSubmitted {
                                 input: pending.input.clone(),
                             },
@@ -1007,7 +1026,12 @@ impl Engine {
                     let promoted = already_promoted || !eligible.is_empty();
                     let pending = pending_inputs(&self.inner.store.get(session)?.log.events(), run);
                     if pending.is_empty() && !promoted && complete_if_empty {
-                        self.append_direct(session, Some(run), Event::RunCompleted { final_text })?;
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            super::event_origin("engine:model-loop"),
+                            Event::RunCompleted { final_text },
+                        )?;
                     }
                     Ok(PendingPromotionState {
                         promoted,
@@ -1020,7 +1044,11 @@ impl Engine {
                 }
                 let _ = reply.send(result);
             }
-            SessionCommand::Compact { focus, reply } => {
+            SessionCommand::Compact {
+                focus,
+                origin: _request_origin,
+                reply,
+            } => {
                 if !self.reserve_compaction(session) {
                     let _ = reply.send(Err(EngineError::SessionRunning(session)));
                 } else {
@@ -1059,6 +1087,7 @@ impl Engine {
             }
             SessionCommand::Revert {
                 through_seq,
+                origin,
                 instructions_override,
                 reply,
             } => {
@@ -1082,7 +1111,12 @@ impl Engine {
                             }
                             .into());
                         }
-                        self.append_direct(session, None, Event::SessionReverted { through_seq })?;
+                        self.append_direct(
+                            session,
+                            None,
+                            origin,
+                            Event::SessionReverted { through_seq },
+                        )?;
                         self.inner
                             .context_token_estimators
                             .lock()
@@ -1098,11 +1132,15 @@ impl Engine {
                     let _ = reply.send(result);
                 }
             }
-            SessionCommand::Fork { through_seq, reply } => {
+            SessionCommand::Fork {
+                through_seq,
+                origin,
+                reply,
+            } => {
                 let result = self
                     .inner
                     .store
-                    .fork(session, through_seq)
+                    .fork(session, through_seq, origin)
                     .map(|session_id| SessionForkResult { session_id });
                 let _ = reply.send(result.map_err(EngineError::from));
             }
@@ -1189,6 +1227,7 @@ impl Engine {
                     self.append_direct(
                         session,
                         Some(params.run_id),
+                        super::event_origin("engine:tool-execution"),
                         Event::ToolStdinSubmitted {
                             tool_call_id: params.call_id,
                             byte_count: data.len() as u64,
@@ -1227,7 +1266,11 @@ impl Engine {
                     .and_then(|()| Ok(self.inner.store.get(session)?.metadata()));
                 let _ = reply.send(result);
             }
-            SessionCommand::Rename { params, reply } => {
+            SessionCommand::Rename {
+                params,
+                origin: _request_origin,
+                reply,
+            } => {
                 let result = (|| {
                     let projection = self.inner.store.get(session)?;
                     if let Some(record) = projection.rename_records.get(&params.client_rename_id) {
@@ -1259,6 +1302,7 @@ impl Engine {
                     self.append_direct(
                         session,
                         None,
+                        super::event_origin("user"),
                         Event::SessionTitleCommitted {
                             input_through_seq,
                             change: commit,
@@ -1271,7 +1315,11 @@ impl Engine {
                 })();
                 let _ = reply.send(result);
             }
-            SessionCommand::ApprovalRespond { params, reply } => {
+            SessionCommand::ApprovalRespond {
+                params,
+                origin: _request_origin,
+                reply,
+            } => {
                 let _ = reply.send(self.approval_respond_direct(params));
             }
             SessionCommand::ApprovalCapabilityInvalid {
@@ -1349,7 +1397,12 @@ impl Engine {
                                 },
                             },
                         };
-                        self.append_direct(session, Some(run), event)?;
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            super::event_origin("engine:tool-execution"),
+                            event,
+                        )?;
                         Ok(true)
                     })()
                 };
@@ -1418,7 +1471,12 @@ impl Engine {
                 };
                 if pending.is_empty() {
                     let result = if complete_if_empty {
-                        self.append_direct(session, Some(run), Event::RunCompleted { final_text })
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            super::event_origin("engine:model-loop"),
+                            Event::RunCompleted { final_text },
+                        )
                     } else {
                         Ok(())
                     }
@@ -1545,6 +1603,7 @@ impl Engine {
                             self.append_direct(
                                 session,
                                 Some(run),
+                                super::event_origin("engine:model-loop"),
                                 Event::UserInputApplied { user_input_seq },
                             )?;
                         }
@@ -1594,6 +1653,10 @@ fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
         match &event.payload {
             Event::UserInputAdmitted { input } => pending.push_back(PendingInput {
                 admission_seq: event.seq,
+                origin: event
+                    .origin
+                    .clone()
+                    .unwrap_or_else(|| super::event_origin("user")),
                 input: input.clone(),
             }),
             Event::UserInputRecalled { .. } => {
@@ -1633,6 +1696,7 @@ mod tests {
     fn event(run: RunId, seq: u64, payload: Event) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: SessionId::new_v7(),
             run_id: Some(run),
             seq,
@@ -1692,6 +1756,7 @@ mod tests {
             pending_inputs(&events, run),
             vec![PendingInput {
                 admission_seq: 5,
+                origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),
                 input: "three".into(),
             }]
         );
@@ -1744,6 +1809,7 @@ mod tests {
             pending_inputs(&events, run),
             vec![PendingInput {
                 admission_seq: 3,
+                origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),
                 input: "direct steer".into(),
             }]
         );

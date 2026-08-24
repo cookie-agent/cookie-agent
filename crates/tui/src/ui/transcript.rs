@@ -2303,6 +2303,7 @@ mod tests {
     fn event(session_id: SessionId, seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(run),
             seq,
@@ -2314,6 +2315,7 @@ mod tests {
     fn runless_event(session_id: SessionId, seq: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq,
@@ -2375,6 +2377,7 @@ mod tests {
     ) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: None,
             seq,
@@ -8557,6 +8560,7 @@ mod tests {
 
         let permission_event = StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: None,
             seq: 2,

@@ -281,8 +281,14 @@ impl Engine {
             manifest_revision: child_policy.selected_suffix[0].manifest_revision.clone(),
         };
         let store = self.inner.store.clone();
-        self.spawn_admission_blocking(move || store.create_with_status(child_session_id, creation))
-            .await?;
+        self.spawn_admission_blocking(move || {
+            store.create_with_status(
+                child_session_id,
+                super::event_origin("engine:delegation"),
+                creation,
+            )
+        })
+        .await?;
         self.spawn_actor(child_session_id);
         self.ensure_delegated_context_seed(child_session_id, invocation_id, seeded_context)
             .await?;
@@ -345,6 +351,7 @@ impl Engine {
             self.append(
                 child_session_id,
                 None,
+                super::event_origin("engine:delegation"),
                 Event::DelegatedContextSeeded {
                     invocation_id,
                     turns,
@@ -385,6 +392,7 @@ impl Engine {
             self.append_blocking(
                 child_session_id,
                 None,
+                super::event_origin("engine:delegation"),
                 Event::DelegatedContextSeeded {
                     invocation_id,
                     turns,
@@ -431,6 +439,7 @@ impl Engine {
             self.append(
                 child_session_id,
                 None,
+                super::event_origin("user"),
                 Event::SessionTitleCommitted {
                     change: SessionTitleChange::DelegatedSet {
                         title,
@@ -481,6 +490,7 @@ impl Engine {
             self.append_blocking(
                 child_session_id,
                 None,
+                super::event_origin("user"),
                 Event::SessionTitleCommitted {
                     change: SessionTitleChange::DelegatedSet {
                         title,

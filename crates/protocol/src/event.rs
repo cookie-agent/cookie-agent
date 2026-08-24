@@ -66,6 +66,77 @@ impl JsonSchema for SessionTitle {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+#[ts(type = "string")]
+pub struct EventOrigin(String);
+impl EventOrigin {
+    pub fn new(value: impl Into<String>) -> Result<Self, EventSchemaError> {
+        let value = value.into();
+        if value == "user" {
+            return Ok(Self(value));
+        }
+        let Some((class, slug)) = value.split_once(':') else {
+            return Err(EventSchemaError::InvalidOrigin);
+        };
+        if !matches!(class, "engine" | "plugin" | "client")
+            || slug.is_empty()
+            || slug.len() > 64
+            || !slug.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'-')
+            })
+        {
+            return Err(EventSchemaError::InvalidOrigin);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn plugin_name(&self) -> Option<&str> {
+        self.0.strip_prefix("plugin:")
+    }
+}
+impl fmt::Display for EventOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl Serialize for EventOrigin {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+impl<'de> Deserialize<'de> for EventOrigin {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+impl JsonSchema for EventOrigin {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("EventOrigin")
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type":"string",
+            "pattern":"^(user|(engine|plugin|client):[a-z0-9][a-z0-9-]{0,63})$",
+            "description":"Validated event author origin."
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionOrigin {
@@ -2272,6 +2343,9 @@ pub struct StoredEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub engine_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub origin: Option<EventOrigin>,
     pub session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<RunId>", required)]
@@ -2283,6 +2357,9 @@ pub struct StoredEvent {
 }
 impl StoredEvent {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
+        if let Some(origin) = &self.origin {
+            EventOrigin::new(origin.as_str())?;
+        }
         if self.seq == 0 {
             return Err(EventSchemaError::ZeroEventSequence);
         }
@@ -2327,6 +2404,8 @@ impl<'de> Deserialize<'de> for StoredEvent {
             #[serde(default)]
             engine_version: Option<String>,
             #[serde(default)]
+            origin: Option<EventOrigin>,
+            #[serde(default)]
             event_schema_version: Option<Value>,
             session_id: SessionId,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -2339,6 +2418,7 @@ impl<'de> Deserialize<'de> for StoredEvent {
         let _ = w.event_schema_version;
         let value = Self {
             engine_version: w.engine_version,
+            origin: w.origin,
             session_id: w.session_id,
             run_id: w.run_id,
             seq: w.seq,
@@ -2632,6 +2712,7 @@ pub struct OutputSnapshotEnvelope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {
+    InvalidOrigin,
     EmptyTitle,
     TitleTooLong,
     TitleControlCharacter,
@@ -2676,6 +2757,7 @@ pub enum EventSchemaError {
 impl fmt::Display for EventSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidOrigin => "event origin is invalid",
             Self::EmptyTitle => "session title must not be blank",
             Self::TitleTooLong => "session title exceeds 512 bytes",
             Self::TitleControlCharacter => "session title must not contain control characters",

@@ -61,6 +61,7 @@ impl Engine {
                 self.append_blocking(
                     session.meta.session_id,
                     parent_run,
+                    super::event_origin("engine:recovery"),
                     Event::InternalAgentInterrupted {
                         invocation_id,
                         internal_run_id,
@@ -77,6 +78,7 @@ impl Engine {
                 self.append_blocking(
                     session.meta.session_id,
                     Some(run.id),
+                    super::event_origin("engine:recovery"),
                     Event::RunInterrupted {
                         reason: Some(safe_error("daemon restart")),
                     },
@@ -91,6 +93,7 @@ impl Engine {
                     self.append_blocking(
                         session.meta.session_id,
                         Some(run.id),
+                        super::event_origin("engine:recovery"),
                         Event::ToolCallTerminated {
                             termination: ToolCallTermination {
                                 tool_call_id: *tool_call_id,
@@ -125,6 +128,7 @@ impl Engine {
                 self.append_blocking(
                     session.meta.session_id,
                     Some(approval_run),
+                    super::event_origin("engine:recovery"),
                     Event::ApprovalCancelled {
                         approval_id: record.request.approval_id(),
                         reason_code: ApprovalReasonCode::PreparedCapabilityLost,
@@ -133,6 +137,7 @@ impl Engine {
                 self.append_blocking(
                     session.meta.session_id,
                     Some(approval_run),
+                    super::event_origin("engine:recovery"),
                     Event::ApprovalFinalized {
                         approval_id: record.request.approval_id(),
                         decision: ApprovalFinalDecision {
@@ -271,6 +276,7 @@ impl Engine {
                             self.append_blocking(
                                 entry.reservation.child_session_id,
                                 Some(child_run_id),
+                                super::event_origin("engine:recovery"),
                                 Event::RunCancelled {
                                     reason: Some(safe_error("parent delegate run was cancelled")),
                                 },
@@ -293,6 +299,7 @@ impl Engine {
                             self.append_blocking(
                                 entry.reservation.child_session_id,
                                 None,
+                                super::event_origin("engine:recovery"),
                                 Event::DelegateChildTerminated {
                                     status: SessionStatus::Cancelled,
                                     reason: Some(safe_error("parent delegate run was cancelled")),
@@ -338,6 +345,7 @@ impl Engine {
             self.append_direct(
                 session_id,
                 Some(run_id),
+                super::event_origin("engine:recovery"),
                 Event::ApprovalCancelled {
                     approval_id: record.request.approval_id(),
                     reason_code: ApprovalReasonCode::PreparedCapabilityLost,
@@ -346,6 +354,7 @@ impl Engine {
             self.append_direct(
                 session_id,
                 Some(run_id),
+                super::event_origin("engine:recovery"),
                 Event::ApprovalFinalized {
                     approval_id: record.request.approval_id(),
                     decision,

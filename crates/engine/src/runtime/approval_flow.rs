@@ -73,6 +73,7 @@ impl Engine {
         self.append(
             active.session,
             Some(run),
+            super::event_origin("engine:approvals"),
             Event::ApprovalRequested {
                 request: request.clone(),
             },
@@ -88,6 +89,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalDoomLoopDetected {
                     approval_id,
                     operation_fingerprint: request.operation_fingerprint().clone(),
@@ -98,6 +100,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {
@@ -128,6 +131,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalEvaluated {
                     approval_id,
                     decision,
@@ -137,6 +141,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {
@@ -168,6 +173,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalEvaluated {
                     approval_id,
                     decision,
@@ -177,6 +183,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {
@@ -207,6 +214,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalEvaluated {
                     approval_id,
                     decision: ApprovalInternalDecision {
@@ -221,6 +229,7 @@ impl Engine {
             self.append(
                 active.session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {

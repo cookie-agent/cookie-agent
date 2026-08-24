@@ -82,6 +82,7 @@ impl Engine {
         self.append_direct(
             session,
             Some(run),
+            super::event_origin("engine:approvals"),
             Event::ApprovalEvaluated {
                 approval_id,
                 decision: ApprovalInternalDecision {
@@ -100,6 +101,7 @@ impl Engine {
             self.append_direct(
                 session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {
@@ -139,6 +141,7 @@ impl Engine {
             self.append_direct(
                 session,
                 Some(run),
+                super::event_origin("engine:approvals"),
                 Event::ApprovalFinalized {
                     approval_id,
                     decision: ApprovalFinalDecision {
@@ -162,6 +165,7 @@ impl Engine {
         self.append_direct(
             session,
             Some(run),
+            super::event_origin("engine:approvals"),
             Event::ApprovalEscalated {
                 approval_id,
                 reason_code: ApprovalReasonCode::Escalated,
@@ -329,6 +333,7 @@ impl Engine {
         self.append_direct(
             params.session_id,
             Some(run_id),
+            super::event_origin("user"),
             Event::ApprovalUserDecisionRecorded {
                 approval_id: params.approval_id,
                 client_response_id: params.client_response_id.clone(),
@@ -358,6 +363,7 @@ impl Engine {
             self.append_direct(
                 params.session_id,
                 Some(run_id),
+                super::event_origin("engine:approvals"),
                 Event::TreeApprovalGrantCommitted {
                     grant: grant.clone(),
                 },
@@ -389,6 +395,7 @@ impl Engine {
         self.append_direct(
             params.session_id,
             Some(run_id),
+            super::event_origin("engine:approvals"),
             Event::ApprovalFinalized {
                 approval_id: params.approval_id,
                 decision: ApprovalFinalDecision {
@@ -481,6 +488,7 @@ impl Engine {
         self.append_direct(
             params.session_id,
             Some(run_id),
+            super::event_origin("engine:approvals"),
             Event::ApprovalCancelled {
                 approval_id: params.approval_id,
                 reason_code,
@@ -489,6 +497,7 @@ impl Engine {
         self.append_direct(
             params.session_id,
             Some(run_id),
+            super::event_origin("engine:approvals"),
             Event::ApprovalFinalized {
                 approval_id: params.approval_id,
                 decision: ApprovalFinalDecision {
@@ -564,6 +573,7 @@ impl Engine {
         self.append_direct(
             session,
             Some(run),
+            super::event_origin("engine:approvals"),
             Event::ApprovalCancelled {
                 approval_id,
                 reason_code,
@@ -572,6 +582,7 @@ impl Engine {
         self.append_direct(
             session,
             Some(run),
+            super::event_origin("engine:approvals"),
             Event::ApprovalFinalized {
                 approval_id,
                 decision: ApprovalFinalDecision {

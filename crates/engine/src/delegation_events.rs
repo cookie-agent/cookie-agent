@@ -182,6 +182,8 @@ impl DelegationEventStore {
         self.sessions.append(
             parent_session_id,
             Some(parent_run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:delegation")
+                .expect("static event origin is valid"),
             EventPayload::DelegationReserved {
                 reservation,
                 child_agent: Box::new(child_agent),
@@ -217,6 +219,8 @@ impl DelegationEventStore {
         self.sessions.append(
             reservation.parent_session_id,
             Some(reservation.parent_run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:delegation")
+                .expect("static event origin is valid"),
             EventPayload::DelegationStarted {
                 invocation_id,
                 child_session_id: reservation.child_session_id,
@@ -285,6 +289,8 @@ impl DelegationEventStore {
         self.sessions.append(
             reservation.parent_session_id,
             Some(reservation.parent_run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:delegation")
+                .expect("static event origin is valid"),
             payload,
         )?;
         let entry = state
@@ -341,6 +347,8 @@ impl DelegationEventStore {
         self.sessions.append(
             reservation.parent_session_id,
             Some(reservation.parent_run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:delegation")
+                .expect("static event origin is valid"),
             EventPayload::DelegationFinished {
                 invocation_id,
                 child_session_id: reservation.child_session_id,

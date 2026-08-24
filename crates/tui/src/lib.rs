@@ -335,6 +335,7 @@ mod tests {
     ) -> StoredEvent {
         StoredEvent {
             engine_version: None,
+            origin: None,
             session_id,
             run_id: Some(run_id),
             seq,
@@ -396,6 +397,7 @@ mod tests {
         let mut store = StateStore::default();
         store.apply_event(StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: Some(run_id),
             seq: 1,
@@ -406,6 +408,7 @@ mod tests {
         });
         store.apply_event(StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session,
             run_id: Some(run_id),
             seq: 2,
@@ -437,6 +440,7 @@ mod tests {
         let approval_id = request.approval_id();
         app.store.apply_event(StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session.session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 2,
@@ -445,6 +449,7 @@ mod tests {
         });
         app.store.apply_event(StoredEvent {
             engine_version: None,
+            origin: None,
             session_id: session.session_id,
             run_id: Some(cookie_agent_protocol::RunId::new_v7()),
             seq: 3,

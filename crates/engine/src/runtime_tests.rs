@@ -273,6 +273,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
             PermissionAction::Read,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("persist session");
@@ -324,6 +325,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
         .append(
             session.session_id,
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::PluginDiagnostic {
                 plugin: "engine".into(),
                 kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
@@ -507,6 +509,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                 PermissionAction::Read,
                 WildcardPattern::new("*").expect("wildcard"),
                 PermissionEffect::Allow,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
             )
             .await
             .expect("persist session");
@@ -548,6 +551,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .append(
                 session_id,
                 None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::PluginDiagnostic {
                     plugin: "engine".into(),
                     kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
@@ -665,6 +669,7 @@ async fn plugin_diagnostic_coalescing_is_exact_and_shutdown_drains() {
             PermissionAction::Read,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("persist session");
@@ -768,6 +773,7 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
             PermissionAction::Read,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Allow,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("persist session");
@@ -856,6 +862,7 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
             PermissionAction::Bash,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("set overlay");
@@ -954,6 +961,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
             PermissionAction::Bash,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("tighten overlay");
@@ -997,6 +1005,7 @@ async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
             PermissionAction::Bash,
             wildcard.clone(),
             PermissionEffect::Allow,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("allow overlay");
@@ -1035,7 +1044,12 @@ async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
 
     fixture
         .engine
-        .clear_session_permission(session.session_id, PermissionAction::Bash, &wildcard)
+        .clear_session_permission(
+            session.session_id,
+            PermissionAction::Bash,
+            &wildcard,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("clear allow overlay");
 
@@ -2191,6 +2205,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
         .append_direct(
             created.session_id,
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionTitleCommitted {
                 input_through_seq: creation_event.seq,
                 change: SessionTitleChange::UserSet {
@@ -2202,12 +2217,15 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
         .expect("append event");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: created.session_id,
-            client_run_id: ClientRunId::new("metadata-persist").expect("client run ID"),
-            selection,
-            input: "persist session".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: created.session_id,
+                client_run_id: ClientRunId::new("metadata-persist").expect("client run ID"),
+                selection,
+                input: "persist session".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("persist session");
     wait_for_session_not_running(&fixture.engine, created.session_id).await;
@@ -2267,12 +2285,15 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
         .expect("create session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("metadata-cache-persist").expect("client run ID"),
-            selection,
-            input: "persist session".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("metadata-cache-persist").expect("client run ID"),
+                selection,
+                input: "persist session".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("persist session");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -2328,6 +2349,7 @@ fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
         .append_direct(
             session.session_id,
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionTitleCommitted {
                 input_through_seq: 1,
                 change: SessionTitleChange::UserSet {
@@ -2362,12 +2384,15 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
 
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("first-persist").expect("client run ID"),
-            selection,
-            input: "first user message".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("first-persist").expect("client run ID"),
+                selection,
+                input: "first user message".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("start run");
 
@@ -2715,6 +2740,7 @@ fn completed_read_events(
     };
     let envelope = |seq, payload| cookie_agent_protocol::StoredEvent {
         engine_version: None,
+        origin: None,
         session_id: session,
         run_id: Some(run),
         seq,
@@ -3050,6 +3076,7 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
     let run = cookie_agent_protocol::RunId::new_v7();
     let events = vec![cookie_agent_protocol::StoredEvent {
         engine_version: None,
+        origin: None,
         session_id: SessionId::new_v7(),
         run_id: Some(run),
         seq: 1,
@@ -4502,12 +4529,15 @@ lazy = true
         .expect("session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("plugin-mcp-preemption").expect("run ID"),
-            selection,
-            input: "use the plugin".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("plugin-mcp-preemption").expect("run ID"),
+                selection,
+                input: "use the plugin".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run accepted");
     tokio::time::timeout(test_timeout(3), reached)
@@ -4724,16 +4754,19 @@ async fn approve_once(
         .and_then(serde_json::Value::as_u64)
         .expect("approval request revision");
     engine
-        .approval_respond(ApprovalRespondParams {
-            session_id: approval.session_id,
-            approval_id: approval.request.approval_id(),
-            request_revision,
-            operation_fingerprint: approval.request.operation_fingerprint().clone(),
-            client_response_id: ClientResponseId::new(client_response_id)
-                .expect("client response ID"),
-            decision: ApprovalUserDecision::ApproveOnce,
-            feedback: None,
-        })
+        .approval_respond(
+            ApprovalRespondParams {
+                session_id: approval.session_id,
+                approval_id: approval.request.approval_id(),
+                request_revision,
+                operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                client_response_id: ClientResponseId::new(client_response_id)
+                    .expect("client response ID"),
+                decision: ApprovalUserDecision::ApproveOnce,
+                feedback: None,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("approve once")
 }
@@ -4806,16 +4839,19 @@ async fn reject_approval(
         .and_then(serde_json::Value::as_u64)
         .expect("approval request revision");
     engine
-        .approval_respond(ApprovalRespondParams {
-            session_id: approval.session_id,
-            approval_id: approval.request.approval_id(),
-            request_revision,
-            operation_fingerprint: approval.request.operation_fingerprint().clone(),
-            client_response_id: ClientResponseId::new(client_response_id)
-                .expect("client response ID"),
-            decision: ApprovalUserDecision::Reject,
-            feedback: None,
-        })
+        .approval_respond(
+            ApprovalRespondParams {
+                session_id: approval.session_id,
+                approval_id: approval.request.approval_id(),
+                request_revision,
+                operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                client_response_id: ClientResponseId::new(client_response_id)
+                    .expect("client response ID"),
+                decision: ApprovalUserDecision::Reject,
+                feedback: None,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("reject approval");
 }
@@ -4831,24 +4867,31 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             .expect("session");
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(if fail_native {
-                    "native-fallback"
-                } else {
-                    "native-success"
-                })
-                .unwrap(),
-                selection,
-                input: "compact this context".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(if fail_native {
+                        "native-fallback"
+                    } else {
+                        "native-success"
+                    })
+                    .unwrap(),
+                    selection,
+                    input: "compact this context".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         assert!(
             fixture
                 .engine
-                .compact_session(session.session_id, Some("preserve focus"))
+                .compact_session(
+                    session.session_id,
+                    Some("preserve focus"),
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+                )
                 .await
                 .expect("compaction")
         );
@@ -4962,6 +5005,7 @@ fn append_compaction_tool_history(
             .append_direct(
                 session,
                 Some(run),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::ModelAttemptStarted {
                     attempt_id,
                     attempt_ordinal,
@@ -4977,6 +5021,7 @@ fn append_compaction_tool_history(
             .append_direct(
                 session,
                 Some(run),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::ModelTurnCommitted {
                     attempt_id,
                     model_turn_seq,
@@ -5015,6 +5060,7 @@ fn append_compaction_tool_history(
         .append_direct(
             session,
             Some(run),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
                     tool_call_id,
@@ -5037,6 +5083,7 @@ fn append_compaction_tool_history(
         .append_direct(
             session,
             Some(run),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ToolCallTerminated {
                 termination: cookie_agent_protocol::ToolCallTermination {
                     tool_call_id,
@@ -5086,12 +5133,15 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("tool-result-readback").unwrap(),
-            selection: selection.clone(),
-            input: "prepare tool result history".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("tool-result-readback").unwrap(),
+                selection: selection.clone(),
+                input: "prepare tool result history".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -5141,6 +5191,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
         .append_direct(
             session.session_id,
             Some(run.run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ToolOutputElided {
                 tool_call_id: truncated_call,
                 original_bytes: full.len() as u64,
@@ -5254,6 +5305,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
         .append_direct(
             session.session_id,
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionReverted {
                 through_seq: termination_seq - 1,
             },
@@ -5305,13 +5357,16 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             .expect("compaction session");
         let run = fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("raw-first-{expect_elision}"))
-                    .expect("run ID"),
-                selection: selection.clone(),
-                input: "prepare compaction history".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("raw-first-{expect_elision}"))
+                        .expect("run ID"),
+                    selection: selection.clone(),
+                    input: "prepare compaction history".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("start compaction run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -5347,7 +5402,11 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         assert!(
             fixture
                 .engine
-                .compact_session(session.session_id, None)
+                .compact_session(
+                    session.session_id,
+                    None,
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+                )
                 .await
                 .expect("manual compaction")
         );
@@ -5838,15 +5897,18 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
     );
     let unavailable = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: created.session_id,
-            client_run_id: ClientRunId::new("unavailable-preset-agent").expect("run ID"),
-            selection: RunSelection {
-                preset: Some("no-root".into()),
-                ..preset_selection.clone()
+        .start_run(
+            RunStartParams {
+                session_id: created.session_id,
+                client_run_id: ClientRunId::new("unavailable-preset-agent").expect("run ID"),
+                selection: RunSelection {
+                    preset: Some("no-root".into()),
+                    ..preset_selection.clone()
+                },
+                input: "agent is absent in this preset".into(),
             },
-            input: "agent is absent in this preset".into(),
-        })
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect_err("missing preset agent is rejected");
     assert!(matches!(unavailable, EngineError::InvalidRuntimeAgent(_)));
@@ -5909,12 +5971,15 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .expect("shared parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
-            selection: shared_selection.clone(),
-            input: "complete the shared run".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
+                selection: shared_selection.clone(),
+                input: "complete the shared run".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("shared run");
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
@@ -5925,12 +5990,15 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     };
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
-            selection: preset_selection,
-            input: "delegate after switching presets".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
+                selection: preset_selection,
+                input: "delegate after switching presets".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("preset run");
     let child = await_child(
@@ -6006,12 +6074,15 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     assert!(matches!(
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: child.session_id,
-                client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
-                selection: switched_child,
-                input: "must remain pinned".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: child.session_id,
+                    client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
+                    selection: switched_child,
+                    input: "must remain pinned".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await,
         Err(EngineError::NoRunnableModel)
     ));
@@ -6075,7 +6146,11 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     );
     assert!(
         reopened
-            .compact_session(parent.session_id, None)
+            .compact_session(
+                parent.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("historical manual compaction")
     );
@@ -6310,13 +6385,16 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
         .create_session(selection.clone())
         .expect("session");
     let run = engine_two
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("frozen-bedrock-run")
-                .expect("run ID"),
-            selection,
-            input: "hold frozen Bedrock semantics".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("frozen-bedrock-run")
+                    .expect("run ID"),
+                selection,
+                input: "hold frozen Bedrock semantics".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted run");
     let frozen = engine_two
@@ -6831,13 +6909,16 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .expect("session");
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("immutable-run")
-                .expect("run ID"),
-            selection,
-            input: "hello".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("immutable-run")
+                    .expect("run ID"),
+                selection,
+                input: "hello".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     let (before, _) = fixture
@@ -6901,13 +6982,16 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         .expect("approval session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("ask-transaction")
-                .expect("run ID"),
-            selection,
-            input: "request the write tool".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("ask-transaction")
+                    .expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted approval run");
 
@@ -6999,12 +7083,15 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
         .expect("approval session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("overlay-epoch").expect("run ID"),
-            selection,
-            input: "request the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("overlay-epoch").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
@@ -7015,6 +7102,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
             PermissionAction::Write,
             WildcardPattern::new("*").expect("wildcard"),
             PermissionEffect::Deny,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
         .expect("tighten overlay");
@@ -7026,15 +7114,19 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
 
     let error = fixture
         .engine
-        .approval_respond(ApprovalRespondParams {
-            session_id: session.session_id,
-            approval_id: approval.request.approval_id(),
-            request_revision,
-            operation_fingerprint: approval.request.operation_fingerprint().clone(),
-            client_response_id: ClientResponseId::new("overlay-epoch-tree").expect("response ID"),
-            decision: ApprovalUserDecision::ApproveTree,
-            feedback: None,
-        })
+        .approval_respond(
+            ApprovalRespondParams {
+                session_id: session.session_id,
+                approval_id: approval.request.approval_id(),
+                request_revision,
+                operation_fingerprint: approval.request.operation_fingerprint().clone(),
+                client_response_id: ClientResponseId::new("overlay-epoch-tree")
+                    .expect("response ID"),
+                decision: ApprovalUserDecision::ApproveTree,
+                feedback: None,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect_err("changed overlay must reject tree grant");
 
@@ -7093,20 +7185,27 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .expect("steering session");
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("steering-compaction")
-                .expect("run ID"),
-            selection,
-            input: "begin".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("steering-compaction")
+                    .expect("run ID"),
+                selection,
+                input: "begin".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("started steering run");
     let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
     assert!(
         fixture
             .engine
-            .steer(run.run_id, "recall me".into())
+            .steer(
+                run.run_id,
+                "recall me".into(),
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("first admission")
             .accepted
@@ -7135,7 +7234,11 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         assert!(
             fixture
                 .engine
-                .steer(run.run_id, input.into())
+                .steer(
+                    run.run_id,
+                    input.into(),
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+                )
                 .await
                 .expect("admission")
                 .accepted
@@ -7154,7 +7257,11 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert!(
         fixture
             .engine
-            .steer(run.run_id, "third pending".into())
+            .steer(
+                run.run_id,
+                "third pending".into(),
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("replacement admission")
             .accepted
@@ -7167,10 +7274,16 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .expect("pending projection")
         .log
         .events();
-    assert!(before_boundary.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputAdmitted { input } if input == first_pending
-    )));
+    assert!(before_boundary.iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::UserInputAdmitted { input } if input == first_pending
+        ) && event
+            .origin
+            .as_ref()
+            .map(cookie_agent_protocol::EventOrigin::as_str)
+            == Some("client:test")
+    }));
     assert!(!before_boundary.iter().any(|event| matches!(
         &event.payload,
         EventPayload::UserInputSubmitted { input } if input != "begin"
@@ -7182,7 +7295,11 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .expect("promotion compaction started");
     let during_reservation = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        fixture.engine.steer(run.run_id, "fourth pending".into()),
+        fixture.engine.steer(
+            run.run_id,
+            "fourth pending".into(),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        ),
     )
     .await
     .expect("steer is not blocked by compaction")
@@ -7228,7 +7345,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::UserInputSubmitted { input } if input != "begin" => {
-                Some((event.seq, input.as_str()))
+                Some((event.seq, input.as_str(), event.origin.as_ref()))
             }
             _ => None,
         })
@@ -7236,7 +7353,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     assert_eq!(
         submitted
             .iter()
-            .map(|(_, input)| *input)
+            .map(|(_, input, _)| *input)
             .collect::<Vec<_>>(),
         vec![
             first_pending,
@@ -7245,6 +7362,9 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
             "fourth pending"
         ]
     );
+    assert!(submitted.iter().all(|(_, _, origin)| {
+        origin.map(cookie_agent_protocol::EventOrigin::as_str) == Some("client:test")
+    }));
     let first_steering_seq = submitted[0].0;
     let next_attempt_seq = events
         .iter()
@@ -7259,6 +7379,24 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
             && checkpoint_seq < first_steering_seq
             && submitted.last().expect("submitted inputs").0 < next_attempt_seq
     );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::ApprovalUserDecisionRecorded { .. }
+        ) && event
+            .origin
+            .as_ref()
+            .map(cookie_agent_protocol::EventOrigin::as_str)
+            == Some("user")
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(event.payload, EventPayload::ApprovalFinalized { .. })
+            && event
+                .origin
+                .as_ref()
+                .map(cookie_agent_protocol::EventOrigin::as_str)
+                == Some("engine:approvals")
+    }));
     fixture.engine.shutdown().await;
 }
 
@@ -7283,12 +7421,15 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         .expect("cancellation session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("prime-predictor").expect("client run ID"),
-            selection: selection.clone(),
-            input: "prime predictor".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("prime-predictor").expect("client run ID"),
+                selection: selection.clone(),
+                input: "prime predictor".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first run started");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -7297,12 +7438,15 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
     let second_selection = selection.clone();
     let start = tokio::spawn(async move {
         start_engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("cancel-prediction").expect("client run ID"),
-                selection: second_selection,
-                input: "must never be appended".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("cancel-prediction").expect("client run ID"),
+                    selection: second_selection,
+                    input: "must never be appended".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
     });
     compaction_reached.await.expect("start compaction reached");
@@ -7410,12 +7554,16 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .expect("yolo mode");
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("interactive-stream-cancel").expect("client run id"),
-            selection,
-            input: "start interactive stream".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("interactive-stream-cancel")
+                    .expect("client run id"),
+                selection,
+                input: "start interactive stream".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run started")
         .run_id;
@@ -7568,12 +7716,16 @@ async fn start_streaming_bash_test_run(
         .session_id;
     let run_id = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id,
-            client_run_id: ClientRunId::new(format!("streaming-{command}")).expect("client run id"),
-            selection,
-            input: "start streaming test".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id,
+                client_run_id: ClientRunId::new(format!("streaming-{command}"))
+                    .expect("client run id"),
+                selection,
+                input: "start streaming test".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run started")
         .run_id;
@@ -7759,12 +7911,15 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         .expect("steering race session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
-            selection: selection.clone(),
-            input: "prime predictor".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
+                selection: selection.clone(),
+                input: "prime predictor".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("prime run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -7772,12 +7927,15 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
     let start_engine = fixture.engine.clone();
     let start = tokio::spawn(async move {
         start_engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("start-steer-race").expect("client run ID"),
-                selection,
-                input: "initial second-run input".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("start-steer-race").expect("client run ID"),
+                    selection,
+                    input: "initial second-run input".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
     });
     compaction_reached.await.expect("start compaction reached");
@@ -7800,7 +7958,11 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
     assert!(
         fixture
             .engine
-            .steer(run, steering.into())
+            .steer(
+                run,
+                steering.into(),
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("steer during start compaction")
             .accepted
@@ -7885,13 +8047,16 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .expect("persistent approval session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
-                .expect("run ID"),
-            selection,
-            input: "request two writes".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
+                    .expect("run ID"),
+                selection,
+                input: "request two writes".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted persistent approval run");
 
@@ -7942,12 +8107,15 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
         .expect("ask mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("ask-mode").expect("run ID"),
-            selection,
-            input: "request the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("ask-mode").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
 
@@ -7998,12 +8166,16 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
         .expect("yolo mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-mode").expect("run ID"),
-            selection,
-            input: "request the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-mode")
+                    .expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
@@ -8077,12 +8249,15 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
         .expect("auto-n mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("auto-n-mode").expect("run ID"),
-            selection,
-            input: "request the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("auto-n-mode").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -8159,12 +8334,15 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         .expect("auto-y mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("auto-y-mode").expect("run ID"),
-            selection,
-            input: "request the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("auto-y-mode").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
@@ -8224,12 +8402,15 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
         .expect("auto-y mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("auto-y-identical-calls").expect("run ID"),
-            selection,
-            input: "request two identical writes".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("auto-y-identical-calls").expect("run ID"),
+                selection,
+                input: "request two identical writes".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -8318,13 +8499,18 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
             .expect("permission mode");
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("mode-agent-{mode:?}-{should_execute}"))
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!(
+                        "mode-agent-{mode:?}-{should_execute}"
+                    ))
                     .expect("run ID"),
-                selection,
-                input: "request the write tool".into(),
-            })
+                    selection,
+                    input: "request the write tool".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -8375,12 +8561,16 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
         .expect("yolo mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-deny").expect("run ID"),
-            selection,
-            input: "request the denied write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-deny")
+                    .expect("run ID"),
+                selection,
+                input: "request the denied write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     await_event(
@@ -8430,13 +8620,16 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         .expect("yolo mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-doom-loop")
-                .expect("run ID"),
-            selection,
-            input: "repeat the same write".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-doom-loop")
+                    .expect("run ID"),
+                selection,
+                input: "repeat the same write".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     await_event(
@@ -8491,13 +8684,16 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         .expect("ask mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("live-mode-change")
-                .expect("run ID"),
-            selection,
-            input: "perform two writes".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("live-mode-change")
+                    .expect("run ID"),
+                selection,
+                input: "perform two writes".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
 
@@ -8564,13 +8760,16 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
         .expect("approval session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("malformed-approval")
-                .expect("run ID"),
-            selection,
-            input: "request the write tool".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("malformed-approval")
+                    .expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted approval run");
 
@@ -8618,12 +8817,16 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
         .expect("approval session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("approval-e2e").expect("run ID"),
-            selection,
-            input: "request the write tool".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("approval-e2e")
+                    .expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted approval run");
 
@@ -8680,13 +8883,16 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
     ));
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-root")
-                .expect("run ID"),
-            selection,
-            input: "hello scripted model".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-root")
+                    .expect("run ID"),
+                selection,
+                input: "hello scripted model".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted run");
     await_projection(
@@ -8794,12 +9000,15 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
         let session = fixture.engine.create_session(selection.clone()).unwrap();
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("user-transform-{name}")).unwrap(),
-                selection,
-                input: "original".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("user-transform-{name}")).unwrap(),
+                    selection,
+                    input: "original".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("run starts after transform chain");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -8864,12 +9073,16 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
             .store(2, Ordering::Release);
         let error = fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("setup-failure-{inject_message}")).unwrap(),
-                selection,
-                input: "setup input".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("setup-failure-{inject_message}"))
+                        .unwrap(),
+                    selection,
+                    input: "setup input".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect_err("terminal append failure is propagated");
         assert!(
@@ -8925,19 +9138,26 @@ async fn compact_cancellation_reason_reaches_the_engine_result() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("compact-cancel-reason").unwrap(),
-            selection,
-            input: "complete before compacting".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("compact-cancel-reason").unwrap(),
+                selection,
+                input: "complete before compacting".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
     captured.await.unwrap();
     let result = fixture
         .engine
-        .compact_session_result(session.session_id, None)
+        .compact_session_result(
+            session.session_id,
+            None,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     assert!(!result.compacted);
@@ -8971,17 +9191,24 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let started = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("intercepted-steer").unwrap(),
-            selection,
-            input: "initial prompt".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("intercepted-steer").unwrap(),
+                selection,
+                input: "initial prompt".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     let steered = fixture
         .engine
-        .steer(started.run_id, "steer original".into())
+        .steer(
+            started.run_id,
+            "steer original".into(),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     assert!(steered.accepted);
@@ -9045,17 +9272,24 @@ async fn blocking_steering_uses_the_same_input_interception_and_audit() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let started = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("blocking-intercepted-steer").unwrap(),
-            selection,
-            input: "initial prompt".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("blocking-intercepted-steer").unwrap(),
+                selection,
+                input: "initial prompt".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     let blocking_engine = fixture.engine.clone();
     let steered = tokio::task::spawn_blocking(move || {
-        blocking_engine.steer_blocking(started.run_id, "blocking original".into())
+        blocking_engine.steer_blocking(
+            started.run_id,
+            "blocking original".into(),
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
     })
     .await
     .unwrap()
@@ -9155,12 +9389,15 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     for index in 0..3 {
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("anthropic-cache-{index}")).unwrap(),
-                selection: selection.clone(),
-                input: format!("turn {index}"),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("anthropic-cache-{index}")).unwrap(),
+                    selection: selection.clone(),
+                    input: format!("turn {index}"),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .unwrap();
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9328,12 +9565,15 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("intercepted-cache").unwrap(),
-            selection,
-            input: "original user".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("intercepted-cache").unwrap(),
+                selection,
+                input: "original user".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9417,19 +9657,26 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("anthropic-before-checkpoint").unwrap(),
-            selection: selection.clone(),
-            input: "old context ".repeat(300),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("anthropic-before-checkpoint").unwrap(),
+                selection: selection.clone(),
+                input: "old context ".repeat(300),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
     assert!(
         fixture
             .engine
-            .compact_session(session.session_id, None)
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .unwrap()
     );
@@ -9458,12 +9705,15 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
         executed: Arc::new(TestFlag::default()),
     }));
     reopened
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("anthropic-after-checkpoint").unwrap(),
-            selection,
-            input: "new live turn".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("anthropic-after-checkpoint").unwrap(),
+                selection,
+                input: "new live turn".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&reopened, session.session_id).await;
@@ -9529,12 +9779,15 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("anthropic-cache-disabled").unwrap(),
-            selection,
-            input: "baseline".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("anthropic-cache-disabled").unwrap(),
+                selection,
+                input: "baseline".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9570,12 +9823,15 @@ async fn primary_agent_max_output_tokens_caps_model_requests() {
         .expect("session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("primary-output-cap").expect("run ID"),
-            selection,
-            input: "respond briefly".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("primary-output-cap").expect("run ID"),
+                selection,
+                input: "respond briefly".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("start capped run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9636,12 +9892,15 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
         .expect("immediate session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("immediate-mcp-run").expect("run ID"),
-            selection,
-            input: "use the available tools".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("immediate-mcp-run").expect("run ID"),
+                selection,
+                input: "use the available tools".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first run after engine open");
     let status = fixture.engine.mcp_statuses().remove(0);
@@ -9669,12 +9928,15 @@ async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_appr
         .expect("immediate project MCP session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("project-mcp-run").expect("run ID"),
-            selection,
-            input: "use the project tools".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("project-mcp-run").expect("run ID"),
+                selection,
+                input: "use the project tools".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first run after engine open");
     let status = fixture.engine.mcp_statuses().remove(0);
@@ -9709,12 +9971,15 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
 
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("revert-first").expect("client run ID"),
-            selection: selection.clone(),
-            input: "first input".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("revert-first").expect("client run ID"),
+                selection: selection.clone(),
+                input: "first input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9732,12 +9997,15 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
 
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("revert-second").expect("client run ID"),
-            selection: selection.clone(),
-            input: "second input must disappear".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("revert-second").expect("client run ID"),
+                selection: selection.clone(),
+                input: "second input must disappear".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("second run");
     second_request_reached
@@ -9746,13 +10014,17 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     assert!(matches!(
         fixture
             .engine
-            .revert_session(session.session_id, through_seq)
+            .revert_session(session.session_id, through_seq, cookie_agent_protocol::EventOrigin::new("client:test").unwrap())
             .await,
         Err(EngineError::SessionRunning(id)) if id == session.session_id
     ));
     let fork = fixture
         .engine
-        .fork_session(session.session_id, through_seq)
+        .fork_session(
+            session.session_id,
+            through_seq,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("fork active source");
     let (artifact, digest) = fixture
@@ -9812,7 +10084,11 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
 
     let reverted = fixture
         .engine
-        .revert_session(session.session_id, through_seq)
+        .revert_session(
+            session.session_id,
+            through_seq,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("revert completed source");
     let first_revert_event = fixture
@@ -9835,23 +10111,34 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     let first_revert_tip = first_revert_event.seq;
     fixture
         .engine
-        .rename_session(cookie_agent_protocol::SessionRenameParams {
-            session_id: session.session_id,
-            client_rename_id: ClientRenameId::new("branch-title").expect("rename ID"),
-            change: cookie_agent_protocol::SessionRenameChange::Set {
-                title: SessionTitle::new("temporary branch").expect("title"),
+        .rename_session(
+            cookie_agent_protocol::SessionRenameParams {
+                session_id: session.session_id,
+                client_rename_id: ClientRenameId::new("branch-title").expect("rename ID"),
+                change: cookie_agent_protocol::SessionRenameChange::Set {
+                    title: SessionTitle::new("temporary branch").expect("title"),
+                },
             },
-        })
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("branch title");
     fixture
         .engine
-        .revert_session(session.session_id, first_revert_tip)
+        .revert_session(
+            session.session_id,
+            first_revert_tip,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("stacked revert");
     let fork_after_revert = fixture
         .engine
-        .fork_session(session.session_id, through_seq)
+        .fork_session(
+            session.session_id,
+            through_seq,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("fork reverted source at original boundary");
     let first_fork_prefix = fixture
@@ -9899,12 +10186,15 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
 
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("revert-branch").expect("client run ID"),
-            selection,
-            input: "branch input".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("revert-branch").expect("client run ID"),
+                selection,
+                input: "branch input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("branch run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
@@ -9934,13 +10224,16 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
     );
     fixture
         .engine
-        .rename_session(cookie_agent_protocol::SessionRenameParams {
-            session_id: fork.session_id,
-            client_rename_id: ClientRenameId::new("fork-independent").expect("rename ID"),
-            change: cookie_agent_protocol::SessionRenameChange::Set {
-                title: SessionTitle::new("independent fork").expect("title"),
+        .rename_session(
+            cookie_agent_protocol::SessionRenameParams {
+                session_id: fork.session_id,
+                client_rename_id: ClientRenameId::new("fork-independent").expect("rename ID"),
+                change: cookie_agent_protocol::SessionRenameChange::Set {
+                    title: SessionTitle::new("independent fork").expect("title"),
+                },
             },
-        })
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("rename fork");
     assert_eq!(
@@ -10037,12 +10330,15 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
         .expect("denied session");
     denied
         .engine
-        .start_run(RunStartParams {
-            session_id: denied_session.session_id,
-            client_run_id: ClientRunId::new("denied-hook").expect("run ID"),
-            selection: denied_selection,
-            input: "try denied write".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: denied_session.session_id,
+                client_run_id: ClientRunId::new("denied-hook").expect("run ID"),
+                selection: denied_selection,
+                input: "try denied write".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("denied run");
     wait_for_session_not_running(&denied.engine, denied_session.session_id).await;
@@ -10078,12 +10374,15 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
             .expect("approval session");
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new(format!("{marker_name}-hook")).expect("run ID"),
-                selection,
-                input: "try approved write".into(),
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("{marker_name}-hook")).expect("run ID"),
+                    selection,
+                    input: "try approved write".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("approval run");
         let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
@@ -10145,12 +10444,15 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
         .expect("session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("validated-hook-chain").expect("run ID"),
-            selection,
-            input: "run write".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("validated-hook-chain").expect("run ID"),
+                selection,
+                input: "run write".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("run");
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
@@ -10185,12 +10487,15 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
         .expect("zero-resource session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("zero-resource-run").expect("run ID"),
-            selection,
-            input: "attempt the write tool".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("zero-resource-run").expect("run ID"),
+                selection,
+                input: "attempt the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted run");
 
@@ -10300,12 +10605,15 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .expect("tree root");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: root.session_id,
-            client_run_id: ClientRunId::new("tree-usage-root").unwrap(),
-            selection: selection.clone(),
-            input: "build nested tree".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: root.session_id,
+                client_run_id: ClientRunId::new("tree-usage-root").unwrap(),
+                selection: selection.clone(),
+                input: "build nested tree".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("tree root run");
     wait_for_session_not_running(&fixture.engine, root.session_id).await;
@@ -10318,12 +10626,15 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .expect("unrelated root");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: unrelated.session_id,
-            client_run_id: ClientRunId::new("tree-usage-unrelated").unwrap(),
-            selection,
-            input: "not part of the tree".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: unrelated.session_id,
+                client_run_id: ClientRunId::new("tree-usage-unrelated").unwrap(),
+                selection,
+                input: "not part of the tree".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("unrelated run");
     wait_for_session_not_running(&fixture.engine, unrelated.session_id).await;
@@ -10385,13 +10696,16 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .expect("parent session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-delegation")
-                .expect("run ID"),
-            selection,
-            input: "delegate this task".to_owned(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-delegation")
+                    .expect("run ID"),
+                selection,
+                input: "delegate this task".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted parent run");
     await_projection(
@@ -10482,7 +10796,11 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .last_event_seq;
     let fork = fixture
         .engine
-        .fork_session(child.session_id, child_tip)
+        .fork_session(
+            child.session_id,
+            child_tip,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("fork terminal delegated child");
     assert!(fixture.engine.inner.store.is_resident(fork.session_id));
@@ -10581,12 +10899,15 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         .expect("parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("missing-child-recovery").expect("run ID"),
-            selection,
-            input: "delegate before crashing".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("missing-child-recovery").expect("run ID"),
+                selection,
+                input: "delegate before crashing".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("parent run");
     reserved
@@ -10707,12 +11028,15 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         .expect("parent");
     let parent_run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("staged-restart-parent").expect("run ID"),
-            selection,
-            input: "delegate staged restart".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("staged-restart-parent").expect("run ID"),
+                selection,
+                input: "delegate staged restart".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("parent run");
     reserved.await.expect("durable staged reservation");
@@ -10830,12 +11154,15 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         .expect("titled parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("titled-delegation").expect("run ID"),
-            selection,
-            input: "delegate a titled child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("titled-delegation").expect("run ID"),
+                selection,
+                input: "delegate a titled child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted titled delegation");
     await_session_change(
@@ -10902,13 +11229,16 @@ async fn delegated_child_uses_description_title_without_title_agent() {
     assert_eq!(captured.await.expect("titled delegation server").len(), 4);
     fixture
         .engine
-        .rename_session(cookie_agent_protocol::SessionRenameParams {
-            session_id: child_id,
-            client_rename_id: ClientRenameId::new("delegated-user-title").expect("rename ID"),
-            change: cookie_agent_protocol::SessionRenameChange::Set {
-                title: SessionTitle::new("User title").expect("user title"),
+        .rename_session(
+            cookie_agent_protocol::SessionRenameParams {
+                session_id: child_id,
+                client_rename_id: ClientRenameId::new("delegated-user-title").expect("rename ID"),
+                change: cookie_agent_protocol::SessionRenameChange::Set {
+                    title: SessionTitle::new("User title").expect("user title"),
+                },
             },
-        })
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("rename delegated child");
     let child_dir = fixture.engine.inner.store.session_dir(child_id);
@@ -11023,12 +11353,15 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
         .expect("background parent session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("background-delegation").expect("run ID"),
-            selection: selection.clone(),
-            input: "delegate in the background".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("background-delegation").expect("run ID"),
+                selection: selection.clone(),
+                input: "delegate in the background".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted background parent run");
 
@@ -11137,12 +11470,15 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .expect("automatic paging parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("automatic-subagent-paging").expect("run ID"),
-            selection,
-            input: "delegate in the background".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("automatic-subagent-paging").expect("run ID"),
+                selection,
+                input: "delegate in the background".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("automatic paging parent run");
 
@@ -11241,12 +11577,15 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .expect("first parent response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-terminal-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "create a resumable child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-terminal-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "create a resumable child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first parent run");
     await_session_change(
@@ -11341,12 +11680,15 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .expect("second parent response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
-            selection,
-            input: "resume the existing child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
+                selection,
+                input: "resume the existing child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("second parent run");
     await_projection(
@@ -11557,12 +11899,15 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .expect("capped parent continuation");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("create-capped-child").expect("run ID"),
-            selection,
-            input: "create capped child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("create-capped-child").expect("run ID"),
+                selection,
+                input: "create capped child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("create capped child run");
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
@@ -11588,12 +11933,15 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .expect("resumed capped child response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: child,
-            client_run_id: ClientRunId::new("resume-capped-child").expect("run ID"),
-            selection: child_selection,
-            input: "second capped child task".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: child,
+                client_run_id: ClientRunId::new("resume-capped-child").expect("run ID"),
+                selection: child_selection,
+                input: "second capped child task".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("resume capped child after restart");
     wait_for_session_not_running(&fixture.engine, child).await;
@@ -11664,12 +12012,16 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             .expect("paging parent response");
         fixture
             .engine
-            .start_run(RunStartParams {
-                session_id: parent.session_id,
-                client_run_id: ClientRunId::new(format!("paging-parent-{index}")).expect("run ID"),
-                selection: selection.clone(),
-                input: parent_input,
-            })
+            .start_run(
+                RunStartParams {
+                    session_id: parent.session_id,
+                    client_run_id: ClientRunId::new(format!("paging-parent-{index}"))
+                        .expect("run ID"),
+                    selection: selection.clone(),
+                    input: parent_input,
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
             .await
             .expect("paging parent run");
         let child_id = await_session_change(
@@ -11908,6 +12260,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .append(
             children[0],
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionTitleCommitted {
                 input_through_seq: subscription_cursor,
                 change: SessionTitleChange::UserSet {
@@ -11972,6 +12325,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .append(
             children[0],
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionTitleCommitted {
                 input_through_seq: gap_cursor,
                 change: SessionTitleChange::UserSet {
@@ -12007,6 +12361,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .append(
             children[0],
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionTitleCommitted {
                 input_through_seq: replay_seq,
                 change: SessionTitleChange::UserSet {
@@ -12043,6 +12398,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .append(
             children[0],
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputAdmitted {
                 input: "queued steer must stay resident".into(),
             },
@@ -12061,6 +12417,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .append(
             children[0],
             None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::UserInputRecalled {
                 input: "queued steer must stay resident".into(),
             },
@@ -12177,12 +12534,15 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .expect("paging resume parent response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("paging-resume-parent").expect("run ID"),
-            selection,
-            input: "resume the evicted paging child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("paging-resume-parent").expect("run ID"),
+                selection,
+                input: "resume the evicted paging child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("paging resume parent run");
     await_projection(
@@ -12246,12 +12606,15 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         .expect("queued resume parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-resume-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "create the resume target".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-resume-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "create the resume target".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("queued resume first run");
     let resumed_session_id = await_session_change(
@@ -12279,12 +12642,15 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         .expect("send queued resume target");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-resume-second").expect("run ID"),
-            selection,
-            input: "fill the slot then resume the terminal child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-resume-second").expect("run ID"),
+                selection,
+                input: "fill the slot then resume the terminal child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("queued resume second run");
     queued.await.expect("resume queued behind slot holder");
@@ -12420,12 +12786,15 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .expect("queued cancel parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-cancel-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "create terminal cancellation target".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-cancel-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "create terminal cancellation target".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("queued cancel first run");
     let resumed_session_id = await_session_change(
@@ -12453,12 +12822,15 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .expect("send cancellation resume target");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-cancel-second").expect("run ID"),
-            selection,
-            input: "queue then cancel the terminal resume".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-cancel-second").expect("run ID"),
+                selection,
+                input: "queue then cancel the terminal resume".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("queued cancel second run");
     queued
@@ -12588,12 +12960,15 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         .expect("parent context response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("inherit-context-history").expect("run ID"),
-            selection: selection.clone(),
-            input: "parent history input".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("inherit-context-history").expect("run ID"),
+                selection: selection.clone(),
+                input: "parent history input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("context history run");
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
@@ -12628,12 +13003,15 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         .expect("inherit parent response");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("inherit-context-delegate").expect("run ID"),
-            selection,
-            input: "delegate using assembled history".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("inherit-context-delegate").expect("run ID"),
+                selection,
+                input: "delegate using assembled history".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("inherit delegation run");
     let child_session_id = await_child(
@@ -12731,12 +13109,15 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         .expect("ask mode");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("approval-gated-background").expect("run ID"),
-            selection,
-            input: "delegate only after approval".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("approval-gated-background").expect("run ID"),
+                selection,
+                input: "delegate only after approval".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted approval-gated run");
 
@@ -12769,12 +13150,15 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
         .expect("cancellable parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("cancellable-delegation").expect("run ID"),
-            selection,
-            input: "start a cancellable child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("cancellable-delegation").expect("run ID"),
+                selection,
+                input: "start a cancellable child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted cancellable parent run");
 
@@ -12854,12 +13238,15 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         .expect("foreign parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("running-subagent-steer").expect("run ID"),
-            selection,
-            input: "start a child to steer".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("running-subagent-steer").expect("run ID"),
+                selection,
+                input: "start a child to steer".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted steer parent run");
     reached.await.expect("child request reached server");
@@ -12953,12 +13340,15 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .expect("running resume parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("running-resume-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "start the long-running child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("running-resume-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "start the long-running child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("first resume parent run");
     ready.await.expect("first parent and child requests");
@@ -13008,12 +13398,15 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .expect("send running resume ID");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("running-resume-second").expect("run ID"),
-            selection,
-            input: "attach to the active child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("running-resume-second").expect("run ID"),
+                selection,
+                input: "attach to the active child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("second resume parent run");
     resume_admitted
@@ -13235,12 +13628,15 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         .expect("handoff race parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-handoff-race-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "start the race child".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-handoff-race-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "start the race child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("handoff race first run");
     ready.await.expect("race child active");
@@ -13274,12 +13670,15 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         .expect("send race child ID");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-handoff-race-second").expect("run ID"),
-            selection,
-            input: "race completion against resume admission".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-handoff-race-second").expect("run ID"),
+                selection,
+                input: "race completion against resume admission".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("handoff race second run");
     admission_reached
@@ -13343,12 +13742,15 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .expect("cancelled admission parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("cancel-resume-admission-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "start child for cancelled resume".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("cancel-resume-admission-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "start child for cancelled resume".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("cancelled admission first run");
     ready.await.expect("cancelled admission child active");
@@ -13389,12 +13791,15 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .expect("send cancelled admission child ID");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("cancel-resume-admission-second").expect("run ID"),
-            selection,
-            input: "cancel while resume is admitting".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("cancel-resume-admission-second").expect("run ID"),
+                selection,
+                input: "cancel while resume is admitting".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("cancelled admission second run");
     admission_reached
@@ -13412,7 +13817,11 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
     assert!(
         fixture
             .engine
-            .steer(old_run_id, "interleaved direct steer".into())
+            .steer(
+                old_run_id,
+                "interleaved direct steer".into(),
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
             .await
             .expect("interleaved direct steer")
             .accepted
@@ -13567,12 +13976,15 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .expect("monitor failure parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-monitor-failure-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "start child for monitor failure".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-monitor-failure-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "start child for monitor failure".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("monitor failure first run");
     ready.await.expect("monitor failure child active");
@@ -13610,12 +14022,15 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .expect("send monitor failure child ID");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-monitor-failure-second").expect("run ID"),
-            selection,
-            input: "resume with failed monitor installation".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-monitor-failure-second").expect("run ID"),
+                selection,
+                input: "resume with failed monitor installation".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("monitor failure second run");
     await_session_change(
@@ -13674,12 +14089,15 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .expect("attachment cancellation parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-attachment-cancel-first").expect("run ID"),
-            selection: selection.clone(),
-            input: "start child for attachment cancellation".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-attachment-cancel-first").expect("run ID"),
+                selection: selection.clone(),
+                input: "start child for attachment cancellation".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("attachment cancellation first run");
     ready.await.expect("attachment cancellation child active");
@@ -13713,12 +14131,15 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .expect("send attachment cancellation child ID");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("resume-attachment-cancel-second").expect("run ID"),
-            selection,
-            input: "cancel after durable run attachment".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("resume-attachment-cancel-second").expect("run ID"),
+                selection,
+                input: "cancel after durable run attachment".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("attachment cancellation second run");
     attachment_reached
@@ -13792,12 +14213,15 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         .expect("queued steer parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-subagent-steer").expect("run ID"),
-            selection,
-            input: "queue five children".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-subagent-steer").expect("run ID"),
+                selection,
+                input: "queue five children".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted queued steer parent run");
     reached.await.expect("queue reached capacity");
@@ -13885,12 +14309,15 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         .expect("startup failure parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("startup-failure-delegation").expect("run ID"),
-            selection,
-            input: "start five children with one injected failure".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("startup-failure-delegation").expect("run ID"),
+                selection,
+                input: "start five children with one injected failure".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted startup failure parent");
 
@@ -13954,12 +14381,15 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         .expect("queued parent session");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("queued-delegation").expect("run ID"),
-            selection,
-            input: "launch five background children".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("queued-delegation").expect("run ID"),
+                selection,
+                input: "launch five background children".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted queued parent run");
 
@@ -14009,12 +14439,15 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .expect("full queue parent");
     fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: parent.session_id,
-            client_run_id: ClientRunId::new("full-delegation-queue").expect("run ID"),
-            selection,
-            input: "fill the background delegation queue".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("full-delegation-queue").expect("run ID"),
+                selection,
+                input: "fill the background delegation queue".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("accepted full queue parent run");
 
@@ -14214,12 +14647,15 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         .expect("session");
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("event-reservation-reopen").expect("run ID"),
-            selection,
-            input: "scripted root input".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("event-reservation-reopen").expect("run ID"),
+                selection,
+                input: "scripted root input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("root run");
     let parent = fixture
@@ -14335,12 +14771,15 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .expect("session");
     let run = fixture
         .engine
-        .start_run(RunStartParams {
-            session_id: session.session_id,
-            client_run_id: ClientRunId::new("best-effort-delegations").expect("run ID"),
-            selection,
-            input: "scripted root input".into(),
-        })
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("best-effort-delegations").expect("run ID"),
+                selection,
+                input: "scripted root input".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
         .await
         .expect("root run");
     let parent = fixture

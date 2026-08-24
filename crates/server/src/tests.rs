@@ -436,10 +436,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 11 }),
+        json!({ "protocol_version": 12 }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], 11);
+    assert_eq!(hello["result"]["protocol_version"], 12);
     client
 }
 

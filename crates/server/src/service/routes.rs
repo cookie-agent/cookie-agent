@@ -28,6 +28,10 @@ use crate::rpc::{RpcFault, engine_fault, run_start_fault};
 
 type Result<T> = std::result::Result<T, ServerFault>;
 
+fn rpc_origin() -> cookie_agent_protocol::EventOrigin {
+    cookie_agent_protocol::EventOrigin::new("client:rpc").expect("static event origin is valid")
+}
+
 #[async_trait]
 impl ServerProtocol for Server {
     async fn connected(&self, context: ServerContext) {
@@ -113,7 +117,7 @@ impl ServerProtocol for Server {
 
     async fn rename_session(&self, params: SessionRenameParams) -> Result<SessionRenameResult> {
         self.engine
-            .rename_session(params.clone())
+            .rename_session(params.clone(), rpc_origin())
             .await
             .map_err(|error| rename_fault(&params, error).into())
     }
@@ -147,6 +151,7 @@ impl ServerProtocol for Server {
                 params.action,
                 params.resource,
                 params.effect,
+                rpc_origin(),
             )
             .await
             .map_err(protocol_fault)
@@ -157,7 +162,12 @@ impl ServerProtocol for Server {
         params: SessionPermissionClearParams,
     ) -> Result<SessionPermissionMutationResult> {
         self.engine
-            .clear_session_permission(params.session_id, params.action, &params.resource)
+            .clear_session_permission(
+                params.session_id,
+                params.action,
+                &params.resource,
+                rpc_origin(),
+            )
             .await
             .map_err(protocol_fault)
     }
@@ -179,6 +189,7 @@ impl ServerProtocol for Server {
             .compact_session_result(
                 params.session_id,
                 params.focus.as_ref().map(|focus| focus.as_str()),
+                rpc_origin(),
             )
             .await
             .map_err(protocol_fault)
@@ -186,20 +197,20 @@ impl ServerProtocol for Server {
 
     async fn revert_session(&self, params: SessionRevertParams) -> Result<SessionRevertResult> {
         self.engine
-            .revert_session(params.session_id, params.through_seq)
+            .revert_session(params.session_id, params.through_seq, rpc_origin())
             .await
             .map_err(protocol_fault)
     }
 
     async fn fork_session(&self, params: SessionForkParams) -> Result<SessionForkResult> {
         self.engine
-            .fork_session(params.session_id, params.through_seq)
+            .fork_session(params.session_id, params.through_seq, rpc_origin())
             .await
             .map_err(protocol_fault)
     }
 
     async fn start_run(&self, params: RunStartParams) -> Result<RunStartResult> {
-        match self.engine.start_run(params.clone()).await {
+        match self.engine.start_run(params.clone(), rpc_origin()).await {
             Ok(result) => Ok(result),
             Err(EngineError::RunIdempotencyConflict) => {
                 Err(RpcFault::run_start_conflict(&params).into())
@@ -210,7 +221,7 @@ impl ServerProtocol for Server {
 
     async fn steer_run(&self, params: RunSteerParams) -> Result<RunSteerResult> {
         self.engine
-            .steer(params.run_id, params.input)
+            .steer(params.run_id, params.input, rpc_origin())
             .await
             .map_err(protocol_fault)
     }
@@ -258,7 +269,7 @@ impl ServerProtocol for Server {
         params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult> {
         self.engine
-            .approval_respond(params.clone())
+            .approval_respond(params.clone(), rpc_origin())
             .await
             .map_err(|error| approval_fault(&params, error).into())
     }
