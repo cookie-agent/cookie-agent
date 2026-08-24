@@ -37,10 +37,7 @@ the generated `EventPayload` schema with the committed additive baseline.
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
-| Compaction | `context_checkpoint_committed`, `context_rehydrated`, `context_compaction_auto_disabled` |
-
-`context_compaction_auto_disabled` is a legacy durable event retained for old
-session logs. Current engines no longer emit it.
+| Compaction | `context_checkpoint_committed`, `context_rehydrated` |
 
 `plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary
 JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the

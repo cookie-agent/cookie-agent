@@ -195,10 +195,10 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 10);
+    assert_eq!(PROTOCOL_VERSION, 11);
     assert_eq!(EVENT_SCHEMA_VERSION, 21);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
-    assert!(serde_json::from_value::<ProtocolVersion>(json!(9)).is_err());
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     for version in [15, 16, 17, 18, 19, 20, 21] {
         assert_eq!(

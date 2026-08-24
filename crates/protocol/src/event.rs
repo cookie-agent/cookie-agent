@@ -1927,13 +1927,6 @@ pub enum EventPayload {
         #[schemars(length(max = 5))]
         files: Vec<ContextRehydratedFile>,
     },
-    /// Legacy durable event retained for old logs; the engine no longer emits it.
-    ContextCompactionAutoDisabled {
-        #[schemars(range(min = 1))]
-        observed_tokens: u64,
-        #[schemars(range(min = 1))]
-        trigger_tokens: u64,
-    },
     SessionTitleCommitted {
         change: SessionTitleChange,
         input_through_seq: u64,
@@ -2252,12 +2245,6 @@ impl EventPayload {
                 for file in files {
                     file.validate()?;
                 }
-            }
-            Self::ContextCompactionAutoDisabled {
-                observed_tokens,
-                trigger_tokens,
-            } if *trigger_tokens == 0 || *observed_tokens < *trigger_tokens => {
-                return Err(EventSchemaError::InvalidCheckpointBoundaries);
             }
             _ => {}
         }

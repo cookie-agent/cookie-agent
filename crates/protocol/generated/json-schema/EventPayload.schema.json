@@ -1845,31 +1845,6 @@
       ]
     },
     {
-      "description": "Legacy durable event retained for old logs; the engine no longer emits it.",
-      "type": "object",
-      "properties": {
-        "observed_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 1
-        },
-        "trigger_tokens": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 1
-        },
-        "type": {
-          "type": "string",
-          "const": "context_compaction_auto_disabled"
-        }
-      },
-      "required": [
-        "type",
-        "observed_tokens",
-        "trigger_tokens"
-      ]
-    },
-    {
       "type": "object",
       "properties": {
         "change": {

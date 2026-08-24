@@ -1832,16 +1832,6 @@ fn reduce_event(
                 |reason| format!("subagent {status:?}: {reason}").to_lowercase(),
             ),
         ),
-        EventPayload::ContextCompactionAutoDisabled {
-            observed_tokens,
-            trigger_tokens,
-        } => push_event(
-            state,
-            EventLevel::Warning,
-            format!(
-                "automatic context compaction disabled after remaining above the trigger ({observed_tokens}/{trigger_tokens} tokens); manual compaction remains available"
-            ),
-        ),
         EventPayload::PluginEventAdded { plugin, name, .. } => {
             push_event(state, EventLevel::Info, format!("plugin {plugin}: {name}"))
         }

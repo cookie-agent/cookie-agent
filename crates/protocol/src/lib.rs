@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 10, event schemas 15-21, and session metadata schema 10.
+//! Exact cookie-agent protocol 11, event schemas 15-21, and session metadata schema 10.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -126,7 +126,7 @@ pub use session::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 // Retained for the grant-invalidation journal until that journal is folded
 // into session events. Stored session events are versionless.
 pub const EVENT_SCHEMA_VERSION: u32 = 21;
@@ -202,8 +202,8 @@ macro_rules! exact_numeric_wire_type {
 
 exact_numeric_wire_type!(
     ProtocolVersion,
-    10,
-    "10",
+    11,
+    "11",
     "The exact protocol wire version."
 );
 /// Legacy schema marker used only by the grant-invalidation journal.
