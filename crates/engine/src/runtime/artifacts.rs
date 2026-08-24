@@ -21,16 +21,22 @@ const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 
 fn scan_durable_artifact_references(sessions_dir: &Path) -> std::io::Result<HashSet<String>> {
     let mut live = HashSet::new();
-    for entry in std::fs::read_dir(sessions_dir)? {
+    'sessions: for entry in std::fs::read_dir(sessions_dir)? {
         let entry = entry?;
         if !entry.path().is_dir() {
             continue;
         }
-        let Ok(file) = File::open(entry.path().join("events.jsonl")) else {
-            continue;
+        let file = match File::open(entry.path().join("events.jsonl")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
         };
         for line in BufReader::new(file).lines() {
-            let Ok(line) = line else { continue };
+            let line = match line {
+                Ok(line) => line,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue 'sessions,
+                Err(error) => return Err(error),
+            };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
@@ -1480,6 +1486,10 @@ mod gc_tests {
         let sessions_dir = root.path().join("sessions");
         let session_dir = sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string());
         std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::create_dir_all(
+            sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string()),
+        )
+        .unwrap();
         let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
 
         let (referenced, referenced_digest) = store.retain(b"referenced").unwrap();
@@ -1540,5 +1550,43 @@ mod gc_tests {
         ] {
             assert!(artifacts_dir.join(digest).exists());
         }
+    }
+
+    #[test]
+    fn garbage_collection_aborts_before_deletion_for_unreadable_event_log() {
+        let root = tempfile::tempdir().unwrap();
+        let artifacts_dir = root.path().join("artifacts");
+        let sessions_dir = root.path().join("sessions");
+        let session_dir = sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string());
+        std::fs::create_dir_all(session_dir.join("events.jsonl")).unwrap();
+        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
+        let (_, digest) = store.retain(b"must survive failed scan").unwrap();
+        age(&artifacts_dir.join(&digest));
+
+        let error = store
+            .collect_garbage(&sessions_dir, Duration::from_secs(60))
+            .unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(artifacts_dir.join(digest).exists());
+    }
+
+    #[test]
+    fn garbage_collection_continues_when_event_log_disappeared() {
+        let root = tempfile::tempdir().unwrap();
+        let artifacts_dir = root.path().join("artifacts");
+        let sessions_dir = root.path().join("sessions");
+        std::fs::create_dir_all(
+            sessions_dir.join(cookie_agent_protocol::SessionId::new_v7().to_string()),
+        )
+        .unwrap();
+        let store = ArtifactStore::open(artifacts_dir.clone()).unwrap();
+        let (_, digest) = store.retain(b"unreferenced").unwrap();
+        age(&artifacts_dir.join(&digest));
+
+        let report = store
+            .collect_garbage(&sessions_dir, Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(!artifacts_dir.join(digest).exists());
     }
 }
