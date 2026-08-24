@@ -87,6 +87,8 @@ struct EventLogWriterState {
     sync_deadline: Option<Instant>,
     directory_sync_pending: bool,
     background_error: Option<WriterFailure>,
+    #[cfg(test)]
+    background_sync_paused: bool,
     shutdown: bool,
 }
 
@@ -258,6 +260,8 @@ impl EventLogWriter {
                 sync_deadline: None,
                 directory_sync_pending: created,
                 background_error: None,
+                #[cfg(test)]
+                background_sync_paused: false,
                 shutdown: false,
             }),
             wake: Condvar::new(),
@@ -351,6 +355,16 @@ impl EventLogWriter {
         });
         (reached_receiver, release)
     }
+
+    #[cfg(test)]
+    fn pause_background_sync(&self) {
+        self.shared
+            .state
+            .lock()
+            .expect("event log writer state lock poisoned")
+            .background_sync_paused = true;
+        self.shared.wake.notify_one();
+    }
 }
 
 impl EventLogWriterShared {
@@ -404,6 +418,14 @@ fn event_log_sync_worker(shared: &EventLogWriterShared) {
                 let _ = shared.sync(&mut state);
             }
             return;
+        }
+        #[cfg(test)]
+        if state.background_sync_paused {
+            state = shared
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            continue;
         }
         let Some(deadline) = state.sync_deadline else {
             state = shared
@@ -736,12 +758,19 @@ impl EventLog {
     }
 
     #[cfg(test)]
-    fn install_sync_hook_for_test(
+    pub(crate) fn install_sync_hook_for_test(
         &self,
     ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         self.persistent_writer()
             .expect("open event log writer")
             .install_sync_hook()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_background_sync_for_test(&self) {
+        self.persistent_writer()
+            .expect("open event log writer")
+            .pause_background_sync();
     }
 
     #[cfg(test)]
@@ -4899,6 +4928,102 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn barrier_sync_drains_all_preceding_stream_records() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let records = attribution_records();
+        let bytes = records
+            .iter()
+            .flat_map(|record| {
+                let mut line = serde_json::to_vec(record).expect("serialize event");
+                line.push(b'\n');
+                line
+            })
+            .collect::<Vec<_>>();
+        fs::write(&path, bytes).expect("write event history");
+        let log = EventLog::open(path.clone(), records[0].session_id).expect("open event log");
+        let run_id = records[1].run_id.expect("run id");
+        let (resolved_model, prompt_fingerprint) = records
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::ModelAttemptStarted {
+                    resolved_model,
+                    prompt_fingerprint,
+                    ..
+                } => Some((resolved_model.clone(), prompt_fingerprint.clone())),
+                _ => None,
+            })
+            .expect("latest attempt");
+        let attempt_id = AttemptId(Uuid::from_u128(6));
+        log.append(
+            Some(run_id),
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 6,
+                fallback_index: 2,
+                retry_ordinal: 1,
+                resolved_model,
+                prompt_fingerprint,
+            },
+        )
+        .expect("start attempt");
+        log.pause_background_sync_for_test();
+        log.append(
+            Some(run_id),
+            EventPayload::TextDelta {
+                attempt_id,
+                text: "buffered text".into(),
+            },
+        )
+        .expect("append text delta");
+        log.append(
+            Some(run_id),
+            EventPayload::ReasoningDelta {
+                attempt_id,
+                text: "buffered reasoning".into(),
+            },
+        )
+        .expect("append reasoning delta");
+        let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+        let barrier = {
+            let log = log.clone();
+            thread::spawn(move || {
+                log.append(Some(run_id), EventPayload::AttemptAbandoned { attempt_id })
+            })
+        };
+
+        sync_reached.recv().expect("barrier reached sync");
+        assert_eq!(
+            load_jsonl::<StoredEvent>(&path)
+                .expect("read pre-barrier prefix")
+                .len(),
+            records.len() + 1,
+            "stream records remain buffered until the barrier sync"
+        );
+        release_sync.send(()).expect("release barrier sync");
+        barrier
+            .join()
+            .expect("barrier thread")
+            .expect("append barrier");
+
+        let durable = load_jsonl::<StoredEvent>(&path).expect("read barrier-synced events");
+        assert!(matches!(
+            &durable[durable.len() - 3].payload,
+            EventPayload::TextDelta { text, .. } if text == "buffered text"
+        ));
+        assert!(matches!(
+            &durable[durable.len() - 2].payload,
+            EventPayload::ReasoningDelta { text, .. } if text == "buffered reasoning"
+        ));
+        assert!(matches!(
+            durable.last().map(|event| &event.payload),
+            Some(EventPayload::AttemptAbandoned { attempt_id: durable_attempt })
+                if *durable_attempt == attempt_id
+        ));
     }
 
     #[test]

@@ -1212,7 +1212,7 @@ fn create_windows_session_file(path: &Path) -> Result<(), SessionError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path, sync::mpsc, thread};
 
     #[cfg(unix)]
     use std::{
@@ -1293,7 +1293,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn persist_test_session(store: &SessionStore) -> SessionId {
         let session_id = SessionId::new_v7();
         let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
@@ -1357,6 +1356,95 @@ mod tests {
             )
             .unwrap();
         session_id
+    }
+
+    #[test]
+    fn eviction_waits_for_pending_stream_records_to_sync() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+        let session_id = persist_test_session(&store);
+        let projection = store.get(session_id).expect("session projection");
+        let (run_id, resolved_model, prompt_fingerprint) = projection
+            .log
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted {
+                    agent,
+                    selected_suffix,
+                    ..
+                } => Some((
+                    event.run_id.expect("run id"),
+                    crate::model_history::wire_model(
+                        selected_suffix.first().expect("selected model"),
+                    ),
+                    agent.prompt_fingerprint.clone(),
+                )),
+                _ => None,
+            })
+            .expect("run event");
+        let attempt_id = AttemptId::new_v7();
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal: 1,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model,
+                    prompt_fingerprint,
+                },
+            )
+            .expect("start attempt");
+        let log = store.get(session_id).expect("session projection").log;
+        log.pause_background_sync_for_test();
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                EventPayload::TextDelta {
+                    attempt_id,
+                    text: "durable before eviction".into(),
+                },
+            )
+            .expect("append buffered delta");
+        let (sync_reached, release_sync) = log.install_sync_hook_for_test();
+        let (eviction_done, eviction_result) = mpsc::channel();
+        let evicting = {
+            let store = store.clone();
+            thread::spawn(move || {
+                eviction_done
+                    .send(store.evict(session_id))
+                    .expect("report eviction result");
+            })
+        };
+
+        sync_reached.recv().expect("eviction reached pending sync");
+        assert!(matches!(
+            eviction_result.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_sync.send(()).expect("release eviction sync");
+        assert!(
+            eviction_result
+                .recv()
+                .expect("receive eviction result")
+                .expect("evict session")
+        );
+        evicting.join().expect("eviction thread");
+
+        let durable = crate::events::load_jsonl::<cookie_agent_protocol::StoredEvent>(
+            &store.session_dir(session_id).join("events.jsonl"),
+        )
+        .expect("read evicted event log");
+        assert!(durable.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::TextDelta { text, .. } if text == "durable before eviction"
+        )));
     }
 
     #[cfg(unix)]
