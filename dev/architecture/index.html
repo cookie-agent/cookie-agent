@@ -868,6 +868,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System prompt
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/protocol/" class="md-nav__link">
         
   
@@ -1668,7 +1691,7 @@ publish contexts are expiring one-shot grants activated at outbound delivery,
 so a token cannot be replayed or retargeted to another session.</p>
 <h2 id="protocol-surface">Protocol surface<a class="headerlink" href="#protocol-surface" title="Permanent link">&para;</a></h2>
 <p>The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at <code>/ws</code>, protocol 12 current-only, <code>handshake</code> first.
+an authenticated WebSocket at <code>/ws</code>, protocol 13 current-only, <code>handshake</code> first.
 Discovery is a single <code>runtime.snapshot.get</code> call that returns one coherent
 runtime snapshot (schema 5). Session events stream through <code>events.subscribe</code>,
 plugin bus events through <code>events.plugin</code>, and tool output through separate

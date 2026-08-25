@@ -16,7 +16,7 @@
         <link rel="prev" href="../../guide/usage/">
       
       
-        <link rel="next" href="../protocol/">
+        <link rel="next" href="../system-prompt/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -947,6 +947,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#project_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      [project_context]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#context_compaction" class="md-nav__link">
     <span class="md-ellipsis">
       [context_compaction]
@@ -1073,6 +1082,29 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System prompt
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -1288,6 +1320,15 @@
   <a href="#approval" class="md-nav__link">
     <span class="md-ellipsis">
       [approval]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      [project_context]
     </span>
   </a>
   
@@ -1529,6 +1570,12 @@ resumes on restart.</p>
 <td>Tool output truncation limits</td>
 </tr>
 <tr>
+<td><code>project_context</code></td>
+<td>table</td>
+<td>defaults below</td>
+<td>Automatic <code>AGENTS.md</code> context</td>
+</tr>
+<tr>
 <td><code>approval</code></td>
 <td>table</td>
 <td>defaults below</td>
@@ -1665,6 +1712,33 @@ truncated or replaced with artifact references.</p>
 <td>integer</td>
 <td><code>30000</code></td>
 <td>How long a user approval stays pending before it expires unattended. Must be greater than zero.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="project_context"><code>[project_context]</code><a class="headerlink" href="#project_context" title="Permanent link">&para;</a></h2>
+<p>Controls root-run <code>AGENTS.md</code> discovery documented in
+<a href="../../guide/agents/#project-context-from-agentsmd">Agents</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Load project-context files at each root run start. Delegated and internal agents remain excluded.</td>
+</tr>
+<tr>
+<td><code>max_bytes</code></td>
+<td>integer</td>
+<td><code>32768</code> (<code>32 * 1024</code>)</td>
+<td>Maximum UTF-8 bytes retained from each discovered file. Longer content is truncated on a UTF-8 boundary and records its original size. Must be from 1 through <code>2097152</code> (2 MiB).</td>
 </tr>
 </tbody>
 </table>

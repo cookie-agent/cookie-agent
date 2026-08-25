@@ -875,6 +875,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System prompt
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../protocol/" class="md-nav__link">
         
   
@@ -1184,6 +1207,10 @@ they do not reinterpret those events without attribution.</p>
 <td><code>session_created</code>, <code>session_reverted</code>, <code>session_permission_overlay_set</code>, <code>skill_loaded</code>, <code>skill_invocation_noted</code>, <code>session_title_committed</code>, <code>delegated_context_seeded</code></td>
 </tr>
 <tr>
+<td>Project context</td>
+<td><code>project_context_loaded</code></td>
+</tr>
+<tr>
 <td>Plugins</td>
 <td><code>plugin_event_added</code>, <code>plugin_diagnostic</code></td>
 </tr>
@@ -1221,6 +1248,13 @@ they do not reinterpret those events without attribution.</p>
 </tr>
 </tbody>
 </table>
+<p><code>project_context_loaded</code> is a run-scoped root-session event stamped
+<code>engine:project-context</code>. It contains one or two discovered <code>AGENTS.md</code> entries,
+each with a bounded display source, retained content, truncation flag, and
+original byte size. Missing or disabled context produces no event. History uses
+only the latest run's event and replays its entries as one provenance-delimited
+user turn. Compaction pins that turn alongside loaded skill bodies. See
+<a href="../system-prompt/#project-context-turn">System Prompt Composition</a>.</p>
 <p><code>plugin_event_added</code> is a runless plugin publication containing <code>plugin</code>, <code>name</code>, and arbitrary
 JSON <code>payload</code>. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
 complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
