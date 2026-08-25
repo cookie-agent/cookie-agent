@@ -842,6 +842,7 @@ fn event_requires_durable_barrier(payload: &EventPayload) -> bool {
         | EventPayload::SessionPermissionOverlaySet { .. }
         | EventPayload::SkillLoaded { .. }
         | EventPayload::SkillInvocationNoted { .. }
+        | EventPayload::ProjectContextLoaded { .. }
         | EventPayload::PluginEventAdded { .. }
         | EventPayload::PluginDiagnostic { .. }
         | EventPayload::RunStarted { .. }

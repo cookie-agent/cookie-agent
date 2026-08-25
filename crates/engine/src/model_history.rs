@@ -41,9 +41,14 @@ pub(crate) fn checkpoint_retained_history(
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
+    let pinned_project_context = usize::from(latest_project_context_event(events).is_some());
     let mut retained = history
         .iter()
-        .take(1_usize.saturating_add(pinned_skills))
+        .take(
+            1_usize
+                .saturating_add(pinned_project_context)
+                .saturating_add(pinned_skills),
+        )
         .cloned()
         .collect::<Vec<_>>();
     if let Some(summary) = summary {
@@ -282,16 +287,20 @@ pub(crate) fn assemble_model_context(
         .filter(|event| event.seq > commit.boundaries.source_through_seq)
         .cloned()
         .collect::<Vec<_>>();
-    let mut pinned_skills = events
+    let project_context_seq = latest_project_context_event(events)
+        .filter(|event| event.seq <= commit.boundaries.source_through_seq)
+        .map(|event| event.seq);
+    let mut pinned_context = events
         .iter()
         .filter(|event| {
             event.seq <= commit.boundaries.source_through_seq
-                && matches!(event.payload, EventPayload::SkillLoaded { .. })
+                && (matches!(event.payload, EventPayload::SkillLoaded { .. })
+                    || project_context_seq == Some(event.seq))
         })
         .cloned()
         .collect::<Vec<_>>();
-    pinned_skills.append(&mut after);
-    let after = pinned_skills;
+    pinned_context.append(&mut after);
+    let after = pinned_context;
     match &commit.checkpoint {
         ContextCheckpoint::InternalSummary { checkpoint } => {
             let mut assembled =
@@ -347,6 +356,12 @@ fn assemble_history_with_replay(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let loaded_project_context = latest_project_context_event(events).and_then(|event| {
+        let EventPayload::ProjectContextLoaded { entries } = &event.payload else {
+            return None;
+        };
+        Some(project_context_turn(entries))
+    });
     let mut logical = Vec::<LogicalTurn>::new();
     let mut submitted = HashMap::<u64, String>::new();
     let mut pending_model_calls = HashMap::<
@@ -585,6 +600,9 @@ fn assemble_history_with_replay(
     let mut history = vec![HistoryTurn::system(SystemMessage::new(vec![
         SystemPart::Text(TextPart::new(composed_prompt)),
     ]))];
+    if let Some(project_context) = loaded_project_context {
+        history.push(HistoryTurn::user(user_text(&project_context)));
+    }
     history.extend(
         loaded_skills
             .iter()
@@ -702,6 +720,45 @@ fn assemble_history_with_replay(
         history,
         replay_decisions,
     })
+}
+
+fn latest_project_context_event(events: &[StoredEvent]) -> Option<&StoredEvent> {
+    let latest_run = events.iter().rev().find_map(|event| {
+        matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
+    });
+    events.iter().rev().find(|event| {
+        matches!(event.payload, EventPayload::ProjectContextLoaded { .. })
+            && latest_run.is_none_or(|run| event.run_id == run)
+    })
+}
+
+fn project_context_turn(entries: &[cookie_agent_protocol::ProjectContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            let source = escape_xml_attribute(entry.source.as_str());
+            let marker = entry.truncated.then(|| {
+                format!(
+                    "\n[project context truncated; original size: {} bytes]",
+                    entry.original_bytes
+                )
+            });
+            format!(
+                "<project_context source=\"{source}\">\n{}{}\n</project_context>",
+                entry.content,
+                marker.as_deref().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn escape_xml_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn attach_result(
@@ -1389,10 +1446,11 @@ mod tests {
         ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
         PermissionAction, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
         PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
-        ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
-        SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, Usage,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
+        ProjectContextEntry, ProviderId, ProviderModelId, ReplayDisposition, ResolvedModelRef,
+        RunId, SafeCode, SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit,
+        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
+        ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -1450,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_accounting_retains_every_pinned_skill_body() {
+    fn checkpoint_accounting_retains_project_context_and_every_skill_body() {
         let run = RunId::new_v7();
         let skill_event = |seq, name: &str, body: &str| {
             event(
@@ -1467,26 +1525,54 @@ mod tests {
             )
         };
         let events = vec![
-            skill_event(1, "one", "first pinned body"),
-            skill_event(2, "two", "second pinned body"),
+            event(
+                1,
+                run,
+                EventPayload::ProjectContextLoaded {
+                    entries: vec![ProjectContextEntry {
+                        source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                        content: "pinned project context".into(),
+                        truncated: false,
+                        original_bytes: 22,
+                    }],
+                },
+            ),
+            skill_event(2, "one", "first pinned body"),
+            skill_event(3, "two", "second pinned body"),
         ];
         let history = vec![
             HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
                 "system",
             ))])),
+            HistoryTurn::user(super::user_text("pinned project context")),
             HistoryTurn::user(super::user_text("first pinned body")),
             HistoryTurn::user(super::user_text("second pinned body")),
             HistoryTurn::user(super::user_text("discarded conversation")),
         ];
         let native = checkpoint_retained_history(&history, &events, None);
-        assert_eq!(native.len(), 3);
+        assert_eq!(native.len(), 4);
         let summarized = checkpoint_retained_history(&history, &events, Some("summary"));
-        assert_eq!(summarized.len(), 4);
+        assert_eq!(summarized.len(), 5);
         let encoded = serde_json::to_string(&summarized).expect("history JSON");
         assert!(encoded.contains("first pinned body"));
         assert!(encoded.contains("second pinned body"));
+        assert!(encoded.contains("pinned project context"));
         assert!(encoded.contains("<summary>\\nsummary"));
         assert!(!encoded.contains("discarded conversation"));
+    }
+
+    #[test]
+    fn truncated_project_context_turn_has_provenance_and_size_marker() {
+        let rendered = super::project_context_turn(&[ProjectContextEntry {
+            source: SafeDisplayText::new("AGENTS.md").unwrap(),
+            content: "bounded".into(),
+            truncated: true,
+            original_bytes: 42,
+        }]);
+        assert_eq!(
+            rendered,
+            "<project_context source=\"AGENTS.md\">\nbounded\n[project context truncated; original size: 42 bytes]\n</project_context>"
+        );
     }
 
     #[test]

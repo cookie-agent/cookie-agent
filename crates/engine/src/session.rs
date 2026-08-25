@@ -377,6 +377,7 @@ impl SessionStore {
                     | EventPayload::DelegatedContextSeeded { .. }
                     | EventPayload::SessionPermissionOverlaySet { .. }
                     | EventPayload::SkillLoaded { .. }
+                    | EventPayload::ProjectContextLoaded { .. }
             );
         let envelope = current.log.append(run, origin, event)?;
         let rebuilt = projection(current.log.clone())?;

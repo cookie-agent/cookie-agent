@@ -1,5 +1,5 @@
 {
-  "protocol_version": 12,
+  "protocol_version": 13,
   "schemas": [
     "ClientHello.schema.json",
     "ServerHello.schema.json",

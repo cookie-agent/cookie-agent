@@ -156,6 +156,7 @@ impl Engine {
             tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
             tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
         };
+        let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
                 self.reconcile_provider_store()?;
@@ -191,6 +192,11 @@ impl Engine {
                     self.inner.config.runtime.prompt_caching.strategy(),
                 )?
             }
+        };
+        let project_context = if is_root {
+            self.load_project_context(params.selection.preset.as_deref())?
+        } else {
+            Vec::new()
         };
         self.compose_skill_listing(
             params.session_id,
@@ -334,6 +340,22 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
+        if !project_context.is_empty()
+            && let Err(error) = self
+                .append(
+                    params.session_id,
+                    Some(run_id),
+                    event_origin("engine:project-context"),
+                    Event::ProjectContextLoaded {
+                        entries: project_context,
+                    },
+                )
+                .await
+        {
+            return Err(self
+                .terminalize_run_setup_failure(&active, run_id, error)
+                .await);
+        }
         for message in injected_messages {
             if let Err(error) = self
                 .append(

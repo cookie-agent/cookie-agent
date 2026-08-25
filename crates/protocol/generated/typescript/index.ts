@@ -219,6 +219,7 @@ export * from "./PreparedCapabilityLifetime.js";
 export * from "./PreparedOperationIdentity.js";
 export * from "./PreparedResourceDigest.js";
 export * from "./PreparedResourceIdentity.js";
+export * from "./ProjectContextEntry.js";
 export * from "./ProtocolVersion.js";
 export * from "./ProviderConfigurationState.js";
 export * from "./ProviderConnectError.js";

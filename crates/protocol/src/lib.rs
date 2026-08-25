@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 12 with versionless session events.
+//! Exact cookie-agent protocol 13 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -126,7 +126,7 @@ pub use session::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
@@ -199,8 +199,8 @@ macro_rules! exact_numeric_wire_type {
 
 exact_numeric_wire_type!(
     ProtocolVersion,
-    12,
-    "12",
+    13,
+    "13",
     "The exact protocol wire version."
 );
 exact_numeric_wire_type!(

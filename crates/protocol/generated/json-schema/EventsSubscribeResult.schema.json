@@ -1073,6 +1073,27 @@
         {
           "type": "object",
           "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProjectContextEntry"
+              },
+              "maxItems": 2,
+              "minItems": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "project_context_loaded"
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "name": {
               "type": "string"
             },
@@ -4668,6 +4689,36 @@
       "additionalProperties": false,
       "required": [
         "digest"
+      ]
+    },
+    "ProjectContextEntry": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "original_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "content",
+        "truncated",
+        "original_bytes"
       ]
     },
     "ProviderOptions": {

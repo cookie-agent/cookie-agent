@@ -153,6 +153,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         runtime: RuntimeConfig {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
+            project_context: cookie_agent_config::ProjectContextConfig::default(),
             approval: ApprovalConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
             prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
@@ -368,6 +369,7 @@ fn harness_with_catalog(
         runtime: RuntimeConfig {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
+            project_context: cookie_agent_config::ProjectContextConfig::default(),
             approval: ApprovalConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
             prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
@@ -436,10 +438,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 12 }),
+        json!({ "protocol_version": 13 }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], 12);
+    assert_eq!(hello["result"]["protocol_version"], 13);
     client
 }
 

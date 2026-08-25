@@ -67,6 +67,7 @@ mod helpers;
 mod internal_agents;
 mod mailbox;
 mod model_loop;
+mod project_context;
 mod recovery;
 mod residency;
 mod runs;
@@ -110,6 +111,12 @@ pub enum EngineError {
     GrantJournal(#[from] GrantJournalError),
     #[error("tool output storage error: {0}")]
     ToolOutput(#[from] std::io::Error),
+    #[error("project context read failed at {path}: {source}")]
+    ProjectContextIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("configuration error: {0}")]
     Config(#[source] Box<cookie_agent_config::ConfigError>),
     #[error("agent `{0}` is not eligible in this session origin")]
