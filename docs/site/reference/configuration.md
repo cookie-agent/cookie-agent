@@ -64,6 +64,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 |---|---|---|---|
 | `server` | table | defaults below | Daemon bind address |
 | `tool_output` | table | defaults below | Tool output truncation limits |
+| `project_context` | table | defaults below | Automatic `AGENTS.md` context |
 | `approval` | table | defaults below | Approval expiry |
 | `context_compaction` | table | defaults below | Automatic context compaction |
 | `prompt_caching` | table | defaults below | Anthropic prompt-cache breakpoints |
@@ -117,6 +118,16 @@ truncated or replaced with artifact references.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `timeout_ms` | integer | `30000` | How long a user approval stays pending before it expires unattended. Must be greater than zero. |
+
+## `[project_context]`
+
+Controls root-run `AGENTS.md` discovery documented in
+[Agents](../guide/agents.md#project-context-from-agentsmd).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Load project-context files at each root run start. Delegated and internal agents remain excluded. |
+| `max_bytes` | integer | `32768` (`32 * 1024`) | Maximum UTF-8 bytes retained from each discovered file. Longer content is truncated on a UTF-8 boundary and records its original size. Must be from 1 through `2097152` (2 MiB). |
 
 ## `[context_compaction]`
 

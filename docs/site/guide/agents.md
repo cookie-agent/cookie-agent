@@ -96,6 +96,30 @@ expression, and only without a variant.
 - `internal` — engine-only (see below). Cannot be selected as a root or a
   delegation target.
 
+See [System Prompt Composition](../reference/system-prompt.md) for the exact
+prompt, skill-listing, plugin, cache, and history assembly order.
+
+## Project context from `AGENTS.md`
+
+Root sessions automatically load project context at the start of every run. The
+files are read fresh, so edits apply to the next run:
+
+1. `.cookie-agent/agents/AGENTS.md` is the default project file. When the run
+   uses a preset and `.cookie-agent/agents/<preset>/AGENTS.md` exists, that file
+   replaces the default project file.
+2. `<cwd>/AGENTS.md` is loaded in addition when present.
+
+Missing files add no event or model tokens. Delegated sessions do not discover
+these files for their own runs; explicitly inherited parent text and forked event
+prefixes retain their existing behavior. Internal agents never discover them.
+Loaded entries are persisted with provenance in `project_context_loaded` and
+replayed as one user context turn, not as system-prompt text.
+
+Repository-controlled `AGENTS.md` content enters model context automatically.
+Treat it as untrusted instructions when opening unfamiliar workspaces and review
+the [security guidance](security.md#project-context-files). Configure limits in
+[`[project_context]`](../reference/configuration.md#project_context).
+
 ## Subagent tools
 
 `delegate_subagent` requires a short `description`, a self-contained `prompt`,

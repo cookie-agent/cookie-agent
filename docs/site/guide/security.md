@@ -76,6 +76,16 @@ will use that path. Treat the parent storage location as trusted and remove
 unexpected state before starting the daemon. Neither platform protects secrets
 from privileged code such as `root`, `SYSTEM`, or an elevated administrator.
 
+### Project context files
+
+For root runs, repository-controlled `AGENTS.md` files are read automatically and
+their text enters model context. They are instructions, not trusted policy, and
+cannot grant permissions or bypass tool preparation. A malicious repository can
+still influence model behavior within permissions. Review or disable project
+context before running unfamiliar workspaces, avoid placing secrets in these
+files, and use restrictive tool permissions. See
+[Project context](agents.md#project-context-from-agentsmd).
+
 ### Retained tool output
 
 Tool-output truncation is a presentation bound, not redaction. The preview shown

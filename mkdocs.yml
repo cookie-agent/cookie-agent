@@ -66,6 +66,7 @@ nav:
       - Usage and cost: guide/usage.md
   - Reference:
       - Configuration: reference/configuration.md
+      - System prompt: reference/system-prompt.md
       - Protocol: reference/protocol.md
       - Events: reference/events.md
       - Tools: reference/tools.md

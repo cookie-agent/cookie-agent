@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 12 is current-only. A client must call `handshake` with
-`{ "protocol_version": 12 }` before any other method.
+Protocol 13 is current-only. A client must call `handshake` with
+`{ "protocol_version": 13 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 12.
+members of protocol 13.
 
 ## Session mechanics
 
