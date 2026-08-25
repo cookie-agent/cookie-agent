@@ -3318,11 +3318,97 @@ async fn project_context_discovery_honors_override_addition_missing_disable_and_
     fixture.config.runtime.project_context.enabled = true;
     fixture.config.runtime.project_context.max_bytes = 5;
     fixture.engine = reopen_engine(&fixture);
-    write_private_test_file(&root.join("AGENTS.md"), "abcdefghi");
+    write_private_test_file(&root.join("AGENTS.md"), "abcdéz");
     let entry = fixture.engine.load_project_context(None).unwrap().remove(0);
-    assert_eq!(entry.content, "abcde");
+    assert_eq!(entry.content, "abcd");
     assert!(entry.truncated);
-    assert_eq!(entry.original_bytes, 9);
+    assert_eq!(entry.original_bytes, 7);
+    let rendered = crate::model_history::project_context_turn_for_test(&[entry]);
+    assert!(rendered.is_char_boundary(rendered.len()));
+    assert!(!rendered.contains('\u{fffd}'));
+    assert!(rendered.contains("original size: 7 bytes"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn consecutive_root_runs_reload_project_context() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "first project-context run",
+            scripted_text_body("first complete"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "second project-context run",
+            scripted_text_body("second complete"),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let context_path = fixture._directory.path().join("AGENTS.md");
+    write_private_test_file(&context_path, "run one project context");
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let first = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("project-context-first").unwrap(),
+                selection: selection.clone(),
+                input: "first project-context run".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    write_private_test_file(&context_path, "run two project context");
+    let second = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("project-context-second").unwrap(),
+                selection,
+                input: "second project-context run".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("run one project context"));
+    assert!(!requests[0].contains("run two project context"));
+    assert!(requests[1].contains("run two project context"));
+    assert!(!requests[1].contains("run one project context"));
+
+    let contexts = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events()
+        .into_iter()
+        .filter_map(|event| {
+            let EventPayload::ProjectContextLoaded { entries } = event.payload else {
+                return None;
+            };
+            Some((event.run_id.unwrap(), entries[0].content.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contexts,
+        vec![
+            (first.run_id, "run one project context".into()),
+            (second.run_id, "run two project context".into()),
+        ]
+    );
     fixture.engine.shutdown().await;
 }
 

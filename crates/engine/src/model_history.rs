@@ -753,6 +753,13 @@ fn project_context_turn(entries: &[cookie_agent_protocol::ProjectContextEntry]) 
         .join("\n\n")
 }
 
+#[cfg(test)]
+pub(crate) fn project_context_turn_for_test(
+    entries: &[cookie_agent_protocol::ProjectContextEntry],
+) -> String {
+    project_context_turn(entries)
+}
+
 fn escape_xml_attribute(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1441,16 +1448,16 @@ mod tests {
 
     use cookie_agent_protocol::{
         ArtifactReference, AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
-        ContextCheckpointBudgets, ContextCheckpointCommit, EventPayload, InternalAgentInvocationId,
-        InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey,
-        ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
-        PermissionAction, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
-        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
-        ProjectContextEntry, ProviderId, ProviderModelId, ReplayDisposition, ResolvedModelRef,
-        RunId, SafeCode, SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit,
-        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolOutputTruncation,
-        ToolTerminationOutcome, Usage,
+        ContextCheckpointBudgets, ContextCheckpointCommit, DelegatedContextRole,
+        DelegatedContextTurn, EventPayload, InternalAgentInvocationId, InternalAgentRunId,
+        InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey, ModelSelection,
+        NativeContextScope, NativeReplayArtifact, OperationFingerprint, PermissionAction,
+        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, ProjectContextEntry, ProviderId,
+        ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
+        SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
+        ToolCallStart, ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -1573,6 +1580,62 @@ mod tests {
             rendered,
             "<project_context source=\"AGENTS.md\">\nbounded\n[project context truncated; original size: 42 bytes]\n</project_context>"
         );
+    }
+
+    #[test]
+    fn replay_orders_project_context_then_skills_then_delegated_seed() {
+        let run = RunId::new_v7();
+        let mut delegated = event(
+            1,
+            run,
+            EventPayload::DelegatedContextSeeded {
+                invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+                turns: vec![DelegatedContextTurn {
+                    role: DelegatedContextRole::User,
+                    text: "delegated seed".into(),
+                }],
+            },
+        );
+        delegated.run_id = None;
+        let events = vec![
+            delegated,
+            event(
+                2,
+                run,
+                EventPayload::SkillLoaded {
+                    name: "ordered-skill".into(),
+                    rendered_body: "loaded skill body".into(),
+                    source_path: "/skills/ordered-skill/SKILL.md".into(),
+                    args: String::new(),
+                    base_dir: "/skills/ordered-skill".into(),
+                    supporting_files: Vec::new(),
+                },
+            ),
+            event(
+                3,
+                run,
+                EventPayload::ProjectContextLoaded {
+                    entries: vec![ProjectContextEntry {
+                        source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                        content: "project context body".into(),
+                        truncated: false,
+                        original_bytes: 20,
+                    }],
+                },
+            ),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let history = assemble_full_history(&events, &store, &binding(), "system prompt").unwrap();
+        assert_eq!(history.len(), 4);
+        let rendered = history
+            .iter()
+            .map(|turn| serde_json::to_string(turn).unwrap())
+            .collect::<Vec<_>>();
+        assert!(rendered[0].contains("system prompt"));
+        assert!(rendered[1].contains("project context body"));
+        assert!(rendered[2].contains("loaded skill body"));
+        assert!(rendered[3].contains("delegated seed"));
     }
 
     #[test]
