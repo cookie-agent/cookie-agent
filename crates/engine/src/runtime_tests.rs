@@ -4890,7 +4890,7 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                 .compact_session(
                     session.session_id,
                     Some("preserve focus"),
-                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+                    cookie_agent_protocol::EventOrigin::new("client:rpc").unwrap()
                 )
                 .await
                 .expect("compaction")
@@ -4907,6 +4907,24 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             EventPayload::ContextCheckpointCommitted { commit } => Some(&commit.checkpoint),
             _ => None,
         });
+        let compaction_events = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::ContextCheckpointCommitted { .. }
+                        | EventPayload::ContextRehydrated { .. }
+                        | EventPayload::ToolOutputElided { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!compaction_events.is_empty());
+        assert!(compaction_events.iter().all(|event| {
+            event
+                .origin
+                .as_ref()
+                .is_some_and(|origin| origin.as_str() == "client:rpc")
+        }));
         let assembled = fixture
             .engine
             .get_history(session.session_id, EngineHistoryView::Assembled)
@@ -7325,16 +7343,20 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .expect("steering projection")
         .log
         .events();
-    let checkpoint_seq = events
+    let checkpoint = events
         .iter()
-        .find_map(|event| {
+        .find(|event| {
             matches!(
                 event.payload,
                 EventPayload::ContextCheckpointCommitted { .. }
             )
-            .then_some(event.seq)
         })
         .expect("predictive checkpoint");
+    assert_eq!(
+        checkpoint.origin.as_ref().map(|origin| origin.as_str()),
+        Some("engine:auto-compact")
+    );
+    let checkpoint_seq = checkpoint.seq;
     let tool_result_seq = events
         .iter()
         .find_map(|event| {

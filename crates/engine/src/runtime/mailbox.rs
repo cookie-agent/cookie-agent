@@ -1046,7 +1046,7 @@ impl Engine {
             }
             SessionCommand::Compact {
                 focus,
-                origin: _request_origin,
+                origin,
                 reply,
             } => {
                 if !self.reserve_compaction(session) {
@@ -1074,7 +1074,7 @@ impl Engine {
                             hook.release.notified().await;
                         }
                         let mut result = engine
-                            .compact_session_direct(session, focus.as_deref())
+                            .compact_session_direct(session, focus.as_deref(), origin)
                             .await;
                         if let Err(error) = engine.finish_compaction(session).await
                             && result.is_ok()

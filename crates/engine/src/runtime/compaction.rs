@@ -101,6 +101,7 @@ impl Engine {
         &self,
         session: SessionId,
         focus: Option<&str>,
+        origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionCompactResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         if projection.status == SessionStatus::Running {
@@ -135,7 +136,7 @@ impl Engine {
                 overflow_recovery: false,
                 focus,
                 actor_direct: false,
-                origin: super::event_origin("engine:compaction"),
+                origin,
             })
             .await
         {
