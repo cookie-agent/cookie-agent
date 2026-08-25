@@ -1897,7 +1897,7 @@ fn reduce_event(
         | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
-        | EventPayload::ProjectContextLoaded { .. }
+        | EventPayload::AgentMdLoaded { .. }
         | EventPayload::SkillLoaded { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
     }

@@ -195,7 +195,7 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 13);
+    assert_eq!(PROTOCOL_VERSION, 14);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
@@ -432,16 +432,16 @@ fn stored_event_origin_is_additive_strict_and_not_payload_degraded() {
 }
 
 #[test]
-fn project_context_event_round_trips_and_enforces_entry_bounds() {
+fn agent_md_event_round_trips_and_enforces_entry_bounds() {
     let event = StoredEvent {
         engine_version: None,
-        origin: Some(EventOrigin::new("engine:project-context").unwrap()),
+        origin: Some(EventOrigin::new("engine:agent-md").unwrap()),
         session_id: SessionId::new_v7(),
         run_id: Some(RunId::new_v7()),
         seq: 1,
         timestamp: jiff::Timestamp::now(),
-        payload: EventPayload::ProjectContextLoaded {
-            entries: vec![ProjectContextEntry {
+        payload: EventPayload::AgentMdLoaded {
+            entries: vec![AgentMdEntry {
                 source: SafeDisplayText::new("AGENTS.md").unwrap(),
                 content: "project rules".into(),
                 truncated: false,
@@ -453,15 +453,12 @@ fn project_context_event_round_trips_and_enforces_entry_bounds() {
     assert_eq!(serde_json::from_value::<StoredEvent>(value).unwrap(), event);
 
     let invalid = StoredEvent {
-        payload: EventPayload::ProjectContextLoaded {
+        payload: EventPayload::AgentMdLoaded {
             entries: Vec::new(),
         },
         ..event
     };
-    assert_eq!(
-        invalid.validate(),
-        Err(EventSchemaError::InvalidProjectContext)
-    );
+    assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidAgentMd));
 }
 
 #[test]

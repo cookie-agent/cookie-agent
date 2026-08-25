@@ -226,7 +226,7 @@ mod tests {
             runtime: RuntimeConfig {
                 server: ServerConfig::default(),
                 tool_output: ToolOutputConfig::default(),
-                project_context: cookie_agent_config::ProjectContextConfig::default(),
+                agent_md: cookie_agent_config::AgentMdConfig::default(),
                 approval: ApprovalConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
                 prompt_caching: cookie_agent_config::PromptCachingConfig::default(),

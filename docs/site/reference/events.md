@@ -44,7 +44,7 @@ Terminal tool-result truncation and `tool_output_elided` references use the
 | Category | Event payload types |
 |---|---|
 | Session | `session_created`, `session_reverted`, `session_permission_overlay_set`, `skill_loaded`, `skill_invocation_noted`, `session_title_committed`, `delegated_context_seeded` |
-| Project context | `project_context_loaded` |
+| AGENTS.md context | `agent_md_loaded` |
 | Plugins | `plugin_event_added`, `plugin_diagnostic` |
 | User input | `message_injected`, `user_input_admitted`, `user_input_submitted`, `user_input_transformed`, `user_input_recalled`, `user_input_recalled_v2`, `user_input_applied` |
 | Run | `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `run_interrupted` |
@@ -55,13 +55,13 @@ Terminal tool-result truncation and `tool_output_elided` references use the
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
 | Compaction | `context_checkpoint_committed`, `context_rehydrated` |
 
-`project_context_loaded` is a run-scoped root-session event stamped
-`engine:project-context`. It contains one or two discovered `AGENTS.md` entries,
+`agent_md_loaded` is a run-scoped root-session event stamped
+`engine:agent-md`. It contains one or two discovered `AGENTS.md` entries,
 each with a bounded display source, retained content, truncation flag, and
 original byte size. Missing or disabled context produces no event. History uses
 only the latest run's event and replays its entries as one provenance-delimited
 user turn. Compaction pins that turn alongside loaded skill bodies. See
-[System Prompt Composition](system-prompt.md#project-context-turn).
+[System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
 `plugin_event_added` is a runless plugin publication containing `plugin`, `name`, and arbitrary
 JSON `payload`. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the

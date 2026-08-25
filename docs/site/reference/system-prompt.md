@@ -17,7 +17,7 @@ For a root or delegated run, the engine composes the model request in this order
    Each accepted change recomputes the prompt fingerprint.
 4. History assembly puts the final composed prompt in `history[0]` as the sole
    system turn.
-5. Root runs may then add a durable [project-context](#project-context-turn)
+5. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
    user turn. Loaded skill bodies follow as user turns, followed by normal
    session history.
 
@@ -35,26 +35,26 @@ composition update the effective fingerprints before `run_started` is persisted.
 Model-attempt events record the prompt fingerprint, and replay validation rejects
 attempt attribution that contradicts the frozen run snapshot.
 
-Project context is intentionally excluded from the system-prompt fingerprint. It
+AGENTS.md context is intentionally excluded from the system-prompt fingerprint. It
 has its own durable event, provenance, and user-role boundary.
 
-## Project-context turn
+## AGENTS.md context turn
 
 At each root run start, cookie agent discovers applicable `AGENTS.md` files and
-stores their bounded content in `project_context_loaded`. History replays the
+stores their bounded content in `agent_md_loaded`. History replays the
 latest run's entries as one user turn, with each file delimited as:
 
 ```text
-<project_context source="AGENTS.md">
+<agent_md source="AGENTS.md">
 ...
-</project_context>
+</agent_md>
 ```
 
 Truncated entries include their original byte size. Making this context a turn
 rather than system text keeps the stable system cache key independent of normal
 repository edits, preserves per-file provenance, and lets compaction pin the
 turn alongside loaded skill bodies. The rolling non-system cache breakpoint can
-still move when project context changes, which is the intended invalidation.
+still move when AGENTS.md context changes, which is the intended invalidation.
 
 ## Cache breakpoints
 
@@ -65,7 +65,7 @@ injection. The engine clears prior markers, then can mark:
 - the final emitted tool definition; and
 - the last eligible non-system history turn.
 
-Project context does not move or rewrite the system breakpoint. Tool schemas are
+AGENTS.md context does not move or rewrite the system breakpoint. Tool schemas are
 separate request fields, so tool changes use the tool breakpoint instead of
 changing system text.
 
@@ -73,9 +73,9 @@ changing system text.
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; optional skill listing and plugin composition | Root-only project-context turn, loaded skill bodies, then session history |
-| Delegated | Frozen delegated agent body; optional skill listing and plugin composition | No filesystem project-context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
-| Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No project-context discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; optional skill listing and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
+| Delegated | Frozen delegated agent body; optional skill listing and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
+| Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 
 The built-in `approval`, `compaction`, and `title` prompts are each roughly 100
 bytes: one narrow instruction plus an output-format constraint. The synthesized

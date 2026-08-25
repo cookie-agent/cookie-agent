@@ -23,9 +23,9 @@ pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};
 pub use loader::{LoadedMcpServer, McpServerSource};
 pub use mcp_store::write_mcp_server;
 pub use runtime::{
-    ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger, DelegationConfig, McpConfig,
-    McpOAuthConfig, McpOAuthSettings, McpServerConfig, ModelPricing, PicoUsdPerMillion,
-    PluginConfig, PluginsConfig, PricingConfig, ProjectContextConfig, PromptCachingConfig,
+    AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
+    DelegationConfig, McpConfig, McpOAuthConfig, McpOAuthSettings, McpServerConfig, ModelPricing,
+    PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig, PromptCachingConfig,
     RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
 };
 pub use skills::{

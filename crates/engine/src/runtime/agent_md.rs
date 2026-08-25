@@ -1,15 +1,15 @@
 use std::{fs::File, io::Read as _, path::Path};
 
-use cookie_agent_protocol::{ProjectContextEntry, SafeDisplayText};
+use cookie_agent_protocol::{AgentMdEntry, SafeDisplayText};
 
 use super::{Engine, EngineError};
 
 impl Engine {
-    pub(crate) fn load_project_context(
+    pub(crate) fn load_agent_md(
         &self,
         preset: Option<&str>,
-    ) -> Result<Vec<ProjectContextEntry>, EngineError> {
-        let config = &self.inner.config.runtime.project_context;
+    ) -> Result<Vec<AgentMdEntry>, EngineError> {
+        let config = &self.inner.config.runtime.agent_md;
         if !config.enabled {
             return Ok(Vec::new());
         }
@@ -18,20 +18,20 @@ impl Engine {
         let mut entries = Vec::with_capacity(2);
         let project_entry = if let Some(preset) = preset {
             let source = format!(".cookie-agent/agents/{preset}/AGENTS.md");
-            match self.read_project_context_file(
+            match self.read_agent_md_file(
                 &agents_dir.join(preset).join("AGENTS.md"),
                 &source,
                 config.max_bytes,
             )? {
                 Some(entry) => Some(entry),
-                None => self.read_project_context_file(
+                None => self.read_agent_md_file(
                     &agents_dir.join("AGENTS.md"),
                     ".cookie-agent/agents/AGENTS.md",
                     config.max_bytes,
                 )?,
             }
         } else {
-            self.read_project_context_file(
+            self.read_agent_md_file(
                 &agents_dir.join("AGENTS.md"),
                 ".cookie-agent/agents/AGENTS.md",
                 config.max_bytes,
@@ -41,24 +41,24 @@ impl Engine {
             entries.push(entry);
         }
         if let Some(entry) =
-            self.read_project_context_file(&cwd.join("AGENTS.md"), "AGENTS.md", config.max_bytes)?
+            self.read_agent_md_file(&cwd.join("AGENTS.md"), "AGENTS.md", config.max_bytes)?
         {
             entries.push(entry);
         }
         Ok(entries)
     }
 
-    fn read_project_context_file(
+    fn read_agent_md_file(
         &self,
         path: &Path,
         source: &str,
         max_bytes: usize,
-    ) -> Result<Option<ProjectContextEntry>, EngineError> {
+    ) -> Result<Option<AgentMdEntry>, EngineError> {
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => {
-                return Err(EngineError::ProjectContextIo {
+                return Err(EngineError::AgentMdIo {
                     path: path.to_owned(),
                     source,
                 });
@@ -66,7 +66,7 @@ impl Engine {
         };
         let metadata_len = file
             .metadata()
-            .map_err(|source| EngineError::ProjectContextIo {
+            .map_err(|source| EngineError::AgentMdIo {
                 path: path.to_owned(),
                 source,
             })?
@@ -75,13 +75,13 @@ impl Engine {
         (&mut file)
             .take(max_bytes.saturating_add(1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|source| EngineError::ProjectContextIo {
+            .map_err(|source| EngineError::AgentMdIo {
                 path: path.to_owned(),
                 source,
             })?;
         let final_metadata_len = file
             .metadata()
-            .map_err(|source| EngineError::ProjectContextIo {
+            .map_err(|source| EngineError::AgentMdIo {
                 path: path.to_owned(),
                 source,
             })?
@@ -96,15 +96,15 @@ impl Engine {
                     .to_owned()
             }
             Err(error) => {
-                return Err(EngineError::ProjectContextIo {
+                return Err(EngineError::AgentMdIo {
                     path: path.to_owned(),
                     source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
                 });
             }
         };
         let original_bytes = observed_bytes.max(content.len() as u64);
-        Ok(Some(ProjectContextEntry {
-            source: SafeDisplayText::new(source).expect("project context source is bounded"),
+        Ok(Some(AgentMdEntry {
+            source: SafeDisplayText::new(source).expect("AGENTS.md context source is bounded"),
             truncated: original_bytes > content.len() as u64,
             original_bytes,
             content,

@@ -41,12 +41,12 @@ pub(crate) fn checkpoint_retained_history(
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
-    let pinned_project_context = usize::from(latest_project_context_event(events).is_some());
+    let pinned_agent_md = usize::from(latest_agent_md_event(events).is_some());
     let mut retained = history
         .iter()
         .take(
             1_usize
-                .saturating_add(pinned_project_context)
+                .saturating_add(pinned_agent_md)
                 .saturating_add(pinned_skills),
         )
         .cloned()
@@ -287,7 +287,7 @@ pub(crate) fn assemble_model_context(
         .filter(|event| event.seq > commit.boundaries.source_through_seq)
         .cloned()
         .collect::<Vec<_>>();
-    let project_context_seq = latest_project_context_event(events)
+    let agent_md_seq = latest_agent_md_event(events)
         .filter(|event| event.seq <= commit.boundaries.source_through_seq)
         .map(|event| event.seq);
     let mut pinned_context = events
@@ -295,7 +295,7 @@ pub(crate) fn assemble_model_context(
         .filter(|event| {
             event.seq <= commit.boundaries.source_through_seq
                 && (matches!(event.payload, EventPayload::SkillLoaded { .. })
-                    || project_context_seq == Some(event.seq))
+                    || agent_md_seq == Some(event.seq))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -356,11 +356,11 @@ fn assemble_history_with_replay(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let loaded_project_context = latest_project_context_event(events).and_then(|event| {
-        let EventPayload::ProjectContextLoaded { entries } = &event.payload else {
+    let loaded_agent_md = latest_agent_md_event(events).and_then(|event| {
+        let EventPayload::AgentMdLoaded { entries } = &event.payload else {
             return None;
         };
-        Some(project_context_turn(entries))
+        Some(agent_md_turn(entries))
     });
     let mut logical = Vec::<LogicalTurn>::new();
     let mut submitted = HashMap::<u64, String>::new();
@@ -600,8 +600,8 @@ fn assemble_history_with_replay(
     let mut history = vec![HistoryTurn::system(SystemMessage::new(vec![
         SystemPart::Text(TextPart::new(composed_prompt)),
     ]))];
-    if let Some(project_context) = loaded_project_context {
-        history.push(HistoryTurn::user(user_text(&project_context)));
+    if let Some(agent_md) = loaded_agent_md {
+        history.push(HistoryTurn::user(user_text(&agent_md)));
     }
     history.extend(
         loaded_skills
@@ -722,29 +722,29 @@ fn assemble_history_with_replay(
     })
 }
 
-fn latest_project_context_event(events: &[StoredEvent]) -> Option<&StoredEvent> {
+fn latest_agent_md_event(events: &[StoredEvent]) -> Option<&StoredEvent> {
     let latest_run = events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
     });
     events.iter().rev().find(|event| {
-        matches!(event.payload, EventPayload::ProjectContextLoaded { .. })
+        matches!(event.payload, EventPayload::AgentMdLoaded { .. })
             && latest_run.is_none_or(|run| event.run_id == run)
     })
 }
 
-fn project_context_turn(entries: &[cookie_agent_protocol::ProjectContextEntry]) -> String {
+fn agent_md_turn(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
     entries
         .iter()
         .map(|entry| {
             let source = escape_xml_attribute(entry.source.as_str());
             let marker = entry.truncated.then(|| {
                 format!(
-                    "\n[project context truncated; original size: {} bytes]",
+                    "\n[AGENTS.md context truncated; original size: {} bytes]",
                     entry.original_bytes
                 )
             });
             format!(
-                "<project_context source=\"{source}\">\n{}{}\n</project_context>",
+                "<agent_md source=\"{source}\">\n{}{}\n</agent_md>",
                 entry.content,
                 marker.as_deref().unwrap_or_default()
             )
@@ -754,10 +754,8 @@ fn project_context_turn(entries: &[cookie_agent_protocol::ProjectContextEntry]) 
 }
 
 #[cfg(test)]
-pub(crate) fn project_context_turn_for_test(
-    entries: &[cookie_agent_protocol::ProjectContextEntry],
-) -> String {
-    project_context_turn(entries)
+pub(crate) fn agent_md_turn_for_test(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
+    agent_md_turn(entries)
 }
 
 fn escape_xml_attribute(value: &str) -> String {
@@ -1447,14 +1445,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cookie_agent_protocol::{
-        ArtifactReference, AssistantToolCallRef, ContextCheckpoint, ContextCheckpointBoundaries,
-        ContextCheckpointBudgets, ContextCheckpointCommit, DelegatedContextRole,
-        DelegatedContextTurn, EventPayload, InternalAgentInvocationId, InternalAgentRunId,
-        InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey, ModelSelection,
-        NativeContextScope, NativeReplayArtifact, OperationFingerprint, PermissionAction,
-        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult, PreparedApprovalResource,
-        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
-        PreparedResourceDigest, PreparedResourceIdentity, ProjectContextEntry, ProviderId,
+        AgentMdEntry, ArtifactReference, AssistantToolCallRef, ContextCheckpoint,
+        ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
+        DelegatedContextRole, DelegatedContextTurn, EventPayload, InternalAgentInvocationId,
+        InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey,
+        ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
+        PermissionAction, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
+        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
+        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
         ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
         SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
         ToolCallStart, ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, Usage,
@@ -1515,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_accounting_retains_project_context_and_every_skill_body() {
+    fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
         let run = RunId::new_v7();
         let skill_event = |seq, name: &str, body: &str| {
             event(
@@ -1535,10 +1533,10 @@ mod tests {
             event(
                 1,
                 run,
-                EventPayload::ProjectContextLoaded {
-                    entries: vec![ProjectContextEntry {
+                EventPayload::AgentMdLoaded {
+                    entries: vec![AgentMdEntry {
                         source: SafeDisplayText::new("AGENTS.md").unwrap(),
-                        content: "pinned project context".into(),
+                        content: "pinned AGENTS.md context".into(),
                         truncated: false,
                         original_bytes: 22,
                     }],
@@ -1551,7 +1549,7 @@ mod tests {
             HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
                 "system",
             ))])),
-            HistoryTurn::user(super::user_text("pinned project context")),
+            HistoryTurn::user(super::user_text("pinned AGENTS.md context")),
             HistoryTurn::user(super::user_text("first pinned body")),
             HistoryTurn::user(super::user_text("second pinned body")),
             HistoryTurn::user(super::user_text("discarded conversation")),
@@ -1563,14 +1561,14 @@ mod tests {
         let encoded = serde_json::to_string(&summarized).expect("history JSON");
         assert!(encoded.contains("first pinned body"));
         assert!(encoded.contains("second pinned body"));
-        assert!(encoded.contains("pinned project context"));
+        assert!(encoded.contains("pinned AGENTS.md context"));
         assert!(encoded.contains("<summary>\\nsummary"));
         assert!(!encoded.contains("discarded conversation"));
     }
 
     #[test]
-    fn truncated_project_context_turn_has_provenance_and_size_marker() {
-        let rendered = super::project_context_turn(&[ProjectContextEntry {
+    fn truncated_agent_md_turn_has_provenance_and_size_marker() {
+        let rendered = super::agent_md_turn(&[AgentMdEntry {
             source: SafeDisplayText::new("AGENTS.md").unwrap(),
             content: "bounded".into(),
             truncated: true,
@@ -1578,12 +1576,12 @@ mod tests {
         }]);
         assert_eq!(
             rendered,
-            "<project_context source=\"AGENTS.md\">\nbounded\n[project context truncated; original size: 42 bytes]\n</project_context>"
+            "<agent_md source=\"AGENTS.md\">\nbounded\n[AGENTS.md context truncated; original size: 42 bytes]\n</agent_md>"
         );
     }
 
     #[test]
-    fn replay_orders_project_context_then_skills_then_delegated_seed() {
+    fn replay_orders_agent_md_then_skills_then_delegated_seed() {
         let run = RunId::new_v7();
         let mut delegated = event(
             1,
@@ -1614,10 +1612,10 @@ mod tests {
             event(
                 3,
                 run,
-                EventPayload::ProjectContextLoaded {
-                    entries: vec![ProjectContextEntry {
+                EventPayload::AgentMdLoaded {
+                    entries: vec![AgentMdEntry {
                         source: SafeDisplayText::new("AGENTS.md").unwrap(),
-                        content: "project context body".into(),
+                        content: "AGENTS.md context body".into(),
                         truncated: false,
                         original_bytes: 20,
                     }],
@@ -1633,7 +1631,7 @@ mod tests {
             .map(|turn| serde_json::to_string(turn).unwrap())
             .collect::<Vec<_>>();
         assert!(rendered[0].contains("system prompt"));
-        assert!(rendered[1].contains("project context body"));
+        assert!(rendered[1].contains("AGENTS.md context body"));
         assert!(rendered[2].contains("loaded skill body"));
         assert!(rendered[3].contains("delegated seed"));
     }

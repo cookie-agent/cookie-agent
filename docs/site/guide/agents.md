@@ -99,9 +99,9 @@ expression, and only without a variant.
 See [System Prompt Composition](../reference/system-prompt.md) for the exact
 prompt, skill-listing, plugin, cache, and history assembly order.
 
-## Project context from `AGENTS.md`
+## AGENTS.md context
 
-Root sessions automatically load project context at the start of every run. The
+Root sessions automatically load AGENTS.md context at the start of every run. The
 files are read fresh, so edits apply to the next run:
 
 1. `.cookie-agent/agents/AGENTS.md` is the default project file. When the run
@@ -112,13 +112,13 @@ files are read fresh, so edits apply to the next run:
 Missing files add no event or model tokens. Delegated sessions do not discover
 these files for their own runs; explicitly inherited parent text and forked event
 prefixes retain their existing behavior. Internal agents never discover them.
-Loaded entries are persisted with provenance in `project_context_loaded` and
+Loaded entries are persisted with provenance in `agent_md_loaded` and
 replayed as one user context turn, not as system-prompt text.
 
 Repository-controlled `AGENTS.md` content enters model context automatically.
 Treat it as untrusted instructions when opening unfamiliar workspaces and review
-the [security guidance](security.md#project-context-files). Configure limits in
-[`[project_context]`](../reference/configuration.md#project_context).
+the [security guidance](security.md#agentsmd-context-files). Configure limits in
+[`[agent_md]`](../reference/configuration.md#agent_md).
 
 ## Subagent tools
 

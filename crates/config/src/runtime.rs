@@ -286,7 +286,7 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub tool_output: ToolOutputConfig,
     #[serde(default)]
-    pub project_context: ProjectContextConfig,
+    pub agent_md: AgentMdConfig,
     #[serde(default)]
     pub approval: ApprovalConfig,
     #[serde(default)]
@@ -308,7 +308,7 @@ pub struct RuntimeConfig {
 pub(crate) struct RawRuntimeLayer {
     pub(crate) server: Option<ServerConfig>,
     pub(crate) tool_output: Option<ToolOutputConfig>,
-    pub(crate) project_context: Option<ProjectContextConfig>,
+    pub(crate) agent_md: Option<AgentMdConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) prompt_caching: Option<PromptCachingConfig>,
@@ -426,21 +426,21 @@ pub struct ToolOutputConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectContextConfig {
+pub struct AgentMdConfig {
     #[serde(default = "yes")]
     pub enabled: bool,
-    #[serde(default = "default_project_context_bytes")]
+    #[serde(default = "default_agent_md_bytes")]
     pub max_bytes: usize,
 }
-impl Default for ProjectContextConfig {
+impl Default for AgentMdConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_bytes: default_project_context_bytes(),
+            max_bytes: default_agent_md_bytes(),
         }
     }
 }
-const fn default_project_context_bytes() -> usize {
+const fn default_agent_md_bytes() -> usize {
     32 * 1024
 }
 impl Default for ToolOutputConfig {
@@ -642,8 +642,8 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.tool_output {
         runtime.tool_output = value.clone();
     }
-    if let Some(value) = &layer.project_context {
-        runtime.project_context = value.clone();
+    if let Some(value) = &layer.agent_md {
+        runtime.agent_md = value.clone();
     }
     if let Some(value) = &layer.approval {
         runtime.approval = value.clone();
@@ -670,8 +670,8 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         || runtime.server.host.len() > 255
         || runtime.tool_output.max_lines == 0
         || runtime.tool_output.max_bytes == 0
-        || runtime.project_context.max_bytes == 0
-        || runtime.project_context.max_bytes > 2 * 1024 * 1024
+        || runtime.agent_md.max_bytes == 0
+        || runtime.agent_md.max_bytes > 2 * 1024 * 1024
         || runtime.approval.timeout_ms == 0
         || runtime.delegation.max_depth == 0
         || runtime.delegation.max_concurrency == Some(0)

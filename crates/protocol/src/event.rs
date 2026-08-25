@@ -1454,13 +1454,13 @@ pub struct ContextRehydratedFile {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectContextEntry {
+pub struct AgentMdEntry {
     pub source: SafeDisplayText,
     pub content: String,
     pub truncated: bool,
     pub original_bytes: u64,
 }
-impl ProjectContextEntry {
+impl AgentMdEntry {
     pub const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -1469,7 +1469,7 @@ impl ProjectContextEntry {
             || self.original_bytes < content_bytes
             || self.truncated != (self.original_bytes > content_bytes)
         {
-            return Err(EventSchemaError::InvalidProjectContext);
+            return Err(EventSchemaError::InvalidAgentMd);
         }
         Ok(())
     }
@@ -1678,9 +1678,9 @@ pub enum EventPayload {
     SkillInvocationNoted {
         name: String,
     },
-    ProjectContextLoaded {
+    AgentMdLoaded {
         #[schemars(length(min = 1, max = 2))]
-        entries: Vec<ProjectContextEntry>,
+        entries: Vec<AgentMdEntry>,
     },
     PluginEventAdded {
         plugin: String,
@@ -2087,9 +2087,9 @@ impl EventPayload {
             Self::SkillInvocationNoted { name } if name.is_empty() => {
                 return Err(EventSchemaError::InvalidSkillEvent);
             }
-            Self::ProjectContextLoaded { entries } => {
+            Self::AgentMdLoaded { entries } => {
                 if entries.is_empty() || entries.len() > 2 {
-                    return Err(EventSchemaError::InvalidProjectContext);
+                    return Err(EventSchemaError::InvalidAgentMd);
                 }
                 for entry in entries {
                     entry.validate()?;
@@ -2748,7 +2748,7 @@ pub struct OutputSnapshotEnvelope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {
     InvalidOrigin,
-    InvalidProjectContext,
+    InvalidAgentMd,
     EmptyTitle,
     TitleTooLong,
     TitleControlCharacter,
@@ -2794,7 +2794,7 @@ impl fmt::Display for EventSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::InvalidOrigin => "event origin is invalid",
-            Self::InvalidProjectContext => "project context event is invalid",
+            Self::InvalidAgentMd => "AGENTS.md context event is invalid",
             Self::EmptyTitle => "session title must not be blank",
             Self::TitleTooLong => "session title exceeds 512 bytes",
             Self::TitleControlCharacter => "session title must not contain control characters",

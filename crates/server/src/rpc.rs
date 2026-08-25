@@ -239,7 +239,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::DelegationEvents(_) => "delegation_events",
         EngineError::GrantJournal(_) => "grant_journal",
         EngineError::ToolOutput(_) => "tool_output_io",
-        EngineError::ProjectContextIo { .. } => "project_context_io",
+        EngineError::AgentMdIo { .. } => "agent_md_io",
         EngineError::IneligibleAgent(_) => "ineligible_agent",
         EngineError::DisabledAgent(_) => "disabled_agent",
         EngineError::MissingRun(_) => "missing_run",

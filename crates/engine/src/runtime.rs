@@ -56,6 +56,7 @@ use crate::{
 };
 
 mod admission;
+mod agent_md;
 mod approval_api;
 mod approval_flow;
 mod approval_projection;
@@ -67,7 +68,6 @@ mod helpers;
 mod internal_agents;
 mod mailbox;
 mod model_loop;
-mod project_context;
 mod recovery;
 mod residency;
 mod runs;
@@ -111,8 +111,8 @@ pub enum EngineError {
     GrantJournal(#[from] GrantJournalError),
     #[error("tool output storage error: {0}")]
     ToolOutput(#[from] std::io::Error),
-    #[error("project context read failed at {path}: {source}")]
-    ProjectContextIo {
+    #[error("AGENTS.md context read failed at {path}: {source}")]
+    AgentMdIo {
         path: PathBuf,
         #[source]
         source: std::io::Error,

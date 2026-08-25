@@ -193,8 +193,8 @@ impl Engine {
                 )?
             }
         };
-        let project_context = if is_root {
-            self.load_project_context(params.selection.preset.as_deref())?
+        let agent_md = if is_root {
+            self.load_agent_md(params.selection.preset.as_deref())?
         } else {
             Vec::new()
         };
@@ -340,15 +340,13 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(run_id, active.clone());
-        if !project_context.is_empty()
+        if !agent_md.is_empty()
             && let Err(error) = self
                 .append(
                     params.session_id,
                     Some(run_id),
-                    event_origin("engine:project-context"),
-                    Event::ProjectContextLoaded {
-                        entries: project_context,
-                    },
+                    event_origin("engine:agent-md"),
+                    Event::AgentMdLoaded { entries: agent_md },
                 )
                 .await
         {

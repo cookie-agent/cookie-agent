@@ -1878,7 +1878,7 @@ fn fixture() -> Fixture {
         runtime: RuntimeConfig {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
-            project_context: cookie_agent_config::ProjectContextConfig::default(),
+            agent_md: cookie_agent_config::AgentMdConfig::default(),
             approval: ApprovalConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
             prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
@@ -3268,80 +3268,68 @@ async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
 }
 
 #[tokio::test]
-async fn project_context_discovery_honors_override_addition_missing_disable_and_truncation() {
+async fn agent_md_discovery_honors_override_addition_missing_disable_and_truncation() {
     let (mut fixture, _) = custom_fixture();
     let root = fixture._directory.path();
     let agents = root.join(".cookie-agent").join("agents");
-    write_private_test_file(&agents.join("AGENTS.md"), "default project context");
-    write_private_test_file(&root.join("AGENTS.md"), "cwd project context");
+    write_private_test_file(&agents.join("AGENTS.md"), "default AGENTS.md context");
+    write_private_test_file(&root.join("AGENTS.md"), "cwd AGENTS.md context");
 
     let entries = fixture
         .engine
-        .load_project_context(None)
-        .expect("default project context");
+        .load_agent_md(None)
+        .expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].source.as_str(), ".cookie-agent/agents/AGENTS.md");
-    assert_eq!(entries[0].content, "default project context");
+    assert_eq!(entries[0].content, "default AGENTS.md context");
     assert_eq!(entries[1].source.as_str(), "AGENTS.md");
-    assert_eq!(entries[1].content, "cwd project context");
+    assert_eq!(entries[1].content, "cwd AGENTS.md context");
 
     let preset = agents.join("python");
     create_private_test_dir(&preset);
-    write_private_test_file(&preset.join("AGENTS.md"), "preset project context");
+    write_private_test_file(&preset.join("AGENTS.md"), "preset AGENTS.md context");
     let entries = fixture
         .engine
-        .load_project_context(Some("python"))
-        .expect("preset project context");
+        .load_agent_md(Some("python"))
+        .expect("preset AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
         ".cookie-agent/agents/python/AGENTS.md"
     );
-    assert_eq!(entries[0].content, "preset project context");
+    assert_eq!(entries[0].content, "preset AGENTS.md context");
     assert!(
         entries
             .iter()
-            .all(|entry| entry.content != "default project context")
+            .all(|entry| entry.content != "default AGENTS.md context")
     );
 
     write_private_test_file(&root.join("AGENTS.md"), "fresh cwd context");
     assert_eq!(
-        fixture.engine.load_project_context(None).unwrap()[1].content,
+        fixture.engine.load_agent_md(None).unwrap()[1].content,
         "fresh cwd context"
     );
     std::fs::remove_file(agents.join("AGENTS.md")).unwrap();
     std::fs::remove_file(preset.join("AGENTS.md")).unwrap();
     std::fs::remove_file(root.join("AGENTS.md")).unwrap();
-    assert!(
-        fixture
-            .engine
-            .load_project_context(None)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(fixture.engine.load_agent_md(None).unwrap().is_empty());
 
     fixture.engine.shutdown().await;
-    fixture.config.runtime.project_context.enabled = false;
+    fixture.config.runtime.agent_md.enabled = false;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "disabled context");
-    assert!(
-        fixture
-            .engine
-            .load_project_context(None)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(fixture.engine.load_agent_md(None).unwrap().is_empty());
 
     fixture.engine.shutdown().await;
-    fixture.config.runtime.project_context.enabled = true;
-    fixture.config.runtime.project_context.max_bytes = 5;
+    fixture.config.runtime.agent_md.enabled = true;
+    fixture.config.runtime.agent_md.max_bytes = 5;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "abcdéz");
-    let entry = fixture.engine.load_project_context(None).unwrap().remove(0);
+    let entry = fixture.engine.load_agent_md(None).unwrap().remove(0);
     assert_eq!(entry.content, "abcd");
     assert!(entry.truncated);
     assert_eq!(entry.original_bytes, 7);
-    let rendered = crate::model_history::project_context_turn_for_test(&[entry]);
+    let rendered = crate::model_history::agent_md_turn_for_test(&[entry]);
     assert!(rendered.is_char_boundary(rendered.len()));
     assert!(!rendered.contains('\u{fffd}'));
     assert!(rendered.contains("original size: 7 bytes"));
@@ -3349,32 +3337,32 @@ async fn project_context_discovery_honors_override_addition_missing_disable_and_
 }
 
 #[tokio::test]
-async fn consecutive_root_runs_reload_project_context() {
+async fn consecutive_root_runs_reload_agent_md() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     responses
         .send(MatchedScriptedResponse::last_message_contains(
-            "first project-context run",
+            "first agent-md run",
             scripted_text_body("first complete"),
         ))
         .unwrap();
     responses
         .send(MatchedScriptedResponse::last_message_contains(
-            "second project-context run",
+            "second agent-md run",
             scripted_text_body("second complete"),
         ))
         .unwrap();
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let context_path = fixture._directory.path().join("AGENTS.md");
-    write_private_test_file(&context_path, "run one project context");
+    write_private_test_file(&context_path, "run one AGENTS.md context");
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     let first = fixture
         .engine
         .start_run(
             RunStartParams {
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("project-context-first").unwrap(),
+                client_run_id: ClientRunId::new("agent-md-first").unwrap(),
                 selection: selection.clone(),
-                input: "first project-context run".into(),
+                input: "first agent-md run".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -3382,15 +3370,15 @@ async fn consecutive_root_runs_reload_project_context() {
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
-    write_private_test_file(&context_path, "run two project context");
+    write_private_test_file(&context_path, "run two AGENTS.md context");
     let second = fixture
         .engine
         .start_run(
             RunStartParams {
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("project-context-second").unwrap(),
+                client_run_id: ClientRunId::new("agent-md-second").unwrap(),
                 selection,
-                input: "second project-context run".into(),
+                input: "second agent-md run".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -3399,10 +3387,10 @@ async fn consecutive_root_runs_reload_project_context() {
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
     let requests = captured.await.unwrap();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].contains("run one project context"));
-    assert!(!requests[0].contains("run two project context"));
-    assert!(requests[1].contains("run two project context"));
-    assert!(!requests[1].contains("run one project context"));
+    assert!(requests[0].contains("run one AGENTS.md context"));
+    assert!(!requests[0].contains("run two AGENTS.md context"));
+    assert!(requests[1].contains("run two AGENTS.md context"));
+    assert!(!requests[1].contains("run one AGENTS.md context"));
 
     let contexts = fixture
         .engine
@@ -3414,7 +3402,7 @@ async fn consecutive_root_runs_reload_project_context() {
         .events()
         .into_iter()
         .filter_map(|event| {
-            let EventPayload::ProjectContextLoaded { entries } = event.payload else {
+            let EventPayload::AgentMdLoaded { entries } = event.payload else {
                 return None;
             };
             Some((event.run_id.unwrap(), entries[0].content.clone()))
@@ -3423,15 +3411,15 @@ async fn consecutive_root_runs_reload_project_context() {
     assert_eq!(
         contexts,
         vec![
-            (first.run_id, "run one project context".into()),
-            (second.run_id, "run two project context".into()),
+            (first.run_id, "run one AGENTS.md context".into()),
+            (second.run_id, "run two AGENTS.md context".into()),
         ]
     );
     fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
-async fn root_run_persists_and_replays_project_context_as_a_user_turn() {
+async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     let (endpoint, captured) = scripted_model_server().await;
     let (mut fixture, mut selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
@@ -3458,15 +3446,15 @@ async fn root_run_persists_and_replays_project_context_as_a_user_turn() {
         .start_run(
             RunStartParams {
                 session_id: session.session_id,
-                client_run_id: ClientRunId::new("project-context-replay").unwrap(),
+                client_run_id: ClientRunId::new("agent-md-replay").unwrap(),
                 selection,
-                input: "run with project context".into(),
+                input: "run with AGENTS.md context".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
-        .expect("start project context run");
-    let request = captured.await.expect("captured project context request");
+        .expect("start AGENTS.md context run");
+    let request = captured.await.expect("captured AGENTS.md context request");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let events = fixture
@@ -3479,13 +3467,13 @@ async fn root_run_persists_and_replays_project_context_as_a_user_turn() {
         .events();
     let loaded = events
         .iter()
-        .find(|event| matches!(event.payload, EventPayload::ProjectContextLoaded { .. }))
-        .expect("project context event");
+        .find(|event| matches!(event.payload, EventPayload::AgentMdLoaded { .. }))
+        .expect("AGENTS.md context event");
     assert_eq!(
         loaded.origin.as_ref().map(|origin| origin.as_str()),
-        Some("engine:project-context")
+        Some("engine:agent-md")
     );
-    let EventPayload::ProjectContextLoaded { entries } = &loaded.payload else {
+    let EventPayload::AgentMdLoaded { entries } = &loaded.payload else {
         unreachable!()
     };
     assert_eq!(entries.len(), 2);
@@ -3504,9 +3492,9 @@ async fn root_run_persists_and_replays_project_context_as_a_user_turn() {
             message["role"] == "user"
                 && message["content"]
                     .as_str()
-                    .is_some_and(|content| content.contains("<project_context"))
+                    .is_some_and(|content| content.contains("<agent_md"))
         })
-        .expect("project context user turn");
+        .expect("AGENTS.md context user turn");
     let content = context["content"].as_str().unwrap();
     assert!(content.contains("source=\".cookie-agent/agents/python/AGENTS.md\""));
     assert!(content.contains("preset replay context"));
@@ -11635,7 +11623,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     write_private_test_file(
         &fixture._directory.path().join("AGENTS.md"),
-        "root-only project context",
+        "root-only AGENTS.md context",
     );
     fixture
         .engine
@@ -11716,7 +11704,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
             .log
             .events()
             .iter()
-            .any(|event| matches!(event.payload, EventPayload::ProjectContextLoaded { .. }))
+            .any(|event| matches!(event.payload, EventPayload::AgentMdLoaded { .. }))
     );
     assert!(
         !fixture
@@ -11728,7 +11716,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
             .log
             .events()
             .iter()
-            .any(|event| matches!(event.payload, EventPayload::ProjectContextLoaded { .. }))
+            .any(|event| matches!(event.payload, EventPayload::AgentMdLoaded { .. }))
     );
 
     let page = fixture

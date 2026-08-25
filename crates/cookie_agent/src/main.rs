@@ -97,7 +97,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 13 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 14 JSON-RPC WebSocket daemon on localhost.
     Daemon,
     /// Attach the TUI to an existing daemon.
     Attach {
