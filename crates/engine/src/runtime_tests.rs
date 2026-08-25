@@ -81,15 +81,33 @@ fn create_private_test_dir(path: &std::path::Path) {
 fn write_private_test_file(path: &std::path::Path, contents: impl AsRef<[u8]>) {
     #[cfg(unix)]
     {
-        fs::write(path, contents).expect("private test file");
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private test file");
+        use std::{fs::OpenOptions, io::Write as _, os::unix::fs::OpenOptionsExt as _};
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+            .expect("private test file");
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .expect("private test file permissions");
+        file.set_len(0).expect("truncate private test file");
+        file.write_all(contents.as_ref())
+            .expect("write private test file");
     }
     #[cfg(windows)]
     {
         use std::io::Write as _;
 
-        let mut file = cookie_agent_models::secure_store::create_windows_private_file(path)
-            .expect("private test file");
+        let mut file = match fs::OpenOptions::new().write(true).truncate(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                cookie_agent_models::secure_store::create_windows_private_file(path)
+                    .expect("private test file")
+            }
+            Err(error) => panic!("private test file: {error}"),
+        };
         file.write_all(contents.as_ref())
             .expect("write private test file");
     }
