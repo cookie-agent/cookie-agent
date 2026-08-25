@@ -13,6 +13,16 @@ use crate::{fs_cap, prepared_operation, prepared_resource, safe_title};
 
 const DEFAULT_RESULT_LIMIT: u32 = 2_000;
 
+pub(crate) fn result_truncation_policy(
+    tool_name: &str,
+) -> cookie_agent_engine::ToolResultTruncationPolicy {
+    if tool_name == "get_subagent_result" {
+        cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+    } else {
+        cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+    }
+}
+
 pub struct DelegateToolProvider {
     engine: Engine,
 }
@@ -161,6 +171,7 @@ impl ToolProvider for DelegateToolProvider {
         } else {
             vec![
                 ToolSpec {
+                    result_truncation: result_truncation_policy("delegate_subagent"),
                     name: "delegate_subagent".into(),
                     permission_name: Self::get_permission_name("delegate_subagent")?.into(),
                     description: "Delegate a self-contained prompt to an allowed subagent.".into(),
@@ -178,6 +189,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    result_truncation: result_truncation_policy("get_subagent_result"),
                     name: "get_subagent_result".into(),
                     permission_name: Self::get_permission_name("get_subagent_result")?.into(),
                     description: "Read a paginated result from an owned subagent session.".into(),
@@ -193,6 +205,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    result_truncation: result_truncation_policy("steer_subagent"),
                     name: "steer_subagent".into(),
                     permission_name: Self::get_permission_name("steer_subagent")?.into(),
                     description:
@@ -207,6 +220,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    result_truncation: result_truncation_policy("cancel_subagent"),
                     name: "cancel_subagent".into(),
                     permission_name: Self::get_permission_name("cancel_subagent")?.into(),
                     description: "Cancel an owned subagent session.".into(),
@@ -625,6 +639,20 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn only_paginated_subagent_results_opt_out_of_truncation() {
+        for name in ["delegate_subagent", "steer_subagent", "cancel_subagent"] {
+            assert_eq!(
+                super::result_truncation_policy(name),
+                cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+            );
+        }
+        assert_eq!(
+            super::result_truncation_policy("get_subagent_result"),
+            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        );
     }
 
     #[test]

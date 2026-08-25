@@ -2658,6 +2658,8 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
     Ok(CachedTool {
         raw_name: tool.name.into_owned(),
         spec: ToolSpec {
+            // External opt-out requires a future extension-protocol capability.
+            result_truncation: Default::default(),
             name: generated,
             permission_name: "mcp".into(),
             description,

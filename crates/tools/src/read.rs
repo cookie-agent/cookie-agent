@@ -54,6 +54,7 @@ impl Default for ReadTool {
 impl ToolProvider for ReadTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.into(),
             description:
@@ -247,22 +248,31 @@ impl PreparedExecutor for ReadExecutor {
         }
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| ToolError::execution("read supports UTF-8 text or approved media"))?;
-        let lines = text.lines().collect::<Vec<_>>();
-        let mut output = format!(
-            "<path>{}</path>\n<type>file</type>\n<content>\n",
-            self.target.display_path.display()
-        );
-        for (index, line) in text_page(&lines, self.offset, self.limit) {
-            output.push_str(&format!("{}: {line}\n", index + 1));
-        }
-        output.push_str("</content>");
-        Ok(ToolResult {
-            title: crate::safe_title(format!("Read file {}", self.target.display_path.display())),
-            output,
-            metadata: serde_json::json!({"kind":"text","offset":self.offset,"limit":self.limit,"total_lines":lines.len()}),
-            truncation: None,
-            attachments: Vec::new(),
-        })
+        Ok(text_result(
+            &self.target.display_path,
+            text,
+            self.offset,
+            self.limit,
+        ))
+    }
+}
+
+fn text_result(path: &std::path::Path, text: &str, offset: usize, limit: usize) -> ToolResult {
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut output = format!(
+        "<path>{}</path>\n<type>file</type>\n<content>\n",
+        path.display()
+    );
+    for (index, line) in text_page(&lines, offset, limit) {
+        output.push_str(&format!("{}: {line}\n", index + 1));
+    }
+    output.push_str("</content>");
+    ToolResult {
+        title: crate::safe_title(format!("Read file {}", path.display())),
+        output,
+        metadata: serde_json::json!({"kind":"text","offset":offset,"limit":limit,"total_lines":lines.len()}),
+        truncation: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -282,12 +292,40 @@ fn directory_page<T>(entries: &[T], offset: usize, limit: usize) -> impl Iterato
 mod tests {
     use std::{fs, path::Path};
 
-    use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
+    use cookie_agent_engine::{
+        SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
+        ToolResultTruncationPolicy,
+    };
     use cookie_agent_protocol::{
         OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
     };
 
-    use super::{ReadTool, directory_page, text_page};
+    use super::{ReadTool, directory_page, text_page, text_result};
+
+    #[test]
+    fn large_single_line_read_is_full_and_declares_absolute_opt_out() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "x".repeat(60 * 1024);
+        fs::write(root.path().join("large.txt"), &text).unwrap();
+        let target = crate::fs_cap::prepare_existing(root.path(), Path::new("large.txt")).unwrap();
+        let bytes = target.verified_bytes().unwrap();
+        let result = text_result(
+            &target.display_path,
+            std::str::from_utf8(&bytes).unwrap(),
+            0,
+            super::DEFAULT_LIMIT,
+        );
+        assert!(result.output.contains(&text));
+        assert!(result.output.len() > 50 * 1024);
+        assert!(result.truncation.is_none());
+        let spec = ReadTool::new("/tmp")
+            .tools_for_session(&SessionToolContext {
+                session: SessionId::new_v7(),
+            })
+            .unwrap()
+            .remove(0);
+        assert_eq!(spec.result_truncation, ToolResultTruncationPolicy::OptOut);
+    }
 
     #[test]
     fn permission_resource_is_the_file_path() {

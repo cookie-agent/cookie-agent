@@ -47,6 +47,7 @@ impl Default for WriteTool {
 impl ToolProvider for WriteTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "write".into(),
             permission_name: Self::get_permission_name("write")?.into(),
             description: "Atomically write an exact descriptor-bound target.".into(),

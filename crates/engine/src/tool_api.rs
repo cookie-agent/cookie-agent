@@ -28,6 +28,16 @@ pub struct ToolSpec {
     pub permission_name: String,
     pub description: String,
     pub parameters: Value,
+    #[serde(default)]
+    pub result_truncation: ToolResultTruncationPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultTruncationPolicy {
+    #[default]
+    Bounded,
+    OptOut,
 }
 
 pub(crate) const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";

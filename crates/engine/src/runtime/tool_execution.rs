@@ -4,7 +4,7 @@ use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
     ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, InternalAgentKind,
     OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
-    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallId, ToolCallPresentation,
+    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallPresentation,
     ToolOutputTruncation,
 };
 use oven_sdk::{JsonSchema, ToolDefinition};
@@ -236,6 +236,7 @@ impl Engine {
                                 permission_name: permission_name.to_owned(),
                                 description: String::new(),
                                 parameters: serde_json::json!(true),
+                                result_truncation: Default::default(),
                             },
                         )
                     })
@@ -332,6 +333,10 @@ impl Engine {
                 ..
             } = prepared;
             let mut prepared = prepared?;
+            let result_truncation = interception
+                .as_ref()
+                .map(|interception| interception.spec.result_truncation)
+                .unwrap_or_default();
             let operation = prepared.operation.clone();
             let policy_labels = prepared.policy_labels.clone();
             let permission_overlay = engine
@@ -633,26 +638,26 @@ impl Engine {
                         engine.retain_finalized_output_hub(call.id);
                         return match result {
                             Ok(result) => {
-                                let bounded = if let Some(capture) = &capture {
-                                    capture.finish(
+                                if let Some(capture) = &capture {
+                                    return capture
+                                        .finish(
                                         result,
                                         active.policy.result_limits.tool_output_max_lines,
                                         active.policy.result_limits.tool_output_max_bytes,
                                     )
-                                } else {
-                                    bound_tool_result(
-                                        result,
-                                        &call.name,
-                                        call.id,
-                                        &engine.inner.artifacts,
-                                        active.policy.result_limits.tool_output_max_lines,
-                                        active.policy.result_limits.tool_output_max_bytes,
-                                    )
-                                };
-                                bounded.map_err(|error| ToolFailure {
-                                    code: ToolCallFailureCode::ExecutionFailed,
-                                    message: error.to_string(),
-                                })
+                                        .map_err(|error| ToolFailure {
+                                            code: ToolCallFailureCode::ExecutionFailed,
+                                            message: error.to_string(),
+                                        });
+                                }
+                                bound_tool_result(
+                                    result,
+                                    result_truncation,
+                                    &engine.inner.artifacts,
+                                    active.policy.result_limits.tool_output_max_lines,
+                                    active.policy.result_limits.tool_output_max_bytes,
+                                )
+                                .map_err(ToolFailure::from)
                             }
                             Err(error) => {
                                 if let Some(capture) = &capture {
@@ -979,13 +984,20 @@ pub(super) fn truncate_tool_output(
 
 pub(super) fn bound_tool_result(
     mut result: ToolResult,
-    tool_name: &str,
-    _call_id: ToolCallId,
+    policy: crate::ToolResultTruncationPolicy,
     artifacts: &ArtifactStore,
     max_lines: usize,
     max_bytes: usize,
-) -> std::io::Result<ToolResult> {
-    if tool_name == "read_tool_result" {
+) -> Result<ToolResult, ToolError> {
+    if policy == crate::ToolResultTruncationPolicy::OptOut {
+        result.truncation = None;
+        if result.output.len() > ToolResult::MAX_OUTPUT_BYTES {
+            return Err(ToolError::resource_limit(format!(
+                "tool output is {} bytes; the event limit is {} bytes",
+                result.output.len(),
+                ToolResult::MAX_OUTPUT_BYTES
+            )));
+        }
         return Ok(result);
     }
     let Some(preview) = truncate_tool_output(&result.output, max_lines, max_bytes) else {
@@ -993,7 +1005,9 @@ pub(super) fn bound_tool_result(
     };
     let original_bytes = result.output.len() as u64;
     let original_lines = result.output.split('\n').count() as u64;
-    let (retained, _) = artifacts.retain(result.output.as_bytes())?;
+    let (retained, _) = artifacts
+        .retain(result.output.as_bytes())
+        .map_err(|error| ToolError::execution(error.to_string()))?;
     result.output = preview.content;
     result.truncation = Some(ToolOutputTruncation {
         original_bytes,
@@ -1029,6 +1043,7 @@ mod tests {
     use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText, ToolCallId};
 
     use super::{ArtifactStore, ToolCall, bound_tool_result, fallback_operation_fingerprint};
+    use crate::{ToolError, ToolResultTruncationPolicy};
 
     #[test]
     fn discovery_failure_fingerprints_keep_known_tool_actions() {
@@ -1054,22 +1069,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn read_tool_result_is_never_retruncated() {
-        let directory = tempfile::tempdir().unwrap();
-        let artifacts = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let output = "line\n".repeat(1_000);
-        let result = PersistedToolResult {
-            title: SafeDisplayText::new("Retained output").unwrap(),
-            output: output.clone(),
+    fn result(output: String) -> PersistedToolResult {
+        PersistedToolResult {
+            title: SafeDisplayText::new("Tool output").unwrap(),
+            output,
             metadata: serde_json::Value::Null,
             truncation: None,
             attachments: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn opted_out_results_ignore_config_limits_without_retention() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact_path = directory.path().join("artifacts");
+        let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
+        let output = "line\n".repeat(1_000);
         let bounded = bound_tool_result(
-            result,
-            "read_tool_result",
-            ToolCallId::new_v7(),
+            result(output.clone()),
+            ToolResultTruncationPolicy::OptOut,
             &artifacts,
             1,
             1,
@@ -1077,5 +1095,40 @@ mod tests {
         .unwrap();
         assert_eq!(bounded.output, output);
         assert!(bounded.truncation.is_none());
+        assert_eq!(std::fs::read_dir(artifact_path).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn opted_out_result_over_event_limit_is_a_resource_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let error = bound_tool_result(
+            result("x".repeat(PersistedToolResult::MAX_OUTPUT_BYTES + 1)),
+            ToolResultTruncationPolicy::OptOut,
+            &artifacts,
+            usize::MAX,
+            usize::MAX,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ToolError::ResourceLimit(_)));
+        assert!(error.to_string().contains("event limit"));
+    }
+
+    #[test]
+    fn bounded_result_still_truncates_and_retains() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact_path = directory.path().join("artifacts");
+        let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
+        let bounded = bound_tool_result(
+            result("full output".into()),
+            ToolResultTruncationPolicy::Bounded,
+            &artifacts,
+            1,
+            4,
+        )
+        .unwrap();
+        assert_eq!(bounded.output, "full");
+        assert!(bounded.truncation.is_some());
+        assert_eq!(std::fs::read_dir(artifact_path).unwrap().count(), 1);
     }
 }

@@ -51,6 +51,7 @@ impl Default for EditTool {
 impl ToolProvider for EditTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "edit".into(),
             permission_name: Self::get_permission_name("edit")?.into(),
             description: "Apply a precomputed semantic replacement atomically.".into(),

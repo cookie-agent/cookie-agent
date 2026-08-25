@@ -432,6 +432,28 @@ mod tests {
     }
 
     #[test]
+    fn self_paginating_tools_declare_truncation_opt_out() {
+        let read = ReadTool::new("/tmp")
+            .tools_for_session(&SessionToolContext {
+                session: SessionId::new_v7(),
+            })
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            read.result_truncation,
+            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        );
+        assert_eq!(
+            ReadToolResultProvider::tool_spec().result_truncation,
+            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        );
+        assert_eq!(
+            super::delegate::result_truncation_policy("get_subagent_result"),
+            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        );
+    }
+
+    #[test]
     fn builtin_tools_do_not_expose_grep_or_glob() {
         let tools = BuiltinTools::new("/tmp");
         let names = tools

@@ -29,11 +29,20 @@ separate artifacts for the terminal result.
 
 ## Retained tool output
 
-When a terminal tool result exceeds the configured line or byte limit, the
-event stores a bounded preview and an `artifact://sha256/<digest>` reference to
-the full original output. Compaction may also replace older bulky previews with
-artifact references. Retained files live below the project state directory at
-`projects/<project-hash>/artifacts/`.
+For most tools, when a terminal result exceeds the configured line or byte
+limit, the event stores a bounded preview and an
+`artifact://sha256/<digest>` reference to the full original output. Compaction
+may also replace older bulky previews with artifact references. Retained files
+live below the project state directory at `projects/<project-hash>/artifacts/`.
+
+The self-paginating `read`, `read_tool_result`, and `get_subagent_result` tools
+declare an absolute truncation opt-out. Their requested page is returned in full
+without artifact retention or truncation metadata, regardless of
+`[tool_output]`. Callers bound these results with each tool's offset/limit
+arguments. A requested page above the event schema's 2 MiB output limit fails
+with a resource-limit tool error; it is never silently truncated. MCP and plugin
+tools remain subject to normal truncation. External opt-out would require a
+future extension-protocol capability and is not currently authorable.
 
 Artifacts are content-addressed by SHA-256, deduplicated, and newly created with
 mode `0600` on Unix. Their digest is verified when content is first read. A
@@ -62,8 +71,9 @@ same session:
 Resolution prefers the original truncation artifact, then a compaction-elision
 artifact, then the inline terminal output. This means compaction cannot make a
 full truncation artifact unreachable. Reverted tool calls and calls from other
-sessions do not resolve. Returned pages include `next_offset` metadata when
-more lines remain and are capped by the 2 MiB terminal-result limit.
+sessions do not resolve. Returned pages include `next_offset` metadata when more
+lines remain. Pages over the 2 MiB terminal-result limit fail and must be
+requested with a smaller limit.
 
 ## Delegation and skills
 

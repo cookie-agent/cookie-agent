@@ -336,6 +336,7 @@ impl Default for BashTool {
 impl ToolProvider for BashTool {
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "bash".into(),
             permission_name: Self::get_permission_name("bash")?.into(),
             description: bash_tool_description().into(),

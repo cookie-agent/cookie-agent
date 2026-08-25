@@ -59,12 +59,10 @@ impl ReadToolResultProvider {
     fn permission_resource(tool_call_id: ToolCallId) -> String {
         format!("tool_result:{tool_call_id}")
     }
-}
 
-#[async_trait]
-impl ToolProvider for ReadToolResultProvider {
-    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(vec![ToolSpec {
+    pub(crate) fn tool_spec() -> ToolSpec {
+        ToolSpec {
+            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "read_tool_result".into(),
             permission_name: "read_tool_result".into(),
             description: "Read a line page from a prior tool result in this session.".into(),
@@ -79,7 +77,14 @@ impl ToolProvider for ReadToolResultProvider {
                 },
                 "required":["tool_call_id"]
             }),
-        }])
+        }
+    }
+}
+
+#[async_trait]
+impl ToolProvider for ReadToolResultProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![Self::tool_spec()])
     }
 
     fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
@@ -182,11 +187,6 @@ impl PreparedExecutor for ReadToolResultExecutor {
             self.args.offset,
             self.args.limit.expect("normalized limit"),
         )?;
-        if page.content.len() > ToolResult::MAX_OUTPUT_BYTES {
-            return Err(ToolError::resource_limit(
-                "requested tool result page exceeds the 2 MiB output limit; reduce limit",
-            ));
-        }
         let metadata = serde_json::json!({
             "tool_call_id":self.args.tool_call_id,
             "offset":self.args.offset,
@@ -202,5 +202,16 @@ impl PreparedExecutor for ReadToolResultExecutor {
             truncation: None,
             attachments: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn readback_declares_absolute_truncation_opt_out() {
+        assert_eq!(
+            super::ReadToolResultProvider::tool_spec().result_truncation,
+            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
+        );
     }
 }

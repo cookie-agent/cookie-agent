@@ -38,7 +38,7 @@ pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, SessionToolContext,
     StdinWrite, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress,
-    ToolProvider, ToolSpec, ToolStdin, TurnAgentContext,
+    ToolProvider, ToolResultTruncationPolicy, ToolSpec, ToolStdin, TurnAgentContext,
 };
 
 pub(crate) use runtime::ArtifactStore;

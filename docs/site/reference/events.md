@@ -138,6 +138,11 @@ progress message marks the truncation. The terminal tool result and any
 bounds. Historical chunks may be replayed to event consumers, but projections
 replace them when `tool_call_terminated` is reduced.
 
+Terminal `truncation` metadata and its retained artifact are emitted only for
+tools using the normal bounded result policy. Self-paginating result tools omit
+both and fail instead when a requested page exceeds the 2 MiB event output
+limit.
+
 During cancellation cleanup, a progress record is considered retained once its
 append command enters the session actor mailbox; actor FIFO then orders it before
 the later terminal command even if persistence has not completed yet. Cleanup

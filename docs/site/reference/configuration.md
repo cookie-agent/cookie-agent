@@ -107,6 +107,9 @@ an allow or ask can publish it and the conditional `skill` tool. Skill
 
 Controls how much tool output is retained inline in a session before it is
 truncated or replaced with artifact references.
+The limits apply only to tools using the normal bounded policy. The
+self-paginating `read`, `read_tool_result`, and `get_subagent_result` tools opt
+out absolutely; configuration cannot re-enable truncation for them.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

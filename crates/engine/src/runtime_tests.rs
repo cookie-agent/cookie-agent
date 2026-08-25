@@ -1119,6 +1119,7 @@ struct TestStreamingBashExecutor {
 impl ToolProvider for TestStreamingBashProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "bash".into(),
             permission_name: "bash".into(),
             description: "Stream until cancelled".into(),
@@ -1338,6 +1339,7 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
+                result_truncation: Default::default(),
                 name: "delegate_subagent".to_owned(),
                 permission_name: "delegate".to_owned(),
                 description: "Delegate scripted work".to_owned(),
@@ -1523,6 +1525,7 @@ struct TestWriteExecutor {
 impl ToolProvider for TestWriteProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "write".to_owned(),
             permission_name: "write".to_owned(),
             description: "Write a test value".to_owned(),
@@ -1637,6 +1640,7 @@ struct TestRehydrationReadExecutor {
 impl ToolProvider for TestRehydrationReadProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "read".into(),
             permission_name: "read".into(),
             description: "Test capability-bound read".into(),
@@ -1786,6 +1790,7 @@ impl ToolProvider for TestToolDefinitionProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            result_truncation: Default::default(),
             name: name.into(),
             permission_name: permission_name.into(),
             description: format!("Test {name} tool definition"),
@@ -5977,15 +5982,21 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
         .create_session(selection)
         .expect("sparse-agent session");
 
+    let definitions = fixture
+        .engine
+        .tool_definitions(session.session_id, &policy)
+        .expect("structurally gated sparse tool definitions");
     assert_eq!(
-        fixture
-            .engine
-            .tool_definitions(session.session_id, &policy)
-            .expect("structurally gated sparse tool definitions")
-            .into_iter()
-            .map(|tool| tool.name)
+        definitions
+            .iter()
+            .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         ["read"]
+    );
+    assert!(
+        !serde_json::to_string(&definitions)
+            .expect("serialize provider tool definitions")
+            .contains("result_truncation")
     );
 
     let worker = "---\ndescription: Worker tool target\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nTest worker.\n";
@@ -15316,6 +15327,7 @@ struct DivergentReadExecutor;
 impl ToolProvider for DivergentReadProvider {
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
             name: "read".into(),
             permission_name: "read".into(),
             description: "Divergent prepared-label test".into(),
