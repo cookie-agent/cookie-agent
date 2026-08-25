@@ -1191,11 +1191,11 @@
 
 <h1 id="protocol-reference">Protocol Reference<a class="headerlink" href="#protocol-reference" title="Permanent link">&para;</a></h1>
 <p>The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at <code>/ws</code>.
-Protocol 11 is current-only. A client must call <code>handshake</code> with
-<code>{ "protocol_version": 11 }</code> before any other method.</p>
+Protocol 12 is current-only. A client must call <code>handshake</code> with
+<code>{ "protocol_version": 12 }</code> before any other method.</p>
 <p>The unreleased MCP approval methods and their <code>pending_approval</code> and <code>rejected</code>
 server states were removed before any release. They are not compatibility
-members of protocol 11.</p>
+members of protocol 12.</p>
 <h2 id="session-mechanics">Session mechanics<a class="headerlink" href="#session-mechanics" title="Permanent link">&para;</a></h2>
 <p>The JSON-RPC session layer lives in the <code>protocol</code> crate so the server, the TUI,
 and the CLI share one implementation of the protocol mechanics.</p>

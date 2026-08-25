@@ -1138,10 +1138,18 @@
 <h1 id="event-reference">Event Reference<a class="headerlink" href="#event-reference" title="Permanent link">&para;</a></h1>
 <p>Session persistence and subscriptions use a versionless event format. Every new
 stored event contains <code>engine_version</code>, <code>session_id</code>, required nullable <code>run_id</code>,
-a positive physical <code>seq</code>, <code>timestamp</code>, and a tagged <code>payload</code>. The
+a positive physical <code>seq</code>, <code>timestamp</code>, a tagged <code>payload</code>, and an optional
+<code>origin</code>. The
 <code>engine_version</code> is the writing engine's binary semver; it is diagnostic metadata,
-not a compatibility gate, and old records may omit it. Legacy
+not a compatibility gate, and old records may omit it. Pre-origin records omit
+<code>origin</code>; readers preserve that absence rather than synthesizing a default.
+Legacy
 <code>event_schema_version</code> fields are ignored when reading.</p>
+<p><code>origin</code> is either <code>user</code> or <code>&lt;class&gt;:&lt;slug&gt;</code>, where <code>class</code> is <code>engine</code>,
+<code>plugin</code>, or <code>client</code> and <code>slug</code> matches
+<code>[a-z0-9][a-z0-9-]{0,63}</code>. It identifies the author of that individual event,
+not the component described by its payload. For example, a diagnostic about a
+plugin can have origin <code>engine:plugin-host</code>.</p>
 <p>Readers handle each JSONL line independently. Fully readable events load
 normally. If a known event has an absent or type-mismatched optional field, that
 field defaults and the event loads with an in-memory degradation diagnostic.
@@ -1156,7 +1164,10 @@ corrupt-log error.</p>
 is additive only. Existing variant tags and fields are never removed or renamed,
 existing required fields remain required, and new fields must be optional. New
 behavior that cannot fit an optional field uses a new variant tag. CI compares
-the generated <code>EventPayload</code> schema with the committed additive baseline.</p>
+the generated <code>EventPayload</code> schema with the committed additive baseline.
+Because older binaries do not know the <code>origin</code> envelope key, their tolerant
+readers skip newly originated events and report an unknown-envelope diagnostic;
+they do not reinterpret those events without attribution.</p>
 <p>Terminal tool-result truncation and <code>tool_output_elided</code> references use the
 <a href="../tools/#retained-tool-output">retained-output readback lifecycle</a>.</p>
 <h2 id="payloads">Payloads<a class="headerlink" href="#payloads" title="Permanent link">&para;</a></h2>
