@@ -69,7 +69,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `agent_md` | table | defaults below | Automatic `AGENTS.md` context |
 | `approval` | table | defaults below | Approval expiry |
 | `context_compaction` | table | defaults below | Automatic context compaction |
-| `prompt_caching` | table | defaults below | Anthropic prompt-cache breakpoints |
+| `prompt_caching` | table | defaults below | Provider-specific prompt-cache policy |
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
 | `pricing` | table | empty | Optional model-rate overrides for cost estimates |
@@ -148,26 +148,54 @@ Controls the automatic context-limit behavior documented in
 
 ## `[prompt_caching]`
 
-Controls declarative Anthropic prompt-cache breakpoints. The strategy is applied
-only when the selected adaptor declares prompt-caching capability. Other
-adaptors are unchanged. Defaults opt managed Anthropic models in:
+Defines provider-specific cache policy. By default only
+`[prompt_caching.anthropic]` is present, with one-hour system and tool markers
+and a five-minute rolling marker. A model binding selects only its own provider
+section, so one fallback chain may mix provider families.
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `true` | Enables cache marker normalization. Set to `false` to emit no strategy markers. |
-| `system_ttl` | string | `"one_hour"` | TTL for `history[0]` when it is a non-empty system turn. |
-| `tools_ttl` | string | `"one_hour"` | TTL for the final emitted tool definition. |
-| `rolling_ttl` | string | `"five_minutes"` | TTL for the last eligible non-empty history turn, walking backward over empty and tool-result-only turns. |
+```toml
+[prompt_caching.anthropic]
+system = "one_hour"
+tools = "one_hour"
+rolling = "five_minutes"
 
-TTL values are `"one_hour"` and `"five_minutes"`. Configuration is rejected if
-a one-hour marker would follow a five-minute marker in Oven's actual marker
-order: tools, system blocks, non-system history, then the optional request-level
-marker. The rolling marker is recomputed on every request.
+[prompt_caching.bedrock]
+enabled = true
+system = "one_hour"
+tools = "one_hour"
+messages = [{ history_index = 2, ttl = "five_minutes" }]
 
-The lower-level Anthropic adaptor option `cache_ttl` remains supported. It maps
-to Oven's request-level `cache_control`, which is a final, optional fourth
-breakpoint; `cache_strategy` maps to the three normalized tool/message
-breakpoints above.
+[prompt_caching.google]
+mode = "explicit"
+cached_content = "cachedContents/example"
+
+[prompt_caching.openai]
+prompt_cache_key = "cookie-${session_id}"
+prompt_cache_retention = "24h"
+```
+
+Anthropic `system` and `tools` accept `"one_hour"`, `"five_minutes"`, or
+`"off"`; `rolling` accepts `"five_minutes"` or `"off"`. Marker order is tools,
+system, then rolling history, and a one-hour marker cannot follow a five-minute
+marker.
+
+Bedrock `enabled = false` emits no cache points and cannot be combined with
+other Bedrock fields. `enabled = true` without placement fields is shorthand for
+one-hour system and tool points plus a five-minute point on the last message.
+Explicit `messages` entries use zero-based Oven history indices. Bedrock allows
+at most four total system, tool, and message points and enforces the same
+one-hour-before-five-minute ordering. System and tool points are omitted from a
+request when that request has no eligible system text or tools.
+
+Google `mode` is `"implicit"`, `"explicit"`, or `"off"`. Explicit mode requires
+a `cachedContents/<id>` resource; the other modes reject `cached_content`.
+OpenAI and Azure OpenAI accept an optional `prompt_cache_key` and
+`prompt_cache_retention` of `"in_memory"` or `"24h"`. The key may contain
+`${session_id}`; after substitution it must be at most 64 characters.
+
+Unknown fields and incoherent combinations are load errors. A cache section that
+does not match its model binding fails policy freeze. OpenAI-compatible and other
+generic adaptors do not accept authored cache policy.
 
 ## `[session_title]`
 
@@ -445,7 +473,7 @@ and merge keys are rejected, as is any `${env:` text.
 | `description` | string | *(required)* | Nonempty display description, at most 512 bytes and without control characters. |
 | `mode` | string | *(required)* | `primary`, `subagent`, `all`, or `internal`. |
 | `enabled` | boolean | *(required)* | Controls root, delegation-target, or internal-backend eligibility. |
-| `models` | array | *(required for `primary`)* | Ordered `{ model, variant? }` model chain. `${parent_model}` is internal-only. |
+| `models` | array | *(required for `primary`)* | Ordered `{ model, variant?, cache? }` model chain. `${parent_model}` is internal-only. |
 | `limits` | table | mode-specific | Supports `max_output_tokens` in every mode and `timeout_ms` for internal agents only. |
 | `permissions` | table | `{}` | Ordered action permission map with at most 256 rules. |
 
@@ -460,6 +488,12 @@ The former `model_fallback` key is a targeted hard error; use `models`. The form
 resolved model from its context limit minus its effective output reserve, with a
 16,384-token fallback when context is unknown; an undersized model is skipped in
 favor of the next candidate.
+
+Each model entry may include a `cache` table with the same `anthropic`,
+`bedrock`, `google`, or `openai` shape as `[prompt_caching]`. It must match that
+binding's provider family. Cache policy precedence is model-entry `cache`, then
+runtime `[prompt_caching]`; omitting `cache` uses the runtime policy, while
+`cache: {}` explicitly selects no strategy for that entry.
 
 For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named `model_fallback`; only agent frontmatter uses `models`.

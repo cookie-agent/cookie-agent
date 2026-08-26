@@ -83,13 +83,19 @@ The durable protocol event for advancing through a model chain remains named
 `model_fallback` for wire-schema compatibility. This event name is independent
 of the agent-frontmatter `models` key.
 
-`models` entries are `{ model = "<provider>/<model-id>", variant = <name|null|"base"> }`.
+`models` entries contain `model`, optional `variant`, and optional `cache`.
 The `variant` field is optional: omitted (`null`) selects the model's configured
 default variant, the string `"base"` selects the base variant explicitly, and any
 other string selects that named variant. A primary agent must
 declare at least one fallback. The chain may contain up to 256 entries with no
 duplicate model keys. Only internal agents may use the `${parent_model}` model
 expression, and only without a variant.
+
+`cache` uses the provider-specific shapes documented under
+[`[prompt_caching]`](../reference/configuration.md#prompt_caching). An entry-level
+cache policy overrides runtime prompt caching for that model binding. This is
+resolved independently for every fallback, including mixed-provider chains;
+generic OpenAI-compatible adaptors reject authored cache policy.
 
 ### Modes
 

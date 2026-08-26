@@ -283,6 +283,20 @@ fn apply_cache_strategy(
         ) => apply_anthropic_cache_strategy(request, strategy),
         (OvenAdapterFamily::AwsBedrockConverse, CacheStrategyConfig::Bedrock(strategy)) => {
             let mut strategy = strategy.clone();
+            if request.tools.is_empty() {
+                strategy.tools = None;
+            }
+            if !request.history.iter().any(|turn| {
+                matches!(
+                    turn,
+                    oven_sdk::HistoryTurn::System(message)
+                        if message.content.iter().any(|part| {
+                            matches!(part, oven_sdk::SystemPart::Text(text) if !text.text.is_empty())
+                        })
+                )
+            }) {
+                strategy.system = None;
+            }
             let last_message = request
                 .history
                 .iter()
@@ -2822,7 +2836,9 @@ mod cache_strategy_tests {
             system: Some(BedrockCachePoint {
                 ttl: Some(BedrockCacheTtl::OneHour),
             }),
-            tools: None,
+            tools: Some(BedrockCachePoint {
+                ttl: Some(BedrockCacheTtl::OneHour),
+            }),
             messages: vec![BedrockMessageCachePoint {
                 history_index: usize::MAX,
                 cache_point: BedrockCachePoint {

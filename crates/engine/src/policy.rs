@@ -732,3 +732,55 @@ fn wire_adapter(value: &str) -> protocol::AdaptorId {
         }
     }
 }
+
+#[cfg(test)]
+mod cache_strategy_tests {
+    use super::*;
+    use cookie_agent_identity::ProtocolRecipeId;
+
+    fn binding(recipe: &str) -> protocol::FrozenModelBinding {
+        let mut binding = crate::test_support::model_binding();
+        binding.protocol_recipe = ProtocolRecipeId::new(recipe).unwrap();
+        binding
+    }
+
+    #[test]
+    fn mixed_provider_bindings_resolve_their_own_runtime_cache_sections() {
+        let runtime = cookie_agent_config::CacheConfig {
+            anthropic: Some(cookie_agent_config::AnthropicCacheConfig::default()),
+            bedrock: Some(cookie_agent_config::BedrockCacheConfig::default()),
+            google: Some(cookie_agent_config::GoogleCacheConfig::default()),
+            openai: Some(cookie_agent_config::OpenAiCacheConfig {
+                prompt_cache_key: Some("mixed-${session_id}".into()),
+                prompt_cache_retention: None,
+            }),
+        };
+
+        assert!(matches!(
+            resolve_cache_strategy(None, &binding("oven.anthropic.messages"), &runtime).unwrap(),
+            Some(CacheStrategyConfig::Anthropic(_))
+        ));
+        assert!(matches!(
+            resolve_cache_strategy(None, &binding("oven.bedrock.converse"), &runtime).unwrap(),
+            Some(CacheStrategyConfig::Bedrock(_))
+        ));
+        assert!(matches!(
+            resolve_cache_strategy(
+                None,
+                &binding("oven.google.gemini.generate-content"),
+                &runtime
+            )
+            .unwrap(),
+            Some(CacheStrategyConfig::Google(_))
+        ));
+        assert!(matches!(
+            resolve_cache_strategy(None, &binding("oven.openai.responses"), &runtime).unwrap(),
+            Some(CacheStrategyConfig::OpenAi(_))
+        ));
+        assert!(
+            resolve_cache_strategy(None, &binding("oven.openai-compatible.chat"), &runtime)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
