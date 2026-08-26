@@ -15,16 +15,16 @@ First [install cookie agent](install.md), then run it from the workspace where i
 should operate:
 
 ```sh
-mkdir -p .cookie-agent
-printf '[providers]\n' > .cookie-agent/config.toml
 cookie
 ```
 
-Type `/connect` to store a managed provider connection. Provider setup and
-credentials are per-user and shared across workspaces. Credentials are checked
-when the provider is first used, not during the connect flow.
+No configuration file is needed to start. If no provider is available, the TUI
+opens in setup mode; type `/connect` to store a managed provider connection.
+Provider setup and credentials are per-user and shared across workspaces.
+Credentials are checked when the provider is first used, not during the connect
+flow.
 
-The [installation guide](install.md#quick-start) continues through configuration
+The [installation guide](install.md#quick-start) continues through provider setup
 and the first run. See [Providers](guide/providers.md) for managed and custom
 provider options, [Plugins](guide/plugins.md) for executable extensions, and
 [Configuration](reference/configuration.md) for every configurable item.
