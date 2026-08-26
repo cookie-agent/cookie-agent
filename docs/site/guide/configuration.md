@@ -29,9 +29,10 @@ definition; nested fields never merge. Every authored file is parsed strictly.
 Unknown fields, leftover schema/version fields, wrong types, and malformed content
 are hard errors; there are no migrations or silently ignored fields.
 
-## Minimum runtime configuration
+## Optional runtime configuration
 
-Every top-level section is optional. An empty file or provider map is valid.
+No configuration file is required. Every top-level section is optional, and an
+empty file or provider map is valid when a workspace does need an authored file.
 
 ```toml
 

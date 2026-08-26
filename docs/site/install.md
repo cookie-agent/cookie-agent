@@ -63,34 +63,24 @@ command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 After installation, change to the workspace where cookie agent should operate.
 Running `cookie` without a subcommand starts a local daemon and opens the TUI.
 
-### Create a workspace configuration
+### Start without configuration
 
-Configuration is loaded from the exact working directory; there is no upward
-search. Create `.cookie-agent/config.toml`:
-
-```toml
-
-[providers]
-```
-
-An empty provider map is valid. If the global provider store is also empty, the
-TUI starts in setup mode and keeps `/connect` available.
-
-### Configure a provider
-
-Start cookie agent from the workspace:
+Both user and workspace configuration are optional. Start cookie agent directly:
 
 ```sh
 cookie
 ```
 
-Type `/connect`, select a managed provider, and fill in the provider's
-recipe-defined setup and credential fields. The durable store is global to the
-user, so other workspaces can use the same compatible connection. The form does
-not contact the provider; the first model request verifies the credentials.
+When no provider is available, the TUI starts in setup mode. Type `/connect`,
+select a managed provider, and fill in its recipe-defined setup and credential
+fields. The durable store is global to the user, so other workspaces can use the
+same compatible connection. The form does not contact the provider; the first
+model request verifies the credentials.
 
-For environment-backed authored configuration instead, use a managed provider
-entry:
+### Optional workspace configuration
+
+Create `.cookie-agent/config.toml` only when the workspace has settings to
+author. For example, an environment-backed managed provider can be declared as:
 
 ```toml
 
@@ -99,7 +89,7 @@ source = "models_dev"
 api_key = "${env:OPENAI_API_KEY}"
 ```
 
-Export the variable before launching:
+Export the variable before launching from that workspace:
 
 ```sh
 export OPENAI_API_KEY='your-key'
