@@ -1154,6 +1154,10 @@ fn delegation_reserved_event_roundtrips_current_request() {
         cache_strategies: vec![Some(FrozenCacheStrategy::OpenAi {
             prompt_cache_key: Some("delegated-${session_id}".into()),
             prompt_cache_retention: Some(FrozenOpenAiCacheRetention::TwentyFourHours),
+            mode: Some(FrozenOpenAiCacheMode::Explicit),
+            ttl: Some(FrozenOpenAiPromptCacheTtl::ThirtyMinutes),
+            system: Some(true),
+            rolling: Some(true),
         })],
         request_fingerprint: Sha256Digest::of_bytes(b"request"),
         request: DelegateRequestPayload {

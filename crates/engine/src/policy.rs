@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use cookie_agent_models::adapters::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
-    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
-    OpenAiPromptCacheRetention, OvenAdapterFamily,
+    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheMode,
+    OpenAiCacheStrategyConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, OvenAdapterFamily,
 };
 use cookie_agent_protocol as protocol;
 
@@ -610,6 +610,7 @@ pub(crate) fn resolve_cache_strategy(
         | OvenAdapterFamily::OpenaiResponses
         | OvenAdapterFamily::AzureOpenaiChat
         | OvenAdapterFamily::AzureOpenaiResponses => config.openai.as_ref().map(|config| {
+            let controls = config.gpt_5_6_controls_enabled();
             CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
                 prompt_cache_key: config.prompt_cache_key.clone(),
                 prompt_cache_retention: config.prompt_cache_retention.map(|retention| {
@@ -622,6 +623,17 @@ pub(crate) fn resolve_cache_strategy(
                         }
                     }
                 }),
+                mode: controls.then(|| match config.effective_mode() {
+                    cookie_agent_config::OpenAiCacheMode::Implicit => OpenAiCacheMode::Implicit,
+                    cookie_agent_config::OpenAiCacheMode::Explicit => OpenAiCacheMode::Explicit,
+                }),
+                ttl: controls.then(|| match config.effective_ttl() {
+                    cookie_agent_config::OpenAiPromptCacheTtl::ThirtyMinutes => {
+                        OpenAiPromptCacheTtl::ThirtyMinutes
+                    }
+                }),
+                system: config.system,
+                rolling: config.rolling,
             })
         }),
         OvenAdapterFamily::OpenaiCompatible | OvenAdapterFamily::CohereV2Chat => {
@@ -727,6 +739,17 @@ fn wire_cache_strategy(
                     }
                 },
             ),
+            mode: strategy.mode.map(|mode| match mode {
+                OpenAiCacheMode::Implicit => protocol::FrozenOpenAiCacheMode::Implicit,
+                OpenAiCacheMode::Explicit => protocol::FrozenOpenAiCacheMode::Explicit,
+            }),
+            ttl: strategy.ttl.map(|ttl| match ttl {
+                OpenAiPromptCacheTtl::ThirtyMinutes => {
+                    protocol::FrozenOpenAiPromptCacheTtl::ThirtyMinutes
+                }
+            }),
+            system: strategy.system.then_some(true),
+            rolling: strategy.rolling.then_some(true),
         },
     })
 }
@@ -797,6 +820,10 @@ fn runtime_cache_strategy(
         protocol::FrozenCacheStrategy::OpenAi {
             prompt_cache_key,
             prompt_cache_retention,
+            mode,
+            ttl,
+            system,
+            rolling,
         } => CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
             prompt_cache_key: prompt_cache_key.clone(),
             prompt_cache_retention: prompt_cache_retention.map(|retention| match retention {
@@ -807,6 +834,17 @@ fn runtime_cache_strategy(
                     OpenAiPromptCacheRetention::TwentyFourHours
                 }
             }),
+            mode: mode.map(|mode| match mode {
+                protocol::FrozenOpenAiCacheMode::Implicit => OpenAiCacheMode::Implicit,
+                protocol::FrozenOpenAiCacheMode::Explicit => OpenAiCacheMode::Explicit,
+            }),
+            ttl: ttl.map(|ttl| match ttl {
+                protocol::FrozenOpenAiPromptCacheTtl::ThirtyMinutes => {
+                    OpenAiPromptCacheTtl::ThirtyMinutes
+                }
+            }),
+            system: system.unwrap_or_default(),
+            rolling: rolling.unwrap_or_default(),
         }),
     })
 }

@@ -29,7 +29,8 @@ use thiserror::Error;
 use crate::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue, SecretString, Sha256Digest,
     adapters::{
-        CacheStrategyConfig, GoogleCacheMode, OpenAiPromptCacheRetention, OvenAdapterFamily,
+        CacheStrategyConfig, GoogleCacheMode, OpenAiCacheMode, OpenAiPromptCacheRetention,
+        OpenAiPromptCacheTtl, OvenAdapterFamily,
         oven::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, ModelBuildError},
     },
     authoring::{AuthOverride, ModelsDevProvider},
@@ -383,9 +384,120 @@ fn apply_cache_strategy(
                     )
                 }),
             );
+            set_option(
+                &mut request.provider_options,
+                namespace,
+                Some(section),
+                "prompt_cache_options",
+                openai_prompt_cache_options(adapter, strategy),
+            );
+            apply_openai_cache_breakpoints(request, adapter, strategy);
         }
         _ => {}
     }
+}
+
+fn openai_prompt_cache_options(
+    adapter: OvenAdapterFamily,
+    strategy: &crate::adapters::OpenAiCacheStrategyConfig,
+) -> Option<Value> {
+    let (Some(mode), Some(ttl)) = (strategy.mode, strategy.ttl) else {
+        return None;
+    };
+    Some(match adapter {
+        OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
+            serde_json::to_value(oven_sdk_openai::OpenAiPromptCacheOptions {
+                mode: match mode {
+                    OpenAiCacheMode::Implicit => oven_sdk_openai::OpenAiPromptCacheMode::Implicit,
+                    OpenAiCacheMode::Explicit => oven_sdk_openai::OpenAiPromptCacheMode::Explicit,
+                },
+                ttl: match ttl {
+                    OpenAiPromptCacheTtl::ThirtyMinutes => {
+                        oven_sdk_openai::OpenAiPromptCacheTtl::ThirtyMinutes
+                    }
+                },
+            })
+            .expect("OpenAI cache options serialize")
+        }
+        OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses => {
+            serde_json::to_value(oven_sdk_azure::AzureOpenAiPromptCacheOptions {
+                mode: match mode {
+                    OpenAiCacheMode::Implicit => {
+                        oven_sdk_azure::AzureOpenAiPromptCacheMode::Implicit
+                    }
+                    OpenAiCacheMode::Explicit => {
+                        oven_sdk_azure::AzureOpenAiPromptCacheMode::Explicit
+                    }
+                },
+                ttl: match ttl {
+                    OpenAiPromptCacheTtl::ThirtyMinutes => {
+                        oven_sdk_azure::AzureOpenAiPromptCacheTtl::ThirtyMinutes
+                    }
+                },
+            })
+            .expect("Azure OpenAI cache options serialize")
+        }
+        _ => return None,
+    })
+}
+
+fn apply_openai_cache_breakpoints(
+    request: &mut Request,
+    adapter: OvenAdapterFamily,
+    strategy: &crate::adapters::OpenAiCacheStrategyConfig,
+) {
+    if strategy.system
+        && let Some(text) = request.history.iter_mut().find_map(|turn| {
+            let oven_sdk::HistoryTurn::System(message) = turn else {
+                return None;
+            };
+            message
+                .content
+                .iter_mut()
+                .rev()
+                .find_map(|part| match part {
+                    oven_sdk::SystemPart::Text(text) if !text.text.is_empty() => Some(text),
+                    oven_sdk::SystemPart::Text(_) | oven_sdk::SystemPart::Custom(_) => None,
+                })
+        })
+    {
+        mark_openai_cache_breakpoint(text, adapter);
+    }
+    if strategy.rolling
+        && let Some(text) = request.history.iter_mut().rev().find_map(|turn| {
+            let oven_sdk::HistoryTurn::User(message) = turn else {
+                return None;
+            };
+            message
+                .content
+                .iter_mut()
+                .rev()
+                .find_map(|part| match part {
+                    oven_sdk::InputPart::Text(text) if !text.text.is_empty() => Some(text),
+                    oven_sdk::InputPart::Text(_)
+                    | oven_sdk::InputPart::File(_)
+                    | oven_sdk::InputPart::Custom(_) => None,
+                })
+        })
+    {
+        mark_openai_cache_breakpoint(text, adapter);
+    }
+}
+
+fn mark_openai_cache_breakpoint(text: &mut oven_sdk::TextPart, adapter: OvenAdapterFamily) {
+    *text = match adapter {
+        OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
+            oven_sdk_openai::OpenAiPromptCacheBreakpointExt::with_openai_prompt_cache_breakpoint(
+                text.clone(),
+            )
+        }
+        OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses => {
+            oven_sdk_azure::AzureOpenAiPromptCacheBreakpointExt::with_azure_openai_prompt_cache_breakpoint(
+                text.clone(),
+            )
+        }
+        _ => return,
+    };
 }
 
 fn set_option(
@@ -2910,6 +3022,10 @@ mod cache_strategy_tests {
         let strategy = CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
             prompt_cache_key: Some("session-key".into()),
             prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
+            mode: Some(OpenAiCacheMode::Explicit),
+            ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+            system: true,
+            rolling: true,
         });
         for (adapter, namespace, section) in [
             (OvenAdapterFamily::OpenaiChat, "openai", "chat"),
@@ -2921,7 +3037,7 @@ mod cache_strategy_tests {
                 "responses",
             ),
         ] {
-            let mut request = Request::new(Vec::new());
+            let mut request = request();
             apply_cache_strategy(&mut request, adapter, &strategy);
             assert_eq!(
                 request.provider_options[namespace][section]["prompt_cache_key"],
@@ -2930,6 +3046,43 @@ mod cache_strategy_tests {
             assert_eq!(
                 request.provider_options[namespace][section]["prompt_cache_retention"],
                 "24h"
+            );
+            assert_eq!(
+                request.provider_options[namespace][section]["prompt_cache_options"],
+                json!({"mode":"explicit", "ttl":"30m"})
+            );
+            let marker = if namespace == "openai" {
+                "openai.prompt_cache_breakpoint"
+            } else {
+                "azure_openai.prompt_cache_breakpoint"
+            };
+            let oven_sdk::HistoryTurn::System(system) = &request.history[0] else {
+                panic!("system turn");
+            };
+            let oven_sdk::SystemPart::Text(system) = &system.content[0] else {
+                panic!("system text");
+            };
+            let oven_sdk::HistoryTurn::User(rolling) = &request.history[1] else {
+                panic!("rolling user turn");
+            };
+            let oven_sdk::InputPart::Text(rolling) = &rolling.content[0] else {
+                panic!("rolling user text");
+            };
+            assert_eq!(
+                system
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get(marker))
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                rolling
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get(marker))
+                    .and_then(Value::as_bool),
+                Some(true)
             );
         }
     }

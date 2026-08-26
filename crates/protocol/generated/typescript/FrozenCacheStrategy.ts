@@ -2,6 +2,8 @@
 import type { FrozenBedrockMessageCachePoint } from "./FrozenBedrockMessageCachePoint.js";
 import type { FrozenCacheTtl } from "./FrozenCacheTtl.js";
 import type { FrozenGoogleCacheMode } from "./FrozenGoogleCacheMode.js";
+import type { FrozenOpenAiCacheMode } from "./FrozenOpenAiCacheMode.js";
 import type { FrozenOpenAiCacheRetention } from "./FrozenOpenAiCacheRetention.js";
+import type { FrozenOpenAiPromptCacheTtl } from "./FrozenOpenAiPromptCacheTtl.js";
 
-export type FrozenCacheStrategy = { "provider": "anthropic", system: FrozenCacheTtl, tools: FrozenCacheTtl, rolling: FrozenCacheTtl, } | { "provider": "bedrock", system: FrozenCacheTtl, tools: FrozenCacheTtl, messages: Array<FrozenBedrockMessageCachePoint>, } | { "provider": "google", mode: FrozenGoogleCacheMode, cached_content: string | null, } | { "provider": "open_ai", prompt_cache_key: string | null, prompt_cache_retention: FrozenOpenAiCacheRetention | null, };
+export type FrozenCacheStrategy = { "provider": "anthropic", system: FrozenCacheTtl, tools: FrozenCacheTtl, rolling: FrozenCacheTtl, } | { "provider": "bedrock", system: FrozenCacheTtl, tools: FrozenCacheTtl, messages: Array<FrozenBedrockMessageCachePoint>, } | { "provider": "google", mode: FrozenGoogleCacheMode, cached_content: string | null, } | { "provider": "open_ai", prompt_cache_key: string | null, prompt_cache_retention: FrozenOpenAiCacheRetention | null, mode?: FrozenOpenAiCacheMode, ttl?: FrozenOpenAiPromptCacheTtl, system?: boolean, rolling?: boolean, };

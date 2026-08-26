@@ -15317,6 +15317,10 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         Some(cookie_agent_protocol::FrozenCacheStrategy::OpenAi {
             prompt_cache_key: Some("persisted-${session_id}".into()),
             prompt_cache_retention: None,
+            mode: None,
+            ttl: None,
+            system: None,
+            rolling: None,
         });
         agent.fallback_chain.len()
     ];

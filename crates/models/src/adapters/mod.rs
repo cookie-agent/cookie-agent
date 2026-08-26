@@ -11,8 +11,8 @@ pub(crate) mod oven;
 pub(crate) use attribution::reattribute;
 pub use cache::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
-    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
-    OpenAiPromptCacheRetention,
+    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheMode,
+    OpenAiCacheStrategyConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
 };
 pub use capabilities::{AdapterCapabilityError, validate_capability_ceiling};
 pub use endpoints::{

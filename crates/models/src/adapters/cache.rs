@@ -31,8 +31,23 @@ pub enum OpenAiPromptCacheRetention {
     TwentyFourHours,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenAiCacheMode {
+    Implicit,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenAiPromptCacheTtl {
+    ThirtyMinutes,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenAiCacheStrategyConfig {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
+    pub mode: Option<OpenAiCacheMode>,
+    pub ttl: Option<OpenAiPromptCacheTtl>,
+    pub system: bool,
+    pub rolling: bool,
 }

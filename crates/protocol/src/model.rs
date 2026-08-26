@@ -852,6 +852,20 @@ pub enum FrozenOpenAiCacheRetention {
     TwentyFourHours,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrozenOpenAiCacheMode {
+    Implicit,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+pub enum FrozenOpenAiPromptCacheTtl {
+    #[serde(rename = "30m")]
+    #[ts(rename = "30m")]
+    ThirtyMinutes,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenBedrockMessageCachePoint {
@@ -886,6 +900,18 @@ pub enum FrozenCacheStrategy {
         #[serde(deserialize_with = "crate::deserialize_required_option")]
         #[schemars(with = "crate::NullableSchema<FrozenOpenAiCacheRetention>", required)]
         prompt_cache_retention: Option<FrozenOpenAiCacheRetention>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        mode: Option<FrozenOpenAiCacheMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        ttl: Option<FrozenOpenAiPromptCacheTtl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        system: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        rolling: Option<bool>,
     },
 }
 
@@ -938,11 +964,19 @@ impl FrozenCacheStrategy {
                 }
             }
             Self::OpenAi {
-                prompt_cache_key, ..
+                prompt_cache_key,
+                mode,
+                ttl,
+                system,
+                rolling,
+                ..
             } => {
                 if prompt_cache_key.as_ref().is_some_and(|key| {
                     key.chars().count() > 64 || key.chars().any(char::is_control)
-                }) {
+                }) || mode.is_some() != ttl.is_some()
+                    || (mode.is_none()
+                        && (system.unwrap_or_default() || rolling.unwrap_or_default()))
+                {
                     return Err("invalid OpenAI frozen cache strategy");
                 }
             }

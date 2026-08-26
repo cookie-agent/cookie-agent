@@ -2941,6 +2941,16 @@
         {
           "type": "object",
           "properties": {
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FrozenOpenAiCacheMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "prompt_cache_key": {
               "type": [
                 "string",
@@ -2960,6 +2970,28 @@
             "provider": {
               "type": "string",
               "const": "open_ai"
+            },
+            "rolling": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "system": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "ttl": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FrozenOpenAiPromptCacheTtl"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "additionalProperties": false,
@@ -3513,11 +3545,24 @@
         "selection_fingerprint"
       ]
     },
+    "FrozenOpenAiCacheMode": {
+      "type": "string",
+      "enum": [
+        "implicit",
+        "explicit"
+      ]
+    },
     "FrozenOpenAiCacheRetention": {
       "type": "string",
       "enum": [
         "in_memory",
         "24h"
+      ]
+    },
+    "FrozenOpenAiPromptCacheTtl": {
+      "type": "string",
+      "enum": [
+        "30m"
       ]
     },
     "FrozenProviderSource": {
