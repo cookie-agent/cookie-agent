@@ -2,6 +2,7 @@
 
 mod agent_document;
 mod agents;
+mod cache;
 mod error;
 mod loader;
 mod mcp_store;
@@ -17,6 +18,11 @@ pub use agents::{
     AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID, BUILT_IN_COMPACTION_AGENT_ID,
     BUILT_IN_DEFAULT_AGENT_ID, BUILT_IN_TITLE_AGENT_ID, PARENT_MODEL_EXPRESSION, PermissionAction,
     PermissionEffect, PermissionRule, PermissionValue,
+};
+pub use cache::{
+    AnthropicCacheConfig, BedrockCacheConfig, BedrockCacheTtl, BedrockMessageCacheConfig,
+    CacheConfig, CacheTtl, GoogleCacheConfig, GoogleCacheMode, OpenAiCacheConfig,
+    OpenAiPromptCacheRetention, RollingCacheTtl,
 };
 pub use error::ConfigError;
 pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};

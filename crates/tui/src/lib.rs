@@ -147,6 +147,7 @@ mod tests {
                             .expect("model key"),
                     ),
                     variant: None,
+                    cache: None,
                 }],
                 limits: cookie_agent_config::AgentLimits::default(),
                 permissions: Default::default(),

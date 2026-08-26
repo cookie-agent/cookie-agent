@@ -9,8 +9,11 @@ use cookie_agent_models::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
+use crate::{
+    AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, ConfigError,
+    GoogleCacheConfig, OpenAiCacheConfig, RollingCacheTtl,
+};
 use zeroize::Zeroize;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -338,26 +341,54 @@ pub struct ModelPricing {
     pub cache_write_per_million_usd: Option<PicoUsdPerMillion>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PromptCachingConfig {
-    #[serde(default = "yes")]
-    pub enabled: bool,
-    #[serde(default = "one_hour")]
-    pub system_ttl: AnthropicCacheTtlConfig,
-    #[serde(default = "one_hour")]
-    pub tools_ttl: AnthropicCacheTtlConfig,
-    #[serde(default = "five_minutes")]
-    pub rolling_ttl: AnthropicCacheTtlConfig,
+    pub anthropic: Option<AnthropicCacheConfig>,
+    pub bedrock: Option<BedrockCacheConfig>,
+    pub google: Option<GoogleCacheConfig>,
+    pub openai: Option<OpenAiCacheConfig>,
 }
 
 impl PromptCachingConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        self.as_cache_config().validate()
+    }
+
+    #[must_use]
+    pub fn as_cache_config(&self) -> CacheConfig {
+        CacheConfig {
+            anthropic: self.anthropic.clone(),
+            bedrock: self.bedrock.clone(),
+            google: self.google.clone(),
+            openai: self.openai.clone(),
+        }
+    }
+
     #[must_use]
     pub fn strategy(&self) -> Option<AnthropicCacheStrategyConfig> {
-        self.enabled.then_some(AnthropicCacheStrategyConfig {
-            system: Some(self.system_ttl),
-            tools: Some(self.tools_ttl),
-            rolling: Some(self.rolling_ttl),
+        let config = self.anthropic.as_ref()?;
+        Some(AnthropicCacheStrategyConfig {
+            system: anthropic_ttl(config.system),
+            tools: anthropic_ttl(config.tools),
+            rolling: match config.rolling {
+                RollingCacheTtl::FiveMinutes => Some(AnthropicCacheTtlConfig::FiveMinutes),
+                RollingCacheTtl::Off => None,
+            },
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for PromptCachingConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let config = CacheConfig::deserialize(deserializer)?;
+        Ok(Self {
+            anthropic: config.anthropic,
+            bedrock: config.bedrock,
+            google: config.google,
+            openai: config.openai,
         })
     }
 }
@@ -365,20 +396,20 @@ impl PromptCachingConfig {
 impl Default for PromptCachingConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            system_ttl: one_hour(),
-            tools_ttl: one_hour(),
-            rolling_ttl: five_minutes(),
+            anthropic: Some(AnthropicCacheConfig::default()),
+            bedrock: None,
+            google: None,
+            openai: None,
         }
     }
 }
 
-const fn one_hour() -> AnthropicCacheTtlConfig {
-    AnthropicCacheTtlConfig::OneHour
-}
-
-const fn five_minutes() -> AnthropicCacheTtlConfig {
-    AnthropicCacheTtlConfig::FiveMinutes
+const fn anthropic_ttl(value: CacheTtl) -> Option<AnthropicCacheTtlConfig> {
+    match value {
+        CacheTtl::OneHour => Some(AnthropicCacheTtlConfig::OneHour),
+        CacheTtl::FiveMinutes => Some(AnthropicCacheTtlConfig::FiveMinutes),
+        CacheTtl::Off => None,
+    }
 }
 
 impl Drop for RawRuntimeLayer {
@@ -692,14 +723,7 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
         return Err(ConfigError::InvalidRuntime);
     }
-    let caching = &runtime.prompt_caching;
-    if caching.enabled
-        && (caching.tools_ttl == AnthropicCacheTtlConfig::FiveMinutes
-            && (caching.system_ttl == AnthropicCacheTtlConfig::OneHour
-                || caching.rolling_ttl == AnthropicCacheTtlConfig::OneHour)
-            || caching.system_ttl == AnthropicCacheTtlConfig::FiveMinutes
-                && caching.rolling_ttl == AnthropicCacheTtlConfig::OneHour)
-    {
+    if runtime.prompt_caching.validate().is_err() {
         return Err(ConfigError::InvalidRuntime);
     }
     for (id, provider) in &runtime.providers {

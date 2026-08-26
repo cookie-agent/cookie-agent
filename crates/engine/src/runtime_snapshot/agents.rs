@@ -213,6 +213,7 @@ fn built_in_internal_document(
         models: vec![AgentModelFallback {
             model: AgentModelRef::ParentModel,
             variant: None,
+            cache: None,
         }],
         limits,
         permissions: IndexMap::new(),
@@ -246,6 +247,7 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
                 .variant
                 .clone()
                 .map(cookie_agent_identity::ConfiguredVariantRef::Named),
+            cache: None,
         }],
         limits: AgentLimits::default(),
         permissions: built_in_default_permissions()?,

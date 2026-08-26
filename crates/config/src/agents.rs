@@ -146,6 +146,7 @@ impl<'de> Deserialize<'de> for AgentModelRef {
 pub struct AgentModelFallback {
     pub model: AgentModelRef,
     pub variant: Option<ConfiguredVariantRef>,
+    pub cache: Option<crate::CacheConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

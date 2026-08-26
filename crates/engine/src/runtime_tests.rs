@@ -6387,6 +6387,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     compaction.frontmatter.models = vec![cookie_agent_config::AgentModelFallback {
         model: cookie_agent_config::AgentModelRef::ParentModel,
         variant: None,
+        cache: None,
     }];
     compaction.frontmatter.limits = cookie_agent_config::AgentLimits {
         timeout_ms: 30_000,
@@ -10211,7 +10212,7 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
             "anthropic-compatible",
         );
     fixture.engine.shutdown().await;
-    fixture.config.runtime.prompt_caching.enabled = false;
+    fixture.config.runtime.prompt_caching.anthropic = None;
     fixture.engine = Engine::open(EngineOptions {
         data_dir: fixture._directory.path().join("data"),
         cwd: fixture._directory.path().to_owned(),

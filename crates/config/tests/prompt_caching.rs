@@ -1,6 +1,9 @@
 use std::fs;
 
-use cookie_agent_config::{ConfigError, load_from_roots};
+use cookie_agent_config::{
+    AgentFrontmatter, BedrockCacheTtl, CacheTtl, ConfigError, GoogleCacheMode,
+    OpenAiPromptCacheRetention, RollingCacheTtl, load_from_roots,
+};
 use cookie_agent_models::adapters::AnthropicCacheTtlConfig;
 use tempfile::TempDir;
 
@@ -11,26 +14,121 @@ fn load(text: &str) -> Result<cookie_agent_config::LoadedConfiguration, ConfigEr
 }
 
 #[test]
-fn prompt_caching_defaults_enabled_with_ordered_ttls() {
+fn prompt_caching_defaults_to_anthropic_ordered_markers() {
     let loaded = load("").unwrap();
     let caching = loaded.runtime.prompt_caching;
-    assert!(caching.enabled);
-    assert_eq!(caching.system_ttl, AnthropicCacheTtlConfig::OneHour);
-    assert_eq!(caching.tools_ttl, AnthropicCacheTtlConfig::OneHour);
-    assert_eq!(caching.rolling_ttl, AnthropicCacheTtlConfig::FiveMinutes);
-    assert!(caching.strategy().is_some());
+    let anthropic = caching.anthropic.as_ref().unwrap();
+    assert_eq!(anthropic.system, CacheTtl::OneHour);
+    assert_eq!(anthropic.tools, CacheTtl::OneHour);
+    assert_eq!(anthropic.rolling, RollingCacheTtl::FiveMinutes);
+    let strategy = caching.strategy().unwrap();
+    assert_eq!(strategy.system, Some(AnthropicCacheTtlConfig::OneHour));
+    assert_eq!(strategy.tools, Some(AnthropicCacheTtlConfig::OneHour));
+    assert_eq!(strategy.rolling, Some(AnthropicCacheTtlConfig::FiveMinutes));
+    assert!(caching.bedrock.is_none());
+    assert!(caching.google.is_none());
+    assert!(caching.openai.is_none());
 }
 
 #[test]
-fn prompt_caching_can_be_disabled_and_is_strict() {
-    let disabled = load("[prompt_caching]\nenabled = false\n").unwrap();
-    assert!(disabled.runtime.prompt_caching.strategy().is_none());
+fn runtime_cache_sections_parse_strict_provider_shapes() {
+    let loaded = load(
+        r#"
+[prompt_caching.anthropic]
+system = "off"
+tools = "one_hour"
+rolling = "five_minutes"
 
-    let unknown = load("[prompt_caching]\nunknown = true\n").unwrap_err();
-    assert!(matches!(unknown, ConfigError::Toml(_)));
+[prompt_caching.bedrock]
+enabled = true
+system = "one_hour"
+tools = "one_hour"
 
-    let invalid_order =
-        load("[prompt_caching]\ntools_ttl = \"five_minutes\"\nsystem_ttl = \"one_hour\"\n")
-            .unwrap_err();
-    assert!(matches!(invalid_order, ConfigError::InvalidRuntime));
+[[prompt_caching.bedrock.messages]]
+history_index = 2
+ttl = "five_minutes"
+
+[prompt_caching.google]
+mode = "explicit"
+cached_content = "cachedContents/runtime"
+
+[prompt_caching.openai]
+prompt_cache_key = "runtime-${session_id}"
+prompt_cache_retention = "24h"
+"#,
+    )
+    .unwrap();
+    let caching = loaded.runtime.prompt_caching;
+    assert_eq!(caching.anthropic.unwrap().system, CacheTtl::Off);
+    assert_eq!(
+        caching.bedrock.unwrap().messages.unwrap()[0].ttl,
+        BedrockCacheTtl::FiveMinutes
+    );
+    assert_eq!(caching.google.unwrap().mode, GoogleCacheMode::Explicit);
+    assert_eq!(
+        caching.openai.unwrap().prompt_cache_retention,
+        Some(OpenAiPromptCacheRetention::TwentyFourHours)
+    );
+}
+
+#[test]
+fn runtime_cache_sections_reject_unknown_and_incoherent_options() {
+    for text in [
+        "[prompt_caching.unknown]\nenabled = true\n",
+        "[prompt_caching.anthropic]\ntools = \"five_minutes\"\nsystem = \"one_hour\"\n",
+        "[prompt_caching.google]\nmode = \"explicit\"\n",
+        "[prompt_caching.google]\nmode = \"off\"\ncached_content = \"cachedContents/x\"\n",
+        &format!(
+            "[prompt_caching.openai]\nprompt_cache_key = \"{}\"\n",
+            "x".repeat(65)
+        ),
+        "[prompt_caching.bedrock]\nenabled = false\nsystem = \"one_hour\"\n",
+        "[prompt_caching.bedrock]\ntools = \"five_minutes\"\nsystem = \"one_hour\"\n",
+        "[prompt_caching.bedrock]\nmessages = [{ history_index = 1, ttl = \"five_minutes\" }, { history_index = 1, ttl = \"five_minutes\" }]\n",
+        "[prompt_caching.bedrock]\nmessages = [{ history_index = 0, ttl = \"one_hour\" }, { history_index = 1, ttl = \"one_hour\" }, { history_index = 2, ttl = \"one_hour\" }]\n",
+    ] {
+        assert!(load(text).is_err(), "accepted invalid cache config: {text}");
+    }
+}
+
+#[test]
+fn agent_model_cache_is_optional_strict_and_validated() {
+    let frontmatter: AgentFrontmatter = serde_yaml::from_str(
+        r#"
+description: Cached agent
+mode: primary
+enabled: true
+models:
+  - model: custom.test/model
+    variant: null
+    cache:
+      openai:
+        prompt_cache_key: agent-${session_id}
+        prompt_cache_retention: in_memory
+permissions: {}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        frontmatter.models[0]
+            .cache
+            .as_ref()
+            .unwrap()
+            .openai
+            .as_ref()
+            .unwrap()
+            .prompt_cache_retention,
+        Some(OpenAiPromptCacheRetention::InMemory)
+    );
+
+    for invalid in [
+        "unknown: {}",
+        "google: { mode: explicit }",
+        "anthropic: { tools: five_minutes, system: one_hour }",
+    ] {
+        let yaml = format!(
+            "description: Cached agent\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/model\n    variant: null\n    cache: {{ {invalid} }}\npermissions: {{}}\n"
+        );
+        assert!(serde_yaml::from_str::<AgentFrontmatter>(&yaml).is_err());
+    }
 }
