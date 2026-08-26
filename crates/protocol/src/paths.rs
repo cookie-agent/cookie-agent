@@ -32,7 +32,7 @@ pub fn home_dir() -> Result<PathBuf, PathError> {
 /// Returns [`PathError::HomeUnavailable`] when the current user's home
 /// directory cannot be determined.
 pub fn user_data_root() -> Result<PathBuf, PathError> {
-    Ok(home_dir()?.join(".cookie_agent"))
+    Ok(home_dir()?.join(".cookie-agent"))
 }
 
 #[cfg(test)]
@@ -42,7 +42,7 @@ mod tests {
         let home = super::home_dir().expect("home directory");
         assert_eq!(
             super::user_data_root().expect("user data root"),
-            home.join(".cookie_agent")
+            home.join(".cookie-agent")
         );
     }
 }

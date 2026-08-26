@@ -1,6 +1,6 @@
 # Cookie Agent TUI configuration
 #
-# Location: ~/.cookie_agent/tui.toml
+# Location: ~/.cookie-agent/tui.toml
 #
 # This file is independent from engine/workspace config. There is no
 # workspace layer and no environment-variable override for these keys; a

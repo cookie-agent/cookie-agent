@@ -1,6 +1,6 @@
 //! Strict, independent TUI configuration (`tui.toml`).
 //!
-//! The file lives at `~/.cookie_agent/tui.toml`. There is no workspace layer or
+//! The file lives at `~/.cookie-agent/tui.toml`. There is no workspace layer or
 //! environment variable override. A missing file yields defaults; a malformed
 //! file or any unknown key fails with an actionable path/key error. Error
 //! messages quote the file's location and the offending key or TOML parse

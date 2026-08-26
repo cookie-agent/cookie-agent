@@ -32,7 +32,7 @@ pub struct SecureDirectory {
 }
 
 impl SecureDirectory {
-    /// Opens `~/.cookie_agent/<relative>`, creating missing components privately.
+    /// Opens `~/.cookie-agent/<relative>`, creating missing components privately.
     pub fn user_data(relative: impl AsRef<Path>) -> Result<Self, SecureStoreError> {
         let root = paths::user_data_root().map_err(|_| SecureStoreError::HomeUnavailable)?;
         #[cfg(unix)]

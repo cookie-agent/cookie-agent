@@ -9,7 +9,7 @@ directory are available as scripts, references, or assets.
 
 Cookie Agent discovers skills from:
 
-- `~/.cookie_agent/skills/<name>/SKILL.md`
+- `~/.cookie-agent/skills/<name>/SKILL.md`
 - `.cookie-agent/skills/<name>/SKILL.md` from the working directory upward to
   the worktree root
 
