@@ -1259,11 +1259,12 @@ directory are available as scripts, references, or assets.</p>
 <h2 id="discovery-and-precedence">Discovery and precedence<a class="headerlink" href="#discovery-and-precedence" title="Permanent link">&para;</a></h2>
 <p>Cookie Agent discovers skills from:</p>
 <ul>
-<li><code>~/.cookie_agent/skills/&lt;name&gt;/SKILL.md</code></li>
+<li><code>~/.cookie-agent/skills/&lt;name&gt;/SKILL.md</code></li>
 <li><code>.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> from the working directory upward to
   the worktree root</li>
 </ul>
-<p>The user location is resolved from the standard home directory.</p>
+<p>The user location is resolved from the standard home directory and is the normal
+place for reusable personal skills.</p>
 <p>Project skills override same-named user skills. The shadowed user skill remains
 visible in <code>skills.list</code> and <code>/skills</code> diagnostics, but cannot be invoked. Skill
 files are not hot-reloaded; restart the engine after changing them.</p>

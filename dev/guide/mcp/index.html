@@ -1292,8 +1292,8 @@
 not expose MCP resources or prompts. Server requests for sampling, elicitation,
 roots, or other interactive input are rejected.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<p>Define servers in either the user configuration or the exact workspace's
-<code>.cookie-agent/config.toml</code>:</p>
+<p>Define servers by default in the user configuration at
+<code>~/.cookie-agent/config.toml</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[mcp.servers.github]</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">command</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"npx"</span>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">args</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"-y"</span><span class="p">,</span><span class="w"> </span><span class="s2">"@modelcontextprotocol/server-github"</span><span class="p">]</span>
@@ -1306,6 +1306,9 @@ roots, or other interactive input are rejected.</p>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">oauth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">lazy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </code></pre></div>
+<p>Workspace-specific servers use the same syntax in
+<code>&lt;cwd&gt;/.cookie-agent/config.toml</code> and take precedence. A same-name workspace
+server replaces the complete user server entry; nested fields never merge.</p>
 <p>Each server must set exactly one of <code>command</code> or <code>url</code>. <code>args</code>, <code>env</code>, and <code>cwd</code>
 apply only to stdio commands; <code>headers</code> applies only to Streamable HTTP. Servers
 are enabled by default. An enabled server connects at startup unless <code>lazy =
@@ -1353,7 +1356,7 @@ passes a fixed redacted surrogate through rmcp's traced exchange path and restor
 the real code only in the outbound token request, preventing debug logs from
 containing the browser callback code.</p>
 <p>OAuth credentials are user-level and stored in the single
-<code>~/.cookie_agent/mcp-oauth.json</code> file. On Unix the file is owner-only
+<code>~/.cookie-agent/mcp-oauth.json</code> file. On Unix the file is owner-only
 (<code>0600</code>) when cookie agent creates it. The unversioned file is parsed strictly,
 but an existing file is used regardless of permissions, ownership, links, or
 symlinks. Stop the daemon and delete this file to revoke all locally stored MCP

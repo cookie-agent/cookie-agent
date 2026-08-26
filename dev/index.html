@@ -1237,14 +1237,14 @@ turns that implementation into task-oriented guides and reference material.</p>
 <h2 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h2>
 <p>First <a href="install/">install cookie agent</a>, then run it from the workspace where it
 should operate:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">'[providers]\n'</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cookie
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cookie
 </code></pre></div>
-<p>Type <code>/connect</code> to store a managed provider connection. Provider setup and
-credentials are per-user and shared across workspaces. Credentials are checked
-when the provider is first used, not during the connect flow.</p>
-<p>The <a href="install/#quick-start">installation guide</a> continues through configuration
+<p>No configuration file is needed to start. If no provider is available, the TUI
+opens in setup mode; type <code>/connect</code> to store a managed provider connection.
+Provider setup and credentials are per-user and shared across workspaces.
+Credentials are checked when the provider is first used, not during the connect
+flow.</p>
+<p>The <a href="install/#quick-start">installation guide</a> continues through provider setup
 and the first run. See <a href="guide/providers/">Providers</a> for managed and custom
 provider options, <a href="guide/plugins/">Plugins</a> for executable extensions, and
 <a href="reference/configuration/">Configuration</a> for every configurable item.</p>

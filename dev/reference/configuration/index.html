@@ -1566,29 +1566,30 @@ there are no undocumented aliases, hidden keys, or migration paths.</p>
 <tbody>
 <tr>
 <td>Runtime, providers, MCP servers, and plugins</td>
-<td><code>~/.cookie_agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
+<td><code>~/.cookie-agent/config.toml</code> and <code>&lt;cwd&gt;/.cookie-agent/config.toml</code></td>
 </tr>
 <tr>
 <td>Agents</td>
-<td><code>~/.cookie_agent/agents/&lt;agent-id&gt;.md</code> and <code>&lt;cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md</code></td>
+<td><code>~/.cookie-agent/agents/&lt;agent-id&gt;.md</code> and <code>&lt;cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md</code></td>
 </tr>
 <tr>
 <td>Skills</td>
-<td><code>~/.cookie_agent/skills/&lt;name&gt;/SKILL.md</code> and <code>.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> from cwd to worktree root</td>
+<td><code>~/.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> and <code>.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> from cwd to worktree root</td>
 </tr>
 <tr>
 <td>TUI</td>
-<td><code>~/.cookie_agent/tui.toml</code></td>
+<td><code>~/.cookie-agent/tui.toml</code></td>
 </tr>
 </tbody>
 </table>
+<p>Examples default to the user layer. The exact-workspace layer uses the same
+syntax and takes precedence when workspace-specific behavior is needed.</p>
 <h2 id="layering-and-strictness">Layering and strictness<a class="headerlink" href="#layering-and-strictness" title="Permanent link">&para;</a></h2>
 <p>The user layer and the exact working directory's <code>.cookie-agent</code> layer are both
 optional. Configuration is loaded from the exact working directory only; there
 is no upward search. Within a layer, <code>config.toml</code> and the <code>agents/</code> directory
-are optional. A workspace layer replaces the corresponding user settings and
-providers, MCP servers, plugins, and agents wholesale by ID; nested fields
-never merge.</p>
+are optional. A same-ID workspace provider, MCP server, plugin, or agent replaces
+the complete user entry; nested fields never merge.</p>
 <p>Every authored file is parsed strictly. Unknown keys, leftover <code>schema</code> or
 <code>schema_version</code> keys, wrong types, and malformed content are hard errors with an
 actionable path, key, and line where available. No authored-file migrations or

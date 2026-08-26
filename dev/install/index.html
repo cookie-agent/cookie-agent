@@ -508,18 +508,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#create-a-workspace-configuration" class="md-nav__link">
+  <a href="#start-without-configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      Create a workspace configuration
+      Start without configuration
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#configure-a-provider" class="md-nav__link">
+  <a href="#optional-user-configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      Configure a provider
+      Optional user configuration
     </span>
   </a>
   
@@ -1307,18 +1307,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#create-a-workspace-configuration" class="md-nav__link">
+  <a href="#start-without-configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      Create a workspace configuration
+      Start without configuration
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#configure-a-provider" class="md-nav__link">
+  <a href="#optional-user-configuration" class="md-nav__link">
     <span class="md-ellipsis">
-      Configure a provider
+      Optional user configuration
     </span>
   </a>
   
@@ -1414,31 +1414,30 @@ command. Each prerelease provides PowerShell (<code>irm ... | iex</code>) and sh
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <p>After installation, change to the workspace where cookie agent should operate.
 Running <code>cookie</code> without a subcommand starts a local daemon and opens the TUI.</p>
-<h3 id="create-a-workspace-configuration">Create a workspace configuration<a class="headerlink" href="#create-a-workspace-configuration" title="Permanent link">&para;</a></h3>
-<p>Configuration is loaded from the exact working directory; there is no upward
-search. Create <code>.cookie-agent/config.toml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[providers]</span>
+<h3 id="start-without-configuration">Start without configuration<a class="headerlink" href="#start-without-configuration" title="Permanent link">&para;</a></h3>
+<p>Both user and workspace configuration are optional. Start cookie agent directly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cookie
 </code></pre></div>
-<p>An empty provider map is valid. If the global provider store is also empty, the
-TUI starts in setup mode and keeps <code>/connect</code> available.</p>
-<h3 id="configure-a-provider">Configure a provider<a class="headerlink" href="#configure-a-provider" title="Permanent link">&para;</a></h3>
-<p>Start cookie agent from the workspace:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cookie
+<p>When no provider is available, the TUI starts in setup mode. Type <code>/connect</code>,
+select a managed provider, and fill in its recipe-defined setup and credential
+fields. The durable store is global to the user, so other workspaces can use the
+same compatible connection. The form does not contact the provider; the first
+model request verifies the credentials.</p>
+<h3 id="optional-user-configuration">Optional user configuration<a class="headerlink" href="#optional-user-configuration" title="Permanent link">&para;</a></h3>
+<p>Create <code>~/.cookie-agent/config.toml</code> only when you have settings to author. For
+example, an environment-backed managed provider can be declared as:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[providers.openai]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
 </code></pre></div>
-<p>Type <code>/connect</code>, select a managed provider, and fill in the provider's
-recipe-defined setup and credential fields. The durable store is global to the
-user, so other workspaces can use the same compatible connection. The form does
-not contact the provider; the first model request verifies the credentials.</p>
-<p>For environment-backed authored configuration instead, use a managed provider
-entry:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.openai]</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"models_dev"</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">api_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"${env:OPENAI_API_KEY}"</span>
+<p>Export the variable before launching cookie agent:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s1">'your-key'</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cookie
 </code></pre></div>
-<p>Export the variable before launching:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENAI_API_KEY</span><span class="o">=</span><span class="s1">'your-key'</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cookie
-</code></pre></div>
+<p>Workspace-specific settings use the same syntax in
+<code>&lt;cwd&gt;/.cookie-agent/config.toml</code> and take precedence over user settings. A
+same-ID workspace provider, MCP server, plugin, or agent replaces the complete
+user entry; nested fields never merge.</p>
 <p>See <a href="../guide/providers/">Providers</a> for precedence rules and custom providers.</p>
 <h3 id="first-run">First run<a class="headerlink" href="#first-run" title="Permanent link">&para;</a></h3>
 <p>When at least one model is available, select an agent and model if needed, type
@@ -1450,10 +1449,10 @@ selection, and message actions. <a href="../guide/agents/">Agents</a> explains t
 internal agents and how to author your own.</p>
 <h3 id="separate-daemon-and-tui">Separate daemon and TUI<a class="headerlink" href="#separate-daemon-and-tui" title="Permanent link">&para;</a></h3>
 <p>The daemon binds to <code>127.0.0.1:7419</code> by default:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cookie<span class="w"> </span>daemon
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cookie<span class="w"> </span>daemon
 </code></pre></div>
 <p>Attach from another terminal:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>cookie<span class="w"> </span>attach
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cookie<span class="w"> </span>attach
 </code></pre></div>
 <p>The attach URL defaults to <code>ws://127.0.0.1:7419/ws</code> and may be changed with
 <code>--url</code>. Only loopback WebSocket URLs with the exact <code>/ws</code> path are accepted.</p>

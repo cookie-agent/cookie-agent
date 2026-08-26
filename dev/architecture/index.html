@@ -1512,7 +1512,7 @@ has six top-level subcommands plus a default mode:</p>
 </tbody>
 </table>
 <p>The daemon binds only to the configured port and authenticates every WebSocket
-with a bearer token stored at <code>~/.cookie_agent/daemon/token-v1</code>.
+with a bearer token stored at <code>~/.cookie-agent/daemon/token-v1</code>.
 <code>attach</code>, <code>connect</code>, <code>disconnect</code>, and <code>mcp</code> accept only loopback <code>ws</code>/<code>wss</code>
 URLs whose path is exactly <code>/ws</code>. They use the same shared protocol client as
 the TUI, so the CLI keeps working even when built without the <code>tui</code> feature.</p>
@@ -1647,8 +1647,8 @@ client is a ~6-line adapter</strong> re-exporting it, and the CLI uses the same 
 through the <code>ClientProtocol</code> trait.</p>
 <h2 id="configuration-and-layering">Configuration and layering<a class="headerlink" href="#configuration-and-layering" title="Permanent link">&para;</a></h2>
 <p>The <code>config</code> crate reads two optional authored layers:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>~/.cookie_agent/config.toml                 # user layer
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>~/.cookie_agent/agents/&lt;agent-id&gt;.md
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>~/.cookie-agent/config.toml                 # user layer
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>~/.cookie-agent/agents/&lt;agent-id&gt;.md
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>&lt;exact-cwd&gt;/.cookie-agent/config.toml       # workspace layer
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>&lt;exact-cwd&gt;/.cookie-agent/agents/&lt;agent-id&gt;.md
 </code></pre></div>
@@ -1656,7 +1656,7 @@ through the <code>ClientProtocol</code> trait.</p>
 corresponding user setting; a same-ID workspace provider or agent replaces the
 complete user definition. Unknown keys, leftover schema/version fields, wrong
 types, and malformed values are rejected without migration or silent ignores.
-The TUI additionally reads an independent <code>~/.cookie_agent/tui.toml</code>.</p>
+The TUI additionally reads an independent <code>~/.cookie-agent/tui.toml</code>.</p>
 <p>See <a href="../guide/configuration/">Configuration</a> and the
 <a href="../reference/configuration/">configuration reference</a> for every key.</p>
 <h2 id="provider-and-model-runtime">Provider and model runtime<a class="headerlink" href="#provider-and-model-runtime" title="Permanent link">&para;</a></h2>
@@ -1681,7 +1681,7 @@ The TUI additionally reads an independent <code>~/.cookie_agent/tui.toml</code>.
    implementations. The <code>models</code> crate selects the adapter for each compiled
    model and freezes it into project manifests.</li>
 <li><strong>Provider store.</strong> Managed connections live in a global per-user provider
-   store (<code>~/.cookie_agent/providers/store-v3.json</code>) and are shared
+   store (<code>~/.cookie-agent/providers/store-v3.json</code>) and are shared
    across workspaces. Credentials are checked on first use, not at connect time.</li>
 </ol>
 <p>Each accepted run freezes its model selection into a project manifest under
@@ -1722,7 +1722,7 @@ fork copies a persisted prefix under a new session ID; neither truncates
 physical events.</p>
 <p>Session data lives under the user data directory keyed by a hash of the
 canonical working directory:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>~/.cookie_agent/
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>~/.cookie-agent/
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  daemon/token-v1                  # daemon bearer token
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  providers/store-v3.json          # durable managed connections
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  catalog/                         # validated models.dev cache

@@ -1377,6 +1377,10 @@ ID. An agent defines the system prompt, permission-controlled tool access, its
 model fallback chain, and its runtime limits. The harness supplies four agents:
 three internal agents plus the synthesized <code>default</code> coding agent when no
 authored root agent is runnable.</p>
+<p>Author common agents under <code>~/.cookie-agent/agents/</code>. The exact workspace may
+use the same document format under <code>&lt;cwd&gt;/.cookie-agent/agents/</code>; a same-ID
+workspace document takes precedence and replaces the complete user document.
+Frontmatter fields and nested permission maps never merge across layers.</p>
 <h2 id="agent-document-structure">Agent document structure<a class="headerlink" href="#agent-document-structure" title="Permanent link">&para;</a></h2>
 <p>Each file has strict YAML frontmatter and a nonempty Markdown body:</p>
 <p>Agent documents do not declare a schema or version. A leftover <code>schema</code> field is
@@ -1581,7 +1585,7 @@ declare their own tool permissions.</p>
 shared document. Markdown files directly under <code>agents/</code> are shared and are
 available when no preset is selected. A directory exactly one level below
 <code>agents/</code> defines a preset:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>.cookie-agent/agents/
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>~/.cookie-agent/agents/
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── primary.md
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>├── reviewer.md
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>├── python/
