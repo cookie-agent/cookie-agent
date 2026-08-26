@@ -7,6 +7,7 @@ use cookie_agent_identity::{
 };
 use cookie_agent_models::{
     ModelManager, ProviderDefinition,
+    adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, CacheStrategyConfig},
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
     },
@@ -134,9 +135,14 @@ async fn dispatch_request(
         })
         .unwrap();
     let request = if cache_strategy {
-        resolved.prepare_request(request)
+        let strategy = CacheStrategyConfig::Anthropic(AnthropicCacheStrategyConfig {
+            system: Some(AnthropicCacheTtlConfig::OneHour),
+            tools: Some(AnthropicCacheTtlConfig::OneHour),
+            rolling: Some(AnthropicCacheTtlConfig::FiveMinutes),
+        });
+        resolved.prepare_request_with_cache_strategy(request, Some(&strategy))
     } else {
-        resolved.prepare_request_with_cache_strategy(request, None)
+        resolved.prepare_request(request)
     };
     let mut stream = resolved
         .model()

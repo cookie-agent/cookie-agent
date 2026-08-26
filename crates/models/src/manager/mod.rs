@@ -266,20 +266,9 @@ impl ResolvedExecutableModel {
         request
             .provider_options
             .extend(self.provider_options.clone());
-        let compiled =
-            take_cache_strategy(&mut request.provider_options).map(CacheStrategyConfig::Anthropic);
-        let strategy = strategy_override.map_or(compiled, |strategy| strategy.cloned());
+        let strategy = strategy_override.flatten().cloned();
         (request, strategy)
     }
-}
-
-fn take_cache_strategy(
-    options: &mut oven_sdk::ProviderOptions,
-) -> Option<AnthropicCacheStrategyConfig> {
-    let Value::Object(anthropic) = options.get_mut("anthropic")? else {
-        return None;
-    };
-    serde_json::from_value(anthropic.remove("cache_strategy")?).ok()
 }
 
 fn apply_cache_strategy(
@@ -2685,11 +2674,6 @@ mod cache_strategy_tests {
                 })])
             }),
         );
-        let strategy = AnthropicCacheStrategyConfig {
-            system: Some(AnthropicCacheTtlConfig::OneHour),
-            tools: Some(AnthropicCacheTtlConfig::OneHour),
-            rolling: Some(AnthropicCacheTtlConfig::FiveMinutes),
-        };
         let resolved = ResolvedExecutableModel {
             selection: ModelSelection {
                 model: "test/group/model".parse().unwrap(),
@@ -2698,13 +2682,18 @@ mod cache_strategy_tests {
             model: Arc::new(scripted.clone()),
             adapter: OvenAdapterFamily::Anthropic,
             defaults: crate::ResolvedRequestDefaults::default(),
-            provider_options: BTreeMap::from([(
-                "anthropic".into(),
-                json!({ "cache_strategy": strategy }),
-            )]),
+            provider_options: BTreeMap::new(),
             behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
         };
         (resolved, scripted)
+    }
+
+    fn strategy() -> CacheStrategyConfig {
+        CacheStrategyConfig::Anthropic(AnthropicCacheStrategyConfig {
+            system: Some(AnthropicCacheTtlConfig::OneHour),
+            tools: Some(AnthropicCacheTtlConfig::OneHour),
+            rolling: Some(AnthropicCacheTtlConfig::FiveMinutes),
+        })
     }
 
     fn marker(options: &oven_sdk::ProviderOptions) -> Option<&str> {
@@ -2743,7 +2732,8 @@ mod cache_strategy_tests {
     #[tokio::test]
     async fn strategy_places_three_ordered_markers_with_empty_and_tool_fallback() {
         let (resolved, scripted) = resolved(true, 1);
-        let prepared = resolved.prepare_request(request());
+        let strategy = strategy();
+        let prepared = resolved.prepare_request_with_cache_strategy(request(), Some(&strategy));
         let _ = scripted
             .stream(prepared, AbortSignal::default())
             .await
@@ -2787,7 +2777,9 @@ mod cache_strategy_tests {
     #[test]
     fn capability_gate_and_compaction_reanchor_are_stable() {
         let (without_capability, _) = resolved(false, 0);
-        let gated = without_capability.prepare_request(request());
+        let strategy = strategy();
+        let gated =
+            without_capability.prepare_request_with_cache_strategy(request(), Some(&strategy));
         assert!(gated.history.iter().all(|turn| {
             marker(match turn {
                 oven_sdk::HistoryTurn::System(message) => &message.provider_options,
@@ -2805,7 +2797,7 @@ mod cache_strategy_tests {
             .push(oven_sdk::HistoryTurn::system(SystemMessage::new(vec![
                 SystemPart::Text(TextPart::new("compacted summary")),
             ])));
-        let prepared = resolved.prepare_request(compacted);
+        let prepared = resolved.prepare_request_with_cache_strategy(compacted, Some(&strategy));
         let oven_sdk::HistoryTurn::System(first) = &prepared.history[0] else {
             panic!("first system turn");
         };
