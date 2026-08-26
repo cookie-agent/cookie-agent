@@ -2030,6 +2030,21 @@
               "minLength": 71,
               "pattern": "^sha256:[0-9a-f]{64}$"
             },
+            "cache_strategies": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FrozenCacheStrategy"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "maxItems": 256
+            },
             "catalog_revision": {
               "type": "string",
               "maxLength": 71,
@@ -2860,6 +2875,145 @@
         "tool"
       ]
     },
+    "FrozenBedrockMessageCachePoint": {
+      "type": "object",
+      "properties": {
+        "history_index": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ttl": {
+          "$ref": "#/$defs/FrozenCacheTtl"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "history_index",
+        "ttl"
+      ]
+    },
+    "FrozenCacheStrategy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "anthropic"
+            },
+            "rolling": {
+              "$ref": "#/$defs/FrozenCacheTtl"
+            },
+            "system": {
+              "$ref": "#/$defs/FrozenCacheTtl"
+            },
+            "tools": {
+              "$ref": "#/$defs/FrozenCacheTtl"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "system",
+            "tools",
+            "rolling"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "messages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FrozenBedrockMessageCachePoint"
+              },
+              "maxItems": 4
+            },
+            "provider": {
+              "type": "string",
+              "const": "bedrock"
+            },
+            "system": {
+              "$ref": "#/$defs/FrozenCacheTtl"
+            },
+            "tools": {
+              "$ref": "#/$defs/FrozenCacheTtl"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "system",
+            "tools",
+            "messages"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cached_content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/$defs/FrozenGoogleCacheMode"
+            },
+            "provider": {
+              "type": "string",
+              "const": "google"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "mode",
+            "cached_content"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "prompt_cache_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt_cache_retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FrozenOpenAiCacheRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "type": "string",
+              "const": "open_ai"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "prompt_cache_key",
+            "prompt_cache_retention"
+          ]
+        }
+      ]
+    },
+    "FrozenCacheTtl": {
+      "type": "string",
+      "enum": [
+        "one_hour",
+        "five_minutes",
+        "off"
+      ]
+    },
     "FrozenCredentialBinding": {
       "type": "object",
       "properties": {
@@ -2945,6 +3099,14 @@
       "required": [
         "targets",
         "effective_depth_ceiling"
+      ]
+    },
+    "FrozenGoogleCacheMode": {
+      "type": "string",
+      "enum": [
+        "implicit",
+        "explicit",
+        "off"
       ]
     },
     "FrozenInternalAgentDefinition": {
@@ -3384,6 +3546,13 @@
         "static_headers",
         "behavior_fingerprint",
         "selection_fingerprint"
+      ]
+    },
+    "FrozenOpenAiCacheRetention": {
+      "type": "string",
+      "enum": [
+        "in_memory",
+        "24h"
       ]
     },
     "FrozenProviderSource": {

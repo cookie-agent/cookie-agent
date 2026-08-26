@@ -430,9 +430,11 @@ impl Engine {
             background: invocation.background,
             staged_skill,
         };
+        let cache_strategies = policy::wire_cache_strategies(&child_policy.cache_strategies)?;
         let fingerprint = delegation_events::delegation_request_fingerprint(
             &child_policy.agent,
             &child_policy.selected_suffix,
+            &cache_strategies,
             &request,
         )
         .map_err(|()| EngineError::RuntimeCompileFailed)?;
@@ -498,6 +500,7 @@ impl Engine {
                 invocation.parent_tool_call_id,
                 &invocation.agent_type,
                 child_policy,
+                cache_strategies,
                 fingerprint,
                 request,
                 Some((invocation_id, generation)),

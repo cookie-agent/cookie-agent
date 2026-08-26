@@ -827,6 +827,142 @@ impl ProviderOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrozenCacheTtl {
+    OneHour,
+    FiveMinutes,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrozenGoogleCacheMode {
+    Implicit,
+    Explicit,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FrozenOpenAiCacheRetention {
+    InMemory,
+    #[serde(rename = "24h")]
+    #[ts(rename = "24h")]
+    TwentyFourHours,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenBedrockMessageCachePoint {
+    pub history_index: u64,
+    pub ttl: FrozenCacheTtl,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FrozenCacheStrategy {
+    Anthropic {
+        system: FrozenCacheTtl,
+        tools: FrozenCacheTtl,
+        rolling: FrozenCacheTtl,
+    },
+    Bedrock {
+        system: FrozenCacheTtl,
+        tools: FrozenCacheTtl,
+        #[schemars(length(max = 4))]
+        messages: Vec<FrozenBedrockMessageCachePoint>,
+    },
+    Google {
+        mode: FrozenGoogleCacheMode,
+        #[serde(deserialize_with = "crate::deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<String>", required)]
+        cached_content: Option<String>,
+    },
+    OpenAi {
+        #[serde(deserialize_with = "crate::deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<String>", required)]
+        prompt_cache_key: Option<String>,
+        #[serde(deserialize_with = "crate::deserialize_required_option")]
+        #[schemars(with = "crate::NullableSchema<FrozenOpenAiCacheRetention>", required)]
+        prompt_cache_retention: Option<FrozenOpenAiCacheRetention>,
+    },
+}
+
+impl FrozenCacheStrategy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Anthropic {
+                system,
+                tools,
+                rolling,
+            } => {
+                if *rolling == FrozenCacheTtl::OneHour
+                    || !valid_cache_ttl_order([*tools, *system, *rolling])
+                {
+                    return Err("invalid Anthropic frozen cache strategy");
+                }
+            }
+            Self::Bedrock {
+                system,
+                tools,
+                messages,
+            } => {
+                let count = usize::from(*system != FrozenCacheTtl::Off)
+                    + usize::from(*tools != FrozenCacheTtl::Off)
+                    + messages.len();
+                let mut indices = std::collections::BTreeSet::new();
+                if count > 4
+                    || messages.iter().any(|point| {
+                        point.ttl == FrozenCacheTtl::Off || !indices.insert(point.history_index)
+                    })
+                    || !valid_cache_ttl_order(
+                        [*tools, *system]
+                            .into_iter()
+                            .chain(messages.iter().map(|point| point.ttl)),
+                    )
+                {
+                    return Err("invalid Bedrock frozen cache strategy");
+                }
+            }
+            Self::Google {
+                mode,
+                cached_content,
+            } => {
+                if (*mode == FrozenGoogleCacheMode::Explicit) != cached_content.is_some()
+                    || cached_content.as_ref().is_some_and(|value| {
+                        !value.starts_with("cachedContents/") || value.len() > 512
+                    })
+                {
+                    return Err("invalid Google frozen cache strategy");
+                }
+            }
+            Self::OpenAi {
+                prompt_cache_key, ..
+            } => {
+                if prompt_cache_key.as_ref().is_some_and(|key| {
+                    key.chars().count() > 64 || key.chars().any(char::is_control)
+                }) {
+                    return Err("invalid OpenAI frozen cache strategy");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_cache_ttl_order(values: impl IntoIterator<Item = FrozenCacheTtl>) -> bool {
+    let mut saw_short = false;
+    for value in values {
+        match value {
+            FrozenCacheTtl::FiveMinutes => saw_short = true,
+            FrozenCacheTtl::OneHour if saw_short => return false,
+            FrozenCacheTtl::OneHour | FrozenCacheTtl::Off => {}
+        }
+    }
+    true
+}
+
 fn validate_provider_string<E>(value: &str, maximum: usize) -> Result<(), E>
 where
     E: serde::de::Error,

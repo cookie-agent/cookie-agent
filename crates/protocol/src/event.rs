@@ -1872,6 +1872,9 @@ pub enum EventPayload {
         recipe_registry_revision: RecipeRegistryRevision,
         #[schemars(length(min = 1, max = 256))]
         selected_suffix: Vec<FrozenModelBinding>,
+        #[serde(default)]
+        #[schemars(length(max = 256))]
+        cache_strategies: Vec<Option<FrozenCacheStrategy>>,
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
     },
@@ -2220,10 +2223,19 @@ impl EventPayload {
             Self::DelegationReserved {
                 child_agent,
                 selected_suffix,
+                cache_strategies,
                 request,
                 ..
             } => {
                 request.validate()?;
+                if (!cache_strategies.is_empty() && cache_strategies.len() != selected_suffix.len())
+                    || cache_strategies
+                        .iter()
+                        .flatten()
+                        .any(|strategy| strategy.validate().is_err())
+                {
+                    return Err(EventSchemaError::InvalidDelegationLifecycle);
+                }
                 child_agent
                     .validate_selected_suffix(
                         &RunSelection {

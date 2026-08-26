@@ -176,12 +176,17 @@ impl Engine {
                     self.inner.config.runtime.prompt_caching.as_cache_config(),
                 )?
             }
-            SessionOrigin::Delegated { .. } => {
+            SessionOrigin::Delegated { invocation_id, .. } => {
                 if params.selection.preset != session.meta.creation_selection.preset {
                     return Err(EngineError::NoRunnableModel);
                 }
                 let runtime = self.current_runtime();
                 let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
+                let delegation = self
+                    .inner
+                    .delegation_events
+                    .get(*invocation_id)
+                    .filter(|entry| entry.reservation.child_session_id == params.session_id);
                 policy_for_session_selection(
                     session.creation_agent.clone(),
                     agents,
@@ -190,6 +195,9 @@ impl Engine {
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
                     self.inner.config.runtime.prompt_caching.as_cache_config(),
+                    delegation
+                        .as_ref()
+                        .map(|entry| entry.cache_strategies.as_slice()),
                 )?
             }
         };

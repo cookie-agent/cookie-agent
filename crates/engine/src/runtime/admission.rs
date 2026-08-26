@@ -81,6 +81,7 @@ impl Engine {
         parent_tool_call_id: ToolCallId,
         agent: &AgentId,
         child_policy: FrozenRunPolicy,
+        cache_strategies: Vec<Option<cookie_agent_protocol::FrozenCacheStrategy>>,
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
         admission: Option<(InvocationId, u64)>,
@@ -171,6 +172,7 @@ impl Engine {
                     reserved_agent,
                     reserved_revisions,
                     reserved_suffix,
+                    cache_strategies,
                     request_fingerprint,
                     request,
                 )

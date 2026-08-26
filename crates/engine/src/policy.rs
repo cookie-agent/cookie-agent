@@ -350,6 +350,7 @@ fn freeze_with_bindings(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn policy_for_session_selection(
     mut agent: protocol::AgentSnapshot,
     registry: Arc<AgentRegistry>,
@@ -358,6 +359,7 @@ pub(crate) fn policy_for_session_selection(
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
     runtime_cache: cookie_agent_config::CacheConfig,
+    frozen_cache_strategies: Option<&[Option<protocol::FrozenCacheStrategy>]>,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
         return Err(EngineError::NoRunnableModel);
@@ -367,9 +369,20 @@ pub(crate) fn policy_for_session_selection(
         .iter()
         .position(|binding| binding.selection == selection.model)
         .ok_or(EngineError::NoRunnableModel)?;
+    let restored_cache_strategies = match frozen_cache_strategies {
+        Some(strategies) if strategies.len() == agent.fallback_chain.len() => {
+            Some(runtime_cache_strategies(&strategies[index..])?)
+        }
+        Some([]) | None => None,
+        Some(_) => {
+            return Err(EngineError::CacheStrategy(
+                "frozen cache strategies do not align with the delegated model suffix".into(),
+            ));
+        }
+    };
     agent.selected_suffix_start = index as u32;
     let suffix = agent.fallback_chain[index..].to_vec();
-    policy_from_snapshot(
+    let mut policy = policy_from_snapshot(
         agent,
         suffix,
         registry,
@@ -377,7 +390,11 @@ pub(crate) fn policy_for_session_selection(
         tool_output_max_lines,
         tool_output_max_bytes,
         runtime_cache,
-    )
+    )?;
+    if let Some(strategies) = restored_cache_strategies {
+        policy.cache_strategies = strategies;
+    }
+    Ok(policy)
 }
 
 pub(crate) fn policy_from_snapshot(
@@ -650,6 +667,193 @@ fn bedrock_cache_point(ttl: cookie_agent_config::CacheTtl) -> Option<BedrockCach
             cookie_agent_config::CacheTtl::OneHour => BedrockCacheTtl::OneHour,
             cookie_agent_config::CacheTtl::FiveMinutes => BedrockCacheTtl::FiveMinutes,
             cookie_agent_config::CacheTtl::Off => return None,
+        }),
+    })
+}
+
+pub(crate) fn wire_cache_strategies(
+    strategies: &[Option<CacheStrategyConfig>],
+) -> Result<Vec<Option<protocol::FrozenCacheStrategy>>, EngineError> {
+    strategies
+        .iter()
+        .map(|strategy| strategy.as_ref().map(wire_cache_strategy).transpose())
+        .collect()
+}
+
+fn wire_cache_strategy(
+    strategy: &CacheStrategyConfig,
+) -> Result<protocol::FrozenCacheStrategy, EngineError> {
+    Ok(match strategy {
+        CacheStrategyConfig::Anthropic(strategy) => protocol::FrozenCacheStrategy::Anthropic {
+            system: wire_optional_anthropic_ttl(strategy.system),
+            tools: wire_optional_anthropic_ttl(strategy.tools),
+            rolling: wire_optional_anthropic_ttl(strategy.rolling),
+        },
+        CacheStrategyConfig::Bedrock(strategy) => protocol::FrozenCacheStrategy::Bedrock {
+            system: wire_optional_bedrock_point(strategy.system.as_ref()),
+            tools: wire_optional_bedrock_point(strategy.tools.as_ref()),
+            messages: strategy
+                .messages
+                .iter()
+                .map(|point| {
+                    Ok(protocol::FrozenBedrockMessageCachePoint {
+                        history_index: u64::try_from(point.history_index).map_err(|_| {
+                            EngineError::CacheStrategy(
+                                "Bedrock cache history index exceeds the frozen wire bound".into(),
+                            )
+                        })?,
+                        ttl: wire_optional_bedrock_point(Some(&point.cache_point)),
+                    })
+                })
+                .collect::<Result<Vec<_>, EngineError>>()?,
+        },
+        CacheStrategyConfig::Google(strategy) => protocol::FrozenCacheStrategy::Google {
+            mode: match strategy.mode {
+                GoogleCacheMode::Implicit => protocol::FrozenGoogleCacheMode::Implicit,
+                GoogleCacheMode::Explicit => protocol::FrozenGoogleCacheMode::Explicit,
+                GoogleCacheMode::Off => protocol::FrozenGoogleCacheMode::Off,
+            },
+            cached_content: strategy.cached_content.clone(),
+        },
+        CacheStrategyConfig::OpenAi(strategy) => protocol::FrozenCacheStrategy::OpenAi {
+            prompt_cache_key: strategy.prompt_cache_key.clone(),
+            prompt_cache_retention: strategy.prompt_cache_retention.map(
+                |retention| match retention {
+                    OpenAiPromptCacheRetention::InMemory => {
+                        protocol::FrozenOpenAiCacheRetention::InMemory
+                    }
+                    OpenAiPromptCacheRetention::TwentyFourHours => {
+                        protocol::FrozenOpenAiCacheRetention::TwentyFourHours
+                    }
+                },
+            ),
+        },
+    })
+}
+
+pub(crate) fn runtime_cache_strategies(
+    strategies: &[Option<protocol::FrozenCacheStrategy>],
+) -> Result<Vec<Option<CacheStrategyConfig>>, EngineError> {
+    strategies
+        .iter()
+        .map(|strategy| strategy.as_ref().map(runtime_cache_strategy).transpose())
+        .collect()
+}
+
+fn runtime_cache_strategy(
+    strategy: &protocol::FrozenCacheStrategy,
+) -> Result<CacheStrategyConfig, EngineError> {
+    strategy
+        .validate()
+        .map_err(|error| EngineError::CacheStrategy(error.into()))?;
+    Ok(match strategy {
+        protocol::FrozenCacheStrategy::Anthropic {
+            system,
+            tools,
+            rolling,
+        } => CacheStrategyConfig::Anthropic(
+            cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
+                system: runtime_anthropic_ttl(*system),
+                tools: runtime_anthropic_ttl(*tools),
+                rolling: runtime_anthropic_ttl(*rolling),
+            },
+        ),
+        protocol::FrozenCacheStrategy::Bedrock {
+            system,
+            tools,
+            messages,
+        } => CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
+            system: runtime_bedrock_point(*system),
+            tools: runtime_bedrock_point(*tools),
+            messages: messages
+                .iter()
+                .map(|point| {
+                    Ok(BedrockMessageCachePoint {
+                        history_index: usize::try_from(point.history_index).map_err(|_| {
+                            EngineError::CacheStrategy(
+                                "frozen Bedrock cache history index exceeds this platform".into(),
+                            )
+                        })?,
+                        cache_point: runtime_bedrock_point(point.ttl).ok_or_else(|| {
+                            EngineError::CacheStrategy(
+                                "frozen Bedrock message cache point cannot be off".into(),
+                            )
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, EngineError>>()?,
+        }),
+        protocol::FrozenCacheStrategy::Google {
+            mode,
+            cached_content,
+        } => CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+            mode: match mode {
+                protocol::FrozenGoogleCacheMode::Implicit => GoogleCacheMode::Implicit,
+                protocol::FrozenGoogleCacheMode::Explicit => GoogleCacheMode::Explicit,
+                protocol::FrozenGoogleCacheMode::Off => GoogleCacheMode::Off,
+            },
+            cached_content: cached_content.clone(),
+        }),
+        protocol::FrozenCacheStrategy::OpenAi {
+            prompt_cache_key,
+            prompt_cache_retention,
+        } => CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: prompt_cache_key.clone(),
+            prompt_cache_retention: prompt_cache_retention.map(|retention| match retention {
+                protocol::FrozenOpenAiCacheRetention::InMemory => {
+                    OpenAiPromptCacheRetention::InMemory
+                }
+                protocol::FrozenOpenAiCacheRetention::TwentyFourHours => {
+                    OpenAiPromptCacheRetention::TwentyFourHours
+                }
+            }),
+        }),
+    })
+}
+
+const fn wire_optional_anthropic_ttl(
+    ttl: Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig>,
+) -> protocol::FrozenCacheTtl {
+    match ttl {
+        Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour) => {
+            protocol::FrozenCacheTtl::OneHour
+        }
+        Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes) => {
+            protocol::FrozenCacheTtl::FiveMinutes
+        }
+        None => protocol::FrozenCacheTtl::Off,
+    }
+}
+
+fn wire_optional_bedrock_point(point: Option<&BedrockCachePoint>) -> protocol::FrozenCacheTtl {
+    match point.and_then(|point| point.ttl) {
+        Some(BedrockCacheTtl::OneHour) => protocol::FrozenCacheTtl::OneHour,
+        Some(BedrockCacheTtl::FiveMinutes) => protocol::FrozenCacheTtl::FiveMinutes,
+        None if point.is_some() => protocol::FrozenCacheTtl::FiveMinutes,
+        None => protocol::FrozenCacheTtl::Off,
+    }
+}
+
+const fn runtime_anthropic_ttl(
+    ttl: protocol::FrozenCacheTtl,
+) -> Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig> {
+    match ttl {
+        protocol::FrozenCacheTtl::OneHour => {
+            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour)
+        }
+        protocol::FrozenCacheTtl::FiveMinutes => {
+            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes)
+        }
+        protocol::FrozenCacheTtl::Off => None,
+    }
+}
+
+const fn runtime_bedrock_point(ttl: protocol::FrozenCacheTtl) -> Option<BedrockCachePoint> {
+    Some(BedrockCachePoint {
+        ttl: Some(match ttl {
+            protocol::FrozenCacheTtl::OneHour => BedrockCacheTtl::OneHour,
+            protocol::FrozenCacheTtl::FiveMinutes => BedrockCacheTtl::FiveMinutes,
+            protocol::FrozenCacheTtl::Off => return None,
         }),
     })
 }

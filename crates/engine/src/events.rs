@@ -4786,9 +4786,11 @@ mod tests {
                                 child_run_id: RunId,
                                 request: DelegateRequestPayload,
                                 attached: bool| {
+            let cache_strategies = vec![None; selected_suffix.len()];
             let request_fingerprint = crate::delegation_events::delegation_request_fingerprint(
                 &child_agent,
                 &selected_suffix,
+                &cache_strategies,
                 &request,
             )
             .expect("delegation fingerprint");
@@ -4814,6 +4816,7 @@ mod tests {
                     agent_revision: agent_revision(),
                     recipe_registry_revision: registry_revision(),
                     selected_suffix: selected_suffix.clone(),
+                    cache_strategies,
                     request_fingerprint,
                     request,
                 },

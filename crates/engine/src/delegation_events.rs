@@ -7,9 +7,9 @@ use std::{
 
 use cookie_agent_protocol::{
     AgentRevision, AgentSnapshot, CatalogRevision, DelegateRequestPayload, DelegationReservation,
-    EventPayload, FrozenModelBinding, InvocationId, ModelRevision, ModelSnapshotRevision,
-    ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision, SessionId,
-    SessionStatus, Sha256Digest, ToolCallId,
+    EventPayload, FrozenCacheStrategy, FrozenModelBinding, InvocationId, ModelRevision,
+    ModelSnapshotRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
+    SessionId, SessionStatus, Sha256Digest, ToolCallId,
 };
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -19,21 +19,39 @@ use crate::session::{SessionError, SessionStore};
 pub(crate) fn delegation_request_fingerprint(
     child_agent: &AgentSnapshot,
     selected_suffix: &[FrozenModelBinding],
+    cache_strategies: &[Option<FrozenCacheStrategy>],
     request: &DelegateRequestPayload,
 ) -> Result<Sha256Digest, ()> {
-    let payload = serde_json::to_vec(&(
-        &child_agent.agent,
-        &request.description,
-        &request.prompt,
-        &request.title,
-        &request.resume_session_id,
-        request.inherit_context,
-        request.background,
-        &request.seeded_context,
-        child_agent,
-        selected_suffix,
-        &request.staged_skill,
-    ))
+    let payload = if cache_strategies.is_empty() {
+        serde_json::to_vec(&(
+            &child_agent.agent,
+            &request.description,
+            &request.prompt,
+            &request.title,
+            &request.resume_session_id,
+            request.inherit_context,
+            request.background,
+            &request.seeded_context,
+            child_agent,
+            selected_suffix,
+            &request.staged_skill,
+        ))
+    } else {
+        serde_json::to_vec(&(
+            &child_agent.agent,
+            &request.description,
+            &request.prompt,
+            &request.title,
+            &request.resume_session_id,
+            request.inherit_context,
+            request.background,
+            &request.seeded_context,
+            child_agent,
+            selected_suffix,
+            cache_strategies,
+            &request.staged_skill,
+        ))
+    }
     .map_err(|_| ())?;
     Sha256Digest::new(format!("{:x}", Sha256::digest(payload))).map_err(|_| ())
 }
@@ -55,6 +73,7 @@ pub struct DelegationEntry {
     pub child_agent: AgentSnapshot,
     pub revisions: DelegationRuntimeRevisions,
     pub selected_suffix: Vec<FrozenModelBinding>,
+    pub cache_strategies: Vec<Option<FrozenCacheStrategy>>,
     pub request_fingerprint: Sha256Digest,
     pub request: DelegateRequestPayload,
     pub started: bool,
@@ -118,6 +137,7 @@ impl DelegationEventStore {
         child_agent: AgentSnapshot,
         revisions: DelegationRuntimeRevisions,
         selected_suffix: Vec<FrozenModelBinding>,
+        cache_strategies: Vec<Option<FrozenCacheStrategy>>,
         request_fingerprint: Sha256Digest,
         request: DelegateRequestPayload,
     ) -> Result<DelegationEntry, DelegationEventError> {
@@ -133,6 +153,7 @@ impl DelegationEventStore {
                 && entry.child_agent == child_agent
                 && entry.revisions == revisions
                 && entry.selected_suffix == selected_suffix
+                && entry.cache_strategies == cache_strategies
                 && entry.request == request;
             return if same_request {
                 Ok(entry.clone())
@@ -142,6 +163,7 @@ impl DelegationEventStore {
         }
         if !valid_request(&request)
             || selected_suffix.is_empty()
+            || !cache_strategies_match_bindings(&selected_suffix, &cache_strategies)
             || selected_suffix
                 .iter()
                 .any(|binding| binding.manifest_revision != revisions.manifest_revision)
@@ -171,6 +193,7 @@ impl DelegationEventStore {
             child_agent: child_agent.clone(),
             revisions: revisions.clone(),
             selected_suffix: selected_suffix.clone(),
+            cache_strategies: cache_strategies.clone(),
             request_fingerprint: request_fingerprint.clone(),
             request: request.clone(),
             started: false,
@@ -195,6 +218,7 @@ impl DelegationEventStore {
                 agent_revision: revisions.agent_revision,
                 recipe_registry_revision: revisions.recipe_registry_revision,
                 selected_suffix,
+                cache_strategies,
                 request_fingerprint,
                 request,
             },
@@ -408,6 +432,7 @@ fn apply_event(
             agent_revision,
             recipe_registry_revision,
             selected_suffix,
+            cache_strategies,
             request_fingerprint,
             request,
         } => {
@@ -421,9 +446,13 @@ fn apply_event(
                 agent_revision,
                 recipe_registry_revision,
             };
-            let fingerprint_valid =
-                delegation_request_fingerprint(&child_agent, &selected_suffix, &request)
-                    .is_ok_and(|computed| computed == request_fingerprint);
+            let fingerprint_valid = delegation_request_fingerprint(
+                &child_agent,
+                &selected_suffix,
+                &cache_strategies,
+                &request,
+            )
+            .is_ok_and(|computed| computed == request_fingerprint);
             if parent_session_id != reservation.parent_session_id
                 || run_id != Some(reservation.parent_run_id)
                 || state.entries.contains_key(&invocation_id)
@@ -433,6 +462,8 @@ fn apply_event(
                 || !valid_request(&request)
                 || !fingerprint_valid
                 || selected_suffix.is_empty()
+                || (!cache_strategies.is_empty()
+                    && !cache_strategies_match_bindings(&selected_suffix, &cache_strategies))
                 || selected_suffix
                     .iter()
                     .any(|binding| binding.manifest_revision != revisions.manifest_revision)
@@ -456,6 +487,7 @@ fn apply_event(
                     child_agent: *child_agent,
                     revisions,
                     selected_suffix,
+                    cache_strategies,
                     request_fingerprint,
                     request,
                     started: false,
@@ -581,4 +613,42 @@ fn valid_request(request: &DelegateRequestPayload) -> bool {
         .map(|turn| turn.text.len())
         .sum::<usize>()
         <= 65_536
+}
+
+fn cache_strategies_match_bindings(
+    bindings: &[FrozenModelBinding],
+    strategies: &[Option<FrozenCacheStrategy>],
+) -> bool {
+    bindings.len() == strategies.len()
+        && bindings.iter().zip(strategies).all(|(binding, strategy)| {
+            let Some(strategy) = strategy else {
+                return true;
+            };
+            let Some(family) = cookie_agent_models::adapters::wire_adapter_for_protocol(
+                binding.protocol_recipe.as_str(),
+            ) else {
+                return false;
+            };
+            matches!(
+                (family, strategy),
+                (
+                    cookie_agent_models::adapters::OvenAdapterFamily::Anthropic
+                        | cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible,
+                    FrozenCacheStrategy::Anthropic { .. }
+                ) | (
+                    cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse,
+                    FrozenCacheStrategy::Bedrock { .. }
+                ) | (
+                    cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
+                        | cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini,
+                    FrozenCacheStrategy::Google { .. }
+                ) | (
+                    cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat
+                        | cookie_agent_models::adapters::OvenAdapterFamily::OpenaiResponses
+                        | cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiChat
+                        | cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiResponses,
+                    FrozenCacheStrategy::OpenAi { .. }
+                )
+            )
+        })
 }

@@ -1151,6 +1151,10 @@ fn delegation_reserved_event_roundtrips_current_request() {
         agent_revision: revision("agents"),
         recipe_registry_revision: revision("recipes"),
         selected_suffix: vec![binding],
+        cache_strategies: vec![Some(FrozenCacheStrategy::OpenAi {
+            prompt_cache_key: Some("delegated-${session_id}".into()),
+            prompt_cache_retention: Some(FrozenOpenAiCacheRetention::TwentyFourHours),
+        })],
         request_fingerprint: Sha256Digest::of_bytes(b"request"),
         request: DelegateRequestPayload {
             description: "Review implementation".into(),
@@ -1168,6 +1172,15 @@ fn delegation_reserved_event_roundtrips_current_request() {
         serde_json::from_value::<EventPayload>(encoded.clone()).unwrap(),
         event
     );
+    let mut legacy = encoded.clone();
+    legacy.as_object_mut().unwrap().remove("cache_strategies");
+    let EventPayload::DelegationReserved {
+        cache_strategies, ..
+    } = serde_json::from_value::<EventPayload>(legacy).unwrap()
+    else {
+        panic!("delegation reservation");
+    };
+    assert!(cache_strategies.is_empty());
 
     for field in [
         "manifest_revision",

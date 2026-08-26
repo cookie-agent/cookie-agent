@@ -3156,13 +3156,14 @@ fn agent_openai_cache_key_is_frozen_per_binding_and_expands_session_id() {
     );
 }
 
-#[test]
-fn delegated_agent_without_models_inherits_frozen_cache_strategies() {
+#[tokio::test]
+async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy() {
     let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: delegated-${session_id}\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
     let worker = "---\ndescription: Inheriting worker\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nWorker prompt.\n";
+    let (endpoint, captured) = scripted_delegation_server().await;
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
-            "http://127.0.0.1:9/v1",
+            &endpoint,
             primary,
             None,
             None,
@@ -3173,25 +3174,55 @@ fn delegated_agent_without_models_inherits_frozen_cache_strategies() {
             Some(worker),
             "openai-chat",
         );
-    let owner = frozen_root_policy(&fixture, &selection);
-    let worker_id = AgentId::new("worker").unwrap();
-    let child = owner.registry.get(&worker_id).unwrap();
-    let child_policy = crate::policy::freeze_delegated_agent_policy(
-        child,
-        Arc::clone(&owner.registry),
-        Arc::clone(&owner.runtime),
-        &selection.model,
-        &owner.selected_suffix,
-        1,
-        crate::policy::FreezeOptions {
-            result_limits: owner.result_limits,
-            runtime_cache: owner.runtime_cache.clone(),
-            inherited_cache_strategies: Some(owner.cache_strategies.clone()),
-        },
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new(
+                    "delegated-cache-inheritance",
+                )
+                .unwrap(),
+                selection,
+                input: "delegate this task".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "delegated cache completion",
+        |projection| projection.status == SessionStatus::Completed,
     )
-    .unwrap();
+    .await;
 
-    assert_eq!(child_policy.cache_strategies, owner.cache_strategies);
+    let child = fixture.engine.children(parent.session_id)[0].session_id;
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        request_body(&requests[1])["prompt_cache_key"],
+        format!("delegated-{child}")
+    );
+    let parent = fixture.engine.inner.store.get(parent.session_id).unwrap();
+    assert!(parent.log.events().iter().any(|event| {
+        matches!(
+            &event.payload,
+            EventPayload::DelegationReserved { cache_strategies, .. }
+                if matches!(
+                    cache_strategies.as_slice(),
+                    [Some(cookie_agent_protocol::FrozenCacheStrategy::OpenAi { .. })]
+                )
+        )
+    }));
+    fixture.engine.shutdown().await;
 }
 
 #[test]
@@ -15224,7 +15255,20 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
 
 #[tokio::test]
 async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering() {
-    let (fixture, selection) = custom_fixture();
+    let primary = "---\ndescription: Reservation owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nReservation owner prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-chat",
+        );
     let session = fixture
         .engine
         .create_session(selection.clone())
@@ -15269,9 +15313,17 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         background: false,
         staged_skill: None,
     };
+    let cache_strategies = vec![
+        Some(cookie_agent_protocol::FrozenCacheStrategy::OpenAi {
+            prompt_cache_key: Some("persisted-${session_id}".into()),
+            prompt_cache_retention: None,
+        });
+        agent.fallback_chain.len()
+    ];
     let fingerprint = crate::delegation_events::delegation_request_fingerprint(
         &agent,
         &agent.fallback_chain,
+        &cache_strategies,
         &request,
     )
     .expect("request fingerprint");
@@ -15288,6 +15340,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
             agent.clone(),
             revisions,
             agent.fallback_chain.clone(),
+            cache_strategies.clone(),
             fingerprint,
             request,
         )
@@ -15308,12 +15361,14 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
     fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);
-    assert!(
+    assert_eq!(
         reopened
             .inner
             .delegation_events
             .get(invocation_id)
-            .is_some()
+            .expect("reopened reservation")
+            .cache_strategies,
+        cache_strategies
     );
     reopened.shutdown().await;
 
@@ -15401,9 +15456,11 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
             background: false,
             staged_skill: None,
         };
+        let cache_strategies = vec![None; agent.fallback_chain.len()];
         let fingerprint = crate::delegation_events::delegation_request_fingerprint(
             &agent,
             &agent.fallback_chain,
+            &cache_strategies,
             &request,
         )
         .expect("fingerprint");
@@ -15419,6 +15476,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
                 agent.clone(),
                 revisions.clone(),
                 agent.fallback_chain.clone(),
+                cache_strategies,
                 fingerprint,
                 request,
             )
