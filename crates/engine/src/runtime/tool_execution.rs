@@ -1115,20 +1115,34 @@ mod tests {
     }
 
     #[test]
-    fn bounded_result_still_truncates_and_retains() {
+    fn default_external_tool_policy_still_truncates_and_retains() {
         let directory = tempfile::tempdir().unwrap();
         let artifact_path = directory.path().join("artifacts");
         let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
+        let external_spec = crate::ToolSpec {
+            name: "mcp_fixture".into(),
+            permission_name: "mcp".into(),
+            description: "External fixture".into(),
+            parameters: serde_json::json!({"type":"object"}),
+            result_truncation: Default::default(),
+        };
+        assert_eq!(
+            external_spec.result_truncation,
+            ToolResultTruncationPolicy::Bounded
+        );
         let bounded = bound_tool_result(
-            result("full output".into()),
-            ToolResultTruncationPolicy::Bounded,
+            result("first\nsecond\n".into()),
+            external_spec.result_truncation,
             &artifacts,
             1,
-            4,
+            5,
         )
         .unwrap();
-        assert_eq!(bounded.output, "full");
-        assert!(bounded.truncation.is_some());
+        assert_eq!(bounded.output, "first");
+        let truncation = bounded.truncation.expect("bounded truncation metadata");
+        assert_eq!(truncation.original_bytes, 13);
+        assert_eq!(truncation.original_lines, 3);
+        assert!(truncation.retained.uri.starts_with("artifact://sha256/"));
         assert_eq!(std::fs::read_dir(artifact_path).unwrap().count(), 1);
     }
 }

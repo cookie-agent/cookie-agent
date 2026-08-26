@@ -5400,6 +5400,60 @@ mod tests {
     }
 
     #[test]
+    fn protocol_thirteen_project_context_event_is_skipped_without_harming_neighbors() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let creation = stored_event();
+        let session = creation.session_id;
+        let old_run = RunId(Uuid::from_u128(13));
+        let old_record = serde_json::json!({
+            "engine_version": "0.2.0",
+            "origin": "engine:project-context",
+            "session_id": session,
+            "run_id": old_run,
+            "seq": 2,
+            "timestamp": jiff::Timestamp::new(2, 0).unwrap(),
+            "payload": {
+                "type": "project_context_loaded",
+                "entries": [{
+                    "source": "AGENTS.md",
+                    "content": "legacy context",
+                    "truncated": false,
+                    "original_bytes": 14
+                }]
+            }
+        });
+        let later = event(
+            session,
+            None,
+            3,
+            EventPayload::UserInputAdmitted {
+                input: "still readable".into(),
+            },
+        );
+        write_event_values(
+            &path,
+            &[
+                serde_json::to_value(creation).unwrap(),
+                old_record,
+                serde_json::to_value(later).unwrap(),
+            ],
+        );
+
+        let log = EventLog::open(path, session).expect("open around protocol 13 event");
+        assert_eq!(
+            log.all_events()
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert!(log.diagnostics().iter().any(|diagnostic| {
+            diagnostic.seq == 2 && diagnostic.skipped && !diagnostic.reason.is_empty()
+        }));
+    }
+
+    #[test]
     fn unrelated_skipped_event_does_not_permit_forged_usage_or_orphan_tool_termination() {
         let records = attribution_records();
         let session = records[0].session_id;
