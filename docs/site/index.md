@@ -11,39 +11,31 @@ turns that implementation into task-oriented guides and reference material.
 
 ## Quickstart
 
-You need Rust 1.88 or newer and Python 3 for the documentation tooling. Cargo
-fetches the locked, git-pinned Oven SDK dependencies when it builds the clone.
+First [install cookie agent](install.md), then run it from the workspace where it
+should operate:
 
 ```sh
-git clone https://github.com/cookie-agent/cookie-agent.git
-cd cookie-agent
 mkdir -p .cookie-agent
 printf '[providers]\n' > .cookie-agent/config.toml
-cargo run --locked -p cookie_agent -- daemon
-```
-
-In another terminal, open the TUI:
-
-```sh
-cargo run --locked -p cookie_agent -- attach
+cookie
 ```
 
 Type `/connect` to store a managed provider connection. Provider setup and
 credentials are per-user and shared across workspaces. Credentials are checked
 when the provider is first used, not during the connect flow.
 
-See [Getting Started](getting-started.md) for configuration and first-run
-details, [Providers](guide/providers.md) for managed and custom provider
-options, [Plugins](guide/plugins.md) for executable extensions, and
+The [installation guide](install.md#quick-start) continues through configuration
+and the first run. See [Providers](guide/providers.md) for managed and custom
+provider options, [Plugins](guide/plugins.md) for executable extensions, and
 [Configuration](reference/configuration.md) for every configurable item.
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a
     credential-bearing config, or provider-store data.
 
-## Workspace crates
+## Development
 
-The Rust workspace contains ten crates: `config`, `cookie_agent`, `engine`,
-`identity`, `models`, `plugin_sdk`, `protocol`, `server`, `tools`, and `tui`.
-Browse their public interfaces in the
-[Rust API documentation](reference/api.md).
+See [Building and testing](development/building.md) for the Rust toolchain and
+required gates, [Plugin development](development/plugins.md) for extension
+authoring, and the [Rust API documentation](reference/api.md) for public
+workspace interfaces.

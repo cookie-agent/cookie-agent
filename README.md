@@ -44,19 +44,12 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cookie-agent/cookie-age
 ```
 
 See the [installation guide](https://cookie-agent.github.io/cookie-agent/install/)
-for direct binary downloads, nightly builds, and building from source. A fresh
-clone requires Rust 1.88 or newer; Cargo fetches the locked, git-pinned Oven SDK
-dependencies automatically:
-
-```sh
-cargo build --locked -p cookie_agent
-```
-
-Running the binary starts a local daemon and opens the TUI. In the TUI, type
+for direct binary downloads, nightly builds, configuration, and the first run.
+Running `cookie` starts a local daemon and opens the TUI. In the TUI, type
 `/connect` to store a provider connection, then start a session.
 
 ```sh
-./target/debug/cookie
+cookie
 ```
 
 For headless use:
@@ -69,7 +62,8 @@ cookie run "Review this workspace"
 
 Setup, configuration, and task-oriented guides are at
 [cookie-agent.github.io/cookie-agent](https://cookie-agent.github.io/cookie-agent/),
-including [Getting Started](https://cookie-agent.github.io/cookie-agent/getting-started/),
+including [Installation](https://cookie-agent.github.io/cookie-agent/install/),
+[Development](https://cookie-agent.github.io/cookie-agent/development/building/),
 [Providers](https://cookie-agent.github.io/cookie-agent/guide/providers/),
 [Plugins](https://cookie-agent.github.io/cookie-agent/guide/plugins/), and
 [Permissions](https://cookie-agent.github.io/cookie-agent/guide/permissions/).

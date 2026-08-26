@@ -248,8 +248,9 @@ Plugin definitions are layered by plugin name. A workspace definition replaces
 the complete same-name user definition without merging nested fields. The
 replacement keeps that user's position in authored order, which is also the
 interception order; workspace-only plugins append in workspace-authored order.
-See the [Plugins guide](../guide/plugins.md) for protocol, permission, and tool
-precedence behavior.
+See the [Plugins guide](../guide/plugins.md) for installation, permission, and
+runtime behavior. Plugin authors can use the
+[development guide](../development/plugins.md) for protocol and tool contracts.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

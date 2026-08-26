@@ -48,7 +48,6 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
   - Installation: install.md
   - Guide:
       - TUI: guide/tui.md
@@ -64,6 +63,10 @@ nav:
       - Providers: guide/providers.md
       - Compaction: guide/compaction.md
       - Usage and cost: guide/usage.md
+  - Development:
+      - Building and testing: development/building.md
+      - Plugin development: development/plugins.md
+      - Rust API: reference/api.md
   - Reference:
       - Configuration: reference/configuration.md
       - System prompt: reference/system-prompt.md
@@ -71,7 +74,6 @@ nav:
       - Events: reference/events.md
       - Tools: reference/tools.md
       - Schemas: reference/schemas.md
-      - Rust API: reference/api.md
   - Architecture: architecture.md
 
 extra:

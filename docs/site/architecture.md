@@ -272,6 +272,10 @@ is aborted. Plugin
 publish contexts are expiring one-shot grants activated at outbound delivery,
 so a token cannot be replayed or retargeted to another session.
 
+See [Plugins](guide/plugins.md) for installation and configuration, and
+[Plugin development](development/plugins.md) for SDK and extension-protocol
+details.
+
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over

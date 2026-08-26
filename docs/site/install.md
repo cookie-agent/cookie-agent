@@ -58,15 +58,80 @@ and select a nightly to download an archive or use its generated installer
 command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 (`curl ... | sh`) installers pinned to that prerelease.
 
-## Build from source
+## Quick start
 
-Install Rust 1.88 or newer and clone the repository. Cargo fetches the locked,
-git-pinned Oven SDK dependencies automatically. Install the locked workspace
-version with:
+After installation, change to the workspace where cookie agent should operate.
+Running `cookie` without a subcommand starts a local daemon and opens the TUI.
 
-```sh
-cargo install --locked --path crates/cookie_agent
+### Create a workspace configuration
+
+Configuration is loaded from the exact working directory; there is no upward
+search. Create `.cookie-agent/config.toml`:
+
+```toml
+
+[providers]
 ```
 
-For development, `cargo build --locked -p cookie_agent` writes the binary to
-`target/debug/cookie`.
+An empty provider map is valid. If the global provider store is also empty, the
+TUI starts in setup mode and keeps `/connect` available.
+
+### Configure a provider
+
+Start cookie agent from the workspace:
+
+```sh
+cookie
+```
+
+Type `/connect`, select a managed provider, and fill in the provider's
+recipe-defined setup and credential fields. The durable store is global to the
+user, so other workspaces can use the same compatible connection. The form does
+not contact the provider; the first model request verifies the credentials.
+
+For environment-backed authored configuration instead, use a managed provider
+entry:
+
+```toml
+
+[providers.openai]
+source = "models_dev"
+api_key = "${env:OPENAI_API_KEY}"
+```
+
+Export the variable before launching:
+
+```sh
+export OPENAI_API_KEY='your-key'
+cookie
+```
+
+See [Providers](guide/providers.md) for precedence rules and custom providers.
+
+### First run
+
+When at least one model is available, select an agent and model if needed, type
+a request in the composer, and press Enter. If no authored root agent is
+runnable, the engine supplies the built-in `default` coding agent.
+
+Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
+`/cancel`. The [TUI guide](guide/tui.md) covers editing, steering, approvals,
+selection, and message actions. [Agents](guide/agents.md) explains the built-in
+internal agents and how to author your own.
+
+### Separate daemon and TUI
+
+The daemon binds to `127.0.0.1:7419` by default:
+
+```sh
+cookie daemon
+```
+
+Attach from another terminal:
+
+```sh
+cookie attach
+```
+
+The attach URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
+`--url`. Only loopback WebSocket URLs with the exact `/ws` path are accepted.

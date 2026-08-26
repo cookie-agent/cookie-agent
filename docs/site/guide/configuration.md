@@ -104,8 +104,9 @@ args = ["--stdio"]
 
 A same-name workspace entry replaces the complete user entry. Set `enabled =
 false` to keep a plugin from starting; its command, timeouts, and other fields
-are still validated. See [Plugins](plugins.md) for protocol, capabilities,
-permissions, and lifecycle behavior.
+are still validated. See [Plugins](plugins.md) for installation, permissions,
+and runtime behavior, or [Plugin development](../development/plugins.md) for
+the extension protocol and capabilities.
 
 ## Environment interpolation
 
