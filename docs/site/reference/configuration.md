@@ -161,8 +161,8 @@ rolling = "five_minutes"
 
 [prompt_caching.bedrock]
 enabled = true
-system = "one_hour"
-tools = "one_hour"
+system = "five_minutes"
+tools = "five_minutes"
 messages = [{ history_index = 2, ttl = "five_minutes" }]
 
 [prompt_caching.google]
@@ -177,21 +177,60 @@ prompt_cache_retention = "24h"
 Anthropic `system` and `tools` accept `"one_hour"`, `"five_minutes"`, or
 `"off"`; `rolling` accepts `"five_minutes"` or `"off"`. Marker order is tools,
 system, then rolling history, and a one-hour marker cannot follow a five-minute
-marker.
+marker. Anthropic also offers an automatic caching mode; Cookie agent deliberately
+uses structural markers so the selected breakpoints remain explicit and stable.
 
 Bedrock `enabled = false` emits no cache points and cannot be combined with
 other Bedrock fields. `enabled = true` without placement fields is shorthand for
-one-hour system and tool points plus a five-minute point on the last message.
+five-minute system, tool, and last-message points. Five minutes is the universal
+default because one-hour points are model-dependent: Claude 3.7 Sonnet and Claude
+3.5 Sonnet v2 support only five minutes, while currently documented newer models
+also accept one hour. Opt into `"one_hour"` only after checking the selected
+model's provider documentation.
 Explicit `messages` entries use zero-based Oven history indices. Bedrock allows
 at most four total system, tool, and message points and enforces the same
 one-hour-before-five-minute ordering. System and tool points are omitted from a
-request when that request has no eligible system text or tools.
+request when that request has no eligible system text or tools. Minimum prefix
+sizes are model-specific and currently range from 512 to 4,096 tokens; an
+undersized checkpoint may simply not be cached.
 
 Google `mode` is `"implicit"`, `"explicit"`, or `"off"`. Explicit mode requires
 a `cachedContents/<id>` resource; the other modes reject `cached_content`.
-OpenAI and Azure OpenAI accept an optional `prompt_cache_key` and
-`prompt_cache_retention` of `"in_memory"` or `"24h"`. The key may contain
-`${session_id}`; after substitution it must be at most 64 characters.
+Implicit caching is automatic and free to enable. Its documented minimum prefix
+is 2,048 tokens for Gemini 2.x and 4,096 for Gemini 3.x; check the model page as
+these thresholds are model-specific. Explicit `cachedContents` resources incur
+cache-token and storage-duration charges. The TTL defaults to one hour, has a
+one-minute minimum, and currently has no documented maximum.
+
+OpenAI and Azure OpenAI accept an optional `prompt_cache_key`; it may contain
+`${session_id}` and must be at most 64 characters after substitution. The
+exposed `prompt_cache_retention` values, `"in_memory"` and `"24h"`, apply to
+models before GPT-5.6 and are deprecated on GPT-5.6 and later. GPT-5.6+ uses
+breakpoint-based caching and `prompt_cache_options.ttl = "30m"` (currently the
+only TTL value). Cookie agent does not yet expose `prompt_cache_options` or
+content-block `prompt_cache_breakpoint` controls, so GPT-5.6+ breakpoint and TTL
+selection is a known limitation. Earlier models cache qualifying prefixes
+automatically; GPT-5.6+ uses implicit or explicit breakpoints. The documented
+minimum cacheable prefix is 1,024 visible input tokens for GPT-5.6+ and 2,048 for
+older models.
+
+OpenAI cache pricing is model- and tier-dependent. GPT-5.6+ currently charges
+cache reads at 0.1 times uncached input and cache writes at 1.25 times; earlier
+models have model-tier-dependent cached-input discounts, including 90%, 75%, and
+50% tiers. Treat the selected catalog model's `cache_read` and `cache_write`
+rates as authoritative rather than assuming one discount.
+
+Cohere performs server-side automatic inference caching and reports cache hits
+as `cached_tokens`, but documents no request controls. `[prompt_caching]`
+therefore has no `cohere` section by design.
+
+Provider behavior changes independently of Cookie agent. See the official
+[OpenAI prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching),
+[Gemini context-caching guide](https://ai.google.dev/gemini-api/docs/generate-content/caching),
+[Amazon Bedrock prompt-caching guide](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
+[Cohere API reference](https://docs.cohere.com/v2/reference/chat), and
+[Anthropic prompt-caching guide](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
+for current model-specific support, thresholds, retention, and billing.
 
 Unknown fields and incoherent combinations are load errors. A cache section that
 does not match its model binding fails policy freeze. OpenAI-compatible and other

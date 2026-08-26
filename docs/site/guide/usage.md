@@ -1,9 +1,12 @@
 # Usage and Cost
 
 Cookie agent records normalized provider usage after every committed model
-turn and completed internal-agent model request. Records include inclusive input and output token totals and cache read or
-write counts when the provider reports them. Anthropic cache creation maps to
-cache writes and cache reads map directly; OpenAI cached input maps to cache
+turn and completed internal-agent model request. Records include inclusive input
+and output token totals and cache read or write counts when the provider reports
+them. Anthropic cache creation maps to cache writes and cache reads map directly;
+OpenAI `cached_tokens` maps to cache reads. GPT-5.6+ can additionally report
+`cache_write_tokens`, which maps to cache writes when supplied by the provider
+adapter. Cohere `cached_tokens` similarly records server-side automatic cache
 reads. Providers that omit a field leave it unknown rather than estimating it.
 
 The event log is the source of truth. Session rollups and their per-model rows
@@ -38,6 +41,13 @@ The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.
 
+Cache economics are model-specific. In particular, current GPT-5.6+ pricing
+charges reads and writes differently, while earlier OpenAI models use
+model-tier-dependent cached-input discounts. The selected catalog model's
+`cache_read` and `cache_write` rates, or explicit pricing overrides, are the
+authoritative inputs to Cookie agent's estimate; do not assume a fixed cached
+discount.
+
 New usage events stamp the request price selected when the request completes.
 Footers and rollups preserve those stamps, so later pricing changes do not
 rewrite already stamped costs. An explicit unpriced stamp also remains
@@ -49,9 +59,9 @@ pricing for legacy records.
 
 To evaluate prompt caching, compare equivalent workloads before and after
 enabling `[prompt_caching]`. Track `cache_hit_rate` after the first turn and
-`estimated_cost_usd` over the whole session. A healthy multi-turn workload
-normally reports cache writes on the first request and cache reads on later
-requests; compare totals only after enough repeated-prefix turns to amortize the
-initial write. Use the provider's off configuration as the baseline: set all
+`estimated_cost_usd` over the whole session. Providers that expose writes may
+report them when a prefix is first cached and reads on later matching requests;
+compare totals only after enough repeated-prefix turns to amortize any write and
+storage charges. Use the provider's off configuration as the baseline: set all
 Anthropic TTLs to `"off"`, use Bedrock `enabled = false`, or use Google
 `mode = "off"`. Provider-reported cache reads and writes should then remain zero.

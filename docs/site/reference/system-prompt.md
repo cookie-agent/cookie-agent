@@ -69,6 +69,13 @@ AGENTS.md context does not move or rewrite the system breakpoint. Tool schemas a
 separate request fields, so tool changes use the tool breakpoint instead of
 changing system text.
 
+Anthropic also documents an automatic caching mode. Cookie agent intentionally
+uses the structural marker strategy above so system, tool, and rolling-history
+boundaries remain deterministic. OpenAI GPT-5.6+ likewise uses implicit or
+explicit cache breakpoints, but Cookie agent does not yet expose its
+`prompt_cache_options` or content-block `prompt_cache_breakpoint` controls; see
+the [prompt-caching configuration reference](configuration.md#prompt_caching).
+
 ## Agent matrix
 
 | Agent type | System prompt | Additional context |
