@@ -1052,6 +1052,8 @@ impl From<&OpenAiChatOptionsConfig> for OpenAiChatOptions {
             service_tier: value.service_tier.clone(),
             verbosity: value.verbosity.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
         }
     }
 }
@@ -1081,6 +1083,8 @@ impl From<&OpenAiResponsesOptionsConfig> for OpenAiResponsesOptions {
             reasoning_mode: value.reasoning_mode.clone(),
             truncation: value.truncation.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
         }
     }
 }
@@ -1592,6 +1596,7 @@ pub struct BedrockOptionsConfig {
 impl BedrockOptionsConfig {
     fn to_oven(&self) -> BedrockRequestOptions {
         BedrockRequestOptions {
+            cache: None,
             additional_model_request_fields: self.additional_model_request_fields.clone(),
             additional_model_response_field_paths: self
                 .additional_model_response_field_paths
@@ -1755,6 +1760,8 @@ impl From<&AzureChatOptionsConfig> for AzureOpenAiChatOptions {
             service_tier: value.service_tier.clone(),
             verbosity: value.verbosity.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
         }
     }
 }
@@ -1784,6 +1791,8 @@ impl From<&AzureResponsesOptionsConfig> for AzureOpenAiResponsesOptions {
             reasoning_mode: value.reasoning_mode.clone(),
             truncation: value.truncation.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
         }
     }
 }
