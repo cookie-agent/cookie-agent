@@ -23,7 +23,7 @@ target
 # Local secrets / test credentials — never commit
 .env
 .env.local
-.cookie-agent/model-snapshots/
+.cookie-agent/
 
 # Generated documentation
 /site/
