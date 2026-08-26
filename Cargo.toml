@@ -68,14 +68,14 @@ tempfile = "3.27.0"
 http = "1.4.0"
 url = "2.5.7"
 windows-sys = "0.61.2"
-oven-sdk = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-anthropic = { version = "=0.6.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-openai = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-google = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-google-vertex = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-bedrock = { version = "=0.4.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-azure = { version = "=0.4.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
-oven-sdk-cohere = { version = "=0.3.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "438f5acdfdb8c803b6aa2bf6966070632d4a507d" }
+oven-sdk = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-anthropic = { version = "=0.6.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-openai = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-google = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-google-vertex = { version = "=0.5.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-bedrock = { version = "=0.4.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-azure = { version = "=0.4.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
+oven-sdk-cohere = { version = "=0.3.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "3c7899bb155c987c659984a0e119356c4571e011" }
 reqwest-oven = { package = "reqwest", version = "=0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
 rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
 

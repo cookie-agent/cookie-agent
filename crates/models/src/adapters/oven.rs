@@ -1053,6 +1053,7 @@ impl From<&OpenAiChatOptionsConfig> for OpenAiChatOptions {
             verbosity: value.verbosity.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
             prompt_cache_key: None,
+            prompt_cache_options: None,
             prompt_cache_retention: None,
         }
     }
@@ -1084,6 +1085,7 @@ impl From<&OpenAiResponsesOptionsConfig> for OpenAiResponsesOptions {
             truncation: value.truncation.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
             prompt_cache_key: None,
+            prompt_cache_options: None,
             prompt_cache_retention: None,
         }
     }
@@ -1761,6 +1763,7 @@ impl From<&AzureChatOptionsConfig> for AzureOpenAiChatOptions {
             verbosity: value.verbosity.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
             prompt_cache_key: None,
+            prompt_cache_options: None,
             prompt_cache_retention: None,
         }
     }
@@ -1792,6 +1795,7 @@ impl From<&AzureResponsesOptionsConfig> for AzureOpenAiResponsesOptions {
             truncation: value.truncation.clone(),
             parallel_tool_calls: value.parallel_tool_calls,
             prompt_cache_key: None,
+            prompt_cache_options: None,
             prompt_cache_retention: None,
         }
     }
