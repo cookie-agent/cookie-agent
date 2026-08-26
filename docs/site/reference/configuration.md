@@ -199,8 +199,8 @@ a `cachedContents/<id>` resource; the other modes reject `cached_content`.
 Implicit caching is automatic and free to enable. Its documented minimum prefix
 is 2,048 tokens for Gemini 2.x and 4,096 for Gemini 3.x; check the model page as
 these thresholds are model-specific. Explicit `cachedContents` resources incur
-cache-token and storage-duration charges. The TTL defaults to one hour, has a
-one-minute minimum, and currently has no documented maximum.
+cache-token and storage-duration charges. The TTL defaults to one hour and has no
+documented minimum or maximum.
 
 OpenAI and Azure OpenAI accept an optional `prompt_cache_key`; it may contain
 `${session_id}` and must be at most 64 characters after substitution. The
