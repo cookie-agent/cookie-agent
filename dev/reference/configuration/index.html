@@ -947,9 +947,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project_context" class="md-nav__link">
+  <a href="#agent_md" class="md-nav__link">
     <span class="md-ellipsis">
-      [project_context]
+      [agent_md]
     </span>
   </a>
   
@@ -1326,9 +1326,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project_context" class="md-nav__link">
+  <a href="#agent_md" class="md-nav__link">
     <span class="md-ellipsis">
-      [project_context]
+      [agent_md]
     </span>
   </a>
   
@@ -1570,7 +1570,7 @@ resumes on restart.</p>
 <td>Tool output truncation limits</td>
 </tr>
 <tr>
-<td><code>project_context</code></td>
+<td><code>agent_md</code></td>
 <td>table</td>
 <td>defaults below</td>
 <td>Automatic <code>AGENTS.md</code> context</td>
@@ -1671,7 +1671,10 @@ an allow or ask can publish it and the conditional <code>skill</code> tool. Skil
 </table>
 <h2 id="tool_output"><code>[tool_output]</code><a class="headerlink" href="#tool_output" title="Permanent link">&para;</a></h2>
 <p>Controls how much tool output is retained inline in a session before it is
-truncated or replaced with artifact references.</p>
+truncated or replaced with artifact references.
+The limits apply only to tools using the normal bounded policy. The
+self-paginating <code>read</code>, <code>read_tool_result</code>, and <code>get_subagent_result</code> tools opt
+out absolutely; configuration cannot re-enable truncation for them.</p>
 <table>
 <thead>
 <tr>
@@ -1715,9 +1718,9 @@ truncated or replaced with artifact references.</p>
 </tr>
 </tbody>
 </table>
-<h2 id="project_context"><code>[project_context]</code><a class="headerlink" href="#project_context" title="Permanent link">&para;</a></h2>
+<h2 id="agent_md"><code>[agent_md]</code><a class="headerlink" href="#agent_md" title="Permanent link">&para;</a></h2>
 <p>Controls root-run <code>AGENTS.md</code> discovery documented in
-<a href="../../guide/agents/#project-context-from-agentsmd">Agents</a>.</p>
+<a href="../../guide/agents/#agentsmd-context">Agents</a>.</p>
 <table>
 <thead>
 <tr>
@@ -1732,7 +1735,7 @@ truncated or replaced with artifact references.</p>
 <td><code>enabled</code></td>
 <td>boolean</td>
 <td><code>true</code></td>
-<td>Load project-context files at each root run start. Delegated and internal agents remain excluded.</td>
+<td>Load <code>AGENTS.md</code> context files at each root run start. Delegated and internal agents remain excluded.</td>
 </tr>
 <tr>
 <td><code>max_bytes</code></td>

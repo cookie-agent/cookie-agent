@@ -747,9 +747,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project-context-from-agentsmd" class="md-nav__link">
+  <a href="#agentsmd-context" class="md-nav__link">
     <span class="md-ellipsis">
-      Project context from AGENTS.md
+      AGENTS.md context
     </span>
   </a>
   
@@ -1224,9 +1224,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project-context-from-agentsmd" class="md-nav__link">
+  <a href="#agentsmd-context" class="md-nav__link">
     <span class="md-ellipsis">
-      Project context from AGENTS.md
+      AGENTS.md context
     </span>
   </a>
   
@@ -1420,8 +1420,8 @@ expression, and only without a variant.</p>
 </ul>
 <p>See <a href="../../reference/system-prompt/">System Prompt Composition</a> for the exact
 prompt, skill-listing, plugin, cache, and history assembly order.</p>
-<h2 id="project-context-from-agentsmd">Project context from <code>AGENTS.md</code><a class="headerlink" href="#project-context-from-agentsmd" title="Permanent link">&para;</a></h2>
-<p>Root sessions automatically load project context at the start of every run. The
+<h2 id="agentsmd-context">AGENTS.md context<a class="headerlink" href="#agentsmd-context" title="Permanent link">&para;</a></h2>
+<p>Root sessions automatically load AGENTS.md context at the start of every run. The
 files are read fresh, so edits apply to the next run:</p>
 <ol>
 <li><code>.cookie-agent/agents/AGENTS.md</code> is the default project file. When the run
@@ -1432,12 +1432,12 @@ files are read fresh, so edits apply to the next run:</p>
 <p>Missing files add no event or model tokens. Delegated sessions do not discover
 these files for their own runs; explicitly inherited parent text and forked event
 prefixes retain their existing behavior. Internal agents never discover them.
-Loaded entries are persisted with provenance in <code>project_context_loaded</code> and
+Loaded entries are persisted with provenance in <code>agent_md_loaded</code> and
 replayed as one user context turn, not as system-prompt text.</p>
 <p>Repository-controlled <code>AGENTS.md</code> content enters model context automatically.
 Treat it as untrusted instructions when opening unfamiliar workspaces and review
-the <a href="../security/#project-context-files">security guidance</a>. Configure limits in
-<a href="../../reference/configuration/#project_context"><code>[project_context]</code></a>.</p>
+the <a href="../security/#agentsmd-context-files">security guidance</a>. Configure limits in
+<a href="../../reference/configuration/#agent_md"><code>[agent_md]</code></a>.</p>
 <h2 id="subagent-tools">Subagent tools<a class="headerlink" href="#subagent-tools" title="Permanent link">&para;</a></h2>
 <p><code>delegate_subagent</code> requires a short <code>description</code>, a self-contained <code>prompt</code>,
 an allowed <code>agent_type</code>, and accepts optional <code>background</code>, <code>resume_session_id</code>,

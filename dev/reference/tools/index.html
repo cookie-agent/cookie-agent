@@ -1216,11 +1216,19 @@ through the <code>run.tool_stdin</code> RPC while the call is active. Standard o
 standard error are streamed separately during execution and retained as
 separate artifacts for the terminal result.</p>
 <h2 id="retained-tool-output">Retained tool output<a class="headerlink" href="#retained-tool-output" title="Permanent link">&para;</a></h2>
-<p>When a terminal tool result exceeds the configured line or byte limit, the
-event stores a bounded preview and an <code>artifact://sha256/&lt;digest&gt;</code> reference to
-the full original output. Compaction may also replace older bulky previews with
-artifact references. Retained files live below the project state directory at
-<code>projects/&lt;project-hash&gt;/artifacts/</code>.</p>
+<p>For most tools, when a terminal result exceeds the configured line or byte
+limit, the event stores a bounded preview and an
+<code>artifact://sha256/&lt;digest&gt;</code> reference to the full original output. Compaction
+may also replace older bulky previews with artifact references. Retained files
+live below the project state directory at <code>projects/&lt;project-hash&gt;/artifacts/</code>.</p>
+<p>The self-paginating <code>read</code>, <code>read_tool_result</code>, and <code>get_subagent_result</code> tools
+declare an absolute truncation opt-out. Their requested page is returned in full
+without artifact retention or truncation metadata, regardless of
+<code>[tool_output]</code>. Callers bound these results with each tool's offset/limit
+arguments. A requested page above the event schema's 2 MiB output limit fails
+with a resource-limit tool error; it is never silently truncated. MCP and plugin
+tools remain subject to normal truncation. External opt-out would require a
+future extension-protocol capability and is not currently authorable.</p>
 <p>Artifacts are content-addressed by SHA-256, deduplicated, and newly created with
 mode <code>0600</code> on Unix. Their digest is verified when content is first read. A
 missing or corrupt artifact produces a normal tool error and does not prevent
@@ -1264,8 +1272,9 @@ same session:</p>
 <p>Resolution prefers the original truncation artifact, then a compaction-elision
 artifact, then the inline terminal output. This means compaction cannot make a
 full truncation artifact unreachable. Reverted tool calls and calls from other
-sessions do not resolve. Returned pages include <code>next_offset</code> metadata when
-more lines remain and are capped by the 2 MiB terminal-result limit.</p>
+sessions do not resolve. Returned pages include <code>next_offset</code> metadata when more
+lines remain. Pages over the 2 MiB terminal-result limit fail and must be
+requested with a smaller limit.</p>
 <h2 id="delegation-and-skills">Delegation and skills<a class="headerlink" href="#delegation-and-skills" title="Permanent link">&para;</a></h2>
 <p>Delegation tools start, inspect, steer, and cancel owned subagent sessions.
 Skill tools load configured skill instructions for the current turn. Their

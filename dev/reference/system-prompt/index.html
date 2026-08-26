@@ -943,9 +943,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project-context-turn" class="md-nav__link">
+  <a href="#agentsmd-context-turn" class="md-nav__link">
     <span class="md-ellipsis">
-      Project-context turn
+      AGENTS.md context turn
     </span>
   </a>
   
@@ -1176,9 +1176,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project-context-turn" class="md-nav__link">
+  <a href="#agentsmd-context-turn" class="md-nav__link">
     <span class="md-ellipsis">
-      Project-context turn
+      AGENTS.md context turn
     </span>
   </a>
   
@@ -1246,7 +1246,7 @@ agent but is not copied into prompt text.</p>
    Each accepted change recomputes the prompt fingerprint.</li>
 <li>History assembly puts the final composed prompt in <code>history[0]</code> as the sole
    system turn.</li>
-<li>Root runs may then add a durable <a href="#project-context-turn">project-context</a>
+<li>Root runs may then add a durable <a href="#agentsmd-context-turn">AGENTS.md context</a>
    user turn. Loaded skill bodies follow as user turns, followed by normal
    session history.</li>
 </ol>
@@ -1261,21 +1261,21 @@ body. The prompt fingerprint covers prompt text only. Skill-listing and plugin
 composition update the effective fingerprints before <code>run_started</code> is persisted.
 Model-attempt events record the prompt fingerprint, and replay validation rejects
 attempt attribution that contradicts the frozen run snapshot.</p>
-<p>Project context is intentionally excluded from the system-prompt fingerprint. It
+<p>AGENTS.md context is intentionally excluded from the system-prompt fingerprint. It
 has its own durable event, provenance, and user-role boundary.</p>
-<h2 id="project-context-turn">Project-context turn<a class="headerlink" href="#project-context-turn" title="Permanent link">&para;</a></h2>
+<h2 id="agentsmd-context-turn">AGENTS.md context turn<a class="headerlink" href="#agentsmd-context-turn" title="Permanent link">&para;</a></h2>
 <p>At each root run start, cookie agent discovers applicable <code>AGENTS.md</code> files and
-stores their bounded content in <code>project_context_loaded</code>. History replays the
+stores their bounded content in <code>agent_md_loaded</code>. History replays the
 latest run's entries as one user turn, with each file delimited as:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;project_context source="AGENTS.md"&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;agent_md source="AGENTS.md"&gt;
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>...
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>&lt;/project_context&gt;
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>&lt;/agent_md&gt;
 </code></pre></div>
 <p>Truncated entries include their original byte size. Making this context a turn
 rather than system text keeps the stable system cache key independent of normal
 repository edits, preserves per-file provenance, and lets compaction pin the
 turn alongside loaded skill bodies. The rolling non-system cache breakpoint can
-still move when project context changes, which is the intended invalidation.</p>
+still move when AGENTS.md context changes, which is the intended invalidation.</p>
 <h2 id="cache-breakpoints">Cache breakpoints<a class="headerlink" href="#cache-breakpoints" title="Permanent link">&para;</a></h2>
 <p>For capable Anthropic adaptors, cache strategy is structural rather than text
 injection. The engine clears prior markers, then can mark:</p>
@@ -1284,7 +1284,7 @@ injection. The engine clears prior markers, then can mark:</p>
 <li>the final emitted tool definition; and</li>
 <li>the last eligible non-system history turn.</li>
 </ul>
-<p>Project context does not move or rewrite the system breakpoint. Tool schemas are
+<p>AGENTS.md context does not move or rewrite the system breakpoint. Tool schemas are
 separate request fields, so tool changes use the tool breakpoint instead of
 changing system text.</p>
 <h2 id="agent-matrix">Agent matrix<a class="headerlink" href="#agent-matrix" title="Permanent link">&para;</a></h2>
@@ -1300,17 +1300,17 @@ changing system text.</p>
 <tr>
 <td>Root</td>
 <td>Selected authored agent body, or the concise built-in default coding prompt; optional skill listing and plugin composition</td>
-<td>Root-only project-context turn, loaded skill bodies, then session history</td>
+<td>Root-only AGENTS.md context turn, loaded skill bodies, then session history</td>
 </tr>
 <tr>
 <td>Delegated</td>
 <td>Frozen delegated agent body; optional skill listing and plugin composition</td>
-<td>No filesystem project-context load. Explicit inherited user/assistant text and ordinary child history remain separate turns.</td>
+<td>No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns.</td>
 </tr>
 <tr>
 <td>Internal</td>
 <td>Authored reserved internal agent body when available, otherwise its built-in prompt</td>
-<td>No project-context discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately.</td>
+<td>No AGENTS.md discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately.</td>
 </tr>
 </tbody>
 </table>

@@ -697,9 +697,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#project-context-files" class="md-nav__link">
+  <a href="#agentsmd-context-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Project context files
+      AGENTS.md context files
     </span>
   </a>
   
@@ -1240,9 +1240,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#project-context-files" class="md-nav__link">
+  <a href="#agentsmd-context-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Project context files
+      AGENTS.md context files
     </span>
   </a>
   
@@ -1354,14 +1354,14 @@ writes through a symlink or provide loose/foreign-owned storage; cookie agent
 will use that path. Treat the parent storage location as trusted and remove
 unexpected state before starting the daemon. Neither platform protects secrets
 from privileged code such as <code>root</code>, <code>SYSTEM</code>, or an elevated administrator.</p>
-<h3 id="project-context-files">Project context files<a class="headerlink" href="#project-context-files" title="Permanent link">&para;</a></h3>
+<h3 id="agentsmd-context-files">AGENTS.md context files<a class="headerlink" href="#agentsmd-context-files" title="Permanent link">&para;</a></h3>
 <p>For root runs, repository-controlled <code>AGENTS.md</code> files are read automatically and
 their text enters model context. They are instructions, not trusted policy, and
 cannot grant permissions or bypass tool preparation. A malicious repository can
-still influence model behavior within permissions. Review or disable project
+still influence model behavior within permissions. Review or disable AGENTS.md
 context before running unfamiliar workspaces, avoid placing secrets in these
 files, and use restrictive tool permissions. See
-<a href="../agents/#project-context-from-agentsmd">Project context</a>.</p>
+<a href="../agents/#agentsmd-context">AGENTS.md context</a>.</p>
 <h3 id="retained-tool-output">Retained tool output<a class="headerlink" href="#retained-tool-output" title="Permanent link">&para;</a></h3>
 <p>Tool-output truncation is a presentation bound, not redaction. The preview shown
 to a model or user can omit bytes that remain in the content-addressed artifact

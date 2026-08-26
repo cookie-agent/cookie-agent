@@ -286,7 +286,7 @@
 <a href=#286 id=286 data-nosnippet>286</a>    <span class="attr">#[serde(default)]
 <a href=#287 id=287 data-nosnippet>287</a>    </span><span class="kw">pub </span>tool_output: ToolOutputConfig,
 <a href=#288 id=288 data-nosnippet>288</a>    <span class="attr">#[serde(default)]
-<a href=#289 id=289 data-nosnippet>289</a>    </span><span class="kw">pub </span>project_context: ProjectContextConfig,
+<a href=#289 id=289 data-nosnippet>289</a>    </span><span class="kw">pub </span>agent_md: AgentMdConfig,
 <a href=#290 id=290 data-nosnippet>290</a>    <span class="attr">#[serde(default)]
 <a href=#291 id=291 data-nosnippet>291</a>    </span><span class="kw">pub </span>approval: ApprovalConfig,
 <a href=#292 id=292 data-nosnippet>292</a>    <span class="attr">#[serde(default)]
@@ -308,7 +308,7 @@
 <a href=#308 id=308 data-nosnippet>308</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>RawRuntimeLayer {
 <a href=#309 id=309 data-nosnippet>309</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) server: <span class="prelude-ty">Option</span>&lt;ServerConfig&gt;,
 <a href=#310 id=310 data-nosnippet>310</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) tool_output: <span class="prelude-ty">Option</span>&lt;ToolOutputConfig&gt;,
-<a href=#311 id=311 data-nosnippet>311</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) project_context: <span class="prelude-ty">Option</span>&lt;ProjectContextConfig&gt;,
+<a href=#311 id=311 data-nosnippet>311</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) agent_md: <span class="prelude-ty">Option</span>&lt;AgentMdConfig&gt;,
 <a href=#312 id=312 data-nosnippet>312</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) approval: <span class="prelude-ty">Option</span>&lt;ApprovalConfig&gt;,
 <a href=#313 id=313 data-nosnippet>313</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) context_compaction: <span class="prelude-ty">Option</span>&lt;ContextCompactionConfig&gt;,
 <a href=#314 id=314 data-nosnippet>314</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) prompt_caching: <span class="prelude-ty">Option</span>&lt;PromptCachingConfig&gt;,
@@ -426,21 +426,21 @@
 <a href=#426 id=426 data-nosnippet>426</a>
 <a href=#427 id=427 data-nosnippet>427</a><span class="attr">#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 <a href=#428 id=428 data-nosnippet>428</a>#[serde(deny_unknown_fields)]
-<a href=#429 id=429 data-nosnippet>429</a></span><span class="kw">pub struct </span>ProjectContextConfig {
+<a href=#429 id=429 data-nosnippet>429</a></span><span class="kw">pub struct </span>AgentMdConfig {
 <a href=#430 id=430 data-nosnippet>430</a>    <span class="attr">#[serde(default = <span class="string">"yes"</span>)]
 <a href=#431 id=431 data-nosnippet>431</a>    </span><span class="kw">pub </span>enabled: bool,
-<a href=#432 id=432 data-nosnippet>432</a>    <span class="attr">#[serde(default = <span class="string">"default_project_context_bytes"</span>)]
+<a href=#432 id=432 data-nosnippet>432</a>    <span class="attr">#[serde(default = <span class="string">"default_agent_md_bytes"</span>)]
 <a href=#433 id=433 data-nosnippet>433</a>    </span><span class="kw">pub </span>max_bytes: usize,
 <a href=#434 id=434 data-nosnippet>434</a>}
-<a href=#435 id=435 data-nosnippet>435</a><span class="kw">impl </span>Default <span class="kw">for </span>ProjectContextConfig {
+<a href=#435 id=435 data-nosnippet>435</a><span class="kw">impl </span>Default <span class="kw">for </span>AgentMdConfig {
 <a href=#436 id=436 data-nosnippet>436</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
 <a href=#437 id=437 data-nosnippet>437</a>        <span class="self">Self </span>{
 <a href=#438 id=438 data-nosnippet>438</a>            enabled: <span class="bool-val">true</span>,
-<a href=#439 id=439 data-nosnippet>439</a>            max_bytes: default_project_context_bytes(),
+<a href=#439 id=439 data-nosnippet>439</a>            max_bytes: default_agent_md_bytes(),
 <a href=#440 id=440 data-nosnippet>440</a>        }
 <a href=#441 id=441 data-nosnippet>441</a>    }
 <a href=#442 id=442 data-nosnippet>442</a>}
-<a href=#443 id=443 data-nosnippet>443</a><span class="kw">const fn </span>default_project_context_bytes() -&gt; usize {
+<a href=#443 id=443 data-nosnippet>443</a><span class="kw">const fn </span>default_agent_md_bytes() -&gt; usize {
 <a href=#444 id=444 data-nosnippet>444</a>    <span class="number">32 </span>* <span class="number">1024
 <a href=#445 id=445 data-nosnippet>445</a></span>}
 <a href=#446 id=446 data-nosnippet>446</a><span class="kw">impl </span>Default <span class="kw">for </span>ToolOutputConfig {
@@ -642,8 +642,8 @@
 <a href=#642 id=642 data-nosnippet>642</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = <span class="kw-2">&amp;</span>layer.tool_output {
 <a href=#643 id=643 data-nosnippet>643</a>        runtime.tool_output = value.clone();
 <a href=#644 id=644 data-nosnippet>644</a>    }
-<a href=#645 id=645 data-nosnippet>645</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = <span class="kw-2">&amp;</span>layer.project_context {
-<a href=#646 id=646 data-nosnippet>646</a>        runtime.project_context = value.clone();
+<a href=#645 id=645 data-nosnippet>645</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = <span class="kw-2">&amp;</span>layer.agent_md {
+<a href=#646 id=646 data-nosnippet>646</a>        runtime.agent_md = value.clone();
 <a href=#647 id=647 data-nosnippet>647</a>    }
 <a href=#648 id=648 data-nosnippet>648</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = <span class="kw-2">&amp;</span>layer.approval {
 <a href=#649 id=649 data-nosnippet>649</a>        runtime.approval = value.clone();
@@ -670,8 +670,8 @@
 <a href=#670 id=670 data-nosnippet>670</a>        || runtime.server.host.len() &gt; <span class="number">255
 <a href=#671 id=671 data-nosnippet>671</a>        </span>|| runtime.tool_output.max_lines == <span class="number">0
 <a href=#672 id=672 data-nosnippet>672</a>        </span>|| runtime.tool_output.max_bytes == <span class="number">0
-<a href=#673 id=673 data-nosnippet>673</a>        </span>|| runtime.project_context.max_bytes == <span class="number">0
-<a href=#674 id=674 data-nosnippet>674</a>        </span>|| runtime.project_context.max_bytes &gt; <span class="number">2 </span>* <span class="number">1024 </span>* <span class="number">1024
+<a href=#673 id=673 data-nosnippet>673</a>        </span>|| runtime.agent_md.max_bytes == <span class="number">0
+<a href=#674 id=674 data-nosnippet>674</a>        </span>|| runtime.agent_md.max_bytes &gt; <span class="number">2 </span>* <span class="number">1024 </span>* <span class="number">1024
 <a href=#675 id=675 data-nosnippet>675</a>        </span>|| runtime.approval.timeout_ms == <span class="number">0
 <a href=#676 id=676 data-nosnippet>676</a>        </span>|| runtime.delegation.max_depth == <span class="number">0
 <a href=#677 id=677 data-nosnippet>677</a>        </span>|| runtime.delegation.max_concurrency == <span class="prelude-val">Some</span>(<span class="number">0</span>)

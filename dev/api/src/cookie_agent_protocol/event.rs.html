@@ -1454,13 +1454,13 @@
 <a href=#1454 id=1454 data-nosnippet>1454</a>
 <a href=#1455 id=1455 data-nosnippet>1455</a><span class="attr">#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 <a href=#1456 id=1456 data-nosnippet>1456</a>#[serde(deny_unknown_fields)]
-<a href=#1457 id=1457 data-nosnippet>1457</a></span><span class="kw">pub struct </span>ProjectContextEntry {
+<a href=#1457 id=1457 data-nosnippet>1457</a></span><span class="kw">pub struct </span>AgentMdEntry {
 <a href=#1458 id=1458 data-nosnippet>1458</a>    <span class="kw">pub </span>source: SafeDisplayText,
 <a href=#1459 id=1459 data-nosnippet>1459</a>    <span class="kw">pub </span>content: String,
 <a href=#1460 id=1460 data-nosnippet>1460</a>    <span class="kw">pub </span>truncated: bool,
 <a href=#1461 id=1461 data-nosnippet>1461</a>    <span class="kw">pub </span>original_bytes: u64,
 <a href=#1462 id=1462 data-nosnippet>1462</a>}
-<a href=#1463 id=1463 data-nosnippet>1463</a><span class="kw">impl </span>ProjectContextEntry {
+<a href=#1463 id=1463 data-nosnippet>1463</a><span class="kw">impl </span>AgentMdEntry {
 <a href=#1464 id=1464 data-nosnippet>1464</a>    <span class="kw">pub const </span>MAX_CONTENT_BYTES: usize = <span class="number">2 </span>* <span class="number">1024 </span>* <span class="number">1024</span>;
 <a href=#1465 id=1465 data-nosnippet>1465</a>
 <a href=#1466 id=1466 data-nosnippet>1466</a>    <span class="kw">pub fn </span>validate(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(), EventSchemaError&gt; {
@@ -1469,7 +1469,7 @@
 <a href=#1469 id=1469 data-nosnippet>1469</a>            || <span class="self">self</span>.original_bytes &lt; content_bytes
 <a href=#1470 id=1470 data-nosnippet>1470</a>            || <span class="self">self</span>.truncated != (<span class="self">self</span>.original_bytes &gt; content_bytes)
 <a href=#1471 id=1471 data-nosnippet>1471</a>        {
-<a href=#1472 id=1472 data-nosnippet>1472</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(EventSchemaError::InvalidProjectContext);
+<a href=#1472 id=1472 data-nosnippet>1472</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(EventSchemaError::InvalidAgentMd);
 <a href=#1473 id=1473 data-nosnippet>1473</a>        }
 <a href=#1474 id=1474 data-nosnippet>1474</a>        <span class="prelude-val">Ok</span>(())
 <a href=#1475 id=1475 data-nosnippet>1475</a>    }
@@ -1678,9 +1678,9 @@
 <a href=#1678 id=1678 data-nosnippet>1678</a>    SkillInvocationNoted {
 <a href=#1679 id=1679 data-nosnippet>1679</a>        name: String,
 <a href=#1680 id=1680 data-nosnippet>1680</a>    },
-<a href=#1681 id=1681 data-nosnippet>1681</a>    ProjectContextLoaded {
+<a href=#1681 id=1681 data-nosnippet>1681</a>    AgentMdLoaded {
 <a href=#1682 id=1682 data-nosnippet>1682</a>        <span class="attr">#[schemars(length(min = <span class="number">1</span>, max = <span class="number">2</span>))]
-<a href=#1683 id=1683 data-nosnippet>1683</a>        </span>entries: Vec&lt;ProjectContextEntry&gt;,
+<a href=#1683 id=1683 data-nosnippet>1683</a>        </span>entries: Vec&lt;AgentMdEntry&gt;,
 <a href=#1684 id=1684 data-nosnippet>1684</a>    },
 <a href=#1685 id=1685 data-nosnippet>1685</a>    PluginEventAdded {
 <a href=#1686 id=1686 data-nosnippet>1686</a>        plugin: String,
@@ -2087,9 +2087,9 @@
 <a href=#2087 id=2087 data-nosnippet>2087</a>            <span class="self">Self</span>::SkillInvocationNoted { name } <span class="kw">if </span>name.is_empty() =&gt; {
 <a href=#2088 id=2088 data-nosnippet>2088</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(EventSchemaError::InvalidSkillEvent);
 <a href=#2089 id=2089 data-nosnippet>2089</a>            }
-<a href=#2090 id=2090 data-nosnippet>2090</a>            <span class="self">Self</span>::ProjectContextLoaded { entries } =&gt; {
+<a href=#2090 id=2090 data-nosnippet>2090</a>            <span class="self">Self</span>::AgentMdLoaded { entries } =&gt; {
 <a href=#2091 id=2091 data-nosnippet>2091</a>                <span class="kw">if </span>entries.is_empty() || entries.len() &gt; <span class="number">2 </span>{
-<a href=#2092 id=2092 data-nosnippet>2092</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(EventSchemaError::InvalidProjectContext);
+<a href=#2092 id=2092 data-nosnippet>2092</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(EventSchemaError::InvalidAgentMd);
 <a href=#2093 id=2093 data-nosnippet>2093</a>                }
 <a href=#2094 id=2094 data-nosnippet>2094</a>                <span class="kw">for </span>entry <span class="kw">in </span>entries {
 <a href=#2095 id=2095 data-nosnippet>2095</a>                    entry.validate()<span class="question-mark">?</span>;
@@ -2748,7 +2748,7 @@
 <a href=#2748 id=2748 data-nosnippet>2748</a><span class="attr">#[derive(Clone, Debug, Eq, PartialEq)]
 <a href=#2749 id=2749 data-nosnippet>2749</a></span><span class="kw">pub enum </span>EventSchemaError {
 <a href=#2750 id=2750 data-nosnippet>2750</a>    InvalidOrigin,
-<a href=#2751 id=2751 data-nosnippet>2751</a>    InvalidProjectContext,
+<a href=#2751 id=2751 data-nosnippet>2751</a>    InvalidAgentMd,
 <a href=#2752 id=2752 data-nosnippet>2752</a>    EmptyTitle,
 <a href=#2753 id=2753 data-nosnippet>2753</a>    TitleTooLong,
 <a href=#2754 id=2754 data-nosnippet>2754</a>    TitleControlCharacter,
@@ -2794,7 +2794,7 @@
 <a href=#2794 id=2794 data-nosnippet>2794</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
 <a href=#2795 id=2795 data-nosnippet>2795</a>        f.write_str(<span class="kw">match </span><span class="self">self </span>{
 <a href=#2796 id=2796 data-nosnippet>2796</a>            <span class="self">Self</span>::InvalidOrigin =&gt; <span class="string">"event origin is invalid"</span>,
-<a href=#2797 id=2797 data-nosnippet>2797</a>            <span class="self">Self</span>::InvalidProjectContext =&gt; <span class="string">"project context event is invalid"</span>,
+<a href=#2797 id=2797 data-nosnippet>2797</a>            <span class="self">Self</span>::InvalidAgentMd =&gt; <span class="string">"AGENTS.md context event is invalid"</span>,
 <a href=#2798 id=2798 data-nosnippet>2798</a>            <span class="self">Self</span>::EmptyTitle =&gt; <span class="string">"session title must not be blank"</span>,
 <a href=#2799 id=2799 data-nosnippet>2799</a>            <span class="self">Self</span>::TitleTooLong =&gt; <span class="string">"session title exceeds 512 bytes"</span>,
 <a href=#2800 id=2800 data-nosnippet>2800</a>            <span class="self">Self</span>::TitleControlCharacter =&gt; <span class="string">"session title must not contain control characters"</span>,
