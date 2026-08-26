@@ -34,13 +34,14 @@ use cookie_agent_protocol::{
     ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalStatus, ApprovalUserDecision,
     CatalogRevision, ClientConnectId, ClientRenameId, ClientRequestId, ClientResponseId,
     ClientRunId, EventPayload, EventSubscriptionMessage, InternalAgentKind, InvocationId,
-    ModelSelection, PermissionAction, PermissionEffect, PermissionMode, PermissionRuleSource,
-    PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-    PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity,
-    ProviderConnectParams, ProviderCredentialValues, ProviderDisconnectParams, ProviderId,
-    ProviderModelId, RunSelection, RunStartParams, RunToolStdinParams, RuntimeChangeReason,
-    SessionId, SessionStatus, SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest,
-    ToolCallId, ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
+    ModelSelection, PermissionAction, PermissionEffect, PermissionMode, PermissionRule,
+    PermissionRuleSource, PreparedApprovalResource, PreparedBindingLifetime,
+    PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+    PreparedResourceIdentity, ProviderConnectParams, ProviderCredentialValues,
+    ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection, RunStartParams,
+    RunToolStdinParams, RuntimeChangeReason, SessionId, SessionPermissionOverlay, SessionStatus,
+    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
+    ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -1776,6 +1777,67 @@ impl PreparedExecutor for TestRehydrationReadExecutor {
 }
 
 struct TestToolDefinitionProvider;
+
+struct OrderedToolDefinitionProvider {
+    tools: Vec<(&'static str, &'static str)>,
+}
+
+#[async_trait]
+impl ToolProvider for OrderedToolDefinitionProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(self
+            .tools
+            .iter()
+            .map(|(name, permission_name)| ToolSpec {
+                result_truncation: Default::default(),
+                name: (*name).into(),
+                permission_name: (*permission_name).into(),
+                description: format!("Ordered {name} definition"),
+                parameters: serde_json::json!({
+                    "type":"object",
+                    "additionalProperties":false,
+                    "properties":{}
+                }),
+            })
+            .collect())
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
+        Err(ToolError::execution(
+            "ordered definition provider is listing-only",
+        ))
+    }
+
+    fn get_permission_resource(
+        &self,
+        _tool_name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Err(ToolError::execution(
+            "ordered definition provider is listing-only",
+        ))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Err(ToolError::execution(
+            "ordered definition provider is listing-only",
+        ))
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution(
+            "ordered definition provider is listing-only",
+        ))
+    }
+}
 
 #[async_trait]
 impl ToolProvider for TestToolDefinitionProvider {
@@ -6035,6 +6097,98 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             .map(|tool| tool.name)
             .collect::<Vec<_>>(),
         ["bash", "delegate", "edit", "read", "write"]
+    );
+}
+
+#[test]
+fn published_tool_order_is_stable_across_registration_and_overlay_order() {
+    fn definitions(reversed: bool) -> Vec<oven_sdk::ToolDefinition> {
+        let agent = "---\ndescription: Tool ordering agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions: {}\n---\nTest stable tool ordering.\n";
+        let fixture = synthetic_default_fixture(Some(agent));
+        let providers: Vec<Arc<dyn ToolProvider>> = if reversed {
+            vec![
+                Arc::new(OrderedToolDefinitionProvider {
+                    tools: vec![("middle", "bash")],
+                }),
+                Arc::new(OrderedToolDefinitionProvider {
+                    tools: vec![("zeta", "read"), ("alpha", "write")],
+                }),
+            ]
+        } else {
+            vec![
+                Arc::new(OrderedToolDefinitionProvider {
+                    tools: vec![("alpha", "write"), ("zeta", "read")],
+                }),
+                Arc::new(OrderedToolDefinitionProvider {
+                    tools: vec![("middle", "bash")],
+                }),
+            ]
+        };
+        for provider in providers {
+            fixture.engine.register_tool_provider(provider);
+        }
+        let snapshot = fixture.engine.runtime_snapshot().unwrap().snapshot;
+        let selected = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.id.as_str() == "primary")
+            .unwrap();
+        let selection = RunSelection {
+            agent: selected.id.clone(),
+            model: selected.resolved_fallback[0].clone(),
+            preset: None,
+        };
+        let policy = frozen_root_policy(&fixture, &selection);
+        let session = fixture.engine.create_session(selection).unwrap();
+        let mut rules = vec![
+            PermissionRule {
+                action: PermissionAction::Read,
+                resource: WildcardPattern::new("*").unwrap(),
+                effect: PermissionEffect::Allow,
+            },
+            PermissionRule {
+                action: PermissionAction::Write,
+                resource: WildcardPattern::new("*").unwrap(),
+                effect: PermissionEffect::Allow,
+            },
+            PermissionRule {
+                action: PermissionAction::Bash,
+                resource: WildcardPattern::new("*").unwrap(),
+                effect: PermissionEffect::Allow,
+            },
+        ];
+        if reversed {
+            rules.reverse();
+        }
+        fixture
+            .engine
+            .append_blocking(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionPermissionOverlaySet {
+                    overlay: SessionPermissionOverlay { rules },
+                },
+            )
+            .unwrap();
+        fixture
+            .engine
+            .tool_definitions(session.session_id, &policy)
+            .unwrap()
+    }
+
+    let forward = definitions(false);
+    let reversed = definitions(true);
+    assert_eq!(
+        forward
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "middle", "zeta"]
+    );
+    assert_eq!(
+        serde_json::to_value(forward).unwrap(),
+        serde_json::to_value(reversed).unwrap()
     );
 }
 
