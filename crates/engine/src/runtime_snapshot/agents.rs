@@ -24,8 +24,13 @@ pub(crate) struct ResolvedAgent {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ResolvedAgentFallback {
-    Selection(ModelSelection),
-    ParentModel,
+    Selection {
+        selection: ModelSelection,
+        cache: Option<cookie_agent_config::CacheConfig>,
+    },
+    ParentModel {
+        cache: Option<cookie_agent_config::CacheConfig>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -58,7 +63,9 @@ impl AgentRegistry {
             for fallback in &document.frontmatter.models {
                 match &fallback.model {
                     AgentModelRef::ParentModel => {
-                        resolved_fallback.push(ResolvedAgentFallback::ParentModel);
+                        resolved_fallback.push(ResolvedAgentFallback::ParentModel {
+                            cache: fallback.cache.clone(),
+                        });
                     }
                     AgentModelRef::Model(model_key) => {
                         let variant = match (&fallback.variant, models.model(model_key)) {
@@ -69,18 +76,21 @@ impl AgentRegistry {
                             }
                             (None, None) => None,
                         };
-                        resolved_fallback.push(ResolvedAgentFallback::Selection(ModelSelection {
-                            model: model_key.clone(),
-                            variant,
-                        }));
+                        resolved_fallback.push(ResolvedAgentFallback::Selection {
+                            selection: ModelSelection {
+                                model: model_key.clone(),
+                                variant,
+                            },
+                            cache: fallback.cache.clone(),
+                        });
                     }
                 }
             }
             let available = resolved_fallback
                 .iter()
                 .filter_map(|fallback| match fallback {
-                    ResolvedAgentFallback::Selection(selection) => Some(selection),
-                    ResolvedAgentFallback::ParentModel => None,
+                    ResolvedAgentFallback::Selection { selection, .. } => Some(selection),
+                    ResolvedAgentFallback::ParentModel { .. } => None,
                 })
                 .any(|selection| selection_available(models, selection));
             let runnable_as_root = document.frontmatter.enabled
@@ -106,7 +116,10 @@ impl AgentRegistry {
                 document.id.clone(),
                 ResolvedAgent {
                     document,
-                    resolved_fallback: vec![ResolvedAgentFallback::Selection(selection)],
+                    resolved_fallback: vec![ResolvedAgentFallback::Selection {
+                        selection,
+                        cache: None,
+                    }],
                     runnable_as_root: true,
                 },
             );
@@ -124,8 +137,10 @@ impl AgentRegistry {
                     .resolved_fallback
                     .iter()
                     .filter_map(|fallback| match fallback {
-                        ResolvedAgentFallback::Selection(selection) => Some(selection.clone()),
-                        ResolvedAgentFallback::ParentModel => None,
+                        ResolvedAgentFallback::Selection { selection, .. } => {
+                            Some(selection.clone())
+                        }
+                        ResolvedAgentFallback::ParentModel { .. } => None,
                     })
                     .collect(),
                 delegation_targets: delegation_targets(&agent.document.frontmatter.permissions),

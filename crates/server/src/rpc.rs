@@ -266,6 +266,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::RuntimeCompileFailed => "runtime_compile_failed",
         EngineError::InvalidRuntimeAgent(_) => "invalid_runtime_agent",
         EngineError::Mcp(_) => "mcp",
+        EngineError::CacheStrategy(_) => "cache_strategy",
         EngineError::Permission(_) => "permission",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",

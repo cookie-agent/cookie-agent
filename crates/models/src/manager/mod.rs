@@ -29,7 +29,7 @@ use thiserror::Error;
 use crate::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue, SecretString, Sha256Digest,
     adapters::{
-        OvenAdapterFamily,
+        CacheStrategyConfig, GoogleCacheMode, OpenAiPromptCacheRetention, OvenAdapterFamily,
         oven::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, ModelBuildError},
     },
     authoring::{AuthOverride, ModelsDevProvider},
@@ -129,6 +129,7 @@ pub struct CompiledRuntimeModel {
 
 #[derive(Clone)]
 struct ExecutableBehavior {
+    adapter: OvenAdapterFamily,
     model: Arc<dyn LanguageModel>,
     defaults: crate::ResolvedRequestDefaults,
     provider_options: oven_sdk::ProviderOptions,
@@ -143,6 +144,7 @@ pub struct ResolvedExecutableModel {
     defaults: crate::ResolvedRequestDefaults,
     provider_options: oven_sdk::ProviderOptions,
     behavior_fingerprint: Sha256Digest,
+    adapter: OvenAdapterFamily,
 }
 
 impl ResolvedExecutableModel {
@@ -162,6 +164,11 @@ impl ResolvedExecutableModel {
     }
 
     #[must_use]
+    pub const fn adapter_family(&self) -> OvenAdapterFamily {
+        self.adapter
+    }
+
+    #[must_use]
     pub fn prepare_request(&self, request: Request) -> Request {
         self.prepare_request_inner(request, None)
     }
@@ -170,7 +177,7 @@ impl ResolvedExecutableModel {
     pub fn prepare_request_with_cache_strategy(
         &self,
         request: Request,
-        strategy: Option<&AnthropicCacheStrategyConfig>,
+        strategy: Option<&CacheStrategyConfig>,
     ) -> Request {
         self.prepare_request_inner(request, Some(strategy))
     }
@@ -180,7 +187,7 @@ impl ResolvedExecutableModel {
     pub fn prepare_request_before_cache_strategy(
         &self,
         request: Request,
-        strategy: Option<&AnthropicCacheStrategyConfig>,
+        strategy: Option<&CacheStrategyConfig>,
     ) -> Request {
         self.prepare_request_defaults(request, Some(strategy)).0
     }
@@ -190,16 +197,10 @@ impl ResolvedExecutableModel {
     pub fn apply_prompt_cache_strategy(
         &self,
         mut request: Request,
-        strategy: Option<&AnthropicCacheStrategyConfig>,
+        strategy: Option<&CacheStrategyConfig>,
     ) -> Request {
-        if self
-            .model
-            .capabilities()
-            .features
-            .contains(Capability::PROMPT_CACHING)
-            && let Some(strategy) = strategy
-        {
-            apply_cache_strategy(&mut request, strategy);
+        if let Some(strategy) = strategy {
+            apply_cache_strategy(&mut request, self.adapter, strategy);
         }
         request
     }
@@ -232,17 +233,24 @@ impl ResolvedExecutableModel {
     fn prepare_request_inner(
         &self,
         request: Request,
-        strategy_override: Option<Option<&AnthropicCacheStrategyConfig>>,
+        strategy_override: Option<Option<&CacheStrategyConfig>>,
     ) -> Request {
         let (mut request, strategy) = self.prepare_request_defaults(request, strategy_override);
-        if self
+        if (self
             .model
             .capabilities()
             .features
             .contains(Capability::PROMPT_CACHING)
-            && let Some(strategy) = strategy
+            || matches!(
+                self.adapter,
+                OvenAdapterFamily::OpenaiChat
+                    | OvenAdapterFamily::OpenaiResponses
+                    | OvenAdapterFamily::AzureOpenaiChat
+                    | OvenAdapterFamily::AzureOpenaiResponses
+            ))
+            && let Some(strategy) = strategy.as_ref()
         {
-            apply_cache_strategy(&mut request, &strategy);
+            apply_cache_strategy(&mut request, self.adapter, strategy);
         }
         request
     }
@@ -250,39 +258,18 @@ impl ResolvedExecutableModel {
     fn prepare_request_defaults(
         &self,
         request: Request,
-        strategy_override: Option<Option<&AnthropicCacheStrategyConfig>>,
-    ) -> (Request, Option<AnthropicCacheStrategyConfig>) {
+        strategy_override: Option<Option<&CacheStrategyConfig>>,
+    ) -> (Request, Option<CacheStrategyConfig>) {
         let mut request = self
             .defaults
             .apply(&crate::ProviderOptions::default(), request);
         request
             .provider_options
             .extend(self.provider_options.clone());
-        if let Some(strategy) = strategy_override {
-            set_cache_strategy(&mut request.provider_options, strategy);
-        }
-        let strategy = take_cache_strategy(&mut request.provider_options);
+        let compiled =
+            take_cache_strategy(&mut request.provider_options).map(CacheStrategyConfig::Anthropic);
+        let strategy = strategy_override.map_or(compiled, |strategy| strategy.cloned());
         (request, strategy)
-    }
-}
-
-fn set_cache_strategy(
-    options: &mut oven_sdk::ProviderOptions,
-    strategy: Option<&AnthropicCacheStrategyConfig>,
-) {
-    let Some(Value::Object(anthropic)) = options.get_mut("anthropic") else {
-        return;
-    };
-    match strategy {
-        Some(strategy) => {
-            anthropic.insert(
-                "cache_strategy".into(),
-                serde_json::to_value(strategy).expect("cache strategy is serializable"),
-            );
-        }
-        None => {
-            anthropic.remove("cache_strategy");
-        }
     }
 }
 
@@ -293,6 +280,140 @@ fn take_cache_strategy(
         return None;
     };
     serde_json::from_value(anthropic.remove("cache_strategy")?).ok()
+}
+
+fn apply_cache_strategy(
+    request: &mut Request,
+    adapter: OvenAdapterFamily,
+    strategy: &CacheStrategyConfig,
+) {
+    match (adapter, strategy) {
+        (
+            OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible,
+            CacheStrategyConfig::Anthropic(strategy),
+        ) => apply_anthropic_cache_strategy(request, strategy),
+        (OvenAdapterFamily::AwsBedrockConverse, CacheStrategyConfig::Bedrock(strategy)) => {
+            let mut strategy = strategy.clone();
+            let last_message = request
+                .history
+                .iter()
+                .rposition(|turn| !matches!(turn, oven_sdk::HistoryTurn::System(_)));
+            strategy.messages.retain_mut(|point| {
+                if point.history_index != usize::MAX {
+                    return true;
+                }
+                if let Some(index) = last_message {
+                    point.history_index = index;
+                    true
+                } else {
+                    false
+                }
+            });
+            set_option(
+                &mut request.provider_options,
+                "bedrock",
+                None,
+                "cache",
+                Some(serde_json::to_value(strategy).expect("Bedrock cache strategy serializes")),
+            );
+        }
+        (
+            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini,
+            CacheStrategyConfig::Google(strategy),
+        ) => {
+            let namespace = if adapter == OvenAdapterFamily::GoogleGemini {
+                "google"
+            } else {
+                "google_vertex"
+            };
+            match strategy.mode {
+                GoogleCacheMode::Implicit => {}
+                GoogleCacheMode::Off => set_option(
+                    &mut request.provider_options,
+                    namespace,
+                    None,
+                    "cached_content",
+                    None,
+                ),
+                GoogleCacheMode::Explicit => set_option(
+                    &mut request.provider_options,
+                    namespace,
+                    None,
+                    "cached_content",
+                    strategy.cached_content.clone().map(Value::String),
+                ),
+            }
+        }
+        (
+            OvenAdapterFamily::OpenaiChat
+            | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::AzureOpenaiChat
+            | OvenAdapterFamily::AzureOpenaiResponses,
+            CacheStrategyConfig::OpenAi(strategy),
+        ) => {
+            let (namespace, section) = match adapter {
+                OvenAdapterFamily::OpenaiChat => ("openai", "chat"),
+                OvenAdapterFamily::OpenaiResponses => ("openai", "responses"),
+                OvenAdapterFamily::AzureOpenaiChat => ("azure_openai", "chat"),
+                OvenAdapterFamily::AzureOpenaiResponses => ("azure_openai", "responses"),
+                _ => unreachable!("OpenAI family match checked"),
+            };
+            set_option(
+                &mut request.provider_options,
+                namespace,
+                Some(section),
+                "prompt_cache_key",
+                strategy.prompt_cache_key.clone().map(Value::String),
+            );
+            set_option(
+                &mut request.provider_options,
+                namespace,
+                Some(section),
+                "prompt_cache_retention",
+                strategy.prompt_cache_retention.map(|retention| {
+                    Value::String(
+                        match retention {
+                            OpenAiPromptCacheRetention::InMemory => "in_memory",
+                            OpenAiPromptCacheRetention::TwentyFourHours => "24h",
+                        }
+                        .into(),
+                    )
+                }),
+            );
+        }
+        _ => {}
+    }
+}
+
+fn set_option(
+    options: &mut oven_sdk::ProviderOptions,
+    namespace: &str,
+    section: Option<&str>,
+    key: &str,
+    value: Option<Value>,
+) {
+    let namespace = options
+        .entry(namespace.into())
+        .or_insert_with(|| Value::Object(Default::default()));
+    let Value::Object(namespace) = namespace else {
+        return;
+    };
+    let target = if let Some(section) = section {
+        let section = namespace
+            .entry(section)
+            .or_insert_with(|| Value::Object(Default::default()));
+        let Value::Object(section) = section else {
+            return;
+        };
+        section
+    } else {
+        namespace
+    };
+    if let Some(value) = value {
+        target.insert(key.into(), value);
+    } else {
+        target.remove(key);
+    }
 }
 
 fn clear_message_cache(options: &mut oven_sdk::ProviderOptions) {
@@ -310,7 +431,7 @@ fn set_message_cache(options: &mut oven_sdk::ProviderOptions, ttl: AnthropicCach
     }
 }
 
-fn apply_cache_strategy(request: &mut Request, strategy: &AnthropicCacheStrategyConfig) {
+fn apply_anthropic_cache_strategy(request: &mut Request, strategy: &AnthropicCacheStrategyConfig) {
     for tool in &mut request.tools {
         clear_message_cache(&mut tool.provider_options);
     }
@@ -569,6 +690,7 @@ impl CompiledRuntimeModel {
         };
         Ok(ResolvedExecutableModel {
             selection: selection.clone(),
+            adapter: behavior.adapter,
             model: Arc::clone(&behavior.model),
             defaults: behavior.defaults.clone(),
             provider_options: behavior.provider_options.clone(),
@@ -1444,6 +1566,7 @@ fn compile_behaviors(
         },
     )?;
     let executable = ExecutableBehavior {
+        adapter: model.adapter,
         model: base.model,
         defaults: crate::ResolvedRequestDefaults {
             request: model.defaults.clone(),
@@ -1475,6 +1598,7 @@ fn compile_behaviors(
             Ok((
                 id.clone(),
                 ExecutableBehavior {
+                    adapter: model.adapter,
                     model: compiled.model,
                     defaults: crate::ResolvedRequestDefaults {
                         request: variant.defaults.clone(),
@@ -1662,6 +1786,8 @@ fn compile_frozen_managed(
     )?;
     Ok(ResolvedExecutableModel {
         selection: binding.selection.clone(),
+        adapter: adapter_for_protocol(binding.protocol_recipe.as_str())
+            .ok_or(ModelManagerError::RuntimeCompileFailed)?,
         model: compiled.model,
         defaults,
         provider_options: compiled.provider_options,
@@ -2442,7 +2568,11 @@ fn oven_capabilities(
     }
     if matches!(
         adapter,
-        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible
+        OvenAdapterFamily::Anthropic
+            | OvenAdapterFamily::AnthropicCompatible
+            | OvenAdapterFamily::GoogleGemini
+            | OvenAdapterFamily::GoogleVertexGemini
+            | OvenAdapterFamily::AwsBedrockConverse
     ) {
         features |= Capability::PROMPT_CACHING;
     }
@@ -2520,6 +2650,10 @@ fn prepared_retained(
 #[cfg(test)]
 mod cache_strategy_tests {
     use super::*;
+    use crate::adapters::{
+        BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
+        GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
+    };
     use crate::{ScriptedModel, ScriptedStep};
     use oven_sdk::{
         AbortSignal, InputPart, JsonSchema, StreamPart, SystemMessage, SystemPart, TextPart,
@@ -2562,6 +2696,7 @@ mod cache_strategy_tests {
                 variant: None,
             },
             model: Arc::new(scripted.clone()),
+            adapter: OvenAdapterFamily::Anthropic,
             defaults: crate::ResolvedRequestDefaults::default(),
             provider_options: BTreeMap::from([(
                 "anthropic".into(),
@@ -2679,6 +2814,116 @@ mod cache_strategy_tests {
         };
         assert_eq!(marker(&first.provider_options), Some("one_hour"));
         assert_eq!(marker(&last.provider_options), Some("five_minutes"));
+    }
+
+    #[test]
+    fn bedrock_strategy_expands_last_message_placement() {
+        let mut request = Request::new(vec![
+            oven_sdk::HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(
+                TextPart::new("stable system"),
+            )])),
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
+                "current input",
+            ))])),
+        ]);
+        let strategy = CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
+            system: Some(BedrockCachePoint {
+                ttl: Some(BedrockCacheTtl::OneHour),
+            }),
+            tools: None,
+            messages: vec![BedrockMessageCachePoint {
+                history_index: usize::MAX,
+                cache_point: BedrockCachePoint {
+                    ttl: Some(BedrockCacheTtl::FiveMinutes),
+                },
+            }],
+        });
+
+        apply_cache_strategy(
+            &mut request,
+            OvenAdapterFamily::AwsBedrockConverse,
+            &strategy,
+        );
+
+        assert_eq!(
+            request.provider_options["bedrock"]["cache"],
+            json!({
+                "system": {"ttl": "1h"},
+                "tools": null,
+                "messages": [{
+                    "historyIndex": 1,
+                    "ttl": "5m"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn google_cache_modes_set_clear_or_preserve_cached_content() {
+        let explicit = CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+            mode: GoogleCacheMode::Explicit,
+            cached_content: Some("cachedContents/example".into()),
+        });
+        let mut request = Request::new(Vec::new());
+        apply_cache_strategy(&mut request, OvenAdapterFamily::GoogleGemini, &explicit);
+        assert_eq!(
+            request.provider_options["google"]["cached_content"],
+            "cachedContents/example"
+        );
+
+        let off = CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+            mode: GoogleCacheMode::Off,
+            cached_content: None,
+        });
+        apply_cache_strategy(&mut request, OvenAdapterFamily::GoogleGemini, &off);
+        assert!(
+            request.provider_options["google"]
+                .get("cached_content")
+                .is_none()
+        );
+
+        request
+            .provider_options
+            .insert("google_vertex".into(), json!({"topK": 3}));
+        let implicit = CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+            mode: GoogleCacheMode::Implicit,
+            cached_content: None,
+        });
+        apply_cache_strategy(
+            &mut request,
+            OvenAdapterFamily::GoogleVertexGemini,
+            &implicit,
+        );
+        assert_eq!(request.provider_options["google_vertex"]["topK"], 3);
+    }
+
+    #[test]
+    fn openai_cache_strategy_uses_endpoint_specific_namespace() {
+        let strategy = CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: Some("session-key".into()),
+            prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
+        });
+        for (adapter, namespace, section) in [
+            (OvenAdapterFamily::OpenaiChat, "openai", "chat"),
+            (OvenAdapterFamily::OpenaiResponses, "openai", "responses"),
+            (OvenAdapterFamily::AzureOpenaiChat, "azure_openai", "chat"),
+            (
+                OvenAdapterFamily::AzureOpenaiResponses,
+                "azure_openai",
+                "responses",
+            ),
+        ] {
+            let mut request = Request::new(Vec::new());
+            apply_cache_strategy(&mut request, adapter, &strategy);
+            assert_eq!(
+                request.provider_options[namespace][section]["prompt_cache_key"],
+                "session-key"
+            );
+            assert_eq!(
+                request.provider_options[namespace][section]["prompt_cache_retention"],
+                "24h"
+            );
+        }
     }
 }
 

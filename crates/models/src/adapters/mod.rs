@@ -1,6 +1,7 @@
 //! Reviewed Oven adapter recipes used by Registry 1.
 
 mod attribution;
+mod cache;
 mod capabilities;
 mod endpoints;
 mod headers;
@@ -8,6 +9,11 @@ pub(crate) mod no_auth_responses;
 pub(crate) mod oven;
 
 pub(crate) use attribution::reattribute;
+pub use cache::{
+    BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
+    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
+    OpenAiPromptCacheRetention,
+};
 pub use capabilities::{AdapterCapabilityError, validate_capability_ceiling};
 pub use endpoints::{
     BaseUrlOverridePolicy, EndpointBuildError, build_endpoint, custom_endpoint_policy,

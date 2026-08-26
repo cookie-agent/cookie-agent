@@ -360,10 +360,11 @@ impl Engine {
                 if let Some(native_context) = context.native_context.clone() {
                     request = request.with_native_context(native_context);
                 }
-                let request = model.prepare_request_with_cache_strategy(
-                    request,
-                    input.owner_policy.prompt_cache_strategy.as_ref(),
-                );
+                let cache_strategy = input
+                    .owner_policy
+                    .cache_strategy(input.binding, input.session);
+                let request =
+                    model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
                 let mut compact_request = CompactionRequest::new(request);
                 let instructions = compaction_focus.clone();
                 compact_request = match input.binding.protocol_recipe.as_str() {
@@ -1092,7 +1093,7 @@ mod tests {
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
-            prompt_cache_strategy: None,
+            cache_strategies: vec![None],
         };
         assert!(compaction_input_fits(&harness_binding, &policy, 97_952));
         assert!(!compaction_input_fits(&harness_binding, &policy, 97_953));
@@ -1137,7 +1138,7 @@ mod tests {
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
-            prompt_cache_strategy: None,
+            cache_strategies: vec![None, None],
         };
 
         assert!(compaction_input_fits(&owner, &policy, 10_000));

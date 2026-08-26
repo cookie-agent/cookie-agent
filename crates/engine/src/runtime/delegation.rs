@@ -371,10 +371,10 @@ impl Engine {
             .resolved_fallback
             .iter()
             .filter_map(|fallback| match fallback {
-                crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => {
+                crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection, .. } => {
                     Some(selection)
                 }
-                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => None,
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => None,
             })
             .find(|selection| {
                 parent_policy
@@ -2613,7 +2613,13 @@ pub(crate) fn freeze_delegated_child_policy(
         inherited_depth_ceiling,
         policy::FreezeOptions {
             result_limits,
-            prompt_cache_strategy: parent_policy.prompt_cache_strategy.clone(),
+            runtime_cache: parent_policy.runtime_cache.clone(),
+            inherited_cache_strategies: Some(
+                inherited_suffix
+                    .iter()
+                    .map(|binding| parent_policy.raw_cache_strategy(binding))
+                    .collect(),
+            ),
         },
     )
 }

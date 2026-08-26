@@ -157,10 +157,9 @@ impl Engine {
                 input.tools.clone(),
                 max_output_tokens,
             );
-            let request = model.prepare_request_with_cache_strategy(
-                request,
-                policy.prompt_cache_strategy.as_ref(),
-            );
+            let cache_strategy = policy.cache_strategy(binding, session);
+            let request =
+                model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
             let abort = AbortBridge::new(execution.cancellation.child_token());
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
@@ -392,10 +391,12 @@ impl Engine {
                 .resolved_fallback
                 .iter()
                 .filter_map(|fallback| match fallback {
-                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => {
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => {
                         Some(Ok(FrozenInternalAgentFallback::ParentModel))
                     }
-                    crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => owner
+                    crate::runtime_snapshot::ResolvedAgentFallback::Selection {
+                        selection, ..
+                    } => owner
                         .runtime
                         .models
                         .model(&selection.model)
@@ -470,12 +471,12 @@ impl Engine {
         };
         for fallback in fallbacks {
             match fallback {
-                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel => {
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { .. } => {
                     if let Some(binding) = parent_binding {
                         models.push(binding.clone());
                     }
                 }
-                crate::runtime_snapshot::ResolvedAgentFallback::Selection(selection) => {
+                crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection, .. } => {
                     if owner
                         .runtime
                         .models
@@ -523,14 +524,20 @@ impl Engine {
             selected_suffix_start: 0,
         };
         let limits = &document.frontmatter.limits;
-        let mut prompt_cache_strategy = owner.prompt_cache_strategy.clone();
-        if matches!(
+        let inherit_parent_cache = resolved.resolved_fallback.iter().any(|fallback| {
+            matches!(
+                fallback,
+                crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None }
+            )
+        });
+        let cache_strategies = internal_cache_strategies(
             kind,
-            InternalAgentKind::Approval | InternalAgentKind::SessionTitle
-        ) && let Some(strategy) = &mut prompt_cache_strategy
-        {
-            strategy.rolling = None;
-        }
+            &models,
+            Some(resolved),
+            owner,
+            parent_binding,
+            inherit_parent_cache,
+        )?;
         Ok(FrozenInternalAgentPolicy {
             agent: snapshot,
             models,
@@ -539,7 +546,7 @@ impl Engine {
                 max_output_tokens: limits.max_output_tokens,
                 timeout_ms: limits.timeout_ms,
             },
-            prompt_cache_strategy,
+            cache_strategies,
         })
     }
 }
@@ -585,14 +592,31 @@ fn frozen_internal_policy_from_definition(
         fallback_chain: models.clone(),
         selected_suffix_start: 0,
     };
-    let mut prompt_cache_strategy = owner.prompt_cache_strategy.clone();
-    if matches!(
+    let resolved = owner.registry.get(&definition.agent);
+    let inherit_parent_cache = resolved.map_or_else(
+        || {
+            definition
+                .fallbacks
+                .iter()
+                .any(|fallback| matches!(fallback, FrozenInternalAgentFallback::ParentModel))
+        },
+        |resolved| {
+            resolved.resolved_fallback.iter().any(|fallback| {
+                matches!(
+                    fallback,
+                    crate::runtime_snapshot::ResolvedAgentFallback::ParentModel { cache: None }
+                )
+            })
+        },
+    );
+    let cache_strategies = internal_cache_strategies(
         definition.kind,
-        InternalAgentKind::Approval | InternalAgentKind::SessionTitle
-    ) && let Some(strategy) = &mut prompt_cache_strategy
-    {
-        strategy.rolling = None;
-    }
+        &models,
+        resolved,
+        owner,
+        parent_binding,
+        inherit_parent_cache,
+    )?;
     Ok(FrozenInternalAgentPolicy {
         agent,
         models,
@@ -601,8 +625,38 @@ fn frozen_internal_policy_from_definition(
             max_output_tokens: definition.max_output_tokens,
             timeout_ms: definition.timeout_ms,
         },
-        prompt_cache_strategy,
+        cache_strategies,
     })
+}
+
+fn internal_cache_strategies(
+    kind: InternalAgentKind,
+    models: &[cookie_agent_protocol::FrozenModelBinding],
+    resolved: Option<&crate::runtime_snapshot::ResolvedAgent>,
+    owner: &FrozenRunPolicy,
+    parent_binding: Option<&cookie_agent_protocol::FrozenModelBinding>,
+    inherit_parent_cache: bool,
+) -> Result<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>, EngineError> {
+    models
+        .iter()
+        .map(|binding| {
+            let mut strategy = if inherit_parent_cache && parent_binding == Some(binding) {
+                owner.raw_cache_strategy(binding)
+            } else {
+                policy::resolve_cache_strategy(resolved, binding, &owner.runtime_cache)?
+            };
+            if matches!(
+                kind,
+                InternalAgentKind::Approval | InternalAgentKind::SessionTitle
+            ) && let Some(cookie_agent_models::adapters::CacheStrategyConfig::Anthropic(
+                strategy,
+            )) = &mut strategy
+            {
+                strategy.rolling = None;
+            }
+            Ok(strategy)
+        })
+        .collect()
 }
 
 fn internal_agent_max_input_limit(policy: &FrozenInternalAgentPolicy) -> u64 {
@@ -775,7 +829,7 @@ mod tests {
                 max_output_tokens: 2_048,
                 timeout_ms: 30_000,
             },
-            prompt_cache_strategy: None,
+            cache_strategies: vec![None],
         };
         assert_eq!(
             internal_agent_input_limit(&policy.models[0], &policy),
@@ -795,18 +849,21 @@ mod tests {
         small.descriptor.capabilities.limits.context = Some(4_096);
         let mut large = crate::test_support::model_binding_named("fallback-one");
         large.descriptor.capabilities.limits.context = Some(200_000);
-        let policy = |models| FrozenInternalAgentPolicy {
-            agent: crate::test_support::agent_snapshot(
-                "compaction",
-                cookie_agent_protocol::AgentMode::Internal,
-            ),
-            models,
-            runtime: None,
-            limits: InternalAgentLimits {
-                max_output_tokens: 2_048,
-                timeout_ms: 30_000,
-            },
-            prompt_cache_strategy: None,
+        let policy = |models: Vec<_>| {
+            let cache_strategies = vec![None; models.len()];
+            FrozenInternalAgentPolicy {
+                agent: crate::test_support::agent_snapshot(
+                    "compaction",
+                    cookie_agent_protocol::AgentMode::Internal,
+                ),
+                models,
+                runtime: None,
+                limits: InternalAgentLimits {
+                    max_output_tokens: 2_048,
+                    timeout_ms: 30_000,
+                },
+                cache_strategies,
+            }
         };
 
         let small_first = policy(vec![small.clone(), large.clone()]);

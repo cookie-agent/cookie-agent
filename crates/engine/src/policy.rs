@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use cookie_agent_models::adapters::{
+    BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
+    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
+    OpenAiPromptCacheRetention, OvenAdapterFamily,
+};
 use cookie_agent_protocol as protocol;
 
 use crate::{
@@ -19,7 +24,9 @@ pub(crate) struct ResultLimits {
 #[derive(Clone)]
 pub(crate) struct FreezeOptions {
     pub result_limits: ResultLimits,
-    pub prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    pub runtime_cache: cookie_agent_config::CacheConfig,
+    pub inherited_cache_strategies:
+        Option<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>>,
 }
 
 #[derive(Clone)]
@@ -32,7 +39,8 @@ pub(crate) struct FrozenRunPolicy {
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
     pub result_limits: ResultLimits,
-    pub prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    pub cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
+    pub runtime_cache: cookie_agent_config::CacheConfig,
 }
 
 impl std::fmt::Debug for FrozenRunPolicy {
@@ -71,6 +79,31 @@ impl FrozenRunPolicy {
             .map(|model| model.capabilities.clone())
     }
 
+    pub(crate) fn cache_strategy(
+        &self,
+        binding: &protocol::FrozenModelBinding,
+        session: protocol::SessionId,
+    ) -> Option<cookie_agent_models::adapters::CacheStrategyConfig> {
+        let mut strategy = self.raw_cache_strategy(binding)?;
+        if let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(config) = &mut strategy
+            && let Some(key) = &mut config.prompt_cache_key
+        {
+            *key = key.replace("${session_id}", &session.to_string());
+        }
+        Some(strategy)
+    }
+
+    pub(crate) fn raw_cache_strategy(
+        &self,
+        binding: &protocol::FrozenModelBinding,
+    ) -> Option<cookie_agent_models::adapters::CacheStrategyConfig> {
+        let index = self
+            .selected_suffix
+            .iter()
+            .position(|candidate| candidate == binding)?;
+        self.cache_strategies.get(index)?.clone()
+    }
+
     pub(crate) fn delegation_target_available(&self, target: &protocol::AgentId) -> bool {
         if self.historical_delegation {
             return self
@@ -96,7 +129,7 @@ pub(crate) fn freeze_root_agent_policy(
     selection: &protocol::ModelSelection,
     max_depth: u32,
     result_limits: ResultLimits,
-    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if !agent.runnable_as_root {
         return Err(EngineError::NoRunnableModel);
@@ -105,7 +138,7 @@ pub(crate) fn freeze_root_agent_policy(
         .resolved_fallback
         .iter()
         .position(|candidate| {
-            matches!(candidate, ResolvedAgentFallback::Selection(candidate) if candidate.model == selection.model)
+            matches!(candidate, ResolvedAgentFallback::Selection { selection: candidate, .. } if candidate.model == selection.model)
         });
     let authored = start.map_or(agent.resolved_fallback.as_slice(), |index| {
         &agent.resolved_fallback[index..]
@@ -113,15 +146,18 @@ pub(crate) fn freeze_root_agent_policy(
     let mut selections = authored
         .iter()
         .filter_map(|candidate| match candidate {
-            ResolvedAgentFallback::Selection(candidate)
-                if runtime.models.model(&candidate.model).is_some_and(|model| {
-                    model.model.status
-                        == cookie_agent_models::compiler::CompiledModelStatus::Available
-                }) =>
+            ResolvedAgentFallback::Selection {
+                selection: candidate,
+                ..
+            } if runtime.models.model(&candidate.model).is_some_and(|model| {
+                model.model.status == cookie_agent_models::compiler::CompiledModelStatus::Available
+            }) =>
             {
                 Some(candidate.clone())
             }
-            ResolvedAgentFallback::Selection(_) | ResolvedAgentFallback::ParentModel => None,
+            ResolvedAgentFallback::Selection { .. } | ResolvedAgentFallback::ParentModel { .. } => {
+                None
+            }
         })
         .collect::<Vec<_>>();
     if start.is_some() {
@@ -141,7 +177,8 @@ pub(crate) fn freeze_root_agent_policy(
         Some(max_depth),
         FreezeOptions {
             result_limits,
-            prompt_cache_strategy,
+            runtime_cache,
+            inherited_cache_strategies: None,
         },
     )
 }
@@ -165,21 +202,24 @@ pub(crate) fn freeze_delegated_agent_policy(
             .resolved_fallback
             .iter()
             .position(|candidate| {
-                matches!(candidate, ResolvedAgentFallback::Selection(candidate) if candidate.model == selection.model)
+                matches!(candidate, ResolvedAgentFallback::Selection { selection: candidate, .. } if candidate.model == selection.model)
             })
             .ok_or(EngineError::NoRunnableModel)?;
         let mut selections = agent.resolved_fallback[index..]
             .iter()
             .filter_map(|candidate| match candidate {
-                ResolvedAgentFallback::Selection(candidate)
-                    if runtime.models.model(&candidate.model).is_some_and(|model| {
-                        model.model.status
-                            == cookie_agent_models::compiler::CompiledModelStatus::Available
-                    }) =>
+                ResolvedAgentFallback::Selection {
+                    selection: candidate,
+                    ..
+                } if runtime.models.model(&candidate.model).is_some_and(|model| {
+                    model.model.status
+                        == cookie_agent_models::compiler::CompiledModelStatus::Available
+                }) =>
                 {
                     Some(candidate.clone())
                 }
-                ResolvedAgentFallback::Selection(_) | ResolvedAgentFallback::ParentModel => None,
+                ResolvedAgentFallback::Selection { .. }
+                | ResolvedAgentFallback::ParentModel { .. } => None,
             })
             .collect::<Vec<_>>();
         if selections.is_empty() {
@@ -276,6 +316,25 @@ fn freeze_with_bindings(
     snapshot
         .validate_selected_suffix(&run_selection, &bindings)
         .map_err(|_| EngineError::NoRunnableModel)?;
+    let cache_strategies = if agent.resolved_fallback.is_empty() {
+        if let Some(strategies) = options
+            .inherited_cache_strategies
+            .clone()
+            .filter(|strategies| strategies.len() == bindings.len())
+        {
+            strategies
+        } else {
+            bindings
+                .iter()
+                .map(|binding| resolve_cache_strategy(None, binding, &options.runtime_cache))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    } else {
+        bindings
+            .iter()
+            .map(|binding| resolve_cache_strategy(Some(agent), binding, &options.runtime_cache))
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let preset = registry.preset().map(str::to_owned);
     Ok(FrozenRunPolicy {
         agent: snapshot,
@@ -286,7 +345,8 @@ fn freeze_with_bindings(
         runtime,
         registry,
         result_limits: options.result_limits,
-        prompt_cache_strategy: options.prompt_cache_strategy,
+        cache_strategies,
+        runtime_cache: options.runtime_cache,
     })
 }
 
@@ -297,7 +357,7 @@ pub(crate) fn policy_for_session_selection(
     selection: &protocol::RunSelection,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
-    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
         return Err(EngineError::NoRunnableModel);
@@ -316,7 +376,7 @@ pub(crate) fn policy_for_session_selection(
         runtime,
         tool_output_max_lines,
         tool_output_max_bytes,
-        prompt_cache_strategy,
+        runtime_cache,
     )
 }
 
@@ -327,12 +387,16 @@ pub(crate) fn policy_from_snapshot(
     runtime: Arc<PublishedRuntime>,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
-    prompt_cache_strategy: Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
     }
     let preset = registry.preset().map(str::to_owned);
+    let cache_strategies = selected_suffix
+        .iter()
+        .map(|binding| resolve_cache_strategy(registry.get(&agent.agent), binding, &runtime_cache))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(FrozenRunPolicy {
         agent,
         preset,
@@ -345,7 +409,8 @@ pub(crate) fn policy_from_snapshot(
             tool_output_max_lines,
             tool_output_max_bytes,
         },
-        prompt_cache_strategy,
+        cache_strategies,
+        runtime_cache,
     })
 }
 
@@ -358,6 +423,235 @@ pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol:
         adapter_id,
         selection_fingerprint: binding.selection_fingerprint.clone(),
     }
+}
+
+pub(crate) fn resolve_cache_strategy(
+    agent: Option<&ResolvedAgent>,
+    binding: &protocol::FrozenModelBinding,
+    runtime_cache: &cookie_agent_config::CacheConfig,
+) -> Result<Option<CacheStrategyConfig>, EngineError> {
+    let authored = agent.and_then(|agent| {
+        let exact = agent
+            .resolved_fallback
+            .iter()
+            .find_map(|fallback| match fallback {
+                ResolvedAgentFallback::Selection { selection, cache }
+                    if selection == &binding.selection =>
+                {
+                    Some(cache)
+                }
+                ResolvedAgentFallback::Selection { .. }
+                | ResolvedAgentFallback::ParentModel { .. } => None,
+            });
+        let same_model = || {
+            agent
+                .resolved_fallback
+                .iter()
+                .find_map(|fallback| match fallback {
+                    ResolvedAgentFallback::Selection { selection, cache }
+                        if selection.model == binding.selection.model =>
+                    {
+                        Some(cache)
+                    }
+                    ResolvedAgentFallback::Selection { .. }
+                    | ResolvedAgentFallback::ParentModel { .. } => None,
+                })
+        };
+        let parent = || {
+            agent
+                .resolved_fallback
+                .iter()
+                .find_map(|fallback| match fallback {
+                    ResolvedAgentFallback::ParentModel { cache } => Some(cache),
+                    ResolvedAgentFallback::Selection { .. } => None,
+                })
+        };
+        exact
+            .or_else(same_model)
+            .or_else(parent)
+            .and_then(Option::as_ref)
+    });
+    if let Some(config) = authored {
+        let configured_sections = usize::from(config.anthropic.is_some())
+            + usize::from(config.bedrock.is_some())
+            + usize::from(config.google.is_some())
+            + usize::from(config.openai.is_some());
+        if configured_sections > 1 {
+            return Err(EngineError::CacheStrategy(
+                "an agent model cache entry must configure only its provider family".into(),
+            ));
+        }
+    }
+    let config = authored.unwrap_or(runtime_cache);
+    let family =
+        cookie_agent_models::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
+            .ok_or_else(|| {
+                EngineError::CacheStrategy("model adapter family is unavailable".into())
+            })?;
+    if let Some(config) = authored {
+        let matches_family = match family {
+            OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+                config.anthropic.is_some()
+            }
+            OvenAdapterFamily::AwsBedrockConverse => config.bedrock.is_some(),
+            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
+                config.google.is_some()
+            }
+            OvenAdapterFamily::OpenaiChat
+            | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::AzureOpenaiChat
+            | OvenAdapterFamily::AzureOpenaiResponses => config.openai.is_some(),
+            OvenAdapterFamily::OpenaiCompatible | OvenAdapterFamily::CohereV2Chat => false,
+        };
+        let has_section = config.anthropic.is_some()
+            || config.bedrock.is_some()
+            || config.google.is_some()
+            || config.openai.is_some();
+        if has_section && !matches_family {
+            return Err(EngineError::CacheStrategy(format!(
+                "cache strategy does not match the {} model adapter family",
+                family.id()
+            )));
+        }
+    }
+    let strategy = match family {
+        OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
+            config.anthropic.as_ref().map(|config| {
+                CacheStrategyConfig::Anthropic(
+                    cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
+                        system: cache_ttl(config.system),
+                        tools: cache_ttl(config.tools),
+                        rolling: match config.rolling {
+                            cookie_agent_config::RollingCacheTtl::FiveMinutes => Some(
+                                cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes,
+                            ),
+                            cookie_agent_config::RollingCacheTtl::Off => None,
+                        },
+                    },
+                )
+            })
+        }
+        OvenAdapterFamily::AwsBedrockConverse => config.bedrock.as_ref().map(|config| {
+            let strategy = if config.enabled {
+                let system = config
+                    .system
+                    .unwrap_or(cookie_agent_config::CacheTtl::OneHour);
+                let tools = config
+                    .tools
+                    .unwrap_or(cookie_agent_config::CacheTtl::OneHour);
+                let messages = config.messages.as_ref().map_or_else(
+                    || {
+                        vec![BedrockMessageCachePoint {
+                            history_index: usize::MAX,
+                            cache_point: BedrockCachePoint {
+                                ttl: Some(BedrockCacheTtl::FiveMinutes),
+                            },
+                        }]
+                    },
+                    |messages| {
+                        messages
+                            .iter()
+                            .map(|message| BedrockMessageCachePoint {
+                                history_index: message.history_index,
+                                cache_point: BedrockCachePoint {
+                                    ttl: Some(match message.ttl {
+                                        cookie_agent_config::BedrockCacheTtl::OneHour => {
+                                            BedrockCacheTtl::OneHour
+                                        }
+                                        cookie_agent_config::BedrockCacheTtl::FiveMinutes => {
+                                            BedrockCacheTtl::FiveMinutes
+                                        }
+                                    }),
+                                },
+                            })
+                            .collect()
+                    },
+                );
+                BedrockCacheStrategy {
+                    system: bedrock_cache_point(system),
+                    tools: bedrock_cache_point(tools),
+                    messages,
+                }
+            } else {
+                BedrockCacheStrategy::default()
+            };
+            CacheStrategyConfig::Bedrock(strategy)
+        }),
+        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
+            config.google.as_ref().map(|config| {
+                CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
+                    mode: match config.mode {
+                        cookie_agent_config::GoogleCacheMode::Implicit => GoogleCacheMode::Implicit,
+                        cookie_agent_config::GoogleCacheMode::Explicit => GoogleCacheMode::Explicit,
+                        cookie_agent_config::GoogleCacheMode::Off => GoogleCacheMode::Off,
+                    },
+                    cached_content: config.cached_content.clone(),
+                })
+            })
+        }
+        OvenAdapterFamily::OpenaiChat
+        | OvenAdapterFamily::OpenaiResponses
+        | OvenAdapterFamily::AzureOpenaiChat
+        | OvenAdapterFamily::AzureOpenaiResponses => config.openai.as_ref().map(|config| {
+            CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+                prompt_cache_key: config.prompt_cache_key.clone(),
+                prompt_cache_retention: config.prompt_cache_retention.map(|retention| {
+                    match retention {
+                        cookie_agent_config::OpenAiPromptCacheRetention::InMemory => {
+                            OpenAiPromptCacheRetention::InMemory
+                        }
+                        cookie_agent_config::OpenAiPromptCacheRetention::TwentyFourHours => {
+                            OpenAiPromptCacheRetention::TwentyFourHours
+                        }
+                    }
+                }),
+            })
+        }),
+        OvenAdapterFamily::OpenaiCompatible | OvenAdapterFamily::CohereV2Chat => {
+            if authored.is_some() {
+                return Err(EngineError::CacheStrategy(format!(
+                    "{} does not support an authored cache strategy",
+                    family.id()
+                )));
+            }
+            None
+        }
+    };
+    if let Some(CacheStrategyConfig::OpenAi(config)) = &strategy
+        && let Some(key) = &config.prompt_cache_key
+    {
+        let expanded = key.replace("${session_id}", "00000000-0000-0000-0000-000000000000");
+        if expanded.contains("${") || expanded.chars().count() > 64 {
+            return Err(EngineError::CacheStrategy(
+                "OpenAI prompt_cache_key supports only ${session_id} and must expand to at most 64 characters".into(),
+            ));
+        }
+    }
+    Ok(strategy)
+}
+
+const fn cache_ttl(
+    ttl: cookie_agent_config::CacheTtl,
+) -> Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig> {
+    match ttl {
+        cookie_agent_config::CacheTtl::OneHour => {
+            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour)
+        }
+        cookie_agent_config::CacheTtl::FiveMinutes => {
+            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes)
+        }
+        cookie_agent_config::CacheTtl::Off => None,
+    }
+}
+
+fn bedrock_cache_point(ttl: cookie_agent_config::CacheTtl) -> Option<BedrockCachePoint> {
+    Some(BedrockCachePoint {
+        ttl: Some(match ttl {
+            cookie_agent_config::CacheTtl::OneHour => BedrockCacheTtl::OneHour,
+            cookie_agent_config::CacheTtl::FiveMinutes => BedrockCacheTtl::FiveMinutes,
+            cookie_agent_config::CacheTtl::Off => return None,
+        }),
+    })
 }
 
 pub(crate) type ResolvedRuntimeModel = cookie_agent_models::ResolvedExecutableModel;

@@ -174,6 +174,8 @@ pub enum EngineError {
     InvalidRuntimeAgent(AgentId),
     #[error("MCP configuration error: {0}")]
     Mcp(String),
+    #[error("cache strategy configuration error: {0}")]
+    CacheStrategy(String),
     #[error("session permission error: {0}")]
     Permission(String),
     #[error(transparent)]
@@ -417,8 +419,27 @@ pub(crate) struct FrozenInternalAgentPolicy {
     pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
     pub(crate) runtime: Option<Arc<PublishedRuntime>>,
     pub(crate) limits: InternalAgentLimits,
-    pub(crate) prompt_cache_strategy:
-        Option<cookie_agent_models::adapters::AnthropicCacheStrategyConfig>,
+    pub(crate) cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
+}
+
+impl FrozenInternalAgentPolicy {
+    pub(crate) fn cache_strategy(
+        &self,
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        session: SessionId,
+    ) -> Option<cookie_agent_models::adapters::CacheStrategyConfig> {
+        let index = self
+            .models
+            .iter()
+            .position(|candidate| candidate == binding)?;
+        let mut strategy = self.cache_strategies.get(index)?.clone()?;
+        if let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(config) = &mut strategy
+            && let Some(key) = &mut config.prompt_cache_key
+        {
+            *key = key.replace("${session_id}", &session.to_string());
+        }
+        Some(strategy)
+    }
 }
 
 #[derive(Clone, Debug)]

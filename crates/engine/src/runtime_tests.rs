@@ -2791,6 +2791,13 @@ fn frozen_root_policy(
     fixture: &Fixture,
     selection: &RunSelection,
 ) -> crate::policy::FrozenRunPolicy {
+    try_frozen_root_policy(fixture, selection).expect("frozen root policy")
+}
+
+fn try_frozen_root_policy(
+    fixture: &Fixture,
+    selection: &RunSelection,
+) -> Result<crate::policy::FrozenRunPolicy, EngineError> {
     let runtime = fixture.engine.current_runtime();
     let registry = runtime
         .agents_for_preset(selection.preset.as_deref())
@@ -2806,9 +2813,8 @@ fn frozen_root_policy(
             tool_output_max_lines: 2_000,
             tool_output_max_bytes: 50 * 1024,
         },
-        fixture.config.runtime.prompt_caching.strategy(),
+        fixture.config.runtime.prompt_caching.as_cache_config(),
     )
-    .expect("frozen root policy")
 }
 
 fn completed_read_events(
@@ -3015,7 +3021,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         Arc::clone(&owner.runtime),
         owner.result_limits.tool_output_max_lines,
         owner.result_limits.tool_output_max_bytes,
-        owner.prompt_cache_strategy.clone(),
+        owner.runtime_cache.clone(),
     )
     .expect("replayed owner policy");
     let replayed = fixture
@@ -3081,8 +3087,8 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
             "lookup tool",
             oven_sdk::JsonSchema::new(serde_json::json!({"type":"object"})).unwrap(),
         )]);
-        let prepared = model
-            .prepare_request_with_cache_strategy(request, policy.prompt_cache_strategy.as_ref());
+        let strategy = policy.cache_strategy(binding, SessionId::new_v7());
+        let prepared = model.prepare_request_with_cache_strategy(request, strategy.as_ref());
         let oven_sdk::HistoryTurn::System(system) = &prepared.history[0] else {
             panic!("system turn");
         };
@@ -3103,6 +3109,111 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
         );
     }
     fixture.engine.shutdown().await;
+}
+
+#[test]
+fn agent_openai_cache_key_is_frozen_per_binding_and_expands_session_id() {
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: agent-${session_id}\n        prompt_cache_retention: 24h\npermissions: {}\n---\nStable owner prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-chat",
+        );
+    let policy = frozen_root_policy(&fixture, &selection);
+    let binding = policy.selected_suffix.first().unwrap();
+    let session = SessionId::new_v7();
+    let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(strategy) =
+        policy.cache_strategy(binding, session).unwrap()
+    else {
+        panic!("OpenAI cache strategy");
+    };
+    assert_eq!(
+        strategy.prompt_cache_key.as_deref(),
+        Some(format!("agent-{session}").as_str())
+    );
+
+    let internal = fixture
+        .engine
+        .internal_agent_policy(InternalAgentKind::ContextCompaction, &policy, Some(binding))
+        .unwrap();
+    let internal_binding = internal.models.first().unwrap();
+    let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(strategy) =
+        internal.cache_strategy(internal_binding, session).unwrap()
+    else {
+        panic!("inherited OpenAI cache strategy");
+    };
+    assert_eq!(
+        strategy.prompt_cache_key.as_deref(),
+        Some(format!("agent-{session}").as_str())
+    );
+}
+
+#[test]
+fn delegated_agent_without_models_inherits_frozen_cache_strategies() {
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: delegated-${session_id}\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
+    let worker = "---\ndescription: Inheriting worker\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nWorker prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            Some(worker),
+            "openai-chat",
+        );
+    let owner = frozen_root_policy(&fixture, &selection);
+    let worker_id = AgentId::new("worker").unwrap();
+    let child = owner.registry.get(&worker_id).unwrap();
+    let child_policy = crate::policy::freeze_delegated_agent_policy(
+        child,
+        Arc::clone(&owner.registry),
+        Arc::clone(&owner.runtime),
+        &selection.model,
+        &owner.selected_suffix,
+        1,
+        crate::policy::FreezeOptions {
+            result_limits: owner.result_limits,
+            runtime_cache: owner.runtime_cache.clone(),
+            inherited_cache_strategies: Some(owner.cache_strategies.clone()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(child_policy.cache_strategies, owner.cache_strategies);
+}
+
+#[test]
+fn authored_cache_strategy_for_unsupported_family_fails_policy_freeze() {
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: unsupported\npermissions: {}\n---\nStable owner prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-compatible",
+        );
+    assert!(matches!(
+        try_frozen_root_policy(&fixture, &selection),
+        Err(EngineError::CacheStrategy(_))
+    ));
 }
 
 #[test]

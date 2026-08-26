@@ -173,7 +173,7 @@ impl Engine {
                     &params.selection.model,
                     self.inner.config.runtime.delegation.max_depth,
                     result_limits,
-                    self.inner.config.runtime.prompt_caching.strategy(),
+                    self.inner.config.runtime.prompt_caching.as_cache_config(),
                 )?
             }
             SessionOrigin::Delegated { .. } => {
@@ -189,7 +189,7 @@ impl Engine {
                     &params.selection,
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
-                    self.inner.config.runtime.prompt_caching.strategy(),
+                    self.inner.config.runtime.prompt_caching.as_cache_config(),
                 )?
             }
         };
@@ -1243,10 +1243,9 @@ impl Engine {
                 if let Some(native_context) = context.native_context {
                     request = request.with_native_context(native_context);
                 }
-                let mut request = model.prepare_request_before_cache_strategy(
-                    request,
-                    policy.prompt_cache_strategy.as_ref(),
-                );
+                let cache_strategy = policy.cache_strategy(binding, session);
+                let mut request =
+                    model.prepare_request_before_cache_strategy(request, cache_strategy.as_ref());
                 let context_id = crate::plugin::plugin_context_id();
                 for plugin in self.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeRequest,
@@ -1305,8 +1304,7 @@ impl Engine {
                         Err(error) => self.record_interception_error(session, plugin, error),
                     }
                 }
-                request = model
-                    .apply_prompt_cache_strategy(request, policy.prompt_cache_strategy.as_ref());
+                request = model.apply_prompt_cache_strategy(request, cache_strategy.as_ref());
                 for plugin in self.inner.plugins.interception_plugins(
                     cookie_agent_protocol::ExtensionInterceptionHook::ProviderBeforeHeaders,
                 ) {
