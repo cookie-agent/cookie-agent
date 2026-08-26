@@ -13,14 +13,16 @@ Three independent configuration surfaces exist:
 | Skills | `~/.cookie-agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
 | TUI | `~/.cookie-agent/tui.toml` |
 
+Examples default to the user layer. The exact-workspace layer uses the same
+syntax and takes precedence when workspace-specific behavior is needed.
+
 ## Layering and strictness
 
 The user layer and the exact working directory's `.cookie-agent` layer are both
 optional. Configuration is loaded from the exact working directory only; there
 is no upward search. Within a layer, `config.toml` and the `agents/` directory
-are optional. A workspace layer replaces the corresponding user settings and
-providers, MCP servers, plugins, and agents wholesale by ID; nested fields
-never merge.
+are optional. A same-ID workspace provider, MCP server, plugin, or agent replaces
+the complete user entry; nested fields never merge.
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or
 `schema_version` keys, wrong types, and malformed content are hard errors with an

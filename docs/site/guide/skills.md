@@ -13,7 +13,8 @@ Cookie Agent discovers skills from:
 - `.cookie-agent/skills/<name>/SKILL.md` from the working directory upward to
   the worktree root
 
-The user location is resolved from the standard home directory.
+The user location is resolved from the standard home directory and is the normal
+place for reusable personal skills.
 
 Project skills override same-named user skills. The shadowed user skill remains
 visible in `skills.list` and `/skills` diagnostics, but cannot be invoked. Skill

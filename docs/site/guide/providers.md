@@ -31,7 +31,8 @@ lengths, integer fields enforce their allowed range, and booleans accept
 `true`/`yes`/`y`/`1` and `false`/`no`/`n`/`0` case-insensitively. The same shared
 parser is used by `/connect`, `cookie connect`, and the TUI's connect flow.
 
-Managed providers may also be authored in configuration:
+Managed providers may also be authored in the user configuration at
+`~/.cookie-agent/config.toml`:
 
 ```toml
 
@@ -39,6 +40,10 @@ Managed providers may also be authored in configuration:
 source = "models_dev"
 api_key = "${env:OPENAI_API_KEY}"
 ```
+
+Workspace-specific providers use the same syntax in
+`<cwd>/.cookie-agent/config.toml` and take precedence. A same-ID workspace
+provider replaces the complete user provider entry; nested fields never merge.
 
 Available fields for a managed provider are `base_url`, `shape`, `setup`,
 `api_key`, `auth_override`, and sparse `model_overrides`. `api_key` is allowed
@@ -178,6 +183,8 @@ Custom provider IDs begin with `custom.` (for example `custom.example`). They
 are config-only: they never appear in `/connect` and never use the provider
 store. A custom definition requires an HTTPS endpoint (or loopback `http`), an
 adaptor, a typed auth definition, and complete explicit model capabilities.
+Author custom providers in `~/.cookie-agent/config.toml` by default; the same
+workspace precedence rule described above applies when an override is needed.
 
 ### Adaptors
 

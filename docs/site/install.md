@@ -77,10 +77,10 @@ fields. The durable store is global to the user, so other workspaces can use the
 same compatible connection. The form does not contact the provider; the first
 model request verifies the credentials.
 
-### Optional workspace configuration
+### Optional user configuration
 
-Create `.cookie-agent/config.toml` only when the workspace has settings to
-author. For example, an environment-backed managed provider can be declared as:
+Create `~/.cookie-agent/config.toml` only when you have settings to author. For
+example, an environment-backed managed provider can be declared as:
 
 ```toml
 
@@ -89,12 +89,17 @@ source = "models_dev"
 api_key = "${env:OPENAI_API_KEY}"
 ```
 
-Export the variable before launching from that workspace:
+Export the variable before launching cookie agent:
 
 ```sh
 export OPENAI_API_KEY='your-key'
 cookie
 ```
+
+Workspace-specific settings use the same syntax in
+`<cwd>/.cookie-agent/config.toml` and take precedence over user settings. A
+same-ID workspace provider, MCP server, plugin, or agent replaces the complete
+user entry; nested fields never merge.
 
 See [Providers](guide/providers.md) for precedence rules and custom providers.
 

@@ -6,8 +6,8 @@ roots, or other interactive input are rejected.
 
 ## Configuration
 
-Define servers in either the user configuration or the exact workspace's
-`.cookie-agent/config.toml`:
+Define servers by default in the user configuration at
+`~/.cookie-agent/config.toml`:
 
 ```toml
 [mcp.servers.github]
@@ -22,6 +22,10 @@ url = "https://mcp.example.com/mcp"
 oauth = true
 lazy = true
 ```
+
+Workspace-specific servers use the same syntax in
+`<cwd>/.cookie-agent/config.toml` and take precedence. A same-name workspace
+server replaces the complete user server entry; nested fields never merge.
 
 Each server must set exactly one of `command` or `url`. `args`, `env`, and `cwd`
 apply only to stdio commands; `headers` applies only to Streamable HTTP. Servers

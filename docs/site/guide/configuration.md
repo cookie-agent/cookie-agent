@@ -11,6 +11,8 @@ cookie agent reads four independent configuration surfaces:
 
 This page covers where configuration lives and how it behaves. For the complete
 key-by-key reference, see [Configuration Reference](../reference/configuration.md).
+Examples on this page target the user layer unless workspace behavior is named.
+The workspace file accepts the same syntax.
 
 ## Locations and layering
 
@@ -31,8 +33,10 @@ are hard errors; there are no migrations or silently ignored fields.
 
 ## Optional runtime configuration
 
-No configuration file is required. Every top-level section is optional, and an
-empty file or provider map is valid when a workspace does need an authored file.
+No configuration file is required. For common per-user settings, create
+`~/.cookie-agent/config.toml`. Every top-level section is optional, and an empty
+file or provider map is valid. Use `<cwd>/.cookie-agent/config.toml` only for
+workspace-specific overrides.
 
 ```toml
 

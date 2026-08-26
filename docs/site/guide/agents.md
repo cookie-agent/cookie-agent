@@ -6,6 +6,11 @@ model fallback chain, and its runtime limits. The harness supplies four agents:
 three internal agents plus the synthesized `default` coding agent when no
 authored root agent is runnable.
 
+Author common agents under `~/.cookie-agent/agents/`. The exact workspace may
+use the same document format under `<cwd>/.cookie-agent/agents/`; a same-ID
+workspace document takes precedence and replaces the complete user document.
+Frontmatter fields and nested permission maps never merge across layers.
+
 ## Agent document structure
 
 Each file has strict YAML frontmatter and a nonempty Markdown body:
@@ -201,7 +206,7 @@ available when no preset is selected. A directory exactly one level below
 `agents/` defines a preset:
 
 ```text
-.cookie-agent/agents/
+~/.cookie-agent/agents/
 ├── primary.md
 ├── reviewer.md
 ├── python/
