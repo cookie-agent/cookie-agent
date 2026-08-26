@@ -957,6 +957,7 @@ mod cache_strategy_tests {
             openai: Some(cookie_agent_config::OpenAiCacheConfig {
                 prompt_cache_key: Some("mixed-${session_id}".into()),
                 prompt_cache_retention: None,
+                ..Default::default()
             }),
         };
 

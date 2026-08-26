@@ -21,8 +21,8 @@ pub use agents::{
 };
 pub use cache::{
     AnthropicCacheConfig, BedrockCacheConfig, BedrockCacheTtl, BedrockMessageCacheConfig,
-    CacheConfig, CacheTtl, GoogleCacheConfig, GoogleCacheMode, OpenAiCacheConfig,
-    OpenAiPromptCacheRetention, RollingCacheTtl,
+    CacheConfig, CacheTtl, GoogleCacheConfig, GoogleCacheMode, OpenAiCacheConfig, OpenAiCacheMode,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
 };
 pub use error::ConfigError;
 pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};

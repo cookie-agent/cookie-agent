@@ -161,14 +161,50 @@ pub enum OpenAiPromptCacheRetention {
     TwentyFourHours,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiCacheMode {
+    #[default]
+    Implicit,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum OpenAiPromptCacheTtl {
+    #[default]
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenAiCacheConfig {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<OpenAiPromptCacheRetention>,
+    pub mode: Option<OpenAiCacheMode>,
+    pub ttl: Option<OpenAiPromptCacheTtl>,
+    #[serde(default)]
+    pub system: bool,
+    #[serde(default)]
+    pub rolling: bool,
 }
 
 impl OpenAiCacheConfig {
+    #[must_use]
+    pub const fn gpt_5_6_controls_enabled(&self) -> bool {
+        self.mode.is_some() || self.ttl.is_some() || self.system || self.rolling
+    }
+
+    #[must_use]
+    pub fn effective_mode(&self) -> OpenAiCacheMode {
+        self.mode.unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn effective_ttl(&self) -> OpenAiPromptCacheTtl {
+        self.ttl.unwrap_or_default()
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self
             .prompt_cache_key

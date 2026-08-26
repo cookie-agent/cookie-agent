@@ -1,8 +1,8 @@
 use std::fs;
 
 use cookie_agent_config::{
-    AgentFrontmatter, BedrockCacheTtl, CacheTtl, ConfigError, GoogleCacheMode,
-    OpenAiPromptCacheRetention, RollingCacheTtl, load_from_roots,
+    AgentFrontmatter, BedrockCacheTtl, CacheTtl, ConfigError, GoogleCacheMode, OpenAiCacheMode,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl, load_from_roots,
 };
 use cookie_agent_models::adapters::AnthropicCacheTtlConfig;
 use tempfile::TempDir;
@@ -55,6 +55,10 @@ cached_content = "cachedContents/runtime"
 [prompt_caching.openai]
 prompt_cache_key = "runtime-${session_id}"
 prompt_cache_retention = "24h"
+mode = "explicit"
+ttl = "30m"
+system = true
+rolling = true
 "#,
     )
     .unwrap();
@@ -66,9 +70,14 @@ prompt_cache_retention = "24h"
     );
     assert_eq!(caching.google.unwrap().mode, GoogleCacheMode::Explicit);
     assert_eq!(
-        caching.openai.unwrap().prompt_cache_retention,
+        caching.openai.as_ref().unwrap().prompt_cache_retention,
         Some(OpenAiPromptCacheRetention::TwentyFourHours)
     );
+    let openai = caching.openai.unwrap();
+    assert_eq!(openai.mode, Some(OpenAiCacheMode::Explicit));
+    assert_eq!(openai.ttl, Some(OpenAiPromptCacheTtl::ThirtyMinutes));
+    assert!(openai.system);
+    assert!(openai.rolling);
 }
 
 #[test]
@@ -82,6 +91,9 @@ fn runtime_cache_sections_reject_unknown_and_incoherent_options() {
             "[prompt_caching.openai]\nprompt_cache_key = \"{}\"\n",
             "x".repeat(65)
         ),
+        "[prompt_caching.openai]\nmode = \"future\"\n",
+        "[prompt_caching.openai]\nttl = \"1h\"\n",
+        "[prompt_caching.openai]\ntools = true\n",
         "[prompt_caching.bedrock]\nenabled = false\nsystem = \"one_hour\"\n",
         "[prompt_caching.bedrock]\ntools = \"five_minutes\"\nsystem = \"one_hour\"\n",
         "[prompt_caching.bedrock]\nmessages = [{ history_index = 1, ttl = \"five_minutes\" }, { history_index = 1, ttl = \"five_minutes\" }]\n",
@@ -120,6 +132,44 @@ permissions: {}
             .prompt_cache_retention,
         Some(OpenAiPromptCacheRetention::InMemory)
     );
+    let openai = frontmatter.models[0]
+        .cache
+        .as_ref()
+        .unwrap()
+        .openai
+        .as_ref()
+        .unwrap();
+    assert!(!openai.gpt_5_6_controls_enabled());
+    assert_eq!(openai.effective_mode(), OpenAiCacheMode::Implicit);
+    assert_eq!(openai.effective_ttl(), OpenAiPromptCacheTtl::ThirtyMinutes);
+
+    let gpt_5_6: AgentFrontmatter = serde_yaml::from_str(
+        r#"
+description: GPT cache agent
+mode: primary
+enabled: true
+models:
+  - model: custom.test/model
+    variant: null
+    cache:
+      openai:
+        mode: explicit
+        ttl: 30m
+        system: true
+        rolling: true
+permissions: {}
+"#,
+    )
+    .unwrap();
+    let openai = gpt_5_6.models[0]
+        .cache
+        .as_ref()
+        .unwrap()
+        .openai
+        .as_ref()
+        .unwrap();
+    assert!(openai.gpt_5_6_controls_enabled());
+    assert_eq!(openai.effective_mode(), OpenAiCacheMode::Explicit);
 
     for invalid in [
         "unknown: {}",
