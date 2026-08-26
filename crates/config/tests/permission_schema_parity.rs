@@ -205,9 +205,69 @@ fn leftover_agent_schema_is_rejected_with_removal_guidance() {
 }
 
 #[test]
-fn checked_workspace_agents_preserve_permission_outcomes() {
-    let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cookie-agent");
-    let loaded = load_from_roots(None, Some(&project)).expect("checked workspace agents");
+fn fixture_agents_preserve_permission_outcomes() {
+    let temp = TempDir::new().unwrap();
+    let project = temp.path().join(".cookie-agent");
+    let agents = project.join("agents");
+    fs::create_dir_all(&agents).unwrap();
+    fs::write(project.join("config.toml"), "").unwrap();
+    for id in ["primary", "worker", "chat", "anthropic", "responses"] {
+        let primary_permissions = if id == "worker" {
+            ""
+        } else {
+            r#"  write: ask
+  bash:
+    "*": ask
+    "*cat*": deny
+    "*rm*": deny
+    "*rmdir*": deny
+  delegate:
+    worker: ask
+"#
+        };
+        let mode = if id == "worker" {
+            "subagent"
+        } else {
+            "primary"
+        };
+        fs::write(
+            agents.join(format!("{id}.md")),
+            format!(
+                r#"---
+description: Fixture {id} agent
+mode: {mode}
+enabled: true
+models:
+  - {{ model: "fixture/model", variant: base }}
+permissions:
+  read:
+    "*": allow
+    "/*": ask
+    ".env": deny
+    "*/.env": deny
+    ".env.*": deny
+    "*/.env.*": deny
+    ".env.example": allow
+    "*/.env.example": allow
+    "store-v3.json": deny
+    "*/store-v3.json": deny
+    "token-v1": deny
+    "*/token-v1": deny
+    "id_*": deny
+    "*/id_*": deny
+    ".netrc": deny
+    "*/.netrc": deny
+    "application_default_credentials.json": deny
+    "*/application_default_credentials.json": deny
+{primary_permissions}---
+Fixture agent body.
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    let loaded = load_from_roots(None, Some(&project)).expect("fixture agents");
     assert_eq!(loaded.agents.len(), 5);
     for (id, document) in &loaded.agents {
         let cases = [
