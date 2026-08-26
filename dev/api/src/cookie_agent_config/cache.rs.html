@@ -96,8 +96,8 @@
 <a href=#96 id=96 data-nosnippet>96</a>        <span class="kw">if </span>!<span class="self">self</span>.enabled {
 <a href=#97 id=97 data-nosnippet>97</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#98 id=98 data-nosnippet>98</a>        }
-<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">let </span>default_system = <span class="self">self</span>.system.unwrap_or(CacheTtl::OneHour);
-<a href=#100 id=100 data-nosnippet>100</a>        <span class="kw">let </span>default_tools = <span class="self">self</span>.tools.unwrap_or(CacheTtl::OneHour);
+<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">let </span>default_system = <span class="self">self</span>.system.unwrap_or(CacheTtl::FiveMinutes);
+<a href=#100 id=100 data-nosnippet>100</a>        <span class="kw">let </span>default_tools = <span class="self">self</span>.tools.unwrap_or(CacheTtl::FiveMinutes);
 <a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">let </span>default_message = [BedrockMessageCacheConfig {
 <a href=#102 id=102 data-nosnippet>102</a>            history_index: usize::MAX,
 <a href=#103 id=103 data-nosnippet>103</a>            ttl: BedrockCacheTtl::FiveMinutes,
