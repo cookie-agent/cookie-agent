@@ -14,7 +14,7 @@
       
       
       
-        <link rel="next" href="getting-started/">
+        <link rel="next" href="install/">
       
       
       <link rel="icon" href="assets/images/favicon.png">
@@ -244,25 +244,6 @@
   
   
     <li class="md-tabs__item">
-      <a href="getting-started/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Getting Started
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-  
-    <li class="md-tabs__item">
       <a href="install/" class="md-tabs__link">
         
   
@@ -289,6 +270,26 @@
   
   
   Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="development/building/" class="md-tabs__link">
+          
+  
+  
+  Development
 
         </a>
       </li>
@@ -446,9 +447,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#workspace-crates" class="md-nav__link">
+  <a href="#development" class="md-nav__link">
     <span class="md-ellipsis">
-      Workspace crates
+      Development
     </span>
   </a>
   
@@ -458,28 +459,6 @@
   
 </nav>
       
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="getting-started/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Getting Started
-    
-  </span>
-  
-
-      </a>
     </li>
   
 
@@ -526,10 +505,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
             
   
   
@@ -542,8 +521,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             Guide
           </label>
@@ -875,6 +854,125 @@
       
         
         
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="development/building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Building and testing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="development/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Plugin development
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
         <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
         
           
@@ -1036,29 +1134,6 @@
 
               
             
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="reference/api/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    Rust API
-    
-  </span>
-  
-
-      </a>
-    </li>
-  
-
-              
-            
           </ul>
         </nav>
       
@@ -1124,9 +1199,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#workspace-crates" class="md-nav__link">
+  <a href="#development" class="md-nav__link">
     <span class="md-ellipsis">
-      Workspace crates
+      Development
     </span>
   </a>
   
@@ -1160,34 +1235,29 @@ persisted and wire surfaces remain current-only.
 <a href="architecture/">Architecture</a> describes how the pieces fit together; this site
 turns that implementation into task-oriented guides and reference material.</p>
 <h2 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h2>
-<p>You need Rust 1.88 or newer and Python 3 for the documentation tooling. Cargo
-fetches the locked, git-pinned Oven SDK dependencies when it builds the clone.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/cookie-agent/cookie-agent.git
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>cookie-agent
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">'[providers]\n'</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>cargo<span class="w"> </span>run<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent<span class="w"> </span>--<span class="w"> </span>daemon
-</code></pre></div>
-<p>In another terminal, open the TUI:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo<span class="w"> </span>run<span class="w"> </span>--locked<span class="w"> </span>-p<span class="w"> </span>cookie_agent<span class="w"> </span>--<span class="w"> </span>attach
+<p>First <a href="install/">install cookie agent</a>, then run it from the workspace where it
+should operate:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>.cookie-agent
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">'[providers]\n'</span><span class="w"> </span>&gt;<span class="w"> </span>.cookie-agent/config.toml
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cookie
 </code></pre></div>
 <p>Type <code>/connect</code> to store a managed provider connection. Provider setup and
 credentials are per-user and shared across workspaces. Credentials are checked
 when the provider is first used, not during the connect flow.</p>
-<p>See <a href="getting-started/">Getting Started</a> for configuration and first-run
-details, <a href="guide/providers/">Providers</a> for managed and custom provider
-options, <a href="guide/plugins/">Plugins</a> for executable extensions, and
+<p>The <a href="install/#quick-start">installation guide</a> continues through configuration
+and the first run. See <a href="guide/providers/">Providers</a> for managed and custom
+provider options, <a href="guide/plugins/">Plugins</a> for executable extensions, and
 <a href="reference/configuration/">Configuration</a> for every configurable item.</p>
 <div class="admonition warning">
 <p class="admonition-title">Keep credentials out of Git</p>
 <p>Prefer <code>/connect</code> or <code>${env:NAME}</code> interpolation. Do not commit <code>.env</code>, a
 credential-bearing config, or provider-store data.</p>
 </div>
-<h2 id="workspace-crates">Workspace crates<a class="headerlink" href="#workspace-crates" title="Permanent link">&para;</a></h2>
-<p>The Rust workspace contains ten crates: <code>config</code>, <code>cookie_agent</code>, <code>engine</code>,
-<code>identity</code>, <code>models</code>, <code>plugin_sdk</code>, <code>protocol</code>, <code>server</code>, <code>tools</code>, and <code>tui</code>.
-Browse their public interfaces in the
-<a href="reference/api/">Rust API documentation</a>.</p>
+<h2 id="development">Development<a class="headerlink" href="#development" title="Permanent link">&para;</a></h2>
+<p>See <a href="development/building/">Building and testing</a> for the Rust toolchain and
+required gates, <a href="development/plugins/">Plugin development</a> for extension
+authoring, and the <a href="reference/api/">Rust API documentation</a> for public
+workspace interfaces.</p>
 
 
 
