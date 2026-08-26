@@ -87,6 +87,18 @@ capabilities. The plugin returns its exact protocol version, configured plugin n
 version, capabilities, and tool declarations. Tool names must be unique within the plugin and
 use `snake_case`. The reported plugin name must exactly match the configuration entry.
 
+During `plugin/initialize`, this executable must declare every capability it uses. A tool-only
+plugin sets `tools: true`, leaves subscription and publishing flags false, and returns an empty
+`intercept` array plus its tool declarations. The agent document must then enable each declared
+permission and resource, for example:
+
+```yaml
+permissions:
+  plugin:
+    "issue_read *": allow
+    "issue_delete *": ask
+```
+
 The protocol also supports `plugin/ping` for liveness and sends the `plugin/shutdown`
 notification during engine shutdown.
 
