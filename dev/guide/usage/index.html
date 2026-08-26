@@ -1203,8 +1203,9 @@ enabling <code>[prompt_caching]</code>. Track <code>cache_hit_rate</code> after 
 <code>estimated_cost_usd</code> over the whole session. A healthy multi-turn workload
 normally reports cache writes on the first request and cache reads on later
 requests; compare totals only after enough repeated-prefix turns to amortize the
-initial write. Use <code>enabled = false</code> as the baseline, where the strategy emits no
-cache markers and provider-reported cache reads and writes should remain zero.</p>
+initial write. Use the provider's off configuration as the baseline: set all
+Anthropic TTLs to <code>"off"</code>, use Bedrock <code>enabled = false</code>, or use Google
+<code>mode = "off"</code>. Provider-reported cache reads and writes should then remain zero.</p>
 
 
 
