@@ -96,8 +96,8 @@ impl BedrockCacheConfig {
         if !self.enabled {
             return Ok(());
         }
-        let default_system = self.system.unwrap_or(CacheTtl::OneHour);
-        let default_tools = self.tools.unwrap_or(CacheTtl::OneHour);
+        let default_system = self.system.unwrap_or(CacheTtl::FiveMinutes);
+        let default_tools = self.tools.unwrap_or(CacheTtl::FiveMinutes);
         let default_message = [BedrockMessageCacheConfig {
             history_index: usize::MAX,
             ttl: BedrockCacheTtl::FiveMinutes,

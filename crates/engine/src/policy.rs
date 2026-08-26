@@ -552,10 +552,10 @@ pub(crate) fn resolve_cache_strategy(
             let strategy = if config.enabled {
                 let system = config
                     .system
-                    .unwrap_or(cookie_agent_config::CacheTtl::OneHour);
+                    .unwrap_or(cookie_agent_config::CacheTtl::FiveMinutes);
                 let tools = config
                     .tools
-                    .unwrap_or(cookie_agent_config::CacheTtl::OneHour);
+                    .unwrap_or(cookie_agent_config::CacheTtl::FiveMinutes);
                 let messages = config.messages.as_ref().map_or_else(
                     || {
                         vec![BedrockMessageCachePoint {
@@ -964,10 +964,24 @@ mod cache_strategy_tests {
             resolve_cache_strategy(None, &binding("oven.anthropic.messages"), &runtime).unwrap(),
             Some(CacheStrategyConfig::Anthropic(_))
         ));
-        assert!(matches!(
-            resolve_cache_strategy(None, &binding("oven.bedrock.converse"), &runtime).unwrap(),
-            Some(CacheStrategyConfig::Bedrock(_))
-        ));
+        let Some(CacheStrategyConfig::Bedrock(bedrock)) =
+            resolve_cache_strategy(None, &binding("oven.bedrock.converse"), &runtime).unwrap()
+        else {
+            panic!("Bedrock cache strategy");
+        };
+        assert_eq!(
+            bedrock.system.and_then(|point| point.ttl),
+            Some(BedrockCacheTtl::FiveMinutes)
+        );
+        assert_eq!(
+            bedrock.tools.and_then(|point| point.ttl),
+            Some(BedrockCacheTtl::FiveMinutes)
+        );
+        assert_eq!(bedrock.messages.len(), 1);
+        assert_eq!(
+            bedrock.messages[0].cache_point.ttl,
+            Some(BedrockCacheTtl::FiveMinutes)
+        );
         assert!(matches!(
             resolve_cache_strategy(
                 None,
