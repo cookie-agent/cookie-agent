@@ -97,6 +97,15 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
     }
 }
 
+pub(crate) fn canonical_video_mime_type(value: &str) -> &str {
+    match value {
+        "video/mov" => "video/quicktime",
+        "video/avi" => "video/x-msvideo",
+        "video/mpg" => "video/mpeg",
+        _ => value,
+    }
+}
+
 #[derive(Clone, Copy)]
 enum MediaKind {
     Image(ImageFormat),

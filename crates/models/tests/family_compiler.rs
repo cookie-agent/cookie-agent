@@ -173,6 +173,47 @@ fn projects_catalog_video_input_with_consensus_limits() {
 }
 
 #[test]
+fn bedrock_video_projection_matches_pinned_oven_ceiling() {
+    let mut provider = record("@ai-sdk/amazon-bedrock", None);
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .modalities
+        .input = vec!["text".into(), "video".into()];
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:bedrock-video", &provider, None)
+        .unwrap();
+    let video = &compiled.models.values().next().unwrap().capabilities.media
+        [&cookie_agent_models::MediaKind::Video];
+
+    assert_eq!(video.max_bytes, 25 * 1024 * 1024);
+    assert_eq!(video.max_count, 1);
+    assert_eq!(
+        video
+            .mime_types
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "video/3gpp",
+            "video/mp4",
+            "video/mpeg",
+            "video/mpg",
+            "video/quicktime",
+            "video/webm",
+            "video/wmv",
+            "video/x-flv",
+            "video/x-matroska",
+        ])
+    );
+}
+
+#[test]
 fn non_video_model_behavior_fingerprint_is_stable() {
     let compiled = DynamicCompiler::family_registry()
         .compile_managed(

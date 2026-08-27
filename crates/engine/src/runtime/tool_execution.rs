@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     events::OutputHub,
-    media::approved_media_type,
+    media::{approved_media_type, canonical_video_mime_type},
     permissions::PermissionPipeline,
     policy::FrozenRunPolicy,
     tool_api::{
@@ -1038,7 +1038,7 @@ pub(crate) fn validate_attachment(
     let validated = approved_media_type(path, bytes)?.ok_or_else(|| {
         ToolError::execution("attachment is not a supported image, PDF, or video")
     })?;
-    if validated != mime_type {
+    if canonical_video_mime_type(validated) != canonical_video_mime_type(mime_type) {
         return Err(ToolError::execution(format!(
             "attachment MIME mismatch: declared {mime_type}, validated {validated}"
         )));
@@ -1096,6 +1096,25 @@ mod tests {
         let error =
             validate_attachment("video/x-flv", Path::new("clip.flv"), &over_limit).unwrap_err();
         assert!(error.to_string().contains("26214400"));
+    }
+
+    #[test]
+    fn video_mime_aliases_validate_in_alias_and_canonical_forms() {
+        let mut quicktime = 16_u32.to_be_bytes().to_vec();
+        quicktime.extend_from_slice(b"ftypqt  \0\0\0\0");
+        for declared in ["video/mov", "video/quicktime"] {
+            validate_attachment(declared, Path::new("clip.mov"), &quicktime).unwrap();
+        }
+
+        let avi = b"RIFF\x04\x00\x00\x00AVI ";
+        for declared in ["video/avi", "video/x-msvideo"] {
+            validate_attachment(declared, Path::new("clip.avi"), avi).unwrap();
+        }
+
+        let mpeg = [0x00, 0x00, 0x01, 0xba];
+        for declared in ["video/mpg", "video/mpeg"] {
+            validate_attachment(declared, Path::new("clip.mpg"), &mpeg).unwrap();
+        }
     }
 
     fn result(output: String) -> PersistedToolResult {

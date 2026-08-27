@@ -10,16 +10,58 @@ use crate::{
     catalog::CatalogModelRecord,
 };
 
+const BROAD_VIDEO_MIME_TYPES: &[&str] = &[
+    "video/mp4",
+    "video/mpeg",
+    "video/mpg",
+    "video/mov",
+    "video/quicktime",
+    "video/avi",
+    "video/x-msvideo",
+    "video/x-flv",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp",
+    "video/x-matroska",
+];
+
+// Keep catalog projection limited to families whose pinned Oven profiles accept video. Expand
+// when Anthropic-compatible/MiniMax and OpenAI-compatible `video_url` profiles are available.
+fn video_profile(family: OvenAdapterFamily) -> Option<(&'static [&'static str], u32)> {
+    match family {
+        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
+            Some((BROAD_VIDEO_MIME_TYPES, 2))
+        }
+        OvenAdapterFamily::AwsBedrockConverse => Some((
+            &[
+                "video/x-matroska",
+                "video/quicktime",
+                "video/mp4",
+                "video/webm",
+                "video/x-flv",
+                "video/mpeg",
+                "video/mpg",
+                "video/wmv",
+                "video/3gpp",
+            ],
+            1,
+        )),
+        OvenAdapterFamily::Anthropic
+        | OvenAdapterFamily::AnthropicCompatible
+        | OvenAdapterFamily::OpenaiChat
+        | OvenAdapterFamily::OpenaiResponses
+        | OvenAdapterFamily::OpenaiCompatible
+        | OvenAdapterFamily::AzureOpenaiChat
+        | OvenAdapterFamily::AzureOpenaiResponses
+        | OvenAdapterFamily::CohereV2Chat => None,
+    }
+}
+
 pub(crate) fn capabilities_from_catalog(
     model: &CatalogModelRecord,
     family: OvenAdapterFamily,
 ) -> Result<ModelCapabilities, serde_json::Error> {
-    let video_supported = matches!(
-        family,
-        OvenAdapterFamily::GoogleGemini
-            | OvenAdapterFamily::GoogleVertexGemini
-            | OvenAdapterFamily::AwsBedrockConverse
-    );
+    let video_profile = video_profile(family);
     let input = model
         .modalities
         .input
@@ -27,7 +69,7 @@ pub(crate) fn capabilities_from_catalog(
         .filter(|value| {
             value.as_str() == "text"
                 || matches!(value.as_str(), "image" | "audio" | "pdf")
-                || value.as_str() == "video" && video_supported
+                || value.as_str() == "video" && video_profile.is_some()
         })
         .cloned()
         .collect::<BTreeSet<_>>();
@@ -59,26 +101,9 @@ pub(crate) fn capabilities_from_catalog(
                 32 * 1024 * 1024_u64,
                 5_u32,
             )),
-            "video" => Some((
-                "video",
-                [
-                    "video/mp4",
-                    "video/mpeg",
-                    "video/mpg",
-                    "video/mov",
-                    "video/quicktime",
-                    "video/avi",
-                    "video/x-msvideo",
-                    "video/x-flv",
-                    "video/webm",
-                    "video/wmv",
-                    "video/3gpp",
-                    "video/x-matroska",
-                ]
-                .as_slice(),
-                25 * 1024 * 1024_u64,
-                2_u32,
-            )),
+            "video" => video_profile.map(|(mime_types, max_count)| {
+                ("video", mime_types, 25 * 1024 * 1024_u64, max_count)
+            }),
             _ => None,
         };
         if let Some((kind, mime_types, max_bytes, max_count)) = value {
