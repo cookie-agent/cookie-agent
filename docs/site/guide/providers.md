@@ -204,6 +204,28 @@ workspace precedence rule described above applies when an override is needed.
 Custom model IDs are `provider/model-id` strings; group into one provider under
 the `models` map.
 
+### Media in tool results
+
+`read` and MCP tools attach media files to tool results when the model
+declares the modality and the adaptor can carry it. Per-family support:
+
+| Family | Images | PDF | Video |
+|---|---|---|---|
+| `anthropic`, `anthropic-compatible` | Yes | Yes | No |
+| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (≤25 MiB; Nova models) |
+| Open Responses (`open-responses`) | Yes | Yes | No |
+| `openai-responses`, `azure-openai-responses` | Yes | No | No |
+| `openai-chat`, `azure-openai-chat`, `openai-compatible` | No | No | No |
+| `google-gemini`, `google-vertex-gemini` | No | No | No |
+| `cohere-v2-chat` | No | No | No |
+
+Families whose tool-result channel is text-only reject attachments at request
+validation, and the tool surfaces a clean error instead of a corrupted result.
+Video-capable models served over user-turn-only APIs (for example Kimi and
+Qwen via OpenAI-compatible endpoints) are recognized as video-capable, but
+delivery currently requires a family that accepts video in tool results
+(Bedrock); user-turn delivery is planned.
+
 ### OpenAI-compatible example
 
 ```toml

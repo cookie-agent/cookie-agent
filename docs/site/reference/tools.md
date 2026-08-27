@@ -19,6 +19,31 @@ Tool results may include image or PDF attachments. Attachments are validated,
 content-addressed, and supplied to models as file parts rather than embedded in
 text output.
 
+### Media reads
+
+When `read` targets an image (PNG, JPEG, GIF, WebP), PDF, or video container,
+the file is sniffed by content (never by extension alone), strictly validated,
+and attached to the tool result. Whether the attachment reaches the model
+depends on two checks, in order:
+
+1. **Model capability.** The selected model must declare the matching input
+   modality in the catalog (for example `image` for `image/png`). If it does
+   not, the call fails with a tool error naming the model and the missing
+   capability.
+2. **Family deliverability.** The provider's wire API must accept the media
+   kind inside a tool result (see the
+   [provider matrix](../guide/providers.md#media-in-tool-results)). If it does
+   not, the call fails with a tool error naming the family.
+
+Both rejections are ordinary tool errors: the model sees the reason and can
+recover (for example by asking the user, or by sampling the file through
+`bash`). Size is clamped to the smaller of the model's advertised limit and
+the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB documents,
+25 MiB video; other families: 20 MiB). Media parts do not contribute to
+context fit estimates, except video, which carries a flat conservative cost.
+Media attachments never survive context-pressure elision or compaction
+checkpoints; the model can re-read the file to recover.
+
 ## Bash
 
 `bash` accepts a complete `command`, an optional timeout in milliseconds, and

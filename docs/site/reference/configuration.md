@@ -256,6 +256,12 @@ Unknown fields and incoherent combinations are load errors. A cache section that
 does not match its model binding fails policy freeze. OpenAI-compatible and other
 generic adaptors do not accept authored cache policy.
 
+Media attachments (`read` on images, PDFs, and video; MCP media results) have no
+configuration keys by design: delivery is driven entirely by the model's catalog
+capabilities and the provider family's wire support, and unsupported
+combinations fail as clean tool errors. See
+[media reads](../reference/tools.md#media-reads).
+
 ## `[session_title]`
 
 Controls automatic session titles generated from the first user message.

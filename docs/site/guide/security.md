@@ -96,6 +96,17 @@ the agent's protocol `Read` permission on the `tool_result:<uuid>` resource, but
 it does not retroactively redact the artifact. See the
 [tool artifact lifecycle](../reference/tools.md#retained-tool-output).
 
+### Media attachments
+
+Media files read through `read` or returned by MCP servers are sniffed by
+content and strictly validated (full image decode with bounded memory, classic
+cross-reference PDF structure, container magic-byte checks for video) before
+bytes are retained or sent to a provider. Validation rejects malformed input,
+but it is not content screening: an image or PDF can embed adversarial text
+intended for the model (visible prompt injection). Media attachments are in the
+same trust class as file text the model already reads; apply the same judgement
+about which files an agent is pointed at.
+
 ## Process boundary
 
 On Unix, Bash commands run in a new session so cancellation and timeout can kill
