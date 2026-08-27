@@ -44,6 +44,8 @@ pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
 pub(super) const REHYDRATION_MAX_FILES: usize = 5;
 pub(super) const REHYDRATION_MAX_FILE_BYTES: usize = 32 * 1024;
 pub(super) const REHYDRATION_MAX_TOTAL_BYTES: usize = 128 * 1024;
+// Video is frame-sampled and can cost tens of thousands of tokens independent of file bytes.
+const VIDEO_FILE_FIT_SURROGATE_BYTES: usize = 40_000 * 4;
 
 pub(super) struct CompactionInput<'a> {
     pub(super) session: SessionId,
@@ -625,7 +627,7 @@ impl Engine {
         history: &[oven_sdk::HistoryTurn],
         tools: &[ToolDefinition],
     ) -> Result<u64, EngineError> {
-        let bytes = serialized_text_request_bytes(history, tools)?;
+        let bytes = serialized_fit_request_bytes(history, tools)?;
         let calibrated = self
             .inner
             .context_token_estimators
@@ -806,54 +808,74 @@ fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bo
     })
 }
 
-pub(super) fn serialized_text_request_bytes(
+pub(super) fn serialized_fit_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
-    let history = text_only_history(history);
+    let (history, video_parts) = fit_history(history);
     let mut writer = CountingWriter::default();
     serde_json::to_writer(&mut writer, &(history, tools))
         .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-    Ok(writer.bytes)
+    Ok(writer
+        .bytes
+        .saturating_add(video_parts.saturating_mul(VIDEO_FILE_FIT_SURROGATE_BYTES)))
 }
 
-fn text_only_history(history: &[oven_sdk::HistoryTurn]) -> Vec<oven_sdk::HistoryTurn> {
+fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>, usize) {
     // Media costs are flat-ish, usually hundreds to low-thousands of tokens per part, and do not
-    // track serialized byte size. Exclude files from this fit check: real usage calibrates residual
-    // error, while overestimation can spuriously compact and drop attachments during rehydration.
+    // track serialized byte size. Exclude image/PDF/audio files; video alone gets a flat surrogate
+    // because frame sampling can be materially expensive. Overestimation can spuriously compact
+    // and drop attachments during rehydration, while real usage calibrates residual error.
     let mut history = history.to_vec();
+    let mut video_parts = 0_usize;
     for turn in &mut history {
         match turn {
             oven_sdk::HistoryTurn::System(_) => {}
             oven_sdk::HistoryTurn::User(message) => {
-                message
-                    .content
-                    .retain(|part| !matches!(part, oven_sdk::InputPart::File(_)));
+                message.content.retain(|part| match part {
+                    oven_sdk::InputPart::File(file) => {
+                        video_parts += usize::from(file.media_type.starts_with("video/"));
+                        false
+                    }
+                    oven_sdk::InputPart::Text(_) | oven_sdk::InputPart::Custom(_) => true,
+                });
             }
             oven_sdk::HistoryTurn::Assistant(turn) => {
-                turn.message
-                    .content
-                    .retain(|part| !matches!(part, oven_sdk::AssistantPart::File(_)));
+                turn.message.content.retain(|part| match part {
+                    oven_sdk::AssistantPart::File(file) => {
+                        video_parts += usize::from(file.media_type.starts_with("video/"));
+                        false
+                    }
+                    _ => true,
+                });
                 for part in &mut turn.message.content {
                     if let oven_sdk::AssistantPart::ToolResult(result) = part {
-                        remove_tool_content_files(&mut result.content);
+                        video_parts += remove_tool_content_files(&mut result.content);
                     }
                 }
             }
             oven_sdk::HistoryTurn::Tool(message) => {
                 for result in &mut message.results {
-                    remove_tool_content_files(&mut result.content);
+                    video_parts += remove_tool_content_files(&mut result.content);
                 }
             }
         }
     }
-    history
+    (history, video_parts)
 }
 
-fn remove_tool_content_files(content: &mut oven_sdk::ToolContent) {
+fn remove_tool_content_files(content: &mut oven_sdk::ToolContent) -> usize {
+    let mut video_parts = 0_usize;
     if let oven_sdk::ToolContent::Mixed(values) = content {
-        values.retain(|value| !matches!(value, oven_sdk::ContentValue::File(_)));
+        values.retain(|value| match value {
+            oven_sdk::ContentValue::File(file) => {
+                video_parts += usize::from(file.media_type.starts_with("video/"));
+                false
+            }
+            oven_sdk::ContentValue::Text(_) | oven_sdk::ContentValue::Json(_) => true,
+        });
     }
+    video_parts
 }
 
 #[derive(Default)]
@@ -876,7 +898,7 @@ fn estimated_request_tokens(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<u64, EngineError> {
-    Ok(estimated_tokens_for_bytes(serialized_text_request_bytes(
+    Ok(estimated_tokens_for_bytes(serialized_fit_request_bytes(
         history, tools,
     )?))
 }
@@ -1056,10 +1078,10 @@ mod tests {
 
     use super::{
         COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        TOOL_OUTPUT_ELISION_MIN_BYTES, checkpoint_covers_input, compaction_gate,
-        compaction_history, compaction_input_fits, compaction_instruction,
+        TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
+        compaction_gate, compaction_history, compaction_input_fits, compaction_instruction,
         estimated_request_tokens, native_compaction_input_budget, raw_fit_from_real_usage,
-        recent_read_candidates, resolve_compaction_trigger, serialized_text_request_bytes,
+        recent_read_candidates, resolve_compaction_trigger, serialized_fit_request_bytes,
         should_elide_tool_output, usage_reaches_compaction_trigger,
     };
     use crate::{
@@ -1185,8 +1207,8 @@ mod tests {
                 FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
             )),
         ]))];
-        let text_bytes = serialized_text_request_bytes(&text_only, &[]).unwrap();
-        let media_bytes = serialized_text_request_bytes(&with_image, &[]).unwrap();
+        let text_bytes = serialized_fit_request_bytes(&text_only, &[]).unwrap();
+        let media_bytes = serialized_fit_request_bytes(&with_image, &[]).unwrap();
         assert_eq!(media_bytes, text_bytes);
 
         let observed_tokens = (text_bytes as u64).div_ceil(4);
@@ -1205,7 +1227,7 @@ mod tests {
                 FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
             )),
         ]))];
-        let heavy_bytes = serialized_text_request_bytes(&heavy, &[]).unwrap();
+        let heavy_bytes = serialized_fit_request_bytes(&heavy, &[]).unwrap();
         assert!(
             media_estimator
                 .estimated_context_tokens(heavy_bytes)
@@ -1225,6 +1247,26 @@ mod tests {
             estimated_request_tokens(&pdf, &[]).unwrap(),
             estimated_request_tokens(&empty, &[]).unwrap()
         );
+    }
+
+    #[test]
+    fn video_uses_flat_fit_cost_and_multiple_videos_trigger() {
+        let video = || {
+            FilePart::video(
+                "video/mp4",
+                FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
+            )
+        };
+        let empty_tokens = estimated_request_tokens(&file_history(Vec::new()), &[]).unwrap();
+        let one_video_tokens = estimated_request_tokens(&file_history(vec![video()]), &[]).unwrap();
+        let two_video_tokens =
+            estimated_request_tokens(&file_history(vec![video(), video()]), &[]).unwrap();
+
+        assert_eq!(VIDEO_FILE_FIT_SURROGATE_BYTES, 160_000);
+        assert_eq!(one_video_tokens - empty_tokens, 40_000);
+        assert_eq!(two_video_tokens - empty_tokens, 80_000);
+        assert!(!usage_reaches_compaction_trigger(one_video_tokens, 50_000));
+        assert!(usage_reaches_compaction_trigger(two_video_tokens, 50_000));
     }
 
     #[test]

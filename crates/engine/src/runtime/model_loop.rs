@@ -1391,7 +1391,7 @@ impl Engine {
                     },
                 )
                 .await?;
-                let serialized_context_bytes = super::compaction::serialized_text_request_bytes(
+                let serialized_context_bytes = super::compaction::serialized_fit_request_bytes(
                     &request.history,
                     &request.tools,
                 )?;
