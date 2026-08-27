@@ -1391,10 +1391,10 @@
 <a href=#1391 id=1391 data-nosnippet>1391</a>                    },
 <a href=#1392 id=1392 data-nosnippet>1392</a>                )
 <a href=#1393 id=1393 data-nosnippet>1393</a>                .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1394 id=1394 data-nosnippet>1394</a>                <span class="kw">let </span>serialized_context_bytes =
-<a href=#1395 id=1395 data-nosnippet>1395</a>                    serde_json::to_vec(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>request.history, <span class="kw-2">&amp;</span>request.tools))
-<a href=#1396 id=1396 data-nosnippet>1396</a>                        .map_err(|error| ModelError::invalid_request(error.to_string()))<span class="question-mark">?
-<a href=#1397 id=1397 data-nosnippet>1397</a>                        </span>.len();
+<a href=#1394 id=1394 data-nosnippet>1394</a>                <span class="kw">let </span>serialized_context_bytes = <span class="kw">super</span>::compaction::serialized_text_request_bytes(
+<a href=#1395 id=1395 data-nosnippet>1395</a>                    <span class="kw-2">&amp;</span>request.history,
+<a href=#1396 id=1396 data-nosnippet>1396</a>                    <span class="kw-2">&amp;</span>request.tools,
+<a href=#1397 id=1397 data-nosnippet>1397</a>                )<span class="question-mark">?</span>;
 <a href=#1398 id=1398 data-nosnippet>1398</a>                <span class="kw">let </span>abort = AbortBridge::new(cancellation.clone());
 <a href=#1399 id=1399 data-nosnippet>1399</a>                <span class="kw">let </span>response = <span class="macro">tokio::select!</span> {
 <a href=#1400 id=1400 data-nosnippet>1400</a>                    result = model.model().stream(request, abort.signal()) =&gt; result,
