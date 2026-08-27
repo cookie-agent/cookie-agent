@@ -937,7 +937,7 @@
 <a href=#937 id=937 data-nosnippet>937</a>        .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))
 <a href=#938 id=938 data-nosnippet>938</a>}
 <a href=#939 id=939 data-nosnippet>939</a>
-<a href=#940 id=940 data-nosnippet>940</a><span class="kw">fn </span>wire_adapter(value: <span class="kw-2">&amp;</span>str) -&gt; protocol::AdaptorId {
+<a href=#940 id=940 data-nosnippet>940</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>wire_adapter(value: <span class="kw-2">&amp;</span>str) -&gt; protocol::AdaptorId {
 <a href=#941 id=941 data-nosnippet>941</a>    <span class="kw">match </span>cookie_agent_models::adapters::wire_adapter_for_protocol(value)
 <a href=#942 id=942 data-nosnippet>942</a>        .expect(<span class="string">"frozen binding contains a reviewed protocol adapter"</span>)
 <a href=#943 id=943 data-nosnippet>943</a>    {

@@ -1098,6 +1098,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Filesystem tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#media-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media reads
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1221,6 +1236,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Filesystem tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#media-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media reads
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1284,6 +1314,31 @@ before publication.</p>
 <p>Tool results may include image or PDF attachments. Attachments are validated,
 content-addressed, and supplied to models as file parts rather than embedded in
 text output.</p>
+<h3 id="media-reads">Media reads<a class="headerlink" href="#media-reads" title="Permanent link">&para;</a></h3>
+<p>When <code>read</code> targets an image (PNG, JPEG, GIF, WebP), PDF, or video container,
+the file is sniffed by content (never by extension alone), strictly validated,
+and attached to the tool result. Whether the attachment reaches the model
+depends on two checks, in order:</p>
+<ol>
+<li><strong>Model capability.</strong> The selected model must declare the matching input
+   modality in the catalog (for example <code>image</code> for <code>image/png</code>). If it does
+   not, the call fails with a tool error naming the model and the missing
+   capability.</li>
+<li><strong>Family deliverability.</strong> The provider's wire API must accept the media
+   kind inside a tool result (see the
+   <a href="../../guide/providers/#media-in-tool-results">provider matrix</a>). If it does
+   not, the call fails with a tool error naming the family.</li>
+</ol>
+<p>Both rejections are ordinary tool errors: the model sees the reason and can
+recover (for example by asking the user, or by sampling the file through
+<code>bash</code>). Size is clamped to the smaller of the model's advertised limit and
+the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB
+documents, ≈18.7 MiB raw video; other families: 20 MiB). MCP media results
+follow the same gate; gated MCP media fails the tool call rather than
+degrading to an inline note. Media parts do not contribute to
+context fit estimates, except video, which carries a flat conservative cost.
+Media attachments never survive context-pressure elision or compaction
+checkpoints; the model can re-read the file to recover.</p>
 <h2 id="bash">Bash<a class="headerlink" href="#bash" title="Permanent link">&para;</a></h2>
 <p><code>bash</code> accepts a complete <code>command</code>, an optional timeout in milliseconds, and
 <code>interactive</code> (default <code>false</code>). Interactive calls can receive bytes or EOF

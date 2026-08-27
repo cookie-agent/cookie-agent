@@ -841,6 +841,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#media-in-tool-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media in tool results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#openai-compatible-example" class="md-nav__link">
     <span class="md-ellipsis">
       OpenAI-compatible example
@@ -1396,6 +1405,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#media-in-tool-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media in tool results
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#openai-compatible-example" class="md-nav__link">
     <span class="md-ellipsis">
       OpenAI-compatible example
@@ -1866,6 +1884,64 @@ workspace precedence rule described above applies when an override is needed.</p
 </table>
 <p>Custom model IDs are <code>provider/model-id</code> strings; group into one provider under
 the <code>models</code> map.</p>
+<h3 id="media-in-tool-results">Media in tool results<a class="headerlink" href="#media-in-tool-results" title="Permanent link">&para;</a></h3>
+<p><code>read</code> and MCP tools attach media files to tool results when the model
+declares the modality and the adaptor can carry it. Per-family support:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Images</th>
+<th>PDF</th>
+<th>Video</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>anthropic</code>, <code>anthropic-compatible</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>aws-bedrock-converse</code></td>
+<td>Yes (≤3.75 MiB)</td>
+<td>Yes (≤4.5 MiB)</td>
+<td>Yes (&lt;25 MiB base64 ≈18.7 MiB raw; Nova models)</td>
+</tr>
+<tr>
+<td><code>openai-responses</code>, <code>azure-openai-responses</code></td>
+<td>Yes</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>openai-chat</code>, <code>azure-openai-chat</code>, <code>openai-compatible</code></td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>google-gemini</code>, <code>google-vertex-gemini</code></td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>cohere-v2-chat</code></td>
+<td>No</td>
+<td>No</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>Families whose tool-result channel is text-only reject attachments at request
+validation, and the tool surfaces a clean error instead of a corrupted result.
+Video-capable models served over user-turn-only APIs (for example Kimi and
+Qwen via OpenAI-compatible endpoints) are recognized as video-capable, but
+delivery currently requires a family that accepts video in tool results
+(Bedrock); user-turn delivery is planned. MCP tool results follow the same
+gate: gated media fails the tool call with the same actionable error.</p>
 <h3 id="openai-compatible-example">OpenAI-compatible example<a class="headerlink" href="#openai-compatible-example" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[providers.</span><span class="s2">"custom.acme"</span><span class="k">]</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"custom"</span>

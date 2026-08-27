@@ -693,6 +693,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#media-attachments" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media attachments
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1332,6 +1341,15 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#media-attachments" class="md-nav__link">
+    <span class="md-ellipsis">
+      Media attachments
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1445,6 +1463,15 @@ that content only for a visible call in the same session and remains subject to
 the agent's protocol <code>Read</code> permission on the <code>tool_result:&lt;uuid&gt;</code> resource, but
 it does not retroactively redact the artifact. See the
 <a href="../../reference/tools/#retained-tool-output">tool artifact lifecycle</a>.</p>
+<h3 id="media-attachments">Media attachments<a class="headerlink" href="#media-attachments" title="Permanent link">&para;</a></h3>
+<p>Media files read through <code>read</code> or returned by MCP servers are sniffed by
+content and strictly validated (full image decode with bounded memory, classic
+cross-reference PDF structure, container magic-byte checks for video) before
+bytes are retained or sent to a provider. Validation rejects malformed input,
+but it is not content screening: an image or PDF can embed adversarial text
+intended for the model (visible prompt injection). Media attachments are in the
+same trust class as file text the model already reads; apply the same judgement
+about which files an agent is pointed at.</p>
 <h2 id="process-boundary">Process boundary<a class="headerlink" href="#process-boundary" title="Permanent link">&para;</a></h2>
 <p>On Unix, Bash commands run in a new session so cancellation and timeout can kill
 the process group. On Windows, Bash commands are assigned to a Job Object before
