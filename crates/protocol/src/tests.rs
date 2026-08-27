@@ -195,12 +195,91 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 14);
+    assert_eq!(PROTOCOL_VERSION, 15);
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn video_modality_and_media_kind_round_trip_and_validate_together() {
+    assert_eq!(
+        serde_json::from_value::<Modality>(json!("video")).unwrap(),
+        Modality::Video
+    );
+    assert_eq!(
+        serde_json::to_value(Modality::Video).unwrap(),
+        json!("video")
+    );
+    assert_eq!(
+        serde_json::from_value::<MediaKind>(json!("video")).unwrap(),
+        MediaKind::Video
+    );
+    assert_eq!(
+        serde_json::to_value(MediaKind::Video).unwrap(),
+        json!("video")
+    );
+
+    let video = MediaCapability {
+        mime_types: BTreeSet::from([MimeType::new("video/mp4").unwrap()]),
+        max_bytes: 25 * 1024 * 1024,
+        max_count: 2,
+    };
+    let capabilities = ModelCapabilities {
+        input: BTreeSet::from([Modality::Text, Modality::Video]),
+        output: BTreeSet::from([Modality::Text]),
+        context_tokens: 128_000,
+        output_tokens: 8_192,
+        tool_calling: true,
+        parallel_tool_calls: true,
+        structured_output: false,
+        reasoning: true,
+        temperature: true,
+        top_p: true,
+        seed: false,
+        native_replay: ReplayCapability::Unsupported,
+        cancellation: CancellationCapability::LocalOnly,
+        media: BTreeMap::from([(MediaKind::Video, video)]),
+    };
+    assert_eq!(
+        serde_json::from_value::<ModelCapabilities>(serde_json::to_value(&capabilities).unwrap())
+            .unwrap(),
+        capabilities
+    );
+}
+
+#[test]
+fn video_modality_and_media_capability_must_match() {
+    let base = json!({
+        "input":["text","video"],
+        "output":["text"],
+        "context_tokens":128000,
+        "output_tokens":8192,
+        "tool_calling":false,
+        "parallel_tool_calls":false,
+        "structured_output":false,
+        "reasoning":false,
+        "temperature":true,
+        "top_p":true,
+        "seed":false,
+        "native_replay":"unsupported",
+        "cancellation":"local_only",
+        "media":{}
+    });
+    assert!(serde_json::from_value::<ModelCapabilities>(base.clone()).is_err());
+
+    let mut media_without_modality = base;
+    media_without_modality["input"] = json!(["text"]);
+    media_without_modality["media"] = json!({
+        "video": {
+            "mime_types":["video/mp4"],
+            "max_bytes":26214400,
+            "max_count":2
+        }
+    });
+    assert!(serde_json::from_value::<ModelCapabilities>(media_without_modality).is_err());
 }
 
 #[test]

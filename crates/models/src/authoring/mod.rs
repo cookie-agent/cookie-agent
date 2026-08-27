@@ -431,11 +431,17 @@ fn validate_capabilities(value: &ModelCapabilities) -> Result<(), AuthoringError
     {
         return Err(AuthoringError::Capabilities);
     }
-    for kind in [MediaKind::Image, MediaKind::Audio, MediaKind::Pdf] {
+    for kind in [
+        MediaKind::Image,
+        MediaKind::Audio,
+        MediaKind::Pdf,
+        MediaKind::Video,
+    ] {
         let modality = match kind {
             MediaKind::Image => Modality::Image,
             MediaKind::Audio => Modality::Audio,
             MediaKind::Pdf => Modality::Pdf,
+            MediaKind::Video => Modality::Video,
         };
         let declared = value.input.contains(&modality);
         let media = value.media.get(&kind);

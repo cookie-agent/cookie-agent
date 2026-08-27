@@ -126,7 +126,7 @@ pub use session::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
@@ -199,8 +199,8 @@ macro_rules! exact_numeric_wire_type {
 
 exact_numeric_wire_type!(
     ProtocolVersion,
-    14,
-    "14",
+    15,
+    "15",
     "The exact protocol wire version."
 );
 exact_numeric_wire_type!(

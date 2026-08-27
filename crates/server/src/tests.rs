@@ -23,8 +23,8 @@ use cookie_agent_models::{
 use cookie_agent_protocol::{
     AuthFieldName, AuthMethodId, CatalogRevision, McpAuthBeginParams, McpAuthCancelParams,
     McpConfigSource, McpServerAddParams, McpServerDefinition, McpServerEditParams,
-    McpServerNameParams, ProviderId, ProviderSetupRecipeId, RUNTIME_CHANGED_METHOD,
-    RecipeCompilerVersion, SessionListParams,
+    McpServerNameParams, PROTOCOL_VERSION, ProviderId, ProviderSetupRecipeId,
+    RUNTIME_CHANGED_METHOD, RecipeCompilerVersion, SessionListParams,
 };
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -438,10 +438,10 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
         &mut client,
         1,
         "handshake",
-        json!({ "protocol_version": 14 }),
+        json!({ "protocol_version": PROTOCOL_VERSION }),
     )
     .await;
-    assert_eq!(hello["result"]["protocol_version"], 14);
+    assert_eq!(hello["result"]["protocol_version"], PROTOCOL_VERSION);
     client
 }
 

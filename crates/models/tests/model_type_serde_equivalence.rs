@@ -16,6 +16,7 @@ fn identical_model_value_types_match_protocol_json() {
         (models::Modality::Image, protocol::Modality::Image),
         (models::Modality::Audio, protocol::Modality::Audio),
         (models::Modality::Pdf, protocol::Modality::Pdf),
+        (models::Modality::Video, protocol::Modality::Video),
     ] {
         assert_same_json(&model, &wire);
     }
@@ -23,6 +24,7 @@ fn identical_model_value_types_match_protocol_json() {
         (models::MediaKind::Image, protocol::MediaKind::Image),
         (models::MediaKind::Audio, protocol::MediaKind::Audio),
         (models::MediaKind::Pdf, protocol::MediaKind::Pdf),
+        (models::MediaKind::Video, protocol::MediaKind::Video),
     ] {
         assert_same_json(&model, &wire);
     }

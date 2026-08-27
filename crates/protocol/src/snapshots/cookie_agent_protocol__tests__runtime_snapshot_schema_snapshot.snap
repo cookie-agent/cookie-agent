@@ -489,7 +489,8 @@ expression: schema_for!(RuntimeSnapshotResult)
         "text",
         "image",
         "audio",
-        "pdf"
+        "pdf",
+        "video"
       ]
     },
     "ModelCapabilities": {
@@ -521,6 +522,9 @@ expression: schema_for!(RuntimeSnapshotResult)
               "$ref": "#/$defs/MediaCapability"
             },
             "pdf": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "video": {
               "$ref": "#/$defs/MediaCapability"
             }
           },

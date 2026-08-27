@@ -2692,6 +2692,7 @@ fn oven_capabilities(
         crate::Modality::Image => OvenModality::image(),
         crate::Modality::Audio => OvenModality::audio(),
         crate::Modality::Pdf => OvenModality::pdf(),
+        crate::Modality::Video => OvenModality::video(),
     };
     let media = value
         .media
@@ -2701,6 +2702,7 @@ fn oven_capabilities(
                 crate::MediaKind::Image => crate::Modality::Image,
                 crate::MediaKind::Audio => crate::Modality::Audio,
                 crate::MediaKind::Pdf => crate::Modality::Pdf,
+                crate::MediaKind::Video => crate::Modality::Video,
             });
             let support = MediaInputSupport::new(
                 support

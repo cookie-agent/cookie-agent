@@ -540,7 +540,8 @@
         "text",
         "image",
         "audio",
-        "pdf"
+        "pdf",
+        "video"
       ]
     },
     "ModelCapabilities": {
@@ -572,6 +573,9 @@
               "$ref": "#/$defs/MediaCapability"
             },
             "pdf": {
+              "$ref": "#/$defs/MediaCapability"
+            },
+            "video": {
               "$ref": "#/$defs/MediaCapability"
             }
           },

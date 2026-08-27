@@ -141,6 +141,7 @@ pub enum Modality {
     Image,
     Audio,
     Pdf,
+    Video,
 }
 
 #[derive(
@@ -151,6 +152,7 @@ pub enum MediaKind {
     Image,
     Audio,
     Pdf,
+    Video,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
@@ -282,6 +284,7 @@ impl ModelCapabilities {
                 MediaKind::Image => Modality::Image,
                 MediaKind::Audio => Modality::Audio,
                 MediaKind::Pdf => Modality::Pdf,
+                MediaKind::Video => Modality::Video,
             };
             if !self.input.contains(&modality)
                 || capability.mime_types.is_empty()
@@ -291,11 +294,17 @@ impl ModelCapabilities {
                 return Err(ModelSchemaError::InvalidMediaCapability);
             }
         }
-        for modality in [Modality::Image, Modality::Audio, Modality::Pdf] {
+        for modality in [
+            Modality::Image,
+            Modality::Audio,
+            Modality::Pdf,
+            Modality::Video,
+        ] {
             let kind = match modality {
                 Modality::Image => MediaKind::Image,
                 Modality::Audio => MediaKind::Audio,
                 Modality::Pdf => MediaKind::Pdf,
+                Modality::Video => MediaKind::Video,
                 Modality::Text => unreachable!(),
             };
             if self.input.contains(&modality) != self.media.contains_key(&kind) {

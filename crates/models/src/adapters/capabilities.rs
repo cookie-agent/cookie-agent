@@ -46,6 +46,7 @@ pub fn validate_capability_ceiling(
             MediaKind::Image => Modality::Image,
             MediaKind::Audio => Modality::Audio,
             MediaKind::Pdf => Modality::Pdf,
+            MediaKind::Video => Modality::Video,
         };
         if !capabilities.input.contains(&modality)
             || media.mime_types.is_empty()
@@ -64,6 +65,7 @@ pub fn validate_capability_ceiling(
                 Modality::Image => MediaKind::Image,
                 Modality::Audio => MediaKind::Audio,
                 Modality::Pdf => MediaKind::Pdf,
+                Modality::Video => MediaKind::Video,
                 Modality::Text => unreachable!(),
             };
             !capabilities.media.contains_key(&kind)
