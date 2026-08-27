@@ -2270,6 +2270,8 @@ mod tests {
     fn turn_context() -> Arc<TurnAgentContext> {
         Arc::new(TurnAgentContext {
             agent: AgentId::new("test").expect("agent ID"),
+            model: "test/model".parse().expect("model key"),
+            adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
             capabilities: ModelCapabilities {
                 input: [Modality::Text].into_iter().collect(),
                 output: [Modality::Text].into_iter().collect(),

@@ -4,6 +4,7 @@ use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use lopdf::{Document, LoadOptions, Object};
 
 use crate::ToolError;
+use cookie_agent_protocol::{AdaptorId, MediaKind as CapabilityMediaKind, ModelCapabilities};
 
 const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
 const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
@@ -22,6 +23,68 @@ const MAX_PDF_TRAILER_DEPTH: usize = 64;
 const MAX_PDF_TRAILER_TOKENS: usize = 16_384;
 const MAX_PDF_NAME_BYTES: usize = 256;
 const MAX_PDF_STRING_BYTES: usize = 8 * 1024 * 1024;
+const BEDROCK_IMAGE_BYTES: u64 = 15 * 1024 * 1024 / 4;
+const BEDROCK_PDF_BYTES: u64 = 9 * 1024 * 1024 / 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentGate {
+    Attach,
+    RejectUnsupportedModel,
+    RejectUnsupportedFamily,
+    RejectTooLarge { max_bytes: u64 },
+}
+
+#[must_use]
+pub fn gate_attachment(
+    family: AdaptorId,
+    capabilities: &ModelCapabilities,
+    mime_type: &str,
+    bytes: &[u8],
+) -> AttachmentGate {
+    let kind = if mime_type.starts_with("image/") {
+        CapabilityMediaKind::Image
+    } else if mime_type == "application/pdf" {
+        CapabilityMediaKind::Pdf
+    } else if mime_type.starts_with("audio/") {
+        CapabilityMediaKind::Audio
+    } else if mime_type.starts_with("video/") {
+        CapabilityMediaKind::Video
+    } else {
+        return AttachmentGate::RejectUnsupportedModel;
+    };
+    let Some(capability) = capabilities.media.get(&kind) else {
+        return AttachmentGate::RejectUnsupportedModel;
+    };
+    let accepted = capability.mime_types.iter().any(|accepted| {
+        if kind == CapabilityMediaKind::Video {
+            canonical_video_mime_type(accepted.as_str()) == canonical_video_mime_type(mime_type)
+        } else {
+            accepted.as_str() == mime_type
+        }
+    });
+    if !accepted {
+        return AttachmentGate::RejectUnsupportedModel;
+    }
+
+    let family_limit = match (family, kind) {
+        (AdaptorId::Anthropic, CapabilityMediaKind::Image | CapabilityMediaKind::Pdf) => {
+            MAX_ENCODED_BYTES as u64
+        }
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Image) => BEDROCK_IMAGE_BYTES,
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Pdf) => BEDROCK_PDF_BYTES,
+        (
+            AdaptorId::OpenaiResponses | AdaptorId::AzureOpenaiResponses,
+            CapabilityMediaKind::Image,
+        ) => MAX_ENCODED_BYTES as u64,
+        _ => return AttachmentGate::RejectUnsupportedFamily,
+    };
+    let max_bytes = capability.max_bytes.min(family_limit);
+    if bytes.len() as u64 > max_bytes {
+        AttachmentGate::RejectTooLarge { max_bytes }
+    } else {
+        AttachmentGate::Attach
+    }
+}
 
 pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static str>, ToolError> {
     let known_extension = known_media_extension(path);
@@ -1132,9 +1195,55 @@ fn malformed_media() -> ToolError {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{collections::BTreeMap, path::Path};
 
-    use super::{PDF_DECOMPRESSION_BUDGET_FOR_TESTS, approved_media_type, pdf_validation_stats};
+    use cookie_agent_protocol::{
+        AdaptorId, CancellationCapability, MediaCapability, MediaKind, MimeType, Modality,
+        ModelCapabilities, ReplayCapability,
+    };
+
+    use super::{
+        AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, PDF_DECOMPRESSION_BUDGET_FOR_TESTS,
+        approved_media_type, gate_attachment, pdf_validation_stats,
+    };
+
+    fn capabilities(kind: Option<(MediaKind, &str, u64)>) -> ModelCapabilities {
+        let mut media = BTreeMap::new();
+        let mut input = std::collections::BTreeSet::from([Modality::Text]);
+        if let Some((kind, mime_type, max_bytes)) = kind {
+            let modality = match kind {
+                MediaKind::Image => Modality::Image,
+                MediaKind::Audio => Modality::Audio,
+                MediaKind::Pdf => Modality::Pdf,
+                MediaKind::Video => Modality::Video,
+            };
+            input.insert(modality);
+            media.insert(
+                kind,
+                MediaCapability {
+                    mime_types: [MimeType::new(mime_type).unwrap()].into_iter().collect(),
+                    max_bytes,
+                    max_count: 1,
+                },
+            );
+        }
+        ModelCapabilities {
+            input,
+            output: [Modality::Text].into_iter().collect(),
+            context_tokens: 8_192,
+            output_tokens: 2_048,
+            tool_calling: true,
+            parallel_tool_calls: false,
+            structured_output: false,
+            reasoning: false,
+            temperature: true,
+            top_p: true,
+            seed: false,
+            native_replay: ReplayCapability::Optional,
+            cancellation: CancellationCapability::LocalOnly,
+            media,
+        }
+    }
 
     fn ftyp(brand: &[u8; 4]) -> Vec<u8> {
         let mut bytes = 16_u32.to_be_bytes().to_vec();
@@ -1149,6 +1258,91 @@ mod tests {
         let (valid, reserved) = pdf_validation_stats(b"not a PDF");
         assert!(!valid);
         assert!(reserved <= PDF_DECOMPRESSION_BUDGET_FOR_TESTS);
+    }
+
+    #[test]
+    fn attachment_gate_is_exhaustive_across_adapters_media_and_capability() {
+        let families = [
+            (AdaptorId::Anthropic, true, true),
+            (AdaptorId::OpenaiChat, false, false),
+            (AdaptorId::OpenaiResponses, true, false),
+            (AdaptorId::OpenaiCompatible, false, false),
+            (AdaptorId::GoogleGemini, false, false),
+            (AdaptorId::GoogleVertexGemini, false, false),
+            (AdaptorId::AwsBedrockConverse, true, true),
+            (AdaptorId::AzureOpenaiChat, false, false),
+            (AdaptorId::AzureOpenaiResponses, true, false),
+            (AdaptorId::CohereV2Chat, false, false),
+        ];
+        for (family, image_deliverable, pdf_deliverable) in families {
+            for (kind, mime_type, deliverable) in [
+                (MediaKind::Image, "image/png", image_deliverable),
+                (MediaKind::Pdf, "application/pdf", pdf_deliverable),
+            ] {
+                assert_eq!(
+                    gate_attachment(family, &capabilities(None), mime_type, b"media"),
+                    AttachmentGate::RejectUnsupportedModel,
+                    "{family:?} {kind:?} without capability"
+                );
+                assert_eq!(
+                    gate_attachment(
+                        family,
+                        &capabilities(Some((kind, mime_type, 20 * 1024 * 1024))),
+                        mime_type,
+                        b"media",
+                    ),
+                    if deliverable {
+                        AttachmentGate::Attach
+                    } else {
+                        AttachmentGate::RejectUnsupportedFamily
+                    },
+                    "{family:?} {kind:?} with capability"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_gate_canonicalizes_video_aliases_and_applies_size_clamps() {
+        for (advertised, observed) in [
+            ("video/mov", "video/quicktime"),
+            ("video/avi", "video/x-msvideo"),
+            ("video/mpg", "video/mpeg"),
+        ] {
+            assert_eq!(
+                gate_attachment(
+                    AdaptorId::OpenaiChat,
+                    &capabilities(Some((MediaKind::Video, advertised, 1024))),
+                    observed,
+                    b"video",
+                ),
+                AttachmentGate::RejectUnsupportedFamily
+            );
+        }
+        let image = capabilities(Some((MediaKind::Image, "image/png", u64::MAX)));
+        let pdf = capabilities(Some((MediaKind::Pdf, "application/pdf", u64::MAX)));
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::AwsBedrockConverse,
+                &image,
+                "image/png",
+                &vec![0; BEDROCK_IMAGE_BYTES as usize + 1],
+            ),
+            AttachmentGate::RejectTooLarge {
+                max_bytes: BEDROCK_IMAGE_BYTES
+            }
+        );
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::AwsBedrockConverse,
+                &pdf,
+                "application/pdf",
+                &vec![0; BEDROCK_PDF_BYTES as usize + 1],
+            ),
+            AttachmentGate::RejectTooLarge {
+                max_bytes: BEDROCK_PDF_BYTES
+            }
+        );
     }
 
     #[test]

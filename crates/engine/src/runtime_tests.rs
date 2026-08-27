@@ -823,6 +823,8 @@ async fn plugin_diagnostic_wedge_does_not_block_shutdown() {
 fn test_turn_context() -> Arc<TurnAgentContext> {
     Arc::new(TurnAgentContext {
         agent: AgentId::new("test").expect("test agent ID"),
+        model: "test/model".parse().expect("test model key"),
+        adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: BTreeSet::from([cookie_agent_protocol::Modality::Text]),
             output: BTreeSet::from([cookie_agent_protocol::Modality::Text]),

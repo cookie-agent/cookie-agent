@@ -474,6 +474,8 @@ impl Engine {
             .ok_or(EngineError::NoRunnableModel)?;
         let turn_context = Arc::new(TurnAgentContext {
             agent: active.policy.agent.agent.clone(),
+            model: binding.selection.model.clone(),
+            adapter: crate::policy::wire_adapter(binding.protocol_recipe.as_str()),
             capabilities: active
                 .policy
                 .model_capabilities(binding)

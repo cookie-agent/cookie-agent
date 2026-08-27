@@ -2,9 +2,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AgentId, ModelCapabilities, OutputStream, PersistedToolResult as ToolResult,
-    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolAttachment, ToolCallId,
-    ToolCallPresentation,
+    AdaptorId, AgentId, ModelCapabilities, ModelKey, OutputStream,
+    PersistedToolResult as ToolResult, PreparedOperationIdentity, RunId, SessionId, Sha256Digest,
+    ToolAttachment, ToolCallId, ToolCallPresentation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -131,6 +131,10 @@ pub struct StdinWrite {
 pub struct TurnAgentContext {
     /// Agent that owns the tool call.
     pub agent: AgentId,
+    /// Exact model selected for this turn.
+    pub model: ModelKey,
+    /// Frozen wire adapter family used to deliver tool results.
+    pub adapter: AdaptorId,
     /// Public capabilities of the exact model binding that produced the tool call.
     pub capabilities: ModelCapabilities,
 }

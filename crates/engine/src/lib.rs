@@ -28,7 +28,7 @@ mod usage;
 pub use cookie_agent_protocol::PersistedToolResult;
 pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
-pub use media::approved_media_type;
+pub use media::{AttachmentGate, approved_media_type, gate_attachment};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::{
     ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,

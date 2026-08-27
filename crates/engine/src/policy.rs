@@ -937,7 +937,7 @@ pub(crate) fn resolve_agent<'a>(
         .ok_or_else(|| EngineError::InvalidRuntimeAgent(id.clone()))
 }
 
-fn wire_adapter(value: &str) -> protocol::AdaptorId {
+pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
     match cookie_agent_models::adapters::wire_adapter_for_protocol(value)
         .expect("frozen binding contains a reviewed protocol adapter")
     {

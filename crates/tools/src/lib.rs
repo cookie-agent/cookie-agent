@@ -28,6 +28,8 @@ pub mod write;
 pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAgentContext> {
     std::sync::Arc::new(cookie_agent_engine::TurnAgentContext {
         agent: cookie_agent_protocol::AgentId::new("test").expect("test agent ID"),
+        model: "test/model".parse().expect("test model key"),
+        adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
         capabilities: cookie_agent_protocol::ModelCapabilities {
             input: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
             output: std::collections::BTreeSet::from([cookie_agent_protocol::Modality::Text]),
