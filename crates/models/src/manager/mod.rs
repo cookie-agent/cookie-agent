@@ -2774,6 +2774,38 @@ mod cache_strategy_tests {
         ToolDefinition, ToolMessage, UserMessage,
     };
 
+    #[test]
+    fn video_media_capability_maps_to_open_oven_modality() {
+        let capabilities = crate::ModelCapabilities {
+            input: BTreeSet::from([crate::Modality::Text, crate::Modality::Video]),
+            output: BTreeSet::from([crate::Modality::Text]),
+            context_tokens: 128_000,
+            output_tokens: 8_192,
+            tool_calling: false,
+            parallel_tool_calls: false,
+            structured_output: false,
+            reasoning: false,
+            temperature: true,
+            top_p: false,
+            seed: false,
+            compaction: crate::CompactionCapability::Unsupported,
+            native_replay: crate::ReplayCapability::Unsupported,
+            cancellation: crate::CancellationCapability::LocalOnly,
+            media: BTreeMap::from([(
+                crate::MediaKind::Video,
+                crate::MediaCapability {
+                    mime_types: BTreeSet::from([crate::MimeType::new("video/mp4").unwrap()]),
+                    max_bytes: 25 * 1024 * 1024,
+                    max_count: 2,
+                },
+            )]),
+        };
+        let oven = oven_capabilities(&capabilities, OvenAdapterFamily::OpenaiResponses).unwrap();
+
+        assert!(oven.modalities.input.contains(&OvenModality::video()));
+        assert!(oven.media.input.contains_key(&OvenModality::video()));
+    }
+
     fn resolved(prompt_caching: bool, steps: usize) -> (ResolvedExecutableModel, ScriptedModel) {
         let capabilities: OvenCapabilities = serde_json::from_value(json!({
             "features": if prompt_caching { vec!["prompt_caching"] } else { Vec::<&str>::new() },

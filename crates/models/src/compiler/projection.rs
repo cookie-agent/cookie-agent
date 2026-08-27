@@ -14,12 +14,20 @@ pub(crate) fn capabilities_from_catalog(
     model: &CatalogModelRecord,
     family: OvenAdapterFamily,
 ) -> Result<ModelCapabilities, serde_json::Error> {
+    let video_supported = matches!(
+        family,
+        OvenAdapterFamily::GoogleGemini
+            | OvenAdapterFamily::GoogleVertexGemini
+            | OvenAdapterFamily::AwsBedrockConverse
+    );
     let input = model
         .modalities
         .input
         .iter()
         .filter(|value| {
-            value.as_str() == "text" || matches!(value.as_str(), "image" | "audio" | "pdf")
+            value.as_str() == "text"
+                || matches!(value.as_str(), "image" | "audio" | "pdf")
+                || value.as_str() == "video" && video_supported
         })
         .cloned()
         .collect::<BTreeSet<_>>();
@@ -50,6 +58,26 @@ pub(crate) fn capabilities_from_catalog(
                 ["application/pdf"].as_slice(),
                 32 * 1024 * 1024_u64,
                 5_u32,
+            )),
+            "video" => Some((
+                "video",
+                [
+                    "video/mp4",
+                    "video/mpeg",
+                    "video/mpg",
+                    "video/mov",
+                    "video/quicktime",
+                    "video/avi",
+                    "video/x-msvideo",
+                    "video/x-flv",
+                    "video/webm",
+                    "video/wmv",
+                    "video/3gpp",
+                    "video/x-matroska",
+                ]
+                .as_slice(),
+                25 * 1024 * 1024_u64,
+                2_u32,
             )),
             _ => None,
         };

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cookie_agent_identity::{
     AuthFieldName, AuthMethodId, ProviderId, ProviderModelId, SetupFieldId,
@@ -121,6 +121,75 @@ fn derives_capabilities_and_reasoning_field() {
             .capabilities
             .media
             .contains_key(&cookie_agent_models::MediaKind::Pdf)
+    );
+}
+
+#[test]
+fn projects_catalog_video_input_with_consensus_limits() {
+    let mut provider = record("@ai-sdk/google", Some("https://example.com/v1"));
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .modalities
+        .input = vec!["text".into(), "image".into(), "video".into()];
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:video", &provider, None)
+        .unwrap();
+    let capabilities = &compiled.models.values().next().unwrap().capabilities;
+    assert!(
+        capabilities
+            .input
+            .contains(&cookie_agent_models::Modality::Video)
+    );
+    let video = &capabilities.media[&cookie_agent_models::MediaKind::Video];
+    assert_eq!(video.max_bytes, 25 * 1024 * 1024);
+    assert_eq!(video.max_count, 2);
+    assert_eq!(
+        video
+            .mime_types
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "video/3gpp",
+            "video/avi",
+            "video/mov",
+            "video/mp4",
+            "video/mpeg",
+            "video/mpg",
+            "video/quicktime",
+            "video/webm",
+            "video/wmv",
+            "video/x-flv",
+            "video/x-matroska",
+            "video/x-msvideo",
+        ])
+    );
+}
+
+#[test]
+fn non_video_model_behavior_fingerprint_is_stable() {
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed(
+            "sha256:test",
+            &record("@ai-sdk/openai-compatible", Some("https://example.com/v1")),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        compiled
+            .models
+            .values()
+            .next()
+            .unwrap()
+            .behavior_fingerprint
+            .as_str(),
+        "66ad8e15721c12aa5eb8db47c7b40afee8f25b043641df0de6377e44602b3cd2"
     );
 }
 
