@@ -44,10 +44,6 @@ pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
 pub(super) const REHYDRATION_MAX_FILES: usize = 5;
 pub(super) const REHYDRATION_MAX_FILE_BYTES: usize = 32 * 1024;
 pub(super) const REHYDRATION_MAX_TOTAL_BYTES: usize = 128 * 1024;
-// Provider image tokenization is resolution-based, not proportional to encoded file bytes.
-const IMAGE_FILE_SERIALIZED_SURROGATE_BYTES: usize = 6 * 1024;
-// Documents and audio can scale with content, but large containers do not scale linearly.
-const DOCUMENT_AUDIO_SERIALIZED_SURROGATE_MAX_BYTES: usize = 256 * 1024;
 
 pub(super) struct CompactionInput<'a> {
     pub(super) session: SessionId,
@@ -629,14 +625,7 @@ impl Engine {
         history: &[oven_sdk::HistoryTurn],
         tools: &[ToolDefinition],
     ) -> Result<u64, EngineError> {
-        let bytes = serialized_request_bytes(history, tools)?;
-        let (adjusted_bytes, has_media_surrogate) =
-            media_adjusted_serialized_bytes(history, bytes)?;
-        // Calibration remains based on real serialized requests; media fit checks use the
-        // explicit surrogate so a text-trained ratio cannot amplify inline byte arrays.
-        if has_media_surrogate {
-            return Ok(estimated_tokens_for_bytes(adjusted_bytes));
-        }
+        let bytes = serialized_text_request_bytes(history, tools)?;
         let calibrated = self
             .inner
             .context_token_estimators
@@ -648,7 +637,7 @@ impl Engine {
         if let Some(calibrated) = calibrated {
             return Ok(calibrated);
         }
-        Ok(estimated_tokens_for_bytes(adjusted_bytes))
+        Ok(estimated_tokens_for_bytes(bytes))
     }
 
     async fn rehydrated_files(&self, input: RehydrationInput<'_>) -> Vec<ContextRehydratedFile> {
@@ -817,104 +806,54 @@ fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bo
     })
 }
 
-fn serialized_request_bytes(
+fn serialized_text_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
+    let history = text_only_history(history);
     let mut writer = CountingWriter::default();
     serde_json::to_writer(&mut writer, &(history, tools))
         .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
     Ok(writer.bytes)
 }
 
-fn media_adjusted_serialized_bytes(
-    history: &[oven_sdk::HistoryTurn],
-    raw_bytes: usize,
-) -> Result<(usize, bool), EngineError> {
-    let mut adjusted = raw_bytes;
-    let mut substituted = false;
-    for file in request_file_parts(history) {
-        let Some(surrogate) = file_serialized_surrogate_bytes(file) else {
-            continue;
-        };
-        let mut writer = CountingWriter::default();
-        serde_json::to_writer(&mut writer, file)
-            .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-        adjusted = adjusted
-            .saturating_sub(writer.bytes)
-            .saturating_add(surrogate);
-        substituted = true;
-    }
-    Ok((adjusted, substituted))
-}
-
-fn request_file_parts(history: &[oven_sdk::HistoryTurn]) -> Vec<&oven_sdk::FilePart> {
-    let mut files = Vec::new();
-    for turn in history {
+fn text_only_history(history: &[oven_sdk::HistoryTurn]) -> Vec<oven_sdk::HistoryTurn> {
+    // Media costs are flat-ish, usually hundreds to low-thousands of tokens per part, and do not
+    // track serialized byte size. Exclude files from this fit check: real usage calibrates residual
+    // error, while overestimation can spuriously compact and drop attachments during rehydration.
+    let mut history = history.to_vec();
+    for turn in &mut history {
         match turn {
             oven_sdk::HistoryTurn::System(_) => {}
             oven_sdk::HistoryTurn::User(message) => {
-                files.extend(message.content.iter().filter_map(|part| match part {
-                    oven_sdk::InputPart::File(file) => Some(file),
-                    oven_sdk::InputPart::Text(_) | oven_sdk::InputPart::Custom(_) => None,
-                }));
+                message
+                    .content
+                    .retain(|part| !matches!(part, oven_sdk::InputPart::File(_)));
             }
             oven_sdk::HistoryTurn::Assistant(turn) => {
-                for part in &turn.message.content {
-                    match part {
-                        oven_sdk::AssistantPart::File(file) => files.push(file),
-                        oven_sdk::AssistantPart::ToolResult(result) => {
-                            append_tool_content_files(&result.content, &mut files);
-                        }
-                        oven_sdk::AssistantPart::Text(_)
-                        | oven_sdk::AssistantPart::Reasoning(_)
-                        | oven_sdk::AssistantPart::ToolCall(_)
-                        | oven_sdk::AssistantPart::Source(_)
-                        | oven_sdk::AssistantPart::ToolApproval(_)
-                        | oven_sdk::AssistantPart::Custom(_) => {}
+                turn.message
+                    .content
+                    .retain(|part| !matches!(part, oven_sdk::AssistantPart::File(_)));
+                for part in &mut turn.message.content {
+                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
+                        remove_tool_content_files(&mut result.content);
                     }
                 }
             }
             oven_sdk::HistoryTurn::Tool(message) => {
-                for result in &message.results {
-                    append_tool_content_files(&result.content, &mut files);
+                for result in &mut message.results {
+                    remove_tool_content_files(&mut result.content);
                 }
             }
         }
     }
-    files
+    history
 }
 
-fn append_tool_content_files<'a>(
-    content: &'a oven_sdk::ToolContent,
-    files: &mut Vec<&'a oven_sdk::FilePart>,
-) {
+fn remove_tool_content_files(content: &mut oven_sdk::ToolContent) {
     if let oven_sdk::ToolContent::Mixed(values) = content {
-        files.extend(values.iter().filter_map(|value| match value {
-            oven_sdk::ContentValue::File(file) => Some(file),
-            oven_sdk::ContentValue::Text(_) | oven_sdk::ContentValue::Json(_) => None,
-        }));
+        values.retain(|value| !matches!(value, oven_sdk::ContentValue::File(_)));
     }
-}
-
-fn file_serialized_surrogate_bytes(file: &oven_sdk::FilePart) -> Option<usize> {
-    if file.media_type.starts_with("image/") {
-        return Some(IMAGE_FILE_SERIALIZED_SURROGATE_BYTES);
-    }
-    if file.media_type.starts_with("audio/")
-        || file.media_type == "application/pdf"
-        || file.media_type.ends_with("+pdf")
-    {
-        let payload_bytes = match &file.source {
-            oven_sdk::FileSource::Bytes(value) => value.len(),
-            oven_sdk::FileSource::Text(value) => value.len(),
-            oven_sdk::FileSource::Url(_) | oven_sdk::FileSource::ProviderReference { .. } => {
-                DOCUMENT_AUDIO_SERIALIZED_SURROGATE_MAX_BYTES
-            }
-        };
-        return Some(payload_bytes.min(DOCUMENT_AUDIO_SERIALIZED_SURROGATE_MAX_BYTES));
-    }
-    None
 }
 
 #[derive(Default)]
@@ -937,9 +876,9 @@ fn estimated_request_tokens(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<u64, EngineError> {
-    let raw_bytes = serialized_request_bytes(history, tools)?;
-    let (adjusted_bytes, _) = media_adjusted_serialized_bytes(history, raw_bytes)?;
-    Ok(estimated_tokens_for_bytes(adjusted_bytes))
+    Ok(estimated_tokens_for_bytes(serialized_text_request_bytes(
+        history, tools,
+    )?))
 }
 
 fn estimated_tokens_for_bytes(bytes: usize) -> u64 {
@@ -1117,7 +1056,6 @@ mod tests {
 
     use super::{
         COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        DOCUMENT_AUDIO_SERIALIZED_SURROGATE_MAX_BYTES, IMAGE_FILE_SERIALIZED_SURROGATE_BYTES,
         TOOL_OUTPUT_ELISION_MIN_BYTES, checkpoint_covers_input, compaction_gate,
         compaction_history, compaction_input_fits, compaction_instruction,
         estimated_request_tokens, native_compaction_input_budget, raw_fit_from_real_usage,
@@ -1184,23 +1122,24 @@ mod tests {
     }
 
     #[test]
-    fn one_megabyte_image_uses_a_few_thousand_token_surrogate() {
-        let history = file_history(vec![FilePart::image(
+    fn one_megabyte_image_contributes_zero_to_fit_estimate() {
+        let media = file_history(vec![FilePart::image(
             "image/png",
             FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
         )]);
-        let tokens = estimated_request_tokens(&history, &[]).unwrap();
+        let empty = file_history(Vec::new());
 
-        assert_eq!(IMAGE_FILE_SERIALIZED_SURROGATE_BYTES, 6 * 1024);
-        assert!(
-            (1_000..10_000).contains(&tokens),
-            "estimated {tokens} tokens"
+        assert_eq!(
+            estimated_request_tokens(&media, &[]).unwrap(),
+            estimated_request_tokens(&empty, &[]).unwrap()
         );
     }
 
     #[test]
     fn several_images_do_not_trigger_but_text_heavy_history_still_does() {
-        let images = file_history(
+        let text = TextPart::new("small text-only context");
+        let mut media_parts = vec![InputPart::Text(text.clone())];
+        media_parts.extend(
             (0..3)
                 .map(|_| {
                     FilePart::image(
@@ -1208,22 +1147,23 @@ mod tests {
                         FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
                     )
                 })
-                .collect(),
+                .map(InputPart::File),
         );
-        let equivalent_text = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
-            TextPart::new("x".repeat(3 * IMAGE_FILE_SERIALIZED_SURROGATE_BYTES)),
+        let images = vec![HistoryTurn::user(UserMessage::new(media_parts))];
+        let text_only = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+            text,
         )]))];
         let text_heavy = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
             TextPart::new("x".repeat(128 * 1024)),
         )]))];
         let trigger = 10_000;
 
+        assert_eq!(
+            estimated_request_tokens(&images, &[]).unwrap(),
+            estimated_request_tokens(&text_only, &[]).unwrap()
+        );
         assert!(!usage_reaches_compaction_trigger(
             estimated_request_tokens(&images, &[]).unwrap(),
-            trigger
-        ));
-        assert!(!usage_reaches_compaction_trigger(
-            estimated_request_tokens(&equivalent_text, &[]).unwrap(),
             trigger
         ));
         assert!(usage_reaches_compaction_trigger(
@@ -1233,23 +1173,17 @@ mod tests {
     }
 
     #[test]
-    fn pdf_serialized_surrogate_is_bounded() {
-        let estimate = |size| {
-            estimated_request_tokens(
-                &file_history(vec![FilePart::document(
-                    "application/pdf",
-                    FileSource::Bytes(bytes::Bytes::from(vec![0_u8; size])),
-                )]),
-                &[],
-            )
-            .unwrap()
-        };
-        let one_megabyte = estimate(1024 * 1024);
-        let two_megabytes = estimate(2 * 1024 * 1024);
+    fn large_pdf_contributes_zero_to_fit_estimate() {
+        let pdf = file_history(vec![FilePart::document(
+            "application/pdf",
+            FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 2 * 1024 * 1024])),
+        )]);
+        let empty = file_history(Vec::new());
 
-        assert_eq!(DOCUMENT_AUDIO_SERIALIZED_SURROGATE_MAX_BYTES, 256 * 1024);
-        assert!(one_megabyte < 70_000, "estimated {one_megabyte} tokens");
-        assert_eq!(one_megabyte, two_megabytes);
+        assert_eq!(
+            estimated_request_tokens(&pdf, &[]).unwrap(),
+            estimated_request_tokens(&empty, &[]).unwrap()
+        );
     }
 
     #[test]
