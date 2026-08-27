@@ -2686,7 +2686,12 @@ fn map_tool_result(
                         attachments.push(attachment);
                         output.push("[MCP image attachment]".into());
                     }
-                    Err(error) => output.push(format!("[Invalid MCP image content: {error}]")),
+                    Err(McpAttachmentError::Invalid(error)) => {
+                        output.push(format!("[Invalid MCP image content: {error}]"));
+                    }
+                    Err(McpAttachmentError::Gated(error)) => {
+                        return Err(ToolError::Failed(error));
+                    }
                 }
             }
             ContentBlock::Audio(audio) => {
@@ -2695,7 +2700,12 @@ fn map_tool_result(
                         attachments.push(attachment);
                         output.push("[MCP audio attachment]".into());
                     }
-                    Err(error) => output.push(format!("[Invalid MCP audio content: {error}]")),
+                    Err(McpAttachmentError::Invalid(error)) => {
+                        output.push(format!("[Invalid MCP audio content: {error}]"));
+                    }
+                    Err(McpAttachmentError::Gated(error)) => {
+                        return Err(ToolError::Failed(error));
+                    }
                 }
             }
             ContentBlock::Resource(resource) => match resource.resource {
@@ -2717,9 +2727,12 @@ fn map_tool_result(
                             attachments.push(attachment);
                             output.push(format!("[MCP embedded resource attachment: {uri}]"));
                         }
-                        Err(error) => output.push(format!(
+                        Err(McpAttachmentError::Invalid(error)) => output.push(format!(
                             "[MCP embedded resource unavailable: {uri}: {error}]"
                         )),
+                        Err(McpAttachmentError::Gated(error)) => {
+                            return Err(ToolError::Failed(error));
+                        }
                     }
                 }
                 _ => output.push("[Unsupported MCP embedded resource]".into()),
@@ -2746,16 +2759,24 @@ fn map_tool_result(
     })
 }
 
+#[derive(Debug)]
+enum McpAttachmentError {
+    /// Malformed or undecodable content; reported inline, the call still succeeds.
+    Invalid(String),
+    /// Rejected by the media gate; fails the tool result like `read` does.
+    Gated(String),
+}
+
 fn retain_base64_attachment(
     context: &ToolExecutionContext,
     mime_type: String,
     data: &str,
-) -> Result<ToolAttachment, String> {
+) -> Result<ToolAttachment, McpAttachmentError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
     if let Some(mime) = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?
     {
         let gate = crate::media::gate_attachment(
             context.turn_context.adapter,
@@ -2769,12 +2790,12 @@ fn retain_base64_attachment(
             &context.turn_context.model,
             context.turn_context.adapter,
         ) {
-            return Err(error);
+            return Err(McpAttachmentError::Gated(error));
         }
     }
     context
         .retain_attachment(mime_type, None, &bytes)
-        .map_err(|error| error.to_string())
+        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))
 }
 
 fn sanitize_name(value: &str) -> String {
@@ -3102,8 +3123,8 @@ for line in sys.stdin:
         )
         .expect_err("incapable model must reject");
         assert!(
-            rejected.contains("does not accept image inputs"),
-            "unexpected error: {rejected}"
+            matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("does not accept image inputs")),
+            "unexpected error: {rejected:?}"
         );
 
         super::retain_base64_attachment(
@@ -3120,8 +3141,8 @@ for line in sys.stdin:
         )
         .expect_err("undeliverable family must reject");
         assert!(
-            rejected.contains("not deliverable in tool results"),
-            "unexpected error: {rejected}"
+            matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("not deliverable in tool results")),
+            "unexpected error: {rejected:?}"
         );
     }
 

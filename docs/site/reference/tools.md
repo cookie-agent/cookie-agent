@@ -38,8 +38,10 @@ depends on two checks, in order:
 Both rejections are ordinary tool errors: the model sees the reason and can
 recover (for example by asking the user, or by sampling the file through
 `bash`). Size is clamped to the smaller of the model's advertised limit and
-the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB documents,
-25 MiB video; other families: 20 MiB). Media parts do not contribute to
+the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB
+documents, 18.75 MiB raw video; other families: 20 MiB). MCP media results
+follow the same gate; gated MCP media fails the tool call rather than
+degrading to an inline note. Media parts do not contribute to
 context fit estimates, except video, which carries a flat conservative cost.
 Media attachments never survive context-pressure elision or compaction
 checkpoints; the model can re-read the file to recover.

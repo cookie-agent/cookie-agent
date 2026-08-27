@@ -27,6 +27,8 @@ const MAX_PDF_NAME_BYTES: usize = 256;
 const MAX_PDF_STRING_BYTES: usize = 8 * 1024 * 1024;
 const BEDROCK_IMAGE_BYTES: u64 = 15 * 1024 * 1024 / 4;
 const BEDROCK_PDF_BYTES: u64 = 9 * 1024 * 1024 / 2;
+/// Bedrock limits inline video base64 below 25 MiB, so raw bytes cap at three quarters.
+const BEDROCK_VIDEO_BYTES: u64 = 75 * 1024 * 1024 / 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentGate {
@@ -110,6 +112,11 @@ pub fn gate_attachment(
     if !accepted {
         return AttachmentGate::RejectUnsupportedModel;
     }
+    if bytes.len() as u64 > capability.max_bytes {
+        return AttachmentGate::RejectTooLarge {
+            max_bytes: capability.max_bytes,
+        };
+    }
 
     let family_limit = match (family, kind) {
         (AdaptorId::Anthropic, CapabilityMediaKind::Image | CapabilityMediaKind::Pdf) => {
@@ -117,6 +124,7 @@ pub fn gate_attachment(
         }
         (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Image) => BEDROCK_IMAGE_BYTES,
         (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Pdf) => BEDROCK_PDF_BYTES,
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Video) => BEDROCK_VIDEO_BYTES,
         (
             AdaptorId::OpenaiResponses | AdaptorId::AzureOpenaiResponses,
             CapabilityMediaKind::Image,
@@ -1399,6 +1407,38 @@ mod tests {
             )
             .unwrap(),
             "Cannot attach image/png: exceeds the 3.75 MiB inline limit for this provider"
+        );
+    }
+
+    #[test]
+    fn bedrock_video_attaches_within_the_raw_byte_budget() {
+        let video = capabilities(Some((MediaKind::Video, "video/mp4", u64::MAX)));
+        assert_eq!(
+            gate_attachment(AdaptorId::AwsBedrockConverse, &video, "video/mp4", b"video",),
+            AttachmentGate::Attach
+        );
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::AwsBedrockConverse,
+                &video,
+                "video/mp4",
+                &vec![0; super::BEDROCK_VIDEO_BYTES as usize + 1],
+            ),
+            AttachmentGate::RejectTooLarge {
+                max_bytes: super::BEDROCK_VIDEO_BYTES
+            }
+        );
+        // Catalog size precedes family deliverability: an attachment that exceeds
+        // the model's advertised limit reports the size, not the family.
+        let small_cap = capabilities(Some((MediaKind::Pdf, "application/pdf", 8)));
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::OpenaiChat,
+                &small_cap,
+                "application/pdf",
+                &[0; 16],
+            ),
+            AttachmentGate::RejectTooLarge { max_bytes: 8 }
         );
     }
 

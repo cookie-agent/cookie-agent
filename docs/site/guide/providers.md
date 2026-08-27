@@ -212,8 +212,7 @@ declares the modality and the adaptor can carry it. Per-family support:
 | Family | Images | PDF | Video |
 |---|---|---|---|
 | `anthropic`, `anthropic-compatible` | Yes | Yes | No |
-| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (≤25 MiB; Nova models) |
-| Open Responses (`open-responses`) | Yes | Yes | No |
+| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (≤18.75 MiB raw; Nova models) |
 | `openai-responses`, `azure-openai-responses` | Yes | No | No |
 | `openai-chat`, `azure-openai-chat`, `openai-compatible` | No | No | No |
 | `google-gemini`, `google-vertex-gemini` | No | No | No |
@@ -224,7 +223,8 @@ validation, and the tool surfaces a clean error instead of a corrupted result.
 Video-capable models served over user-turn-only APIs (for example Kimi and
 Qwen via OpenAI-compatible endpoints) are recognized as video-capable, but
 delivery currently requires a family that accepts video in tool results
-(Bedrock); user-turn delivery is planned.
+(Bedrock); user-turn delivery is planned. MCP tool results follow the same
+gate: gated media fails the tool call with the same actionable error.
 
 ### OpenAI-compatible example
 
