@@ -1882,7 +1882,10 @@ section, so one fallback chain may mix provider families.</p>
 <a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>
 <a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="k">[prompt_caching.openai]</span>
 <a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">prompt_cache_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"cookie-${session_id}"</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">prompt_cache_retention</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"24h"</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"implicit"</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">ttl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"30m"</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </code></pre></div>
 <p>Anthropic <code>system</code> and <code>tools</code> accept <code>"one_hour"</code>, <code>"five_minutes"</code>, or
 <code>"off"</code>; <code>rolling</code> accepts <code>"five_minutes"</code> or <code>"off"</code>. Marker order is tools,
@@ -1914,12 +1917,27 @@ documented minimum or maximum.</p>
 exposed <code>prompt_cache_retention</code> values, <code>"in_memory"</code> and <code>"24h"</code>, apply to
 models before GPT-5.6 and are deprecated on GPT-5.6 and later. GPT-5.6+ uses
 breakpoint-based caching and <code>prompt_cache_options.ttl = "30m"</code> (currently the
-only TTL value). Cookie agent does not yet expose <code>prompt_cache_options</code> or
-content-block <code>prompt_cache_breakpoint</code> controls, so GPT-5.6+ breakpoint and TTL
-selection is a known limitation. Earlier models cache qualifying prefixes
-automatically; GPT-5.6+ uses implicit or explicit breakpoints. The documented
-minimum cacheable prefix is 1,024 visible input tokens for GPT-5.6+ and 2,048 for
-older models.</p>
+only TTL value). Cookie agent exposes these controls as <code>mode</code>, <code>ttl</code>, <code>system</code>,
+and <code>rolling</code>. Using any of those four fields enables GPT-5.6 controls; omitted
+<code>mode</code> and <code>ttl</code> then default to <code>"implicit"</code> and <code>"30m"</code>. A section containing
+only <code>prompt_cache_key</code> or <code>prompt_cache_retention</code> remains on the pre-5.6 path
+and does not emit <code>prompt_cache_options</code>.</p>
+<p><code>mode = "implicit"</code> retains the provider-managed latest-message breakpoint and
+allows Cookie agent's explicit markers. <code>mode = "explicit"</code> disables that
+provider-managed breakpoint; with both placement fields false, it therefore
+writes no cache. <code>system = true</code> marks the last non-empty text part of the first
+turn, but only when the first turn itself is a system turn; an ineligible first
+turn is skipped without searching later system turns. <code>rolling = true</code> considers
+only the latest user turn and marks its last non-empty text part. If that turn is
+empty or file-only, placement is skipped without falling back to an earlier user
+turn. Rolling deliberately skips files, assistant history, and tool results; the
+provider rejects markers on assistant and tool-result content. There is no
+<code>tools</code> placement because the SDK does not expose markers on tool definitions.
+Existing caller markers are preserved, and the SDK rejects requests exceeding
+the provider's four-write aggregate limit as invalid requests.</p>
+<p>Earlier models cache qualifying prefixes automatically; GPT-5.6+ uses implicit
+or explicit breakpoints. The documented minimum cacheable prefix is 1,024
+visible input tokens for GPT-5.6+ and 2,048 for older models.</p>
 <p>OpenAI cache pricing is model- and tier-dependent. GPT-5.6+ currently charges
 cache reads at 0.1 times uncached input and cache writes at 1.25 times; earlier
 models have model-tier-dependent cached-input discounts, including 90%, 75%, and

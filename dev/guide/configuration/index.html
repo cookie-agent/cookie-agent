@@ -784,6 +784,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prompt caching
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agent-documents" class="md-nav__link">
     <span class="md-ellipsis">
       Agent documents
@@ -1287,6 +1296,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prompt caching
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agent-documents" class="md-nav__link">
     <span class="md-ellipsis">
       Agent documents
@@ -1447,26 +1465,48 @@ offending path.</p>
 </code></pre></div>
 <p>Prefer interpolation or <code>/connect</code> over plaintext credentials, and never commit
 <code>.env</code> or a credential-bearing config.</p>
+<h2 id="prompt-caching">Prompt caching<a class="headerlink" href="#prompt-caching" title="Permanent link">&para;</a></h2>
+<p>Runtime prompt-cache policy is provider-specific. This GPT-5.6+ example keeps
+OpenAI's implicit breakpoint and adds stable system and latest-user boundaries:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[prompt_caching.openai]</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">prompt_cache_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"workspace-${session_id}"</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"implicit"</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">ttl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"30m"</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</code></pre></div>
+<p>Use <code>mode = "explicit"</code> when only the selected <code>system</code> and <code>rolling</code> boundaries
+should write. OpenAI and Azure OpenAI do not support a Cookie agent <code>tools</code>
+placement because provider breakpoints attach to content parts, not tool
+definitions. See the <a href="../../reference/configuration/#prompt_caching">configuration reference</a>
+for legacy retention, placement, and provider-specific rules.</p>
 <h2 id="agent-documents">Agent documents<a class="headerlink" href="#agent-documents" title="Permanent link">&para;</a></h2>
 <p>Agents are Markdown files whose filename is the agent ID. Each file has strict
 YAML frontmatter and a nonempty Markdown body used as the system prompt:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>---
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>description: Reviews changes for correctness
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>mode: subagent
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>enabled: true
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>models:
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: "openai/gpt-5", variant: null }
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>limits:
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>  max_output_tokens: 2048
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>permissions:
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>  read: allow
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>  write: deny
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>  bash:
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    "git diff*": allow
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    "*": ask
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="gu">  delegate: deny</span>
-<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="gu">---</span>
-<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>Review the requested change and report concrete findings.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>---
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>description: Reviews changes for correctness
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>mode: subagent
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>enabled: true
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>models:
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>model: "openai/gpt-5.6"
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    variant: null
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    cache:
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>      openai:
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>        mode: explicit
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>        ttl: 30m
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>        system: true
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>        rolling: true
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>limits:
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>  max_output_tokens: 2048
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>permissions:
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>  read: allow
+<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>  write: deny
+<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>  bash:
+<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    "git diff*": allow
+<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>    "*": ask
+<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="gu">  delegate: deny</span>
+<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a><span class="gu">---</span>
+<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>Review the requested change and report concrete findings.
 </code></pre></div>
 <p>Modes are <code>primary</code>, <code>subagent</code>, <code>all</code>, and <code>internal</code>. Internal agents are
 engine-only and cannot be selected as roots or delegation targets. The reserved
@@ -1480,8 +1520,8 @@ internal agents.</p>
 config: there is no workspace layer and no environment-variable override. A
 missing file uses defaults; unknown keys or malformed values are rejected naming
 the path and key.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"warning"</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"auto"</span><span class="w">                    </span><span class="c1"># auto | default | dark | mono | high-contrast</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">minimum_event_level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"warning"</span><span class="w">   </span><span class="c1"># debug | info | warning | error</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">theme</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"auto"</span><span class="w">                    </span><span class="c1"># auto | default | dark | mono | high-contrast</span>
 </code></pre></div>
 <p><code>theme</code> takes precedence over <code>COOKIE_THEME</code> and terminal detection, but
 leaving it unset is equivalent to <code>"auto"</code>. Automatic selection queries the
