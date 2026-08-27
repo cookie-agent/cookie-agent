@@ -171,7 +171,10 @@ cached_content = "cachedContents/example"
 
 [prompt_caching.openai]
 prompt_cache_key = "cookie-${session_id}"
-prompt_cache_retention = "24h"
+mode = "implicit"
+ttl = "30m"
+system = true
+rolling = true
 ```
 
 Anthropic `system` and `tools` accept `"one_hour"`, `"five_minutes"`, or
@@ -207,12 +210,26 @@ OpenAI and Azure OpenAI accept an optional `prompt_cache_key`; it may contain
 exposed `prompt_cache_retention` values, `"in_memory"` and `"24h"`, apply to
 models before GPT-5.6 and are deprecated on GPT-5.6 and later. GPT-5.6+ uses
 breakpoint-based caching and `prompt_cache_options.ttl = "30m"` (currently the
-only TTL value). Cookie agent does not yet expose `prompt_cache_options` or
-content-block `prompt_cache_breakpoint` controls, so GPT-5.6+ breakpoint and TTL
-selection is a known limitation. Earlier models cache qualifying prefixes
-automatically; GPT-5.6+ uses implicit or explicit breakpoints. The documented
-minimum cacheable prefix is 1,024 visible input tokens for GPT-5.6+ and 2,048 for
-older models.
+only TTL value). Cookie agent exposes these controls as `mode`, `ttl`, `system`,
+and `rolling`. Using any of those four fields enables GPT-5.6 controls; omitted
+`mode` and `ttl` then default to `"implicit"` and `"30m"`. A section containing
+only `prompt_cache_key` or `prompt_cache_retention` remains on the pre-5.6 path
+and does not emit `prompt_cache_options`.
+
+`mode = "implicit"` retains the provider-managed latest-message breakpoint and
+allows Cookie agent's explicit markers. `mode = "explicit"` disables that
+provider-managed breakpoint; with both placement fields false, it therefore
+writes no cache. `system = true` marks the last non-empty text part of the first
+system turn. `rolling = true` marks the last non-empty text part of the latest
+user turn. Rolling deliberately skips files, assistant history, and tool results;
+the provider rejects markers on assistant and tool-result content. There is no
+`tools` placement because the SDK does not expose markers on tool definitions.
+Existing caller markers are preserved, and the SDK rejects requests exceeding
+the provider's four-write aggregate limit as invalid requests.
+
+Earlier models cache qualifying prefixes automatically; GPT-5.6+ uses implicit
+or explicit breakpoints. The documented minimum cacheable prefix is 1,024
+visible input tokens for GPT-5.6+ and 2,048 for older models.
 
 OpenAI cache pricing is model- and tier-dependent. GPT-5.6+ currently charges
 cache reads at 0.1 times uncached input and cache writes at 1.25 times; earlier

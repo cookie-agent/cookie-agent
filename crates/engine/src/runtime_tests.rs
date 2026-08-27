@@ -3248,6 +3248,59 @@ fn authored_cache_strategy_for_unsupported_family_fails_policy_freeze() {
 }
 
 #[test]
+fn fifth_openai_cache_write_surfaces_as_engine_invalid_request() {
+    let primary = "---\ndescription: Cache overflow owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable owner prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-chat",
+        );
+    let policy = frozen_root_policy(&fixture, &selection);
+    let binding = policy.selected_suffix.first().unwrap();
+    let model = crate::policy::resolve_model(binding, &policy.runtime).unwrap();
+    let marked = (0..4)
+        .map(|index| {
+            oven_sdk::InputPart::Text(
+                oven_sdk_openai::OpenAiPromptCacheBreakpointExt::with_openai_prompt_cache_breakpoint(
+                    oven_sdk::TextPart::new(format!("marked-{index}")),
+                ),
+            )
+        })
+        .collect();
+    let request = oven_sdk::Request::new(vec![
+        oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
+            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new("system breakpoint")),
+        ])),
+        oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(marked)),
+    ]);
+    let strategy = cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(
+        cookie_agent_models::adapters::OpenAiCacheStrategyConfig {
+            prompt_cache_key: Some("overflow".into()),
+            prompt_cache_retention: None,
+            mode: Some(cookie_agent_models::adapters::OpenAiCacheMode::Explicit),
+            ttl: Some(cookie_agent_models::adapters::OpenAiPromptCacheTtl::ThirtyMinutes),
+            system: true,
+            rolling: false,
+        },
+    );
+    let prepared = model.prepare_request_with_cache_strategy(request, Some(&strategy));
+    let error = model.model().validate_request(&prepared).unwrap_err();
+    let EngineError::Model(error) = EngineError::from(error) else {
+        panic!("engine model error");
+    };
+    assert_eq!(error.kind, oven_sdk::ModelErrorKind::InvalidRequest);
+    assert!(error.message.contains("at most four"));
+}
+
+#[test]
 fn model_capabilities_follow_the_exact_fallback_binding() {
     let fixture = synthetic_default_fixture(None);
     let descriptor = fixture

@@ -995,6 +995,8 @@ mod cache_strategy_tests {
             openai: Some(cookie_agent_config::OpenAiCacheConfig {
                 prompt_cache_key: Some("mixed-${session_id}".into()),
                 prompt_cache_retention: None,
+                ttl: Some(cookie_agent_config::OpenAiPromptCacheTtl::ThirtyMinutes),
+                system: true,
                 ..Default::default()
             }),
         };
@@ -1030,10 +1032,15 @@ mod cache_strategy_tests {
             .unwrap(),
             Some(CacheStrategyConfig::Google(_))
         ));
-        assert!(matches!(
-            resolve_cache_strategy(None, &binding("oven.openai.responses"), &runtime).unwrap(),
-            Some(CacheStrategyConfig::OpenAi(_))
-        ));
+        let Some(CacheStrategyConfig::OpenAi(openai)) =
+            resolve_cache_strategy(None, &binding("oven.openai.responses"), &runtime).unwrap()
+        else {
+            panic!("OpenAI cache strategy");
+        };
+        assert_eq!(openai.mode, Some(OpenAiCacheMode::Implicit));
+        assert_eq!(openai.ttl, Some(OpenAiPromptCacheTtl::ThirtyMinutes));
+        assert!(openai.system);
+        assert!(!openai.rolling);
         assert!(
             resolve_cache_strategy(None, &binding("oven.openai-compatible.chat"), &runtime)
                 .unwrap()

@@ -2765,6 +2765,7 @@ fn prepared_retained(
 #[cfg(test)]
 mod cache_strategy_tests {
     use super::*;
+    use crate::adapters::oven::{AdapterConfig, AuthConfig, CommonDefaults, ConcreteModel};
     use crate::adapters::{
         BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
         GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
@@ -3084,6 +3085,272 @@ mod cache_strategy_tests {
                     .and_then(Value::as_bool),
                 Some(true)
             );
+        }
+    }
+
+    fn real_openai_resolved(
+        adapter: OvenAdapterFamily,
+        endpoint: String,
+    ) -> ResolvedExecutableModel {
+        let capabilities = resolved(false, 0).0.model().capabilities().clone();
+        if matches!(
+            adapter,
+            OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
+        ) {
+            let provider = oven_sdk::ProviderConfig::new(
+                OvenProviderId::new(oven_sdk_azure::AZURE_OPENAI_PROVIDER_ID),
+                oven_sdk::ApiEndpoint::parse(endpoint).unwrap(),
+                oven_sdk_azure::AzureOpenAiAuth::ApiKey(oven_sdk::SecretString::new("test-key")),
+                oven_sdk::HeaderConfig::empty(),
+            )
+            .unwrap();
+            let declaration =
+                oven_sdk::ModelDeclaration::new(ModelId::new("gpt-5.6-test"), capabilities)
+                    .unwrap();
+            let model: Arc<dyn LanguageModel> = match adapter {
+                OvenAdapterFamily::AzureOpenaiChat => Arc::new(
+                    oven_sdk_azure::AzureOpenAiChatModel::new(oven_sdk::ModelConfig::new(
+                        provider,
+                        declaration,
+                        oven_sdk_azure::AzureOpenAiChatSettings::default(),
+                    ))
+                    .unwrap(),
+                ),
+                OvenAdapterFamily::AzureOpenaiResponses => Arc::new(
+                    oven_sdk_azure::AzureOpenAiResponsesModel::new(oven_sdk::ModelConfig::new(
+                        provider,
+                        declaration,
+                        oven_sdk_azure::AzureOpenAiResponsesSettings::default(),
+                    ))
+                    .unwrap(),
+                ),
+                _ => unreachable!("Azure family checked"),
+            };
+            return ResolvedExecutableModel {
+                selection: ModelSelection {
+                    model: "test/group/model".parse().unwrap(),
+                    variant: None,
+                },
+                model,
+                adapter,
+                defaults: crate::ResolvedRequestDefaults::default(),
+                provider_options: BTreeMap::new(),
+                behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
+            };
+        }
+        let adapter_config: AdapterConfig = serde_json::from_value(match adapter {
+            OvenAdapterFamily::OpenaiChat => json!({
+                "adaptor":"openai-chat",
+                "settings":{
+                    "system_message_role":"developer",
+                    "max_tokens_field":"max_tokens",
+                    "stream_usage":false,
+                    "structured_output":"unsupported",
+                    "reasoning_field":"none",
+                    "routing_discriminator":null
+                },
+                "options":{}
+            }),
+            OvenAdapterFamily::OpenaiResponses => json!({
+                "adaptor":"openai-responses",
+                "settings":{"routing_discriminator":null,"compaction":"unsupported"},
+                "options":{}
+            }),
+            OvenAdapterFamily::AzureOpenaiChat => json!({
+                "adaptor":"azure-chat",
+                "settings":{
+                    "route":{"kind":"v1"},
+                    "revision":null,
+                    "system_role":"developer",
+                    "max_tokens_field":"max_tokens",
+                    "stream_usage":false,
+                    "structured_output":"unsupported",
+                    "reasoning_field":"none",
+                    "omit_reasoning_sampling":false
+                },
+                "options":{}
+            }),
+            OvenAdapterFamily::AzureOpenaiResponses => json!({
+                "adaptor":"azure-responses",
+                "settings":{
+                    "route":{"kind":"v1"},
+                    "revision":null,
+                    "compaction":{"kind":"unsupported"}
+                },
+                "options":{}
+            }),
+            _ => panic!("OpenAI endpoint family"),
+        })
+        .unwrap();
+        let constructed = ConcreteModel {
+            provider_id: if matches!(
+                adapter,
+                OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
+            ) {
+                "azure.openai".into()
+            } else {
+                "openai".into()
+            },
+            model_id: "gpt-5.6-test".into(),
+            endpoint,
+            auth: if matches!(
+                adapter,
+                OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
+            ) {
+                AuthConfig::ApiKey {
+                    value: "test-key".into(),
+                }
+            } else {
+                AuthConfig::Openai {
+                    api_key: "test-key".into(),
+                    organization: None,
+                    project: None,
+                }
+            },
+            headers: BTreeMap::new(),
+            capabilities,
+            defaults: CommonDefaults::default(),
+            adapter: adapter_config,
+        }
+        .build()
+        .unwrap();
+        ResolvedExecutableModel {
+            selection: ModelSelection {
+                model: "test/group/model".parse().unwrap(),
+                variant: None,
+            },
+            model: constructed.model,
+            adapter,
+            defaults: crate::ResolvedRequestDefaults::default(),
+            provider_options: constructed.provider_options,
+            behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
+        }
+    }
+
+    async fn wire_capture_server(
+        responses: bool,
+    ) -> (String, tokio::task::JoinHandle<serde_json::Value>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (body_start, content_length) = loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|value| value == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .map(str::to_owned)
+                    })
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                break (header_end + 4, content_length);
+            };
+            while request.len() < body_start + content_length {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body = serde_json::from_slice(
+                &request[body_start..body_start.saturating_add(content_length)],
+            )
+            .unwrap();
+            let stream = if responses {
+                concat!(
+                    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.6-test\"}}\n\n",
+                    "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+                    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"ok\"}\n\n",
+                    "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}}\n\n",
+                    "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.6-test\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+                )
+            } else {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{stream}",
+                stream.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            body
+        });
+        (format!("http://{address}/v1"), task)
+    }
+
+    fn wire_breakpoint_count(value: &Value) -> usize {
+        match value {
+            Value::Object(object) => {
+                usize::from(object.contains_key("prompt_cache_breakpoint"))
+                    + object.values().map(wire_breakpoint_count).sum::<usize>()
+            }
+            Value::Array(values) => values.iter().map(wire_breakpoint_count).sum(),
+            _ => 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_cache_controls_reach_all_four_provider_wires() {
+        let strategy = CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: Some("wire-key".into()),
+            prompt_cache_retention: Some(OpenAiPromptCacheRetention::TwentyFourHours),
+            mode: Some(OpenAiCacheMode::Explicit),
+            ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+            system: true,
+            rolling: true,
+        });
+        for adapter in [
+            OvenAdapterFamily::OpenaiChat,
+            OvenAdapterFamily::OpenaiResponses,
+            OvenAdapterFamily::AzureOpenaiChat,
+            OvenAdapterFamily::AzureOpenaiResponses,
+        ] {
+            let responses = matches!(
+                adapter,
+                OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+            );
+            let (mut endpoint, captured) = wire_capture_server(responses).await;
+            if matches!(
+                adapter,
+                OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
+            ) {
+                endpoint.truncate(endpoint.len() - "/v1".len());
+            }
+            let model = real_openai_resolved(adapter, endpoint);
+            let request = Request::new(vec![
+                oven_sdk::HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(
+                    TextPart::new("stable system"),
+                )])),
+                oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+                    TextPart::new("current input"),
+                )])),
+            ]);
+            let request = model.prepare_request_with_cache_strategy(request, Some(&strategy));
+            model
+                .model()
+                .complete(request, AbortSignal::default())
+                .await
+                .unwrap();
+            let body = captured.await.unwrap();
+            assert_eq!(body["prompt_cache_key"], "wire-key", "{adapter:?}");
+            assert_eq!(body["prompt_cache_retention"], "24h", "{adapter:?}");
+            assert_eq!(
+                body["prompt_cache_options"],
+                json!({"mode":"explicit", "ttl":"30m"}),
+                "{adapter:?}"
+            );
+            assert_eq!(wire_breakpoint_count(&body), 2, "{adapter:?}");
         }
     }
 }

@@ -131,6 +131,26 @@ api_key = "${env:OPENAI_API_KEY}"
 Prefer interpolation or `/connect` over plaintext credentials, and never commit
 `.env` or a credential-bearing config.
 
+## Prompt caching
+
+Runtime prompt-cache policy is provider-specific. This GPT-5.6+ example keeps
+OpenAI's implicit breakpoint and adds stable system and latest-user boundaries:
+
+```toml
+[prompt_caching.openai]
+prompt_cache_key = "workspace-${session_id}"
+mode = "implicit"
+ttl = "30m"
+system = true
+rolling = true
+```
+
+Use `mode = "explicit"` when only the selected `system` and `rolling` boundaries
+should write. OpenAI and Azure OpenAI do not support a Cookie agent `tools`
+placement because provider breakpoints attach to content parts, not tool
+definitions. See the [configuration reference](../reference/configuration.md#prompt_caching)
+for legacy retention, placement, and provider-specific rules.
+
 ## Agent documents
 
 Agents are Markdown files whose filename is the agent ID. Each file has strict
@@ -142,7 +162,14 @@ description: Reviews changes for correctness
 mode: subagent
 enabled: true
 models:
-  - { model: "openai/gpt-5", variant: null }
+  - model: "openai/gpt-5.6"
+    variant: null
+    cache:
+      openai:
+        mode: explicit
+        ttl: 30m
+        system: true
+        rolling: true
 limits:
   max_output_tokens: 2048
 permissions:
