@@ -447,38 +447,34 @@ fn apply_openai_cache_breakpoints(
     strategy: &crate::adapters::OpenAiCacheStrategyConfig,
 ) {
     if strategy.system
-        && let Some(text) = request.history.iter_mut().find_map(|turn| {
-            let oven_sdk::HistoryTurn::System(message) = turn else {
-                return None;
-            };
-            message
-                .content
-                .iter_mut()
-                .rev()
-                .find_map(|part| match part {
-                    oven_sdk::SystemPart::Text(text) if !text.text.is_empty() => Some(text),
-                    oven_sdk::SystemPart::Text(_) | oven_sdk::SystemPart::Custom(_) => None,
-                })
-        })
+        && let Some(oven_sdk::HistoryTurn::System(message)) = request.history.first_mut()
+        && let Some(text) = message
+            .content
+            .iter_mut()
+            .rev()
+            .find_map(|part| match part {
+                oven_sdk::SystemPart::Text(text) if !text.text.is_empty() => Some(text),
+                oven_sdk::SystemPart::Text(_) | oven_sdk::SystemPart::Custom(_) => None,
+            })
     {
         mark_openai_cache_breakpoint(text, adapter);
     }
     if strategy.rolling
-        && let Some(text) = request.history.iter_mut().rev().find_map(|turn| {
-            let oven_sdk::HistoryTurn::User(message) = turn else {
-                return None;
-            };
-            message
-                .content
-                .iter_mut()
-                .rev()
-                .find_map(|part| match part {
-                    oven_sdk::InputPart::Text(text) if !text.text.is_empty() => Some(text),
-                    oven_sdk::InputPart::Text(_)
-                    | oven_sdk::InputPart::File(_)
-                    | oven_sdk::InputPart::Custom(_) => None,
-                })
-        })
+        && let Some(index) = request
+            .history
+            .iter()
+            .rposition(|turn| matches!(turn, oven_sdk::HistoryTurn::User(_)))
+        && let oven_sdk::HistoryTurn::User(message) = &mut request.history[index]
+        && let Some(text) = message
+            .content
+            .iter_mut()
+            .rev()
+            .find_map(|part| match part {
+                oven_sdk::InputPart::Text(text) if !text.text.is_empty() => Some(text),
+                oven_sdk::InputPart::Text(_)
+                | oven_sdk::InputPart::File(_)
+                | oven_sdk::InputPart::Custom(_) => None,
+            })
     {
         mark_openai_cache_breakpoint(text, adapter);
     }
@@ -3038,7 +3034,14 @@ mod cache_strategy_tests {
                 "responses",
             ),
         ] {
-            let mut request = request();
+            let mut request = Request::new(vec![
+                oven_sdk::HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(
+                    TextPart::new("stable system"),
+                )])),
+                oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+                    TextPart::new("eligible latest user"),
+                )])),
+            ]);
             apply_cache_strategy(&mut request, adapter, &strategy);
             assert_eq!(
                 request.provider_options[namespace][section]["prompt_cache_key"],
@@ -3086,6 +3089,98 @@ mod cache_strategy_tests {
                 Some(true)
             );
         }
+    }
+
+    fn openai_strategy(system: bool, rolling: bool) -> CacheStrategyConfig {
+        CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            mode: Some(OpenAiCacheMode::Explicit),
+            ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+            system,
+            rolling,
+        })
+    }
+
+    fn has_openai_breakpoint(metadata: &oven_sdk::PartMetadata) -> bool {
+        metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("openai.prompt_cache_breakpoint"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn openai_rolling_does_not_fall_back_from_latest_file_only_user_turn() {
+        let mut request = Request::new(vec![
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
+                "earlier eligible text",
+            ))])),
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::File(
+                oven_sdk::FilePart::document(
+                    "application/pdf",
+                    oven_sdk::FileSource::Text("latest file".into()),
+                ),
+            )])),
+        ]);
+
+        apply_cache_strategy(
+            &mut request,
+            OvenAdapterFamily::OpenaiChat,
+            &openai_strategy(false, true),
+        );
+
+        let oven_sdk::HistoryTurn::User(earlier) = &request.history[0] else {
+            panic!("earlier user turn");
+        };
+        let InputPart::Text(earlier) = &earlier.content[0] else {
+            panic!("earlier user text");
+        };
+        let oven_sdk::HistoryTurn::User(latest) = &request.history[1] else {
+            panic!("latest user turn");
+        };
+        let InputPart::File(latest) = &latest.content[0] else {
+            panic!("latest user file");
+        };
+        assert!(!has_openai_breakpoint(&earlier.metadata));
+        assert!(!has_openai_breakpoint(&latest.metadata));
+    }
+
+    #[test]
+    fn openai_system_does_not_fall_forward_from_ineligible_first_turn() {
+        let mut request = Request::new(vec![
+            oven_sdk::HistoryTurn::system(SystemMessage::new(vec![
+                SystemPart::Text(TextPart::new("")),
+                SystemPart::Custom(oven_sdk::CustomPart::new(
+                    "test.system",
+                    json!({"value":"not text"}),
+                )),
+            ])),
+            oven_sdk::HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(
+                TextPart::new("later eligible system text"),
+            )])),
+        ]);
+
+        apply_cache_strategy(
+            &mut request,
+            OvenAdapterFamily::OpenaiChat,
+            &openai_strategy(true, false),
+        );
+
+        let oven_sdk::HistoryTurn::System(first) = &request.history[0] else {
+            panic!("first system turn");
+        };
+        let SystemPart::Text(first) = &first.content[0] else {
+            panic!("empty system text");
+        };
+        let oven_sdk::HistoryTurn::System(later) = &request.history[1] else {
+            panic!("later system turn");
+        };
+        let SystemPart::Text(later) = &later.content[0] else {
+            panic!("later system text");
+        };
+        assert!(!has_openai_breakpoint(&first.metadata));
+        assert!(!has_openai_breakpoint(&later.metadata));
     }
 
     fn real_openai_resolved(

@@ -73,8 +73,10 @@ Anthropic also documents an automatic caching mode. Cookie agent intentionally
 uses the structural marker strategy above so system, tool, and rolling-history
 boundaries remain deterministic. OpenAI GPT-5.6+ likewise uses implicit or
 explicit cache breakpoints. Cookie agent's OpenAI `system` placement marks the
-last non-empty text part in the first system turn, while `rolling` marks the last
-non-empty text part in the latest user turn. Assistant and tool-result content is
+last non-empty text part only when the first turn is an eligible system turn,
+while `rolling` considers only the latest user turn and marks its last non-empty
+text part. Either placement is omitted when that exact turn has no eligible text;
+Cookie agent does not search another turn. Assistant and tool-result content is
 never selected because those marker locations are rejected by the provider. See
 the [prompt-caching configuration reference](configuration.md#prompt_caching).
 

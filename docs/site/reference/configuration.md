@@ -220,9 +220,12 @@ and does not emit `prompt_cache_options`.
 allows Cookie agent's explicit markers. `mode = "explicit"` disables that
 provider-managed breakpoint; with both placement fields false, it therefore
 writes no cache. `system = true` marks the last non-empty text part of the first
-system turn. `rolling = true` marks the last non-empty text part of the latest
-user turn. Rolling deliberately skips files, assistant history, and tool results;
-the provider rejects markers on assistant and tool-result content. There is no
+turn, but only when the first turn itself is a system turn; an ineligible first
+turn is skipped without searching later system turns. `rolling = true` considers
+only the latest user turn and marks its last non-empty text part. If that turn is
+empty or file-only, placement is skipped without falling back to an earlier user
+turn. Rolling deliberately skips files, assistant history, and tool results; the
+provider rejects markers on assistant and tool-result content. There is no
 `tools` placement because the SDK does not expose markers on tool definitions.
 Existing caller markers are preserved, and the SDK rejects requests exceeding
 the provider's four-write aggregate limit as invalid requests.
