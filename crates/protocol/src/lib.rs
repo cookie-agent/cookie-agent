@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 14 with versionless session events.
+//! Exact cookie-agent protocol 15 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
