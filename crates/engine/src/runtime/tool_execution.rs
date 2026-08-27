@@ -31,6 +31,8 @@ use crate::{
     },
 };
 
+const MAX_VIDEO_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+
 const TOOL_CANCELLATION_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn tool_progress_event(progress: &ToolProgress) -> Event {
@@ -1022,14 +1024,20 @@ pub(crate) fn validate_attachment(
     path: &Path,
     bytes: &[u8],
 ) -> Result<(), ToolError> {
-    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+    let max_attachment_bytes = if mime_type.starts_with("video/") {
+        MAX_VIDEO_ATTACHMENT_BYTES
+    } else {
+        MAX_ATTACHMENT_BYTES
+    };
+    if bytes.len() as u64 > max_attachment_bytes {
         return Err(ToolError::resource_limit(format!(
-            "attachment is {} bytes; the limit is {MAX_ATTACHMENT_BYTES} bytes",
+            "attachment is {} bytes; the limit is {max_attachment_bytes} bytes",
             bytes.len()
         )));
     }
-    let validated = approved_media_type(path, bytes)?
-        .ok_or_else(|| ToolError::execution("attachment is not a supported image or PDF"))?;
+    let validated = approved_media_type(path, bytes)?.ok_or_else(|| {
+        ToolError::execution("attachment is not a supported image, PDF, or video")
+    })?;
     if validated != mime_type {
         return Err(ToolError::execution(format!(
             "attachment MIME mismatch: declared {mime_type}, validated {validated}"
@@ -1040,9 +1048,14 @@ pub(crate) fn validate_attachment(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText, ToolCallId};
 
-    use super::{ArtifactStore, ToolCall, bound_tool_result, fallback_operation_fingerprint};
+    use super::{
+        ArtifactStore, MAX_VIDEO_ATTACHMENT_BYTES, ToolCall, bound_tool_result,
+        fallback_operation_fingerprint, validate_attachment,
+    };
     use crate::{ToolError, ToolResultTruncationPolicy};
 
     #[test]
@@ -1067,6 +1080,22 @@ mod tests {
                 "{tool_name}"
             );
         }
+    }
+
+    #[test]
+    fn video_attachment_limit_accepts_boundary_and_rejects_plus_one() {
+        let video = |size: usize| {
+            let mut bytes = vec![0_u8; size];
+            bytes[..4].copy_from_slice(b"FLV\x01");
+            bytes
+        };
+        let at_limit = video(MAX_VIDEO_ATTACHMENT_BYTES as usize);
+        validate_attachment("video/x-flv", Path::new("clip.flv"), &at_limit).unwrap();
+
+        let over_limit = video(MAX_VIDEO_ATTACHMENT_BYTES as usize + 1);
+        let error =
+            validate_attachment("video/x-flv", Path::new("clip.flv"), &over_limit).unwrap_err();
+        assert!(error.to_string().contains("26214400"));
     }
 
     fn result(output: String) -> PersistedToolResult {

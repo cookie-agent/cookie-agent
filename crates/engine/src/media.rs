@@ -6,6 +6,7 @@ use lopdf::{Document, LoadOptions, Object};
 use crate::ToolError;
 
 const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
+const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
@@ -34,6 +35,32 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         Some(("image/webp", MediaKind::Image(ImageFormat::WebP)))
     } else if bytes.starts_with(b"%PDF-") {
         Some(("application/pdf", MediaKind::Pdf))
+    } else if let Some(mime) = iso_base_media_type(bytes) {
+        Some((mime, MediaKind::Video))
+    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        let mime = if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("mkv"))
+        {
+            "video/x-matroska"
+        } else {
+            "video/webm"
+        };
+        Some((mime, MediaKind::Video))
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"AVI " {
+        Some(("video/x-msvideo", MediaKind::Video))
+    } else if bytes.starts_with(b"FLV\x01") {
+        Some(("video/x-flv", MediaKind::Video))
+    } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0xba])
+        || bytes.starts_with(&[0x00, 0x00, 0x01, 0xb3])
+    {
+        Some(("video/mpeg", MediaKind::Video))
+    } else if bytes.starts_with(&[
+        0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce,
+        0x6c,
+    ]) {
+        Some(("video/wmv", MediaKind::Video))
     } else {
         None
     };
@@ -44,9 +71,16 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
             Ok(None)
         };
     };
-    if bytes.len() > MAX_ENCODED_BYTES {
+    if known_extension && !media_extension_matches(path, mime) {
+        return Err(malformed_media());
+    }
+    let max_encoded_bytes = match kind {
+        MediaKind::Video => MAX_VIDEO_ENCODED_BYTES,
+        MediaKind::Image(_) | MediaKind::Gif | MediaKind::Pdf => MAX_ENCODED_BYTES,
+    };
+    if bytes.len() > max_encoded_bytes {
         return Err(ToolError::resource_limit(format!(
-            "attachment is {} bytes; the limit is {MAX_ENCODED_BYTES} bytes",
+            "attachment is {} bytes; the limit is {max_encoded_bytes} bytes",
             bytes.len()
         )));
     }
@@ -54,6 +88,7 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         MediaKind::Image(format) => validate_image(bytes, format),
         MediaKind::Gif => validate_gif(bytes),
         MediaKind::Pdf => validate_pdf(bytes),
+        MediaKind::Video => true,
     };
     if valid {
         Ok(Some(mime))
@@ -67,6 +102,42 @@ enum MediaKind {
     Image(ImageFormat),
     Gif,
     Pdf,
+    Video,
+}
+
+fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return None;
+    }
+    let box_size = u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
+    if box_size < 12 || box_size > bytes.len() {
+        return None;
+    }
+    let brand = &bytes[8..12];
+    if brand == b"qt  " {
+        return Some("video/quicktime");
+    }
+    if brand.starts_with(b"3g") {
+        return Some("video/3gpp");
+    }
+    matches!(
+        brand,
+        b"isom"
+            | b"iso2"
+            | b"iso3"
+            | b"iso4"
+            | b"iso5"
+            | b"iso6"
+            | b"iso7"
+            | b"iso8"
+            | b"iso9"
+            | b"mp41"
+            | b"mp42"
+            | b"avc1"
+            | b"dash"
+            | b"M4V "
+    )
+    .then_some("video/mp4")
 }
 
 fn validate_image(bytes: &[u8], format: ImageFormat) -> bool {
@@ -1002,23 +1073,141 @@ fn known_media_extension(path: &Path) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf"
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "pdf"
+                    | "mp4"
+                    | "mov"
+                    | "mkv"
+                    | "webm"
+                    | "avi"
+                    | "flv"
+                    | "mpg"
+                    | "mpeg"
+                    | "wmv"
+                    | "3gp"
             )
         })
 }
 
+fn media_extension_matches(path: &Path, mime: &str) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| {
+            matches!(
+                (extension.to_ascii_lowercase().as_str(), mime),
+                ("png", "image/png")
+                    | ("jpg" | "jpeg", "image/jpeg")
+                    | ("gif", "image/gif")
+                    | ("webp", "image/webp")
+                    | ("pdf", "application/pdf")
+                    | ("mp4", "video/mp4")
+                    | ("mov", "video/quicktime" | "video/mov")
+                    | ("mkv", "video/x-matroska")
+                    | ("webm", "video/webm")
+                    | ("avi", "video/x-msvideo" | "video/avi")
+                    | ("flv", "video/x-flv")
+                    | ("mpg" | "mpeg", "video/mpeg" | "video/mpg")
+                    | ("wmv", "video/wmv")
+                    | ("3gp", "video/3gpp")
+            ) || !known_media_extension(path)
+        })
+}
+
 fn malformed_media() -> ToolError {
-    ToolError::execution("file extension identifies malformed image or PDF content")
+    ToolError::execution("file extension identifies malformed image, PDF, or video content")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PDF_DECOMPRESSION_BUDGET_FOR_TESTS, pdf_validation_stats};
+    use std::path::Path;
+
+    use super::{PDF_DECOMPRESSION_BUDGET_FOR_TESTS, approved_media_type, pdf_validation_stats};
+
+    fn ftyp(brand: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = 16_u32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(brand);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes
+    }
 
     #[test]
     fn malformed_pdf_is_rejected_within_the_bounded_budget() {
         let (valid, reserved) = pdf_validation_stats(b"not a PDF");
         assert!(!valid);
         assert!(reserved <= PDF_DECOMPRESSION_BUDGET_FOR_TESTS);
+    }
+
+    #[test]
+    fn iso_base_media_brands_identify_mp4_quicktime_and_3gpp() {
+        assert_eq!(
+            approved_media_type(Path::new("clip.mp4"), &ftyp(b"isom")).unwrap(),
+            Some("video/mp4")
+        );
+        assert_eq!(
+            approved_media_type(Path::new("clip.mov"), &ftyp(b"qt  ")).unwrap(),
+            Some("video/quicktime")
+        );
+        assert_eq!(
+            approved_media_type(Path::new("clip.3gp"), &ftyp(b"3gp6")).unwrap(),
+            Some("video/3gpp")
+        );
+    }
+
+    #[test]
+    fn ebml_identifies_webm_and_matroska_by_extension() {
+        let bytes = [0x1a, 0x45, 0xdf, 0xa3];
+        assert_eq!(
+            approved_media_type(Path::new("clip.webm"), &bytes).unwrap(),
+            Some("video/webm")
+        );
+        assert_eq!(
+            approved_media_type(Path::new("clip.mkv"), &bytes).unwrap(),
+            Some("video/x-matroska")
+        );
+    }
+
+    #[test]
+    fn riff_flv_and_mpeg_headers_are_recognized() {
+        assert_eq!(
+            approved_media_type(Path::new("clip.avi"), b"RIFF\x04\x00\x00\x00AVI ").unwrap(),
+            Some("video/x-msvideo")
+        );
+        assert_eq!(
+            approved_media_type(Path::new("clip.flv"), b"FLV\x01").unwrap(),
+            Some("video/x-flv")
+        );
+        for signature in [[0x00, 0x00, 0x01, 0xba], [0x00, 0x00, 0x01, 0xb3]] {
+            assert_eq!(
+                approved_media_type(Path::new("clip.mpeg"), &signature).unwrap(),
+                Some("video/mpeg")
+            );
+        }
+    }
+
+    #[test]
+    fn asf_guid_identifies_wmv() {
+        let guid = [
+            0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62,
+            0xce, 0x6c,
+        ];
+        assert_eq!(
+            approved_media_type(Path::new("clip.wmv"), &guid).unwrap(),
+            Some("video/wmv")
+        );
+    }
+
+    #[test]
+    fn known_video_extensions_reject_malformed_and_mismatched_content() {
+        assert!(approved_media_type(Path::new("clip.mp4"), b"not video").is_err());
+        assert!(approved_media_type(Path::new("clip.mp4"), &[0x1a, 0x45, 0xdf, 0xa3]).is_err());
+        assert_eq!(
+            approved_media_type(Path::new("clip.bin"), b"not video").unwrap(),
+            None
+        );
     }
 }
