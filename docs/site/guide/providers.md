@@ -212,7 +212,7 @@ declares the modality and the adaptor can carry it. Per-family support:
 | Family | Images | PDF | Video |
 |---|---|---|---|
 | `anthropic`, `anthropic-compatible` | Yes | Yes | No |
-| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (≤18.75 MiB raw; Nova models) |
+| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (<25 MiB base64 ≈18.7 MiB raw; Nova models) |
 | `openai-responses`, `azure-openai-responses` | Yes | No | No |
 | `openai-chat`, `azure-openai-chat`, `openai-compatible` | No | No | No |
 | `google-gemini`, `google-vertex-gemini` | No | No | No |

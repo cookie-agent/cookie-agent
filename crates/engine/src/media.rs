@@ -27,8 +27,9 @@ const MAX_PDF_NAME_BYTES: usize = 256;
 const MAX_PDF_STRING_BYTES: usize = 8 * 1024 * 1024;
 const BEDROCK_IMAGE_BYTES: u64 = 15 * 1024 * 1024 / 4;
 const BEDROCK_PDF_BYTES: u64 = 9 * 1024 * 1024 / 2;
-/// Bedrock limits inline video base64 below 25 MiB, so raw bytes cap at three quarters.
-const BEDROCK_VIDEO_BYTES: u64 = 75 * 1024 * 1024 / 4;
+/// Bedrock requires inline video base64 strictly below 25 MiB; the largest raw size whose
+/// base64 encoding stays below that limit (4 * ceil(n / 3) < 26,214,400).
+const BEDROCK_VIDEO_BYTES: u64 = 19_660_797;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentGate {
@@ -1422,12 +1423,26 @@ mod tests {
                 AdaptorId::AwsBedrockConverse,
                 &video,
                 "video/mp4",
+                &vec![0; super::BEDROCK_VIDEO_BYTES as usize],
+            ),
+            AttachmentGate::Attach
+        );
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::AwsBedrockConverse,
+                &video,
+                "video/mp4",
                 &vec![0; super::BEDROCK_VIDEO_BYTES as usize + 1],
             ),
             AttachmentGate::RejectTooLarge {
                 max_bytes: super::BEDROCK_VIDEO_BYTES
             }
         );
+        // The constant honors the strict base64 bound: 4 * ceil(n / 3) < 25 MiB.
+        let encoded = 4 * super::BEDROCK_VIDEO_BYTES.div_ceil(3);
+        assert!(encoded < 25 * 1024 * 1024);
+        let encoded_over = 4 * (super::BEDROCK_VIDEO_BYTES + 1).div_ceil(3);
+        assert!(encoded_over >= 25 * 1024 * 1024);
         // Catalog size precedes family deliverability: an attachment that exceeds
         // the model's advertised limit reports the size, not the family.
         let small_cap = capabilities(Some((MediaKind::Pdf, "application/pdf", 8)));
