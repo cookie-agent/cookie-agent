@@ -4,7 +4,9 @@ use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use lopdf::{Document, LoadOptions, Object};
 
 use crate::ToolError;
-use cookie_agent_protocol::{AdaptorId, MediaKind as CapabilityMediaKind, ModelCapabilities};
+use cookie_agent_protocol::{
+    AdaptorId, MediaKind as CapabilityMediaKind, ModelCapabilities, ModelKey,
+};
 
 const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
 const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
@@ -32,6 +34,49 @@ pub enum AttachmentGate {
     RejectUnsupportedModel,
     RejectUnsupportedFamily,
     RejectTooLarge { max_bytes: u64 },
+}
+
+#[must_use]
+pub fn attachment_gate_error(
+    gate: AttachmentGate,
+    mime_type: &str,
+    model: &ModelKey,
+    family: AdaptorId,
+) -> Option<String> {
+    match gate {
+        AttachmentGate::Attach => None,
+        AttachmentGate::RejectUnsupportedModel => {
+            let input = if mime_type.starts_with("image/") {
+                "image"
+            } else if mime_type == "application/pdf" {
+                "PDF"
+            } else {
+                "media"
+            };
+            Some(format!(
+                "Cannot attach {mime_type}: the active model \"{model}\" does not accept {input} inputs"
+            ))
+        }
+        AttachmentGate::RejectUnsupportedFamily => Some(format!(
+            "Cannot attach {mime_type}: not deliverable in tool results via the {} family API",
+            family.as_str()
+        )),
+        AttachmentGate::RejectTooLarge { max_bytes } => Some(format!(
+            "Cannot attach {mime_type}: exceeds the {} MiB inline limit for this provider",
+            format_mib(max_bytes)
+        )),
+    }
+}
+
+fn format_mib(bytes: u64) -> String {
+    let mut value = format!("{:.2}", bytes as f64 / (1024 * 1024) as f64);
+    while value.ends_with('0') {
+        value.pop();
+    }
+    if value.ends_with('.') {
+        value.pop();
+    }
+    value
 }
 
 #[must_use]
@@ -1204,7 +1249,7 @@ mod tests {
 
     use super::{
         AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, PDF_DECOMPRESSION_BUDGET_FOR_TESTS,
-        approved_media_type, gate_attachment, pdf_validation_stats,
+        approved_media_type, attachment_gate_error, gate_attachment, pdf_validation_stats,
     };
 
     fn capabilities(kind: Option<(MediaKind, &str, u64)>) -> ModelCapabilities {
@@ -1342,6 +1387,18 @@ mod tests {
             AttachmentGate::RejectTooLarge {
                 max_bytes: BEDROCK_PDF_BYTES
             }
+        );
+        assert_eq!(
+            attachment_gate_error(
+                AttachmentGate::RejectTooLarge {
+                    max_bytes: BEDROCK_IMAGE_BYTES,
+                },
+                "image/png",
+                &"test/model".parse().unwrap(),
+                AdaptorId::AwsBedrockConverse,
+            )
+            .unwrap(),
+            "Cannot attach image/png: exceeds the 3.75 MiB inline limit for this provider"
         );
     }
 

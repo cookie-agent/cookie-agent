@@ -162,6 +162,25 @@ pub struct ToolExecutionContext {
 }
 
 impl ToolExecutionContext {
+    #[cfg(feature = "test-support")]
+    pub fn for_test(
+        artifact_directory: impl Into<PathBuf>,
+        turn_context: Arc<TurnAgentContext>,
+    ) -> Result<Self, ToolError> {
+        let call_id = ToolCallId::new_v7();
+        let (progress, _receiver) = mpsc::channel(1);
+        Ok(Self {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            progress: ProgressSink::new(progress, OutputHub::new(call_id, 1024)),
+            cancellation: CancellationToken::new(),
+            stdin: None,
+            turn_context,
+            artifacts: ArtifactStore::open(artifact_directory.into())
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+        })
+    }
+
     pub fn retain_attachment(
         &self,
         mime_type: impl Into<String>,
@@ -360,6 +379,20 @@ impl PreparedTool {
     #[must_use]
     pub fn policy_labels(&self) -> &[Option<String>] {
         &self.policy_labels
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn execute_for_test(
+        self,
+        context: ToolExecutionContext,
+    ) -> Result<ToolResult, ToolError> {
+        let executor = self
+            .executor
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?;
+        executor.execute(context).await
     }
 }
 

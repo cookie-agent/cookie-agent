@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use cookie_agent_engine::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type,
+    ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type, attachment_gate_error,
+    gate_attachment,
 };
 use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
 use schemars::JsonSchema;
@@ -227,6 +228,20 @@ impl PreparedExecutor for ReadExecutor {
         }
         let bytes = self.target.verified_bytes()?;
         if let Some(mime) = approved_media_type(&self.target.display_path, &bytes)? {
+            let gate = gate_attachment(
+                context.turn_context.adapter,
+                &context.turn_context.capabilities,
+                mime,
+                &bytes,
+            );
+            if let Some(error) = attachment_gate_error(
+                gate,
+                mime,
+                &context.turn_context.model,
+                context.turn_context.adapter,
+            ) {
+                return Err(ToolError::execution(error));
+            }
             let attachment = context.retain_attachment(
                 mime,
                 self.target
@@ -290,17 +305,73 @@ fn directory_page<T>(entries: &[T], offset: usize, limit: usize) -> impl Iterato
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
     use cookie_agent_engine::{
-        SessionToolContext, ToolCall, ToolError, ToolPreparationContext, ToolProvider,
-        ToolResultTruncationPolicy,
+        SessionToolContext, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext,
+        ToolProvider, ToolResultTruncationPolicy, TurnAgentContext,
     };
     use cookie_agent_protocol::{
-        OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
+        AdaptorId, MediaCapability, MediaKind, MimeType, Modality, OperationFingerprint,
+        PermissionAction, RunId, SessionId, ToolCallId,
     };
 
     use super::{ReadTool, directory_page, text_page, text_result};
+
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5,
+        0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn pdf() -> Vec<u8> {
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in [
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>\nendobj\n",
+        ] {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(object.as_bytes());
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(
+            format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        bytes
+    }
+
+    fn turn_context(
+        adapter: AdaptorId,
+        media: Option<(MediaKind, Modality, &str, u64)>,
+    ) -> Arc<TurnAgentContext> {
+        let base = crate::test_turn_context();
+        let mut capabilities = base.capabilities.clone();
+        if let Some((kind, modality, mime_type, max_bytes)) = media {
+            capabilities.input.insert(modality);
+            capabilities.media = BTreeMap::from([(
+                kind,
+                MediaCapability {
+                    mime_types: [MimeType::new(mime_type).unwrap()].into_iter().collect(),
+                    max_bytes,
+                    max_count: 1,
+                },
+            )]);
+        }
+        Arc::new(TurnAgentContext {
+            agent: base.agent.clone(),
+            model: base.model.clone(),
+            adapter,
+            capabilities,
+        })
+    }
 
     #[test]
     fn large_single_line_read_is_full_and_declares_absolute_opt_out() {
@@ -479,14 +550,21 @@ mod tests {
         );
     }
 
-    fn context(root: &Path) -> ToolPreparationContext {
+    fn context_with_turn(
+        root: &Path,
+        turn_context: Arc<TurnAgentContext>,
+    ) -> ToolPreparationContext {
         ToolPreparationContext {
             session: SessionId::new_v7(),
             run: RunId::new_v7(),
             cwd: root.to_owned(),
             workspace_root: root.to_owned(),
-            turn_context: crate::test_turn_context(),
+            turn_context,
         }
+    }
+
+    fn context(root: &Path) -> ToolPreparationContext {
+        context_with_turn(root, crate::test_turn_context())
     }
 
     async fn prepared(root: &Path, path: &str) -> cookie_agent_engine::PreparedTool {
@@ -501,6 +579,168 @@ mod tests {
             )
             .await
             .expect("prepare read")
+    }
+
+    async fn execute_media(
+        root: &Path,
+        path: &str,
+        turn_context: Arc<TurnAgentContext>,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        let prepared = ReadTool::new(root)
+            .prepare(
+                context_with_turn(root, Arc::clone(&turn_context)),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"filePath":path}),
+                },
+            )
+            .await?;
+        prepared
+            .execute_for_test(ToolExecutionContext::for_test(
+                root.join("artifacts"),
+                turn_context,
+            )?)
+            .await
+    }
+
+    #[tokio::test]
+    async fn media_reads_follow_capability_family_and_size_gates() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("pixel.png"), PNG).unwrap();
+        let pdf = pdf();
+        fs::write(root.path().join("page.pdf"), &pdf).unwrap();
+
+        let image_capable = turn_context(
+            AdaptorId::Anthropic,
+            Some((
+                MediaKind::Image,
+                Modality::Image,
+                "image/png",
+                PNG.len() as u64,
+            )),
+        );
+        let image = execute_media(root.path(), "pixel.png", image_capable)
+            .await
+            .unwrap();
+        assert_eq!(image.attachments.len(), 1);
+        assert_eq!(image.attachments[0].mime_type.as_str(), "image/png");
+
+        let image_incapable = execute_media(
+            root.path(),
+            "pixel.png",
+            turn_context(AdaptorId::Anthropic, None),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            image_incapable.message(),
+            "Cannot attach image/png: the active model \"test/model\" does not accept image inputs"
+        );
+
+        let pdf_capable = turn_context(
+            AdaptorId::Anthropic,
+            Some((
+                MediaKind::Pdf,
+                Modality::Pdf,
+                "application/pdf",
+                pdf.len() as u64,
+            )),
+        );
+        let document = execute_media(root.path(), "page.pdf", pdf_capable)
+            .await
+            .unwrap();
+        assert_eq!(document.attachments.len(), 1);
+        assert_eq!(
+            document.attachments[0].mime_type.as_str(),
+            "application/pdf"
+        );
+
+        let pdf_incapable = execute_media(
+            root.path(),
+            "page.pdf",
+            turn_context(AdaptorId::Anthropic, None),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            pdf_incapable.message(),
+            "Cannot attach application/pdf: the active model \"test/model\" does not accept PDF inputs"
+        );
+
+        let family_rejected = execute_media(
+            root.path(),
+            "pixel.png",
+            turn_context(
+                AdaptorId::OpenaiCompatible,
+                Some((
+                    MediaKind::Image,
+                    Modality::Image,
+                    "image/png",
+                    PNG.len() as u64,
+                )),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            family_rejected.message(),
+            "Cannot attach image/png: not deliverable in tool results via the openai-compatible family API"
+        );
+
+        let size_rejected = execute_media(
+            root.path(),
+            "pixel.png",
+            turn_context(
+                AdaptorId::Anthropic,
+                Some((
+                    MediaKind::Image,
+                    Modality::Image,
+                    "image/png",
+                    PNG.len() as u64 - 1,
+                )),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            size_rejected
+                .message()
+                .contains("inline limit for this provider")
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_media_still_errors_and_text_path_is_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("bad.png"), b"not a PNG").unwrap();
+        let malformed = execute_media(
+            root.path(),
+            "bad.png",
+            turn_context(
+                AdaptorId::Anthropic,
+                Some((MediaKind::Image, Modality::Image, "image/png", 1024)),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            malformed
+                .message()
+                .contains("malformed image, PDF, or video")
+        );
+        assert!(!malformed.message().contains("Cannot attach"));
+
+        fs::write(root.path().join("note.txt"), "plain text\n").unwrap();
+        let text = execute_media(
+            root.path(),
+            "note.txt",
+            turn_context(AdaptorId::OpenaiCompatible, None),
+        )
+        .await
+        .unwrap();
+        assert!(text.output.contains("1: plain text"));
+        assert!(text.attachments.is_empty());
     }
 
     #[tokio::test]

@@ -29,5 +29,6 @@ rustix.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+cookie_agent_engine = { version = "=0.2.0", path = "../engine", features = ["test-support"] }
 cookie_agent_models = { version = "=0.2.0", path = "../models" }
 tempfile.workspace = true

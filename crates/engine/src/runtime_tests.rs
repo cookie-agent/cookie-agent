@@ -1628,6 +1628,137 @@ impl PreparedExecutor for TestWriteExecutor {
 }
 
 #[derive(Clone)]
+struct TestMediaReadProvider;
+
+struct TestMediaReadExecutor {
+    path: std::path::PathBuf,
+}
+
+#[async_trait]
+impl ToolProvider for TestMediaReadProvider {
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            result_truncation: Default::default(),
+            name: "read".into(),
+            permission_name: "read".into(),
+            description: "Read a test media file".into(),
+            parameters: serde_json::json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{"filePath":{"type":"string"}},
+                "required":["filePath"]
+            }),
+        }])
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "read" => Ok("read"),
+            _ => Err(ToolError::execution("read provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let path = arguments
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+        Ok((Self::get_permission_name(name)?, Some(path.into())))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_permission_resource(name, arguments)?
+            .1
+            .ok_or_else(|| ToolError::execution("missing filePath"))
+    }
+
+    async fn prepare(
+        &self,
+        ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let display = call
+            .arguments
+            .get("filePath")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+        let path = ctx.cwd.join(display);
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(display.as_bytes()),
+            vec![ApprovalCapability {
+                action: PermissionAction::Read,
+                operation: PreparedCapabilityOperation::new("read:file").unwrap(),
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Read,
+                canonical: PreparedResourceIdentity::new(display).unwrap(),
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    display.as_bytes(),
+                ),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"test media read"),
+        )
+        .unwrap();
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(TestMediaReadExecutor { path }),
+        )
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for TestMediaReadExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        let bytes =
+            fs::read(&self.path).map_err(|error| ToolError::execution(error.to_string()))?;
+        let mime = crate::approved_media_type(&self.path, &bytes)?
+            .ok_or_else(|| ToolError::execution("test read expected media"))?;
+        let gate = crate::gate_attachment(
+            context.turn_context.adapter,
+            &context.turn_context.capabilities,
+            mime,
+            &bytes,
+        );
+        if let Some(error) = crate::attachment_gate_error(
+            gate,
+            mime,
+            &context.turn_context.model,
+            context.turn_context.adapter,
+        ) {
+            return Err(ToolError::execution(error));
+        }
+        let attachment = context.retain_attachment(mime, None, &bytes)?;
+        Ok(cookie_agent_protocol::PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
+            output: format!("Attached {mime}."),
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: vec![attachment],
+        })
+    }
+}
+
+#[derive(Clone)]
 struct TestRehydrationReadProvider {
     executed: Arc<TestFlag>,
     swap_after_prepare: bool,
@@ -2658,6 +2789,35 @@ fn custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor
     worker_agent: Option<&str>,
     adaptor: &str,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_capabilities(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        max_concurrency,
+        mcp_server,
+        context_tokens,
+        worker_agent,
+        adaptor,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_fixture_with_capabilities(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
+    context_tokens: u64,
+    worker_agent: Option<&str>,
+    adaptor: &str,
+    capabilities_override: Option<&str>,
+) -> (Fixture, RunSelection) {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -2675,20 +2835,7 @@ auth = { method = "no-auth-v1", values = {} }
 display_name = "Model"
 
 [providers."custom.test".models."group/model".capabilities]
-input = ["text"]
-output = ["text"]
-context_tokens = 4096
-output_tokens = 1024
-tool_calling = true
-parallel_tool_calls = true
-structured_output = false
-reasoning = false
-temperature = true
-top_p = true
-seed = true
-native_replay = "unsupported"
-cancellation = "local_only"
-media = {}
+__MODEL_CAPABILITIES__
 "#
     .replace("http://127.0.0.1:9/v1", endpoint)
     .replace(
@@ -2696,8 +2843,16 @@ media = {}
         &format!("adaptor = \"{adaptor}\""),
     )
     .replace(
-        "context_tokens = 4096",
-        &format!("context_tokens = {context_tokens}"),
+        "__MODEL_CAPABILITIES__",
+        capabilities_override.map_or_else(
+            || {
+                format!(
+                    "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = {context_tokens}\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {{}}"
+                )
+            },
+            str::to_owned,
+        )
+        .as_str(),
     );
     let config_text = if adaptor.starts_with("anthropic") {
         config_text.replace("seed = true", "seed = false").replace(
@@ -9982,6 +10137,135 @@ fn anthropic_usage_body(
     format!(
         "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":{input_tokens},\"cache_read_input_tokens\":{cache_read_tokens},\"cache_creation_input_tokens\":{cache_write_tokens}}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":1}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
     )
+}
+
+fn anthropic_tool_body(id: &str, name: &str, arguments: serde_json::Value) -> String {
+    [
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{}}\n\n".into(),
+        format!(
+            "event: content_block_start\ndata: {}\n\n",
+            serde_json::json!({
+                "type":"content_block_start",
+                "index":0,
+                "content_block":{"type":"tool_use","id":id,"name":name,"input":arguments}
+            })
+        ),
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".into(),
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{}}\n\n".into(),
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into(),
+    ]
+    .concat()
+}
+
+#[tokio::test]
+async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapable() {
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5,
+        0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let primary = "---\ndescription: Media read test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRead media.\n";
+    let image_capabilities = "input = [\"text\", \"image\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 20971520, max_count = 1 } }";
+    let text_capabilities = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {}";
+
+    for (capabilities, capable) in [(image_capabilities, true), (text_capabilities, false)] {
+        let bodies = vec![
+            anthropic_tool_body(
+                "read-image",
+                "read",
+                serde_json::json!({"filePath":"pixel.png"}),
+            ),
+            anthropic_usage_body("continued after read", 1, 0, 0),
+        ];
+        let (endpoint, captured, _reached, _release) =
+            scripted_server_with_delayed_response(bodies, usize::MAX).await;
+        let (fixture, selection) = custom_fixture_with_capabilities(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+            Some(capabilities),
+        );
+        fs::write(fixture._directory.path().join("pixel.png"), PNG).unwrap();
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestMediaReadProvider));
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(if capable {
+                        "media-capable"
+                    } else {
+                        "media-incapable"
+                    })
+                    .unwrap(),
+                    selection,
+                    input: "read the image".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        assert_eq!(
+            fixture
+                .engine
+                .get_session(session.session_id)
+                .unwrap()
+                .status,
+            SessionStatus::Completed
+        );
+        let requests = captured.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let follow_up = request_body(&requests[1]);
+        if capable {
+            let tool_result = &follow_up["messages"][2]["content"][0];
+            assert_eq!(tool_result["content"][2]["type"], "image");
+            assert_eq!(
+                tool_result["content"][2]["source"]["media_type"],
+                "image/png"
+            );
+            assert_eq!(
+                follow_up["messages"][1]["content"][0]["cache_control"]["ttl"],
+                "5m"
+            );
+        } else {
+            assert!(requests[1].contains(
+                "Cannot attach image/png: the active model \\\"custom.test/group/model\\\" does not accept image inputs"
+            ));
+            let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+            let events = projection.log.events();
+            let termination = events
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ToolCallTerminated { termination } => Some(termination),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+            assert!(
+                termination
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .message
+                    .as_str()
+                    .contains("does not accept image inputs")
+            );
+        }
+        fixture.engine.shutdown().await;
+    }
 }
 
 fn request_body(request: &str) -> serde_json::Value {

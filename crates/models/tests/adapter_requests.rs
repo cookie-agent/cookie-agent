@@ -16,8 +16,10 @@ use cookie_agent_models::{
 use futures_util::StreamExt as _;
 use jiff::Timestamp;
 use oven_sdk::{
-    AbortSignal, HistoryTurn, InputPart, JsonSchema, Request, SystemMessage, SystemPart, TextPart,
-    ToolDefinition, UserMessage,
+    AbortSignal, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, FilePart,
+    FileSource, Finish, FinishReason, HistoryTurn, InputPart, JsonSchema, Request, SystemMessage,
+    SystemPart, TextPart, ToolCallPart, ToolContent, ToolDefinition, ToolMessage, ToolResultPart,
+    UserMessage,
 };
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -95,8 +97,16 @@ async fn server(response_body: &'static str) -> (String, tokio::task::JoinHandle
     (format!("http://{address}/v1"), task)
 }
 
-fn definition(endpoint: &str, adaptor: &str) -> ProviderDefinition {
+fn definition(endpoint: &str, adaptor: &str, image_capable: bool) -> ProviderDefinition {
     let tool_calling = adaptor != "openai-responses";
+    let (input, media) = if image_capable {
+        (
+            r#"["text", "image"]"#,
+            r#"{ image = { mime_types = ["image/png"], max_bytes = 20971520, max_count = 1 } }"#,
+        )
+    } else {
+        (r#"["text"]"#, "{}")
+    };
     toml::from_str(&format!(
         r#"source = "custom"
 endpoint = "{endpoint}"
@@ -105,7 +115,7 @@ auth = {{ method = "no-auth-v1", values = {{}} }}
 
 [models.test]
 display_name = "No Auth"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = {tool_calling}, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
+capabilities = {{ input = {input}, output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = {tool_calling}, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {media} }}
 "#
     ))
     .unwrap()
@@ -117,11 +127,24 @@ async fn dispatch_request(
     request: Request,
     cache_strategy: bool,
 ) -> String {
+    dispatch_request_with_media(adaptor, response, request, cache_strategy, false).await
+}
+
+async fn dispatch_request_with_media(
+    adaptor: &str,
+    response: &'static str,
+    request: Request,
+    cache_strategy: bool,
+    image_capable: bool,
+) -> String {
     let (endpoint, captured) = server(response).await;
     let temporary = TempDir::new().unwrap();
     let provider_id = ProviderId::new("custom.no-auth").unwrap();
     let manager = ModelManager::new(
-        BTreeMap::from([(provider_id.clone(), definition(&endpoint, adaptor))]),
+        BTreeMap::from([(
+            provider_id.clone(),
+            definition(&endpoint, adaptor, image_capable),
+        )]),
         empty_catalog(),
         store(&temporary),
     )
@@ -244,4 +267,46 @@ async fn anthropic_cache_strategy_lowers_to_system_tools_and_messages() {
 
     let uncached = dispatch_request("anthropic-compatible", response, request, false).await;
     assert!(!uncached.contains("cache_control"));
+}
+
+#[tokio::test]
+async fn anthropic_cache_breakpoint_survives_image_bearing_tool_result() {
+    let response =
+        "event: message_start\ndata: {\"message\":{}}\n\nevent: message_stop\ndata: {}\n\n";
+    let assistant = CompletedTurn::new(
+        AssistantMessage::new(vec![AssistantPart::ToolCall(ToolCallPart::new(
+            "call",
+            "read",
+            serde_json::json!({}),
+        ))]),
+        Finish::new(Default::default(), FinishReason::ToolCalls),
+    );
+    let result = ToolResultPart::new(
+        "call",
+        ToolContent::Mixed(vec![
+            ContentValue::Text("Attached image/png".into()),
+            ContentValue::File(FilePart::image(
+                "image/png",
+                FileSource::Bytes(b"png".to_vec().into()),
+            )),
+        ]),
+    );
+    let request = Request::new(vec![
+        HistoryTurn::assistant(assistant),
+        HistoryTurn::tool(ToolMessage::new(vec![result])),
+    ]);
+    let captured =
+        dispatch_request_with_media("anthropic-compatible", response, request, true, true).await;
+    let body = http_body(&captured);
+    let tool_result = &body["messages"][1]["content"][0];
+    assert_eq!(tool_result["content"][1]["type"], "image");
+    assert_eq!(
+        tool_result["content"][1]["source"]["media_type"],
+        "image/png"
+    );
+    assert_eq!(tool_result["content"][1]["source"]["data"], "cG5n");
+    assert_eq!(
+        body["messages"][0]["content"][0]["cache_control"]["ttl"],
+        "5m"
+    );
 }
