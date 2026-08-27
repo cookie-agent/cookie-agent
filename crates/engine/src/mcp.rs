@@ -2754,6 +2754,24 @@ fn retain_base64_attachment(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|error| error.to_string())?;
+    if let Some(mime) = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
+        .map_err(|error| error.to_string())?
+    {
+        let gate = crate::media::gate_attachment(
+            context.turn_context.adapter,
+            &context.turn_context.capabilities,
+            mime,
+            &bytes,
+        );
+        if let Some(error) = crate::media::attachment_gate_error(
+            gate,
+            mime,
+            &context.turn_context.model,
+            context.turn_context.adapter,
+        ) {
+            return Err(error);
+        }
+    }
     context
         .retain_attachment(mime_type, None, &bytes)
         .map_err(|error| error.to_string())
@@ -2950,27 +2968,51 @@ for line in sys.stdin:
     }
 
     fn turn_context() -> Arc<TurnAgentContext> {
-        Arc::new(TurnAgentContext {
+        Arc::new(make_turn_context(
+            cookie_agent_protocol::AdaptorId::OpenaiChat,
+            false,
+        ))
+    }
+
+    fn make_turn_context(
+        adapter: cookie_agent_protocol::AdaptorId,
+        with_image: bool,
+    ) -> TurnAgentContext {
+        let mut capabilities = ModelCapabilities {
+            input: [Modality::Text].into_iter().collect(),
+            output: [Modality::Text].into_iter().collect(),
+            context_tokens: 8_192,
+            output_tokens: 2_048,
+            tool_calling: true,
+            parallel_tool_calls: true,
+            structured_output: false,
+            reasoning: false,
+            temperature: true,
+            top_p: true,
+            seed: false,
+            native_replay: ReplayCapability::Optional,
+            cancellation: CancellationCapability::LocalOnly,
+            media: BTreeMap::new(),
+        };
+        if with_image {
+            capabilities.input.insert(Modality::Image);
+            capabilities.media = BTreeMap::from([(
+                cookie_agent_protocol::MediaKind::Image,
+                cookie_agent_protocol::MediaCapability {
+                    mime_types: [cookie_agent_protocol::MimeType::new("image/png").expect("mime")]
+                        .into_iter()
+                        .collect(),
+                    max_bytes: 20 * 1024 * 1024,
+                    max_count: 1,
+                },
+            )]);
+        }
+        TurnAgentContext {
             agent: AgentId::new("test").expect("agent"),
             model: "test/model".parse().expect("model key"),
-            adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
-            capabilities: ModelCapabilities {
-                input: [Modality::Text].into_iter().collect(),
-                output: [Modality::Text].into_iter().collect(),
-                context_tokens: 8_192,
-                output_tokens: 2_048,
-                tool_calling: true,
-                parallel_tool_calls: true,
-                structured_output: false,
-                reasoning: false,
-                temperature: true,
-                top_p: true,
-                seed: false,
-                native_replay: ReplayCapability::Optional,
-                cancellation: CancellationCapability::LocalOnly,
-                media: BTreeMap::new(),
-            },
-        })
+            adapter,
+            capabilities,
+        }
     }
 
     async fn execute(
@@ -3024,6 +3066,63 @@ for line in sys.stdin:
     fn names_are_sanitized_without_prefix() {
         assert_eq!(sanitize_name("git hub"), "git_hub");
         assert_eq!(sanitize_name("search/repos"), "search_repos");
+    }
+
+    #[test]
+    fn base64_attachments_follow_the_media_gate() {
+        use base64::Engine as _;
+        use cookie_agent_protocol::AdaptorId;
+
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let data = base64::engine::general_purpose::STANDARD.encode(PNG);
+        let directory = tempfile::tempdir().expect("tempdir");
+        let call_id = ToolCallId::new_v7();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
+        let context = |turn: TurnAgentContext| ToolExecutionContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            progress: ProgressSink::new(progress_tx.clone(), OutputHub::new(call_id, 1024)),
+            cancellation: CancellationToken::new(),
+            stdin: None,
+            turn_context: Arc::new(turn),
+            artifacts: ArtifactStore::open(directory.path().join("artifacts"))
+                .expect("artifact store"),
+        };
+
+        let rejected = super::retain_base64_attachment(
+            &context(make_turn_context(AdaptorId::Anthropic, false)),
+            "image/png".into(),
+            &data,
+        )
+        .expect_err("incapable model must reject");
+        assert!(
+            rejected.contains("does not accept image inputs"),
+            "unexpected error: {rejected}"
+        );
+
+        super::retain_base64_attachment(
+            &context(make_turn_context(AdaptorId::Anthropic, true)),
+            "image/png".into(),
+            &data,
+        )
+        .expect("capable model must retain");
+
+        let rejected = super::retain_base64_attachment(
+            &context(make_turn_context(AdaptorId::OpenaiChat, true)),
+            "image/png".into(),
+            &data,
+        )
+        .expect_err("undeliverable family must reject");
+        assert!(
+            rejected.contains("not deliverable in tool results"),
+            "unexpected error: {rejected}"
+        );
     }
 
     #[test]
