@@ -806,7 +806,7 @@ fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bo
     })
 }
 
-fn serialized_text_request_bytes(
+pub(super) fn serialized_text_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
@@ -1059,13 +1059,13 @@ mod tests {
         TOOL_OUTPUT_ELISION_MIN_BYTES, checkpoint_covers_input, compaction_gate,
         compaction_history, compaction_input_fits, compaction_instruction,
         estimated_request_tokens, native_compaction_input_budget, raw_fit_from_real_usage,
-        recent_read_candidates, resolve_compaction_trigger, should_elide_tool_output,
-        usage_reaches_compaction_trigger,
+        recent_read_candidates, resolve_compaction_trigger, serialized_text_request_bytes,
+        should_elide_tool_output, usage_reaches_compaction_trigger,
     };
     use crate::{
         model_history::{assemble_model_context, wire_model},
         runtime::{
-            Event, FrozenInternalAgentPolicy, InternalAgentLimits,
+            ContextTokenEstimator, Event, FrozenInternalAgentPolicy, InternalAgentLimits,
             artifacts::ArtifactStore,
             helpers::{safe_code, safe_display},
             tool_execution::fallback_operation_fingerprint,
@@ -1170,6 +1170,47 @@ mod tests {
             estimated_request_tokens(&text_heavy, &[]).unwrap(),
             trigger
         ));
+    }
+
+    #[test]
+    fn media_calibration_uses_text_bytes_and_still_triggers_for_heavy_text() {
+        let calibration_text = TextPart::new("x".repeat(16 * 1024));
+        let text_only = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+            calibration_text.clone(),
+        )]))];
+        let with_image = vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::Text(calibration_text),
+            InputPart::File(FilePart::image(
+                "image/png",
+                FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
+            )),
+        ]))];
+        let text_bytes = serialized_text_request_bytes(&text_only, &[]).unwrap();
+        let media_bytes = serialized_text_request_bytes(&with_image, &[]).unwrap();
+        assert_eq!(media_bytes, text_bytes);
+
+        let observed_tokens = (text_bytes as u64).div_ceil(4);
+        let mut text_estimator = ContextTokenEstimator::default();
+        text_estimator.record_committed_turn(text_bytes, Some(observed_tokens));
+        let mut media_estimator = ContextTokenEstimator::default();
+        media_estimator.record_committed_turn(media_bytes, Some(observed_tokens));
+        assert!(
+            (media_estimator.tokens_per_byte - text_estimator.tokens_per_byte).abs() < f64::EPSILON
+        );
+
+        let heavy = vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::Text(TextPart::new("x".repeat(128 * 1024))),
+            InputPart::File(FilePart::image(
+                "image/png",
+                FileSource::Bytes(bytes::Bytes::from(vec![0_u8; 1024 * 1024])),
+            )),
+        ]))];
+        let heavy_bytes = serialized_text_request_bytes(&heavy, &[]).unwrap();
+        assert!(
+            media_estimator
+                .estimated_context_tokens(heavy_bytes)
+                .is_some_and(|tokens| tokens >= 10_000)
+        );
     }
 
     #[test]

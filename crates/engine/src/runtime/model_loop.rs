@@ -1391,10 +1391,10 @@ impl Engine {
                     },
                 )
                 .await?;
-                let serialized_context_bytes =
-                    serde_json::to_vec(&(&request.history, &request.tools))
-                        .map_err(|error| ModelError::invalid_request(error.to_string()))?
-                        .len();
+                let serialized_context_bytes = super::compaction::serialized_text_request_bytes(
+                    &request.history,
+                    &request.tools,
+                )?;
                 let abort = AbortBridge::new(cancellation.clone());
                 let response = tokio::select! {
                     result = model.model().stream(request, abort.signal()) => result,
