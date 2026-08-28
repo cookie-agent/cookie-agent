@@ -1895,6 +1895,7 @@ channel:</p>
 <th>Images</th>
 <th>PDF</th>
 <th>Video</th>
+<th>Audio</th>
 </tr>
 </thead>
 <tbody>
@@ -1903,27 +1904,32 @@ channel:</p>
 <td>Tool result</td>
 <td>Tool result</td>
 <td>No</td>
+<td>No</td>
 </tr>
 <tr>
 <td><code>anthropic-compatible</code></td>
 <td>Tool result</td>
 <td>Tool result</td>
 <td>User turn (capable MiniMax models)</td>
+<td>No</td>
 </tr>
 <tr>
 <td><code>aws-bedrock-converse</code></td>
 <td>Tool result (≤3.75 MiB)</td>
 <td>Tool result (≤4.5 MiB)</td>
 <td>Tool result (&lt;25 MiB base64 ≈18.7 MiB raw; Nova models)</td>
+<td>No</td>
 </tr>
 <tr>
 <td><code>openai-responses</code>, <code>azure-openai-responses</code></td>
 <td>Tool result</td>
 <td>No</td>
 <td>No</td>
+<td>No</td>
 </tr>
 <tr>
 <td><code>openai-chat</code>, <code>azure-openai-chat</code></td>
+<td>No</td>
 <td>No</td>
 <td>No</td>
 <td>No</td>
@@ -1933,15 +1939,18 @@ channel:</p>
 <td>No</td>
 <td>No</td>
 <td>User turn (capable Kimi/Qwen models)</td>
+<td>No</td>
 </tr>
 <tr>
 <td><code>google-gemini</code>, <code>google-vertex-gemini</code></td>
 <td>No</td>
 <td>No</td>
 <td>User turn</td>
+<td>User turn</td>
 </tr>
 <tr>
 <td><code>cohere-v2-chat</code></td>
+<td>No</td>
 <td>No</td>
 <td>No</td>
 <td>No</td>
@@ -1950,6 +1959,8 @@ channel:</p>
 </table>
 <p>Families without either delivery channel reject attachments at request
 validation, and the tool surfaces a clean error instead of a corrupted result.
+Per-kind count limits advertised by the model are enforced per request, and a
+tool result plus its emitted messages share one combined attachment budget.
 For user-turn delivery, the tool result is followed by one persisted emitted
 user message containing the video. MCP media follows the same channel gate,
 although MCP's <code>CallToolResult</code> cannot author arbitrary emitted messages.</p>

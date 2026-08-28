@@ -1423,6 +1423,14 @@ action level. Calls then use the complete generated tool name as their scoped
 resource: more-specific patterns override broader patterns, and unmatched calls
 ask. Each delegated agent is evaluated against its own permission map.</p>
 <p>Each MCP description and result is treated as untrusted server output.</p>
+<p>Media blocks in tool results (images, audio, and embedded resource blobs) are
+sniffed by content, gated on the model's capabilities and the provider's
+delivery channel exactly like <a href="../../reference/tools/#media-reads">media reads</a>,
+and retained as content-addressed attachments. Gated media fails the tool call
+with an actionable error; malformed blocks degrade to inline notes. Blob
+resources without a declared MIME type are retained under the sniffed type.
+Results that would exceed the combined attachment budget keep what fits and
+degrade the remainder to inline notes.</p>
 
 
 
