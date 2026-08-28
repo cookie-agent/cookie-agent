@@ -100,7 +100,8 @@ it does not retroactively redact the artifact. See the
 
 Media files read through `read` or returned by MCP servers are sniffed by
 content and strictly validated (full image decode with bounded memory, classic
-cross-reference PDF structure, container magic-byte checks for video) before
+cross-reference PDF structure, frame-sync and container magic-byte checks for
+audio and video) before
 bytes are retained or sent to a provider. Validation rejects malformed input,
 but it is not content screening: an image or PDF can embed adversarial text
 intended for the model (visible prompt injection). Media attachments are in the

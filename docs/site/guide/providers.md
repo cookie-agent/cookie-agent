@@ -210,19 +210,21 @@ the `models` map.
 adaptor can carry it. `Tool result` and `User turn` identify the delivery
 channel:
 
-| Family | Images | PDF | Video |
-|---|---|---|---|
-| `anthropic` | Tool result | Tool result | No |
-| `anthropic-compatible` | Tool result | Tool result | User turn (capable MiniMax models) |
-| `aws-bedrock-converse` | Tool result (≤3.75 MiB) | Tool result (≤4.5 MiB) | Tool result (<25 MiB base64 ≈18.7 MiB raw; Nova models) |
-| `openai-responses`, `azure-openai-responses` | Tool result | No | No |
-| `openai-chat`, `azure-openai-chat` | No | No | No |
-| `openai-compatible` | No | No | User turn (capable Kimi/Qwen models) |
-| `google-gemini`, `google-vertex-gemini` | No | No | User turn |
-| `cohere-v2-chat` | No | No | No |
+| Family | Images | PDF | Video | Audio |
+|---|---|---|---|---|
+| `anthropic` | Tool result | Tool result | No | No |
+| `anthropic-compatible` | Tool result | Tool result | User turn (capable MiniMax models) | No |
+| `aws-bedrock-converse` | Tool result (≤3.75 MiB) | Tool result (≤4.5 MiB) | Tool result (<25 MiB base64 ≈18.7 MiB raw; Nova models) | No |
+| `openai-responses`, `azure-openai-responses` | Tool result | No | No | No |
+| `openai-chat`, `azure-openai-chat` | No | No | No | No |
+| `openai-compatible` | No | No | User turn (capable Kimi/Qwen models) | No |
+| `google-gemini`, `google-vertex-gemini` | No | No | User turn | User turn |
+| `cohere-v2-chat` | No | No | No | No |
 
 Families without either delivery channel reject attachments at request
 validation, and the tool surfaces a clean error instead of a corrupted result.
+Per-kind count limits advertised by the model are enforced per request, and a
+tool result plus its emitted messages share one combined attachment budget.
 For user-turn delivery, the tool result is followed by one persisted emitted
 user message containing the video. MCP media follows the same channel gate,
 although MCP's `CallToolResult` cannot author arbitrary emitted messages.

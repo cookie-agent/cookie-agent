@@ -15,13 +15,14 @@ prepared and revalidated against the target before execution.
 unambiguous replacement. Both tools stage and validate filesystem mutations
 before publication.
 
-Tool results may include image, PDF, or video attachments. Attachments are
-validated, content-addressed, and supplied to models as file parts rather than
-embedded in text output.
+Tool results may include image, PDF, audio, or video attachments. Attachments
+are validated, content-addressed, and supplied to models as file parts rather
+than embedded in text output.
 
 ### Media reads
 
-When `read` targets an image (PNG, JPEG, GIF, WebP), PDF, or video container,
+When `read` targets an image (PNG, JPEG, GIF, WebP), PDF, audio file (MP3,
+WAV, Ogg, FLAC), or video container (MP4/MOV/WebM/MKV/AVI/FLV/MPEG/WMV/3GPP),
 the file is sniffed by content (never by extension alone), strictly validated,
 and retained as an attachment. Whether the attachment reaches the model
 depends on two checks, in order:
@@ -42,10 +43,16 @@ the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB
 documents, ≈18.7 MiB raw video; other families: 20 MiB images or 25 MiB
 video). Bedrock receives supported video in the tool result. OpenAI-compatible,
 Anthropic-compatible, Gemini, and Vertex models that declare video receive it
-as a file in one emitted user turn immediately after the tool result. MCP media
-uses the same delivery selection; the MCP wire format cannot author arbitrary
-additional messages. Media parts do not contribute to context fit estimates,
-except video, which carries a flat conservative cost.
+as a file in one emitted user turn immediately after the tool result; Gemini
+and Vertex receive audio the same way. Each model also advertises per-kind
+count limits, enforced per request. Media parts do not contribute to context
+fit estimates, except video, which carries a flat conservative cost.
+
+MCP media blocks (images, audio, embedded resource blobs) follow the same gate
+and delivery selection. Blob resources without a declared MIME type are
+retained under the sniffed type. Results that would exceed the combined
+attachment budget keep what fits and degrade the rest to inline notes. The MCP
+wire format cannot author arbitrary additional messages.
 
 Media does not survive context pressure. Tool-output elision removes the parent
 result and all of its emitted messages as one unit, and compaction checkpoints
