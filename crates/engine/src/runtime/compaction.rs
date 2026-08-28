@@ -976,7 +976,7 @@ impl io::Write for CountingWriter {
     }
 }
 
-fn estimated_request_tokens(
+pub(super) fn estimated_request_tokens(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<u64, EngineError> {

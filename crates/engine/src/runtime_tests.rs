@@ -6084,6 +6084,20 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             "{RAW_MARKER}{}",
             "x".repeat(output_bytes - RAW_MARKER.len())
         );
+        let image_bytes = vec![7_u8; 1024 * 1024];
+        let (image_reference, image_digest) = fixture
+            .engine
+            .inner
+            .artifacts
+            .retain(&image_bytes)
+            .expect("retain compaction image");
+        let image_attachment = cookie_agent_protocol::ToolAttachment {
+            mime_type: cookie_agent_protocol::MimeType::new("image/png").unwrap(),
+            filename: Some("context.png".into()),
+            byte_length: image_bytes.len() as u64,
+            sha256: Sha256Digest::new(image_digest).unwrap(),
+            reference: image_reference,
+        };
         append_compaction_tool_history(
             &fixture,
             session.session_id,
@@ -6094,7 +6108,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 output,
                 metadata: serde_json::Value::Null,
                 truncation: None,
-                attachments: Vec::new(),
+                attachments: vec![image_attachment],
                 additional_messages: Vec::new(),
             },
             latest_usage,
@@ -6171,6 +6185,11 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             summary_request.contains("[tool output elided; retained at artifact://sha256/"),
             expect_elision
         );
+        assert_eq!(
+            summary_request.contains("[image/png attachment elided for summarization]"),
+            !expect_elision
+        );
+        assert!(!summary_request.contains("input_image"));
         fixture.engine.shutdown().await;
     }
 }

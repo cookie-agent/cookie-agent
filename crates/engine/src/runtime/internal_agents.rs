@@ -706,23 +706,73 @@ pub(super) fn internal_agent_output_limit(
 }
 
 fn internal_model_request(
-    history: Vec<oven_sdk::HistoryTurn>,
+    mut history: Vec<oven_sdk::HistoryTurn>,
     tools: Vec<ToolDefinition>,
     max_output_tokens: Option<u64>,
 ) -> ModelRequest {
+    project_internal_history(&mut history);
     let mut request = ModelRequest::new(history).with_tools(tools);
     request.inference.max_output_tokens = max_output_tokens;
     request
+}
+
+fn project_internal_history(history: &mut [oven_sdk::HistoryTurn]) {
+    for turn in history {
+        match turn {
+            oven_sdk::HistoryTurn::System(_) => {}
+            oven_sdk::HistoryTurn::User(message) => {
+                for part in &mut message.content {
+                    if let oven_sdk::InputPart::File(file) = part {
+                        *part = oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+                            attachment_placeholder(&file.media_type),
+                        ));
+                    }
+                }
+            }
+            oven_sdk::HistoryTurn::Assistant(turn) => {
+                for part in &mut turn.message.content {
+                    match part {
+                        oven_sdk::AssistantPart::File(file) => {
+                            *part = oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(
+                                attachment_placeholder(&file.media_type),
+                            ));
+                        }
+                        oven_sdk::AssistantPart::ToolResult(result) => {
+                            project_tool_content(&mut result.content);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            oven_sdk::HistoryTurn::Tool(message) => {
+                for result in &mut message.results {
+                    project_tool_content(&mut result.content);
+                }
+            }
+        }
+    }
+}
+
+fn project_tool_content(content: &mut oven_sdk::ToolContent) {
+    let oven_sdk::ToolContent::Mixed(values) = content else {
+        return;
+    };
+    for value in values {
+        if let oven_sdk::ContentValue::File(file) = value {
+            *value = oven_sdk::ContentValue::Text(attachment_placeholder(&file.media_type));
+        }
+    }
+}
+
+fn attachment_placeholder(media_type: &str) -> String {
+    format!("[{media_type} attachment elided for summarization]")
 }
 
 pub(super) fn internal_history_tokens(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<u64, EngineError> {
-    let bytes = serde_json::to_vec(&(history, tools))
-        .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?
-        .len();
-    Ok((bytes as u64).div_ceil(4))
+    super::compaction::estimated_request_tokens(history, tools)
 }
 
 fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
@@ -763,6 +813,10 @@ mod tests {
         FrozenInternalAgentPolicy, InternalAgentLimits, UNKNOWN_INTERNAL_CONTEXT_LIMIT,
         internal_agent_input_fits, internal_agent_input_limit, internal_history_tokens,
         internal_model_request, invalid_internal_output,
+    };
+    use oven_sdk::{
+        ContentValue, FilePart, FileSource, HistoryTurn, InputPart, ToolContent, ToolMessage,
+        ToolResultPart, UserMessage,
     };
 
     #[test]
@@ -826,6 +880,60 @@ mod tests {
             ))],
         ))];
         assert!(internal_history_tokens(&history, &[]).unwrap() >= 1_000);
+    }
+
+    #[test]
+    fn history_input_estimate_matches_shared_fit_projection_with_media() {
+        let history = vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::Text(oven_sdk::TextPart::new("describe attachment")),
+            InputPart::File(FilePart::image(
+                "image/png",
+                FileSource::Bytes(bytes::Bytes::from(vec![7_u8; 1024 * 1024])),
+            )),
+        ]))];
+
+        assert_eq!(
+            internal_history_tokens(&history, &[]).unwrap(),
+            super::super::compaction::estimated_request_tokens(&history, &[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn internal_request_wire_history_replaces_all_files_with_placeholders() {
+        let file = || {
+            FilePart::image(
+                "image/png",
+                FileSource::Bytes(bytes::Bytes::from_static(b"raw-media-bytes")),
+            )
+        };
+        let history = vec![
+            HistoryTurn::user(UserMessage::new(vec![InputPart::File(file())])),
+            HistoryTurn::tool(ToolMessage::new(vec![ToolResultPart::new(
+                "call",
+                ToolContent::Mixed(vec![ContentValue::File(file())]),
+            )])),
+        ];
+
+        let request = internal_model_request(history, Vec::new(), None);
+        let wire = serde_json::to_value(request).expect("serialize internal request");
+        assert_eq!(
+            wire["history"][0]["value"]["content"][0],
+            serde_json::json!({
+                "type": "text",
+                "value": {
+                    "text": "[image/png attachment elided for summarization]",
+                    "metadata": null
+                }
+            })
+        );
+        assert_eq!(
+            wire["history"][1]["value"]["results"][0]["content"]["value"][0],
+            serde_json::json!({
+                "type": "text",
+                "value": "[image/png attachment elided for summarization]"
+            })
+        );
+        assert!(!wire.to_string().contains("raw-media-bytes"));
     }
 
     #[test]
