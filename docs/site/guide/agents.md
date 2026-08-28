@@ -280,7 +280,9 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 | `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; 128 max output tokens |
 
 All three default to `${parent_model}`, so they run on the model the parent run
-is currently using. An internal agent's input budget is derived from each
+is currently using — including its position in the fallback chain: if the run
+has fallen back to its second model, internal agents resolve to that second
+model too. An internal agent's input budget is derived from each
 resolved model's context limit after reserving its effective maximum output,
 with a minimum of one token. A model with an unknown context limit uses a
 16,384-token input budget. Agent documents cannot set an input-token cap.
