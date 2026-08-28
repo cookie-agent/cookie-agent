@@ -476,6 +476,7 @@ impl Engine {
             agent: active.policy.agent.agent.clone(),
             model: binding.selection.model.clone(),
             adapter: crate::policy::wire_adapter(binding.protocol_recipe.as_str()),
+            adapter_family: crate::policy::adapter_family(binding.protocol_recipe.as_str()),
             capabilities: active
                 .policy
                 .model_capabilities(binding)

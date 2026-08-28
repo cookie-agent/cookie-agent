@@ -1236,6 +1236,7 @@ impl Engine {
                     agent: policy.agent.agent.clone(),
                     model: binding.selection.model.clone(),
                     adapter: policy::wire_adapter(binding.protocol_recipe.as_str()),
+                    adapter_family: policy::adapter_family(binding.protocol_recipe.as_str()),
                     capabilities: policy
                         .model_capabilities(binding)
                         .ok_or(EngineError::NoRunnableModel)?,

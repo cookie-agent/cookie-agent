@@ -135,6 +135,8 @@ pub struct TurnAgentContext {
     pub model: ModelKey,
     /// Frozen wire adapter family used to deliver tool results.
     pub adapter: AdaptorId,
+    /// Exact Oven adapter family, preserving compatible-family distinctions.
+    pub adapter_family: cookie_agent_models::adapters::OvenAdapterFamily,
     /// Public capabilities of the exact model binding that produced the tool call.
     pub capabilities: ModelCapabilities,
 }

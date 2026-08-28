@@ -212,6 +212,7 @@ mod tests {
 
     #[test]
     fn video_profiles_match_pinned_oven_declarations() {
+        assert_eq!(video_profile(OvenAdapterFamily::Anthropic), None);
         for (family, expected) in [
             (
                 OvenAdapterFamily::OpenaiCompatible,

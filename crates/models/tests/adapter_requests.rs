@@ -134,6 +134,10 @@ fn video_definition(endpoint: &str, adaptor: &str, video_mime_type: &str) -> Pro
         "openai-compatible" | "anthropic-compatible" => {
             ("", r#"auth = { method = "no-auth-v1", values = {} }"#)
         }
+        "anthropic" => (
+            "",
+            r#"auth = { method = "anthropic-api-key-v1", values = { api_key = "test-key" } }"#,
+        ),
         _ => panic!("unsupported video fixture adaptor"),
     };
     toml::from_str(&format!(
@@ -149,6 +153,27 @@ capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens =
 "#
     ))
     .unwrap()
+}
+
+#[test]
+fn authored_anthropic_model_rejects_video_capability() {
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("custom.anthropic-video").unwrap();
+    let result = ModelManager::new(
+        BTreeMap::from([(
+            provider_id,
+            video_definition("http://127.0.0.1:9/v1", "anthropic", "video/mp4"),
+        )]),
+        empty_catalog(),
+        store(&temporary),
+    );
+
+    let error = match result {
+        Ok(_) => panic!("true Anthropic adapter accepted authored video capability"),
+        Err(error) => error,
+    };
+    let error = format!("{error:?}");
+    assert!(error.contains("Anthropic declaration exceeds the protocol modality ceiling"));
 }
 
 async fn dispatch_request(

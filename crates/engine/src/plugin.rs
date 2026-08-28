@@ -2273,6 +2273,7 @@ mod tests {
             agent: AgentId::new("test").expect("agent ID"),
             model: "test/model".parse().expect("model key"),
             adapter: cookie_agent_protocol::AdaptorId::OpenaiChat,
+            adapter_family: cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
             capabilities: ModelCapabilities {
                 input: [Modality::Text].into_iter().collect(),
                 output: [Modality::Text].into_iter().collect(),

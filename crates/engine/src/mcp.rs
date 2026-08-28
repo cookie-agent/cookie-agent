@@ -2892,7 +2892,7 @@ fn retain_base64_attachment(
             )));
         }
         let gate = crate::media::gate_attachment(
-            context.turn_context.adapter,
+            context.turn_context.adapter_family,
             &context.turn_context.capabilities,
             mime,
             &bytes,
@@ -3151,6 +3151,18 @@ for line in sys.stdin:
             agent: AgentId::new("test").expect("agent"),
             model: "test/model".parse().expect("model key"),
             adapter,
+            adapter_family: match adapter {
+                cookie_agent_protocol::AdaptorId::Anthropic => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible
+                }
+                cookie_agent_protocol::AdaptorId::OpenaiCompatible => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
+                }
+                cookie_agent_protocol::AdaptorId::GoogleGemini => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
+                }
+                _ => cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+            },
             capabilities,
         }
     }

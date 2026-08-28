@@ -938,9 +938,7 @@ pub(crate) fn resolve_agent<'a>(
 }
 
 pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
-    match cookie_agent_models::adapters::wire_adapter_for_protocol(value)
-        .expect("frozen binding contains a reviewed protocol adapter")
-    {
+    match adapter_family(value) {
         cookie_agent_models::adapters::OvenAdapterFamily::Anthropic
         | cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible => {
             protocol::AdaptorId::Anthropic
@@ -973,6 +971,11 @@ pub(crate) fn wire_adapter(value: &str) -> protocol::AdaptorId {
             protocol::AdaptorId::CohereV2Chat
         }
     }
+}
+
+pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::OvenAdapterFamily {
+    cookie_agent_models::adapters::wire_adapter_for_protocol(value)
+        .expect("frozen binding contains a reviewed protocol adapter")
 }
 
 #[cfg(test)]

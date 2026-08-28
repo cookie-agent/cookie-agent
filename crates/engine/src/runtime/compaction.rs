@@ -337,6 +337,7 @@ impl Engine {
             agent: input.owner_policy.agent.agent.clone(),
             model: input.binding.selection.model.clone(),
             adapter: policy::wire_adapter(input.binding.protocol_recipe.as_str()),
+            adapter_family: policy::adapter_family(input.binding.protocol_recipe.as_str()),
             capabilities: input
                 .owner_policy
                 .model_capabilities(input.binding)
@@ -753,6 +754,7 @@ impl Engine {
                 agent: owner_policy.agent.agent.clone(),
                 model: binding.selection.model.clone(),
                 adapter: policy::wire_adapter(binding.protocol_recipe.as_str()),
+                adapter_family: policy::adapter_family(binding.protocol_recipe.as_str()),
                 capabilities: owner_policy
                     .model_capabilities(binding)
                     .expect("test binding has published capabilities"),

@@ -460,10 +460,11 @@ fn apply_openai_cache_breakpoints(
         mark_openai_cache_breakpoint(text, adapter);
     }
     if strategy.rolling
-        && let Some(index) = request
-            .history
-            .iter()
-            .rposition(|turn| matches!(turn, oven_sdk::HistoryTurn::User(_)))
+        && let Some(index) = request.history.iter().rposition(|turn| {
+            matches!(turn, oven_sdk::HistoryTurn::User(message) if message.content.iter().any(
+                |part| matches!(part, oven_sdk::InputPart::Text(text) if !text.text.is_empty())
+            ))
+        })
         && let oven_sdk::HistoryTurn::User(message) = &mut request.history[index]
         && let Some(text) = message
             .content
@@ -3145,7 +3146,7 @@ mod cache_strategy_tests {
     }
 
     #[test]
-    fn openai_rolling_does_not_fall_back_from_latest_file_only_user_turn() {
+    fn openai_rolling_uses_latest_user_turn_with_nonempty_text() {
         let mut request = Request::new(vec![
             oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
                 "earlier eligible text",
@@ -3176,7 +3177,7 @@ mod cache_strategy_tests {
         let InputPart::File(latest) = &latest.content[0] else {
             panic!("latest user file");
         };
-        assert!(!has_openai_breakpoint(&earlier.metadata));
+        assert!(has_openai_breakpoint(&earlier.metadata));
         assert!(!has_openai_breakpoint(&latest.metadata));
     }
 

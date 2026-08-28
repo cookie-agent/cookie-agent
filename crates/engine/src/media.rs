@@ -4,6 +4,7 @@ use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use lopdf::{Document, LoadOptions, Object};
 
 use crate::ToolError;
+use cookie_agent_models::adapters::OvenAdapterFamily;
 use cookie_agent_protocol::{
     AdaptorId, MediaKind as CapabilityMediaKind, ModelCapabilities, ModelKey,
 };
@@ -85,7 +86,7 @@ fn format_mib(bytes: u64) -> String {
 
 #[must_use]
 pub fn gate_attachment(
-    family: AdaptorId,
+    family: OvenAdapterFamily,
     capabilities: &ModelCapabilities,
     mime_type: &str,
     bytes: &[u8],
@@ -121,35 +122,37 @@ pub fn gate_attachment(
     }
 
     let (delivery, family_limit) = match (family, kind) {
-        (AdaptorId::Anthropic, CapabilityMediaKind::Image | CapabilityMediaKind::Pdf) => {
-            (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64)
-        }
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Image) => {
+        (
+            OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible,
+            CapabilityMediaKind::Image | CapabilityMediaKind::Pdf,
+        ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
+        (OvenAdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Image) => {
             (AttachmentGate::AttachToolResult, BEDROCK_IMAGE_BYTES)
         }
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Pdf) => {
+        (OvenAdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Pdf) => {
             (AttachmentGate::AttachToolResult, BEDROCK_PDF_BYTES)
         }
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Video) => {
+        (OvenAdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Video) => {
             (AttachmentGate::AttachToolResult, BEDROCK_VIDEO_BYTES)
         }
         (
-            AdaptorId::OpenaiResponses | AdaptorId::AzureOpenaiResponses,
+            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses,
             CapabilityMediaKind::Image,
         ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
         (
-            AdaptorId::OpenaiCompatible
-            | AdaptorId::Anthropic
-            | AdaptorId::GoogleGemini
-            | AdaptorId::GoogleVertexGemini,
+            OvenAdapterFamily::OpenaiCompatible
+            | OvenAdapterFamily::AnthropicCompatible
+            | OvenAdapterFamily::GoogleGemini
+            | OvenAdapterFamily::GoogleVertexGemini,
             CapabilityMediaKind::Video,
         ) => (
             AttachmentGate::DeliverViaUserTurn,
             MAX_VIDEO_ENCODED_BYTES as u64,
         ),
-        (AdaptorId::GoogleGemini | AdaptorId::GoogleVertexGemini, CapabilityMediaKind::Audio) => {
-            (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64)
-        }
+        (
+            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini,
+            CapabilityMediaKind::Audio,
+        ) => (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64),
         _ => return AttachmentGate::RejectUnsupportedFamily,
     };
     let max_bytes = capability.max_bytes.min(family_limit);
@@ -270,11 +273,33 @@ fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
         return None;
     }
-    let box_size = u32::from_be_bytes(bytes[..4].try_into().ok()?) as usize;
-    if box_size < 12 || box_size > bytes.len() {
+    let (box_size, major_offset, compatible_offset) =
+        match u32::from_be_bytes(bytes[..4].try_into().ok()?) {
+            1 => {
+                if bytes.len() < 24 {
+                    return None;
+                }
+                let size =
+                    usize::try_from(u64::from_be_bytes(bytes[8..16].try_into().ok()?)).ok()?;
+                (size, 16, 24)
+            }
+            size => (size as usize, 8, 16),
+        };
+    if box_size < compatible_offset || box_size > bytes.len() {
         return None;
     }
-    let brand = &bytes[8..12];
+    let brand = &bytes[major_offset..major_offset + 4];
+    if let Some(mime) = iso_base_brand_media_type(brand) {
+        return Some(mime);
+    }
+    bytes[compatible_offset..box_size]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .find_map(|brand| iso_base_brand_media_type(brand))
+}
+
+fn iso_base_brand_media_type(brand: &[u8]) -> Option<&'static str> {
     if brand == b"qt  " {
         return Some("video/quicktime");
     }
@@ -1294,6 +1319,7 @@ fn malformed_media() -> ToolError {
 mod tests {
     use std::{collections::BTreeMap, path::Path};
 
+    use cookie_agent_models::adapters::OvenAdapterFamily;
     use cookie_agent_protocol::{
         AdaptorId, CancellationCapability, MediaCapability, MediaKind, MimeType, Modality,
         ModelCapabilities, ReplayCapability,
@@ -1350,6 +1376,25 @@ mod tests {
         bytes
     }
 
+    fn ftyp_with_compatible_brand(major: &[u8; 4], compatible: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = 20_u32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(major);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(compatible);
+        bytes
+    }
+
+    fn large_ftyp(major: &[u8; 4], compatible: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = 1_u32.to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"ftyp");
+        bytes.extend_from_slice(&28_u64.to_be_bytes());
+        bytes.extend_from_slice(major);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(compatible);
+        bytes
+    }
+
     #[test]
     fn malformed_pdf_is_rejected_within_the_bounded_budget() {
         let (valid, reserved) = pdf_validation_stats(b"not a PDF");
@@ -1360,16 +1405,17 @@ mod tests {
     #[test]
     fn attachment_gate_is_exhaustive_across_adapters_media_and_capability() {
         let families = [
-            (AdaptorId::Anthropic, true, true),
-            (AdaptorId::OpenaiChat, false, false),
-            (AdaptorId::OpenaiResponses, true, false),
-            (AdaptorId::OpenaiCompatible, false, false),
-            (AdaptorId::GoogleGemini, false, false),
-            (AdaptorId::GoogleVertexGemini, false, false),
-            (AdaptorId::AwsBedrockConverse, true, true),
-            (AdaptorId::AzureOpenaiChat, false, false),
-            (AdaptorId::AzureOpenaiResponses, true, false),
-            (AdaptorId::CohereV2Chat, false, false),
+            (OvenAdapterFamily::Anthropic, true, true),
+            (OvenAdapterFamily::AnthropicCompatible, true, true),
+            (OvenAdapterFamily::OpenaiChat, false, false),
+            (OvenAdapterFamily::OpenaiResponses, true, false),
+            (OvenAdapterFamily::OpenaiCompatible, false, false),
+            (OvenAdapterFamily::GoogleGemini, false, false),
+            (OvenAdapterFamily::GoogleVertexGemini, false, false),
+            (OvenAdapterFamily::AwsBedrockConverse, true, true),
+            (OvenAdapterFamily::AzureOpenaiChat, false, false),
+            (OvenAdapterFamily::AzureOpenaiResponses, true, false),
+            (OvenAdapterFamily::CohereV2Chat, false, false),
         ];
         for (family, image_deliverable, pdf_deliverable) in families {
             for (kind, mime_type, deliverable) in [
@@ -1408,7 +1454,7 @@ mod tests {
         ] {
             assert_eq!(
                 gate_attachment(
-                    AdaptorId::OpenaiChat,
+                    OvenAdapterFamily::OpenaiChat,
                     &capabilities(Some((MediaKind::Video, advertised, 1024))),
                     observed,
                     b"video",
@@ -1420,7 +1466,7 @@ mod tests {
         let pdf = capabilities(Some((MediaKind::Pdf, "application/pdf", u64::MAX)));
         assert_eq!(
             gate_attachment(
-                AdaptorId::AwsBedrockConverse,
+                OvenAdapterFamily::AwsBedrockConverse,
                 &image,
                 "image/png",
                 &vec![0; BEDROCK_IMAGE_BYTES as usize + 1],
@@ -1431,7 +1477,7 @@ mod tests {
         );
         assert_eq!(
             gate_attachment(
-                AdaptorId::AwsBedrockConverse,
+                OvenAdapterFamily::AwsBedrockConverse,
                 &pdf,
                 "application/pdf",
                 &vec![0; BEDROCK_PDF_BYTES as usize + 1],
@@ -1458,12 +1504,17 @@ mod tests {
     fn bedrock_video_attaches_within_the_raw_byte_budget() {
         let video = capabilities(Some((MediaKind::Video, "video/mp4", u64::MAX)));
         assert_eq!(
-            gate_attachment(AdaptorId::AwsBedrockConverse, &video, "video/mp4", b"video",),
+            gate_attachment(
+                OvenAdapterFamily::AwsBedrockConverse,
+                &video,
+                "video/mp4",
+                b"video",
+            ),
             AttachmentGate::AttachToolResult
         );
         assert_eq!(
             gate_attachment(
-                AdaptorId::AwsBedrockConverse,
+                OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
                 &vec![0; super::BEDROCK_VIDEO_BYTES as usize],
@@ -1472,7 +1523,7 @@ mod tests {
         );
         assert_eq!(
             gate_attachment(
-                AdaptorId::AwsBedrockConverse,
+                OvenAdapterFamily::AwsBedrockConverse,
                 &video,
                 "video/mp4",
                 &vec![0; super::BEDROCK_VIDEO_BYTES as usize + 1],
@@ -1491,7 +1542,7 @@ mod tests {
         let small_cap = capabilities(Some((MediaKind::Pdf, "application/pdf", 8)));
         assert_eq!(
             gate_attachment(
-                AdaptorId::OpenaiChat,
+                OvenAdapterFamily::OpenaiChat,
                 &small_cap,
                 "application/pdf",
                 &[0; 16],
@@ -1504,10 +1555,10 @@ mod tests {
     fn user_turn_video_families_use_the_emitted_delivery_channel() {
         let video = capabilities(Some((MediaKind::Video, "video/mp4", 1024)));
         for family in [
-            AdaptorId::OpenaiCompatible,
-            AdaptorId::Anthropic,
-            AdaptorId::GoogleGemini,
-            AdaptorId::GoogleVertexGemini,
+            OvenAdapterFamily::OpenaiCompatible,
+            OvenAdapterFamily::AnthropicCompatible,
+            OvenAdapterFamily::GoogleGemini,
+            OvenAdapterFamily::GoogleVertexGemini,
         ] {
             assert_eq!(
                 gate_attachment(family, &video, "video/mp4", b"video"),
@@ -1516,17 +1567,26 @@ mod tests {
             );
         }
         assert_eq!(
-            gate_attachment(AdaptorId::AwsBedrockConverse, &video, "video/mp4", b"video"),
+            gate_attachment(
+                OvenAdapterFamily::AwsBedrockConverse,
+                &video,
+                "video/mp4",
+                b"video"
+            ),
             AttachmentGate::AttachToolResult
         );
         assert_eq!(
             gate_attachment(
-                AdaptorId::OpenaiCompatible,
+                OvenAdapterFamily::OpenaiCompatible,
                 &capabilities(None),
                 "video/mp4",
                 b"video"
             ),
             AttachmentGate::RejectUnsupportedModel
+        );
+        assert_eq!(
+            gate_attachment(OvenAdapterFamily::Anthropic, &video, "video/mp4", b"video"),
+            AttachmentGate::RejectUnsupportedFamily
         );
     }
 
@@ -1551,7 +1611,10 @@ mod tests {
         }
 
         let audio = capabilities(Some((MediaKind::Audio, "audio/mpeg", 1024)));
-        for family in [AdaptorId::GoogleGemini, AdaptorId::GoogleVertexGemini] {
+        for family in [
+            OvenAdapterFamily::GoogleGemini,
+            OvenAdapterFamily::GoogleVertexGemini,
+        ] {
             assert_eq!(
                 gate_attachment(family, &audio, "audio/mpeg", b"ID3payload"),
                 AttachmentGate::DeliverViaUserTurn
@@ -1572,6 +1635,20 @@ mod tests {
         assert_eq!(
             approved_media_type(Path::new("clip.3gp"), &ftyp(b"3gp6")).unwrap(),
             Some("video/3gpp")
+        );
+        for major in [b"MSNV", b"av01", b"mp71"] {
+            assert_eq!(
+                approved_media_type(
+                    Path::new("clip.mp4"),
+                    &ftyp_with_compatible_brand(major, b"mp42")
+                )
+                .unwrap(),
+                Some("video/mp4")
+            );
+        }
+        assert_eq!(
+            approved_media_type(Path::new("clip.mp4"), &large_ftyp(b"MSNV", b"isom")).unwrap(),
+            Some("video/mp4")
         );
     }
 

@@ -233,7 +233,7 @@ impl PreparedExecutor for ReadExecutor {
         let bytes = self.target.verified_bytes()?;
         if let Some(mime) = approved_media_type(&self.target.display_path, &bytes)? {
             let gate = gate_attachment(
-                context.turn_context.adapter,
+                context.turn_context.adapter_family,
                 &context.turn_context.capabilities,
                 mime,
                 &bytes,
@@ -402,6 +402,24 @@ mod tests {
             agent: base.agent.clone(),
             model: base.model.clone(),
             adapter,
+            adapter_family: match adapter {
+                AdaptorId::Anthropic => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible
+                }
+                AdaptorId::OpenaiCompatible => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
+                }
+                AdaptorId::AwsBedrockConverse => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse
+                }
+                AdaptorId::GoogleGemini => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
+                }
+                AdaptorId::GoogleVertexGemini => {
+                    cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini
+                }
+                _ => cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+            },
             capabilities,
         })
     }
