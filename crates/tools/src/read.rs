@@ -809,7 +809,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             video_incapable.message(),
-            "Cannot attach video/mp4: the active model \"test/model\" does not accept media inputs"
+            "Cannot attach video/mp4: the active model \"test/model\" does not accept video inputs"
         );
     }
 
@@ -830,7 +830,7 @@ mod tests {
         assert!(
             malformed
                 .message()
-                .contains("malformed image, PDF, or video")
+                .contains("malformed image, PDF, audio, or video")
         );
         assert!(!malformed.message().contains("Cannot attach"));
 

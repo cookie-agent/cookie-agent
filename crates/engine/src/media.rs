@@ -1,4 +1,8 @@
-use std::{collections::HashSet, io::Cursor, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io::Cursor,
+    path::Path,
+};
 
 use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use lopdf::{Document, LoadOptions, Object};
@@ -55,6 +59,10 @@ pub fn attachment_gate_error(
                 "image"
             } else if mime_type == "application/pdf" {
                 "PDF"
+            } else if mime_type.starts_with("audio/") {
+                "audio"
+            } else if mime_type.starts_with("video/") {
+                "video"
             } else {
                 "media"
             };
@@ -163,6 +171,92 @@ pub fn gate_attachment(
     }
 }
 
+pub(crate) fn validate_media_part_counts(
+    history: &[oven_sdk::HistoryTurn],
+    capabilities: &ModelCapabilities,
+) -> Result<(), String> {
+    let mut counts = BTreeMap::new();
+    for turn in history {
+        match turn {
+            oven_sdk::HistoryTurn::System(_) => {}
+            oven_sdk::HistoryTurn::User(message) => {
+                for part in &message.content {
+                    if let oven_sdk::InputPart::File(file) = part {
+                        count_media_file(&mut counts, file);
+                    }
+                }
+            }
+            oven_sdk::HistoryTurn::Assistant(turn) => {
+                for part in &turn.message.content {
+                    match part {
+                        oven_sdk::AssistantPart::File(file) => {
+                            count_media_file(&mut counts, file);
+                        }
+                        oven_sdk::AssistantPart::ToolResult(result) => {
+                            count_tool_media(&mut counts, &result.content);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            oven_sdk::HistoryTurn::Tool(message) => {
+                for result in &message.results {
+                    count_tool_media(&mut counts, &result.content);
+                }
+            }
+        }
+    }
+    for (kind, capability) in &capabilities.media {
+        let count = counts.get(kind).copied().unwrap_or_default();
+        if count > capability.max_count as usize {
+            let label = match kind {
+                CapabilityMediaKind::Image => "image",
+                CapabilityMediaKind::Audio => "audio",
+                CapabilityMediaKind::Pdf => "PDF",
+                CapabilityMediaKind::Video => "video",
+            };
+            return Err(format!(
+                "model request contains {count} {label} file parts; the model limit is {}",
+                capability.max_count
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn count_media_file(counts: &mut BTreeMap<CapabilityMediaKind, usize>, file: &oven_sdk::FilePart) {
+    if let Some(kind) = capability_media_kind(&file.media_type) {
+        *counts.entry(kind).or_insert(0) += 1;
+    }
+}
+
+fn count_tool_media(
+    counts: &mut BTreeMap<CapabilityMediaKind, usize>,
+    content: &oven_sdk::ToolContent,
+) {
+    if let oven_sdk::ToolContent::Mixed(values) = content {
+        for value in values {
+            if let oven_sdk::ContentValue::File(file) = value {
+                count_media_file(counts, file);
+            }
+        }
+    }
+}
+
+fn capability_media_kind(mime_type: &str) -> Option<CapabilityMediaKind> {
+    if mime_type.starts_with("image/") {
+        Some(CapabilityMediaKind::Image)
+    } else if mime_type == "application/pdf" {
+        Some(CapabilityMediaKind::Pdf)
+    } else if mime_type.starts_with("audio/") {
+        Some(CapabilityMediaKind::Audio)
+    } else if mime_type.starts_with("video/") {
+        Some(CapabilityMediaKind::Video)
+    } else {
+        None
+    }
+}
+
 pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static str>, ToolError> {
     let known_extension = known_media_extension(path);
     let candidate = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -233,7 +327,7 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
     };
     if bytes.len() > max_encoded_bytes {
         return Err(ToolError::resource_limit(format!(
-            "attachment is {} bytes; the limit is {max_encoded_bytes} bytes",
+            "attachment is {} bytes; the absolute validation cap is {max_encoded_bytes} bytes",
             bytes.len()
         )));
     }
@@ -1312,7 +1406,7 @@ fn media_extension_matches(path: &Path, mime: &str) -> bool {
 }
 
 fn malformed_media() -> ToolError {
-    ToolError::execution("file extension identifies malformed image, PDF, or video content")
+    ToolError::execution("file extension identifies malformed image, PDF, audio, or video content")
 }
 
 #[cfg(test)]
@@ -1328,6 +1422,7 @@ mod tests {
     use super::{
         AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, PDF_DECOMPRESSION_BUDGET_FOR_TESTS,
         approved_media_type, attachment_gate_error, gate_attachment, pdf_validation_stats,
+        validate_media_part_counts,
     };
 
     fn capabilities(kind: Option<(MediaKind, &str, u64)>) -> ModelCapabilities {
@@ -1400,6 +1495,47 @@ mod tests {
         let (valid, reserved) = pdf_validation_stats(b"not a PDF");
         assert!(!valid);
         assert!(reserved <= PDF_DECOMPRESSION_BUDGET_FOR_TESTS);
+    }
+
+    #[test]
+    fn request_media_count_includes_tool_results_and_emitted_user_turns() {
+        let file = || {
+            oven_sdk::FilePart::image(
+                "image/png",
+                oven_sdk::FileSource::Bytes(bytes::Bytes::from_static(b"image")),
+            )
+        };
+        let history = vec![
+            oven_sdk::HistoryTurn::tool(oven_sdk::ToolMessage::new(vec![
+                oven_sdk::ToolResultPart::new(
+                    "call",
+                    oven_sdk::ToolContent::Mixed(vec![oven_sdk::ContentValue::File(file())]),
+                ),
+            ])),
+            oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(vec![
+                oven_sdk::InputPart::File(file()),
+            ])),
+        ];
+        let error = validate_media_part_counts(
+            &history,
+            &capabilities(Some((MediaKind::Image, "image/png", u64::MAX))),
+        )
+        .expect_err("two image parts must exceed max_count one");
+
+        assert!(
+            error
+                .to_string()
+                .contains("model request contains 2 image file parts; the model limit is 1")
+        );
+    }
+
+    #[test]
+    fn absolute_media_cap_is_named_in_resource_limit_errors() {
+        let mut video = b"FLV\x01".to_vec();
+        video.resize(super::MAX_VIDEO_ENCODED_BYTES + 1, 0);
+        let error = approved_media_type(Path::new("clip.flv"), &video)
+            .expect_err("oversized media must fail the absolute cap");
+        assert!(error.message().contains("absolute validation cap"));
     }
 
     #[test]

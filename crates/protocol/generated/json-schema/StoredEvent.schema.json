@@ -4812,6 +4812,7 @@
       "type": "object",
       "properties": {
         "additional_messages": {
+          "description": "Emitted model-history messages. Their files share the 256-file limit with attachments.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ToolEmittedMessage"
@@ -4819,6 +4820,7 @@
           "maxItems": 4
         },
         "attachments": {
+          "description": "Direct result files. Together with files in additional_messages, at most 256 are allowed.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ToolAttachment"

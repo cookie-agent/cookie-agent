@@ -43,21 +43,32 @@ pub(crate) fn checkpoint_retained_history(
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
     let pinned_agent_md = usize::from(latest_agent_md_event(events).is_some());
-    let mut retained = history
-        .iter()
-        .take(
-            1_usize
-                .saturating_add(pinned_agent_md)
-                .saturating_add(pinned_skills),
-        )
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut history = history.iter();
+    let mut retained = history.next().cloned().into_iter().collect::<Vec<_>>();
+    if history.clone().next().is_some_and(is_framed_summary_turn) {
+        history.next();
+    }
+    retained.extend(
+        history
+            .take(pinned_agent_md.saturating_add(pinned_skills))
+            .cloned(),
+    );
     if let Some(summary) = summary {
         retained.push(HistoryTurn::user(user_text(&framed_compaction_summary(
             summary,
         ))));
     }
     retained
+}
+
+fn is_framed_summary_turn(turn: &HistoryTurn) -> bool {
+    matches!(
+        turn,
+        HistoryTurn::User(message)
+            if matches!(message.content.as_slice(), [InputPart::Text(text)]
+                if text.text.starts_with(COMPACTION_SUMMARY_PREFIX)
+                    && text.text.ends_with(COMPACTION_SUMMARY_SUFFIX))
+    )
 }
 
 pub(crate) fn tool_output_elision_marker(
@@ -1614,6 +1625,9 @@ mod tests {
             HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
                 "system",
             ))])),
+            HistoryTurn::user(super::user_text(&framed_compaction_summary(
+                "stale summary",
+            ))),
             HistoryTurn::user(super::user_text("pinned AGENTS.md context")),
             HistoryTurn::user(super::user_text("first pinned body")),
             HistoryTurn::user(super::user_text("second pinned body")),
@@ -1628,6 +1642,7 @@ mod tests {
         assert!(encoded.contains("second pinned body"));
         assert!(encoded.contains("pinned AGENTS.md context"));
         assert!(encoded.contains("<summary>\\nsummary"));
+        assert!(!encoded.contains("stale summary"));
         assert!(!encoded.contains("discarded conversation"));
     }
 

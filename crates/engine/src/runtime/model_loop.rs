@@ -1382,6 +1382,11 @@ impl Engine {
                         Err(error) => self.record_interception_error(session, plugin, error),
                     }
                 }
+                crate::media::validate_media_part_counts(
+                    &request.history,
+                    &turn_context.capabilities,
+                )
+                .map_err(ModelError::invalid_request)?;
                 let authoritative_prompt = serde_json::to_vec(&request)
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?;
                 self.append(

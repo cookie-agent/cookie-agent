@@ -365,6 +365,14 @@ impl Engine {
             if let Ok(model) = policy::resolve_model(input.binding, &input.owner_policy.runtime) {
                 let mut request =
                     ModelRequest::new(context.history.clone()).with_tools(input.tools.to_vec());
+                crate::media::validate_media_part_counts(
+                    &request.history,
+                    &input
+                        .owner_policy
+                        .model_capabilities(input.binding)
+                        .ok_or(EngineError::NoRunnableModel)?,
+                )
+                .map_err(ModelError::invalid_request)?;
                 if let Some(native_context) = context.native_context.clone() {
                     request = request.with_native_context(native_context);
                 }

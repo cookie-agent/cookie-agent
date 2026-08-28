@@ -543,8 +543,14 @@ pub struct PersistedToolResult {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ToolOutputTruncation>", required)]
     pub truncation: Option<ToolOutputTruncation>,
+    #[schemars(
+        description = "Direct result files. Together with files in additional_messages, at most 256 are allowed."
+    )]
     #[schemars(length(max = 256))]
     pub attachments: Vec<ToolAttachment>,
+    #[schemars(
+        description = "Emitted model-history messages. Their files share the 256-file limit with attachments."
+    )]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 4))]
     pub additional_messages: Vec<ToolEmittedMessage>,
