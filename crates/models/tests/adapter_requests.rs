@@ -121,6 +121,36 @@ capabilities = {{ input = {input}, output = ["text"], context_tokens = 4096, out
     .unwrap()
 }
 
+fn video_definition(endpoint: &str, adaptor: &str) -> ProviderDefinition {
+    let (setup, auth) = match adaptor {
+        "google-gemini" => (
+            "",
+            r#"auth = { method = "google-api-key-header-v1", values = { api_key = "google-key" } }"#,
+        ),
+        "google-vertex-gemini" => (
+            r#"setup = { project = "project-1", location = "us-central1", resource = "publishers/google" }"#,
+            r#"auth = { method = "oauth-access-token-v1", values = { access_token = "vertex-token" } }"#,
+        ),
+        "openai-compatible" | "anthropic-compatible" => {
+            ("", r#"auth = { method = "no-auth-v1", values = {} }"#)
+        }
+        _ => panic!("unsupported video fixture adaptor"),
+    };
+    toml::from_str(&format!(
+        r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "{adaptor}"
+{setup}
+{auth}
+
+[models.test]
+display_name = "Video"
+capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{ video = {{ mime_types = ["video/mp4"], max_bytes = 26214400, max_count = 2 }} }} }}
+"#
+    ))
+    .unwrap()
+}
+
 async fn dispatch_request(
     adaptor: &str,
     response: &'static str,
@@ -188,6 +218,44 @@ async fn dispatch(adaptor: &str, response: &'static str) -> String {
         true,
     )
     .await
+}
+
+async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
+    let (mut endpoint, captured) = server(response).await;
+    if adaptor == "google-gemini" {
+        endpoint = endpoint.trim_end_matches("/v1").to_owned() + "/v1beta";
+    }
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("custom.video").unwrap();
+    let manager = ModelManager::new(
+        BTreeMap::from([(provider_id.clone(), video_definition(&endpoint, adaptor))]),
+        empty_catalog(),
+        store(&temporary),
+    )
+    .unwrap_or_else(|error| panic!("{adaptor} video manager: {error:?}"));
+    let key = ModelKey::new(provider_id, ProviderModelId::new("test").unwrap()).unwrap();
+    let resolved = manager
+        .current()
+        .resolve(&ModelSelection {
+            model: key,
+            variant: None,
+        })
+        .unwrap();
+    let request = Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
+        InputPart::File(FilePart::video(
+            "video/mp4",
+            FileSource::Bytes(b"video".to_vec().into()),
+        )),
+    ]))]);
+    let mut stream = resolved
+        .model()
+        .stream(resolved.prepare_request(request), AbortSignal::default())
+        .await
+        .unwrap();
+    while let Some(part) = stream.stream.next().await {
+        part.unwrap();
+    }
+    captured.await.unwrap()
 }
 
 fn http_body(request: &str) -> serde_json::Value {
@@ -309,4 +377,51 @@ async fn anthropic_cache_breakpoint_survives_image_bearing_tool_result() {
         body["messages"][0]["content"][0]["cache_control"]["ttl"],
         "5m"
     );
+}
+
+#[tokio::test]
+async fn user_turn_video_encodes_for_every_declared_delivery_family() {
+    let openai = http_body(
+        &dispatch_video(
+            "openai-compatible",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        )
+        .await,
+    );
+    assert_eq!(
+        openai["messages"][0]["content"][0],
+        serde_json::json!({
+            "type":"video_url",
+            "video_url":{"url":"data:video/mp4;base64,dmlkZW8="}
+        })
+    );
+
+    let anthropic = http_body(
+        &dispatch_video(
+            "anthropic-compatible",
+            "event: message_start\ndata: {\"message\":{}}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\nevent: message_stop\ndata: {}\n\n",
+        )
+        .await,
+    );
+    assert_eq!(anthropic["messages"][0]["content"][0]["type"], "video");
+    assert_eq!(
+        anthropic["messages"][0]["content"][0]["source"],
+        serde_json::json!({
+            "type":"base64",
+            "media_type":"video/mp4",
+            "data":"dmlkZW8="
+        })
+    );
+
+    let google_response = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n";
+    for adaptor in ["google-gemini", "google-vertex-gemini"] {
+        let body = http_body(&dispatch_video(adaptor, google_response).await);
+        assert_eq!(
+            body["contents"][0]["parts"][0],
+            serde_json::json!({
+                "inlineData":{"mimeType":"video/mp4","data":"dmlkZW8="}
+            }),
+            "{adaptor}"
+        );
+    }
 }

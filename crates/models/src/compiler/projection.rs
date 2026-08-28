@@ -24,14 +24,22 @@ const BROAD_VIDEO_MIME_TYPES: &[&str] = &[
     "video/3gpp",
     "video/x-matroska",
 ];
+const ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES: &[&str] = &[
+    "video/mp4",
+    "video/avi",
+    "video/x-msvideo",
+    "video/quicktime",
+    "video/mov",
+    "video/x-matroska",
+];
 
-// Keep catalog projection limited to families whose pinned Oven profiles accept video. Expand
-// when Anthropic-compatible/MiniMax and OpenAI-compatible `video_url` profiles are available.
+// Keep catalog projection limited to families whose pinned Oven profiles accept video.
 fn video_profile(family: OvenAdapterFamily) -> Option<(&'static [&'static str], u32)> {
     match family {
-        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
-            Some((BROAD_VIDEO_MIME_TYPES, 2))
-        }
+        OvenAdapterFamily::AnthropicCompatible => Some((ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES, 2)),
+        OvenAdapterFamily::OpenaiCompatible
+        | OvenAdapterFamily::GoogleGemini
+        | OvenAdapterFamily::GoogleVertexGemini => Some((BROAD_VIDEO_MIME_TYPES, 2)),
         OvenAdapterFamily::AwsBedrockConverse => Some((
             &[
                 "video/x-matroska",
@@ -47,10 +55,8 @@ fn video_profile(family: OvenAdapterFamily) -> Option<(&'static [&'static str], 
             1,
         )),
         OvenAdapterFamily::Anthropic
-        | OvenAdapterFamily::AnthropicCompatible
         | OvenAdapterFamily::OpenaiChat
         | OvenAdapterFamily::OpenaiResponses
-        | OvenAdapterFamily::OpenaiCompatible
         | OvenAdapterFamily::AzureOpenaiChat
         | OvenAdapterFamily::AzureOpenaiResponses
         | OvenAdapterFamily::CohereV2Chat => None,

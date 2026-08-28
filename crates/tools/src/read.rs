@@ -2,11 +2,14 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type, attachment_gate_error,
-    gate_attachment,
+    AttachmentGate, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec, approved_media_type,
+    attachment_gate_error, gate_attachment,
 };
-use cookie_agent_protocol::{PermissionAction, PersistedToolResult as ToolResult};
+use cookie_agent_protocol::{
+    PermissionAction, PersistedToolResult as ToolResult, ToolEmittedContent, ToolEmittedMessage,
+    ToolEmittedMessageRole,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -251,16 +254,43 @@ impl PreparedExecutor for ReadExecutor {
                     .map(|name| name.to_string_lossy().into_owned()),
                 &bytes,
             )?;
+            let sha256 = attachment.sha256.clone();
+            let (output, attachments, additional_messages) = match gate {
+                AttachmentGate::AttachToolResult => (
+                    format!("Attached {mime} ({} bytes).", bytes.len()),
+                    vec![attachment],
+                    Vec::new(),
+                ),
+                AttachmentGate::DeliverViaUserTurn => (
+                    format!(
+                        "Attached {mime} ({} bytes), delivered in the following message.",
+                        bytes.len()
+                    ),
+                    Vec::new(),
+                    vec![
+                        ToolEmittedMessage::new(
+                            ToolEmittedMessageRole::User,
+                            vec![ToolEmittedContent::File(attachment)],
+                        )
+                        .map_err(|error| ToolError::execution(error.to_string()))?,
+                    ],
+                ),
+                AttachmentGate::RejectUnsupportedModel
+                | AttachmentGate::RejectUnsupportedFamily
+                | AttachmentGate::RejectTooLarge { .. } => {
+                    unreachable!("rejected attachment gates returned an error")
+                }
+            };
             return Ok(ToolResult {
                 title: crate::safe_title(format!(
                     "Read attachment {}",
                     self.target.display_path.display()
                 )),
-                output: format!("Attached {mime} ({} bytes).", bytes.len()),
-                metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":attachment.sha256}),
+                output,
+                metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":sha256}),
                 truncation: None,
-                attachments: vec![attachment],
-                additional_messages: Vec::new(),
+                attachments,
+                additional_messages,
             });
         }
         let text = std::str::from_utf8(&bytes)
@@ -316,7 +346,7 @@ mod tests {
     };
     use cookie_agent_protocol::{
         AdaptorId, MediaCapability, MediaKind, MimeType, Modality, OperationFingerprint,
-        PermissionAction, RunId, SessionId, ToolCallId,
+        PermissionAction, RunId, SessionId, ToolCallId, ToolEmittedContent,
     };
 
     use super::{ReadTool, directory_page, text_page, text_result};
@@ -613,6 +643,10 @@ mod tests {
         fs::write(root.path().join("pixel.png"), PNG).unwrap();
         let pdf = pdf();
         fs::write(root.path().join("page.pdf"), &pdf).unwrap();
+        let mut video = 16_u32.to_be_bytes().to_vec();
+        video.extend_from_slice(b"ftypisom");
+        video.extend_from_slice(&[0; 4]);
+        fs::write(root.path().join("clip.mp4"), &video).unwrap();
 
         let image_capable = turn_context(
             AdaptorId::Anthropic,
@@ -710,6 +744,54 @@ mod tests {
             size_rejected
                 .message()
                 .contains("inline limit for this provider")
+        );
+
+        for family in [
+            AdaptorId::OpenaiCompatible,
+            AdaptorId::Anthropic,
+            AdaptorId::GoogleGemini,
+            AdaptorId::GoogleVertexGemini,
+        ] {
+            let result = execute_media(
+                root.path(),
+                "clip.mp4",
+                turn_context(
+                    family,
+                    Some((
+                        MediaKind::Video,
+                        Modality::Video,
+                        "video/mp4",
+                        video.len() as u64,
+                    )),
+                ),
+            )
+            .await
+            .unwrap();
+            assert!(result.attachments.is_empty(), "{family:?}");
+            assert_eq!(
+                result.output,
+                format!(
+                    "Attached video/mp4 ({} bytes), delivered in the following message.",
+                    video.len()
+                )
+            );
+            assert!(matches!(
+                result.additional_messages[0].content.as_slice(),
+                [ToolEmittedContent::File(attachment)]
+                    if attachment.mime_type.as_str() == "video/mp4"
+            ));
+        }
+
+        let video_incapable = execute_media(
+            root.path(),
+            "clip.mp4",
+            turn_context(AdaptorId::OpenaiCompatible, None),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            video_incapable.message(),
+            "Cannot attach video/mp4: the active model \"test/model\" does not accept media inputs"
         );
     }
 

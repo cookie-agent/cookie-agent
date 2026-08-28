@@ -170,6 +170,34 @@ fn projects_catalog_video_input_with_consensus_limits() {
             "video/x-msvideo",
         ])
     );
+
+    for npm in ["@ai-sdk/openai-compatible", "@ai-sdk/anthropic"] {
+        let mut provider = record(npm, Some("https://example.com/v1"));
+        provider
+            .models
+            .values_mut()
+            .next()
+            .unwrap()
+            .record
+            .as_mut()
+            .unwrap()
+            .modalities
+            .input = vec!["text".into(), "video".into()];
+        let compiled = DynamicCompiler::family_registry()
+            .compile_managed("sha256:user-turn-video", &provider, None)
+            .unwrap();
+        let capabilities = &compiled.models.values().next().unwrap().capabilities;
+        assert!(
+            capabilities
+                .input
+                .contains(&cookie_agent_models::Modality::Video)
+        );
+        assert!(
+            capabilities
+                .media
+                .contains_key(&cookie_agent_models::MediaKind::Video)
+        );
+    }
 }
 
 #[test]

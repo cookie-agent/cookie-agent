@@ -33,7 +33,8 @@ const BEDROCK_VIDEO_BYTES: u64 = 19_660_797;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentGate {
-    Attach,
+    AttachToolResult,
+    DeliverViaUserTurn,
     RejectUnsupportedModel,
     RejectUnsupportedFamily,
     RejectTooLarge { max_bytes: u64 },
@@ -47,7 +48,7 @@ pub fn attachment_gate_error(
     family: AdaptorId,
 ) -> Option<String> {
     match gate {
-        AttachmentGate::Attach => None,
+        AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn => None,
         AttachmentGate::RejectUnsupportedModel => {
             let input = if mime_type.starts_with("image/") {
                 "image"
@@ -119,24 +120,40 @@ pub fn gate_attachment(
         };
     }
 
-    let family_limit = match (family, kind) {
+    let (delivery, family_limit) = match (family, kind) {
         (AdaptorId::Anthropic, CapabilityMediaKind::Image | CapabilityMediaKind::Pdf) => {
-            MAX_ENCODED_BYTES as u64
+            (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64)
         }
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Image) => BEDROCK_IMAGE_BYTES,
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Pdf) => BEDROCK_PDF_BYTES,
-        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Video) => BEDROCK_VIDEO_BYTES,
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Image) => {
+            (AttachmentGate::AttachToolResult, BEDROCK_IMAGE_BYTES)
+        }
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Pdf) => {
+            (AttachmentGate::AttachToolResult, BEDROCK_PDF_BYTES)
+        }
+        (AdaptorId::AwsBedrockConverse, CapabilityMediaKind::Video) => {
+            (AttachmentGate::AttachToolResult, BEDROCK_VIDEO_BYTES)
+        }
         (
             AdaptorId::OpenaiResponses | AdaptorId::AzureOpenaiResponses,
             CapabilityMediaKind::Image,
-        ) => MAX_ENCODED_BYTES as u64,
+        ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
+        (
+            AdaptorId::OpenaiCompatible
+            | AdaptorId::Anthropic
+            | AdaptorId::GoogleGemini
+            | AdaptorId::GoogleVertexGemini,
+            CapabilityMediaKind::Video,
+        ) => (
+            AttachmentGate::DeliverViaUserTurn,
+            MAX_VIDEO_ENCODED_BYTES as u64,
+        ),
         _ => return AttachmentGate::RejectUnsupportedFamily,
     };
     let max_bytes = capability.max_bytes.min(family_limit);
     if bytes.len() as u64 > max_bytes {
         AttachmentGate::RejectTooLarge { max_bytes }
     } else {
-        AttachmentGate::Attach
+        delivery
     }
 }
 
@@ -1346,7 +1363,7 @@ mod tests {
                         b"media",
                     ),
                     if deliverable {
-                        AttachmentGate::Attach
+                        AttachmentGate::AttachToolResult
                     } else {
                         AttachmentGate::RejectUnsupportedFamily
                     },
@@ -1416,7 +1433,7 @@ mod tests {
         let video = capabilities(Some((MediaKind::Video, "video/mp4", u64::MAX)));
         assert_eq!(
             gate_attachment(AdaptorId::AwsBedrockConverse, &video, "video/mp4", b"video",),
-            AttachmentGate::Attach
+            AttachmentGate::AttachToolResult
         );
         assert_eq!(
             gate_attachment(
@@ -1425,7 +1442,7 @@ mod tests {
                 "video/mp4",
                 &vec![0; super::BEDROCK_VIDEO_BYTES as usize],
             ),
-            AttachmentGate::Attach
+            AttachmentGate::AttachToolResult
         );
         assert_eq!(
             gate_attachment(
@@ -1454,6 +1471,36 @@ mod tests {
                 &[0; 16],
             ),
             AttachmentGate::RejectTooLarge { max_bytes: 8 }
+        );
+    }
+
+    #[test]
+    fn user_turn_video_families_use_the_emitted_delivery_channel() {
+        let video = capabilities(Some((MediaKind::Video, "video/mp4", 1024)));
+        for family in [
+            AdaptorId::OpenaiCompatible,
+            AdaptorId::Anthropic,
+            AdaptorId::GoogleGemini,
+            AdaptorId::GoogleVertexGemini,
+        ] {
+            assert_eq!(
+                gate_attachment(family, &video, "video/mp4", b"video"),
+                AttachmentGate::DeliverViaUserTurn,
+                "{family:?}"
+            );
+        }
+        assert_eq!(
+            gate_attachment(AdaptorId::AwsBedrockConverse, &video, "video/mp4", b"video"),
+            AttachmentGate::AttachToolResult
+        );
+        assert_eq!(
+            gate_attachment(
+                AdaptorId::OpenaiCompatible,
+                &capabilities(None),
+                "video/mp4",
+                b"video"
+            ),
+            AttachmentGate::RejectUnsupportedModel
         );
     }
 
