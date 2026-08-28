@@ -121,7 +121,7 @@ capabilities = {{ input = {input}, output = ["text"], context_tokens = 4096, out
     .unwrap()
 }
 
-fn video_definition(endpoint: &str, adaptor: &str) -> ProviderDefinition {
+fn video_definition(endpoint: &str, adaptor: &str, video_mime_type: &str) -> ProviderDefinition {
     let (setup, auth) = match adaptor {
         "google-gemini" => (
             "",
@@ -145,7 +145,7 @@ adaptor = "{adaptor}"
 
 [models.test]
 display_name = "Video"
-capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{ video = {{ mime_types = ["video/mp4"], max_bytes = 26214400, max_count = 2 }} }} }}
+capabilities = {{ input = ["text", "video"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{ video = {{ mime_types = ["{video_mime_type}"], max_bytes = 26214400, max_count = 2 }} }} }}
 "#
     ))
     .unwrap()
@@ -220,7 +220,12 @@ async fn dispatch(adaptor: &str, response: &'static str) -> String {
     .await
 }
 
-async fn dispatch_video_request(adaptor: &str, response: &'static str, request: Request) -> String {
+async fn dispatch_video_request(
+    adaptor: &str,
+    response: &'static str,
+    request: Request,
+    declared_video_mime_type: &str,
+) -> String {
     let (mut endpoint, captured) = server(response).await;
     if adaptor == "google-gemini" {
         endpoint = endpoint.trim_end_matches("/v1").to_owned() + "/v1beta";
@@ -228,7 +233,10 @@ async fn dispatch_video_request(adaptor: &str, response: &'static str, request: 
     let temporary = TempDir::new().unwrap();
     let provider_id = ProviderId::new("custom.video").unwrap();
     let manager = ModelManager::new(
-        BTreeMap::from([(provider_id.clone(), video_definition(&endpoint, adaptor))]),
+        BTreeMap::from([(
+            provider_id.clone(),
+            video_definition(&endpoint, adaptor, declared_video_mime_type),
+        )]),
         empty_catalog(),
         store(&temporary),
     )
@@ -252,16 +260,17 @@ async fn dispatch_video_request(adaptor: &str, response: &'static str, request: 
     captured.await.unwrap()
 }
 
-async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
+async fn dispatch_video(adaptor: &str, response: &'static str, video_mime_type: &str) -> String {
     dispatch_video_request(
         adaptor,
         response,
         Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
             InputPart::File(FilePart::video(
-                "video/mp4",
+                video_mime_type,
                 FileSource::Bytes(b"video".to_vec().into()),
             )),
         ]))]),
+        video_mime_type,
     )
     .await
 }
@@ -393,6 +402,7 @@ async fn user_turn_video_encodes_for_every_declared_delivery_family() {
         &dispatch_video(
             "openai-compatible",
             "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "video/mp4",
         )
         .await,
     );
@@ -408,6 +418,7 @@ async fn user_turn_video_encodes_for_every_declared_delivery_family() {
         &dispatch_video(
             "anthropic-compatible",
             "event: message_start\ndata: {\"message\":{}}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\nevent: message_stop\ndata: {}\n\n",
+            "video/mov",
         )
         .await,
     );
@@ -416,18 +427,21 @@ async fn user_turn_video_encodes_for_every_declared_delivery_family() {
         anthropic["messages"][0]["content"][0]["source"],
         serde_json::json!({
             "type":"base64",
-            "media_type":"video/mp4",
+            "media_type":"video/mov",
             "data":"dmlkZW8="
         })
     );
 
     let google_response = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}\n\n";
-    for adaptor in ["google-gemini", "google-vertex-gemini"] {
-        let body = http_body(&dispatch_video(adaptor, google_response).await);
+    for (adaptor, mime_type) in [
+        ("google-gemini", "video/webm"),
+        ("google-vertex-gemini", "video/mpegs"),
+    ] {
+        let body = http_body(&dispatch_video(adaptor, google_response, mime_type).await);
         assert_eq!(
             body["contents"][0]["parts"][0],
             serde_json::json!({
-                "inlineData":{"mimeType":"video/mp4","data":"dmlkZW8="}
+                "inlineData":{"mimeType":mime_type,"data":"dmlkZW8="}
             }),
             "{adaptor}"
         );
@@ -454,6 +468,7 @@ async fn translated_system_emission_stays_a_user_turn_on_each_delivery_family_wi
             "openai-compatible",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
             request(),
+            "video/mp4",
         )
         .await,
     );
@@ -469,6 +484,7 @@ async fn translated_system_emission_stays_a_user_turn_on_each_delivery_family_wi
             "anthropic-compatible",
             "event: message_start\ndata: {\"message\":{}}\n\nevent: message_stop\ndata: {}\n\n",
             request(),
+            "video/mp4",
         )
         .await,
     );
@@ -478,7 +494,9 @@ async fn translated_system_emission_stays_a_user_turn_on_each_delivery_family_wi
 
     let google_response = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
     for adaptor in ["google-gemini", "google-vertex-gemini"] {
-        let body = http_body(&dispatch_video_request(adaptor, google_response, request()).await);
+        let body = http_body(
+            &dispatch_video_request(adaptor, google_response, request(), "video/mp4").await,
+        );
         assert_eq!(
             body["systemInstruction"]["parts"][0]["text"], "stable system prefix",
             "{adaptor}"

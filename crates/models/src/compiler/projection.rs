@@ -10,20 +10,7 @@ use crate::{
     catalog::CatalogModelRecord,
 };
 
-const BROAD_VIDEO_MIME_TYPES: &[&str] = &[
-    "video/mp4",
-    "video/mpeg",
-    "video/mpg",
-    "video/mov",
-    "video/quicktime",
-    "video/avi",
-    "video/x-msvideo",
-    "video/x-flv",
-    "video/webm",
-    "video/wmv",
-    "video/3gpp",
-    "video/x-matroska",
-];
+const OPENAI_COMPATIBLE_VIDEO_MIME_TYPES: &[&str] = &["video/mp4"];
 const ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES: &[&str] = &[
     "video/mp4",
     "video/avi",
@@ -32,14 +19,36 @@ const ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES: &[&str] = &[
     "video/mov",
     "video/x-matroska",
 ];
+const GEMINI_VIDEO_MIME_TYPES: &[&str] = &[
+    "video/mp4",
+    "video/mpeg",
+    "video/mov",
+    "video/avi",
+    "video/x-flv",
+    "video/mpg",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp",
+];
+const VERTEX_VIDEO_MIME_TYPES: &[&str] = &[
+    "video/x-flv",
+    "video/quicktime",
+    "video/mpeg",
+    "video/mpegs",
+    "video/mpg",
+    "video/mp4",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp",
+];
 
 // Keep catalog projection limited to families whose pinned Oven profiles accept video.
 fn video_profile(family: OvenAdapterFamily) -> Option<(&'static [&'static str], u32)> {
     match family {
         OvenAdapterFamily::AnthropicCompatible => Some((ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES, 2)),
-        OvenAdapterFamily::OpenaiCompatible
-        | OvenAdapterFamily::GoogleGemini
-        | OvenAdapterFamily::GoogleVertexGemini => Some((BROAD_VIDEO_MIME_TYPES, 2)),
+        OvenAdapterFamily::OpenaiCompatible => Some((OPENAI_COMPATIBLE_VIDEO_MIME_TYPES, 2)),
+        OvenAdapterFamily::GoogleGemini => Some((GEMINI_VIDEO_MIME_TYPES, 2)),
+        OvenAdapterFamily::GoogleVertexGemini => Some((VERTEX_VIDEO_MIME_TYPES, 2)),
         OvenAdapterFamily::AwsBedrockConverse => Some((
             &[
                 "video/x-matroska",
@@ -195,4 +204,30 @@ pub(crate) fn validate_defaults(
         && defaults.stop.iter().all(|value| {
             !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_profiles_match_pinned_oven_declarations() {
+        for (family, expected) in [
+            (
+                OvenAdapterFamily::OpenaiCompatible,
+                OPENAI_COMPATIBLE_VIDEO_MIME_TYPES,
+            ),
+            (
+                OvenAdapterFamily::AnthropicCompatible,
+                ANTHROPIC_COMPATIBLE_VIDEO_MIME_TYPES,
+            ),
+            (OvenAdapterFamily::GoogleGemini, GEMINI_VIDEO_MIME_TYPES),
+            (
+                OvenAdapterFamily::GoogleVertexGemini,
+                VERTEX_VIDEO_MIME_TYPES,
+            ),
+        ] {
+            assert_eq!(video_profile(family), Some((expected, 2)), "{family:?}");
+        }
+    }
 }

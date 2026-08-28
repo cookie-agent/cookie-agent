@@ -162,12 +162,9 @@ fn projects_catalog_video_input_with_consensus_limits() {
             "video/mp4",
             "video/mpeg",
             "video/mpg",
-            "video/quicktime",
             "video/webm",
             "video/wmv",
             "video/x-flv",
-            "video/x-matroska",
-            "video/x-msvideo",
         ])
     );
 
