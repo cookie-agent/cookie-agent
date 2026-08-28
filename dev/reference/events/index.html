@@ -1268,6 +1268,11 @@ readers skip newly originated events and report an unknown-envelope diagnostic;
 they do not reinterpret those events without attribution.</p>
 <p>Terminal tool-result truncation and <code>tool_output_elided</code> references use the
 <a href="../tools/#retained-tool-output">retained-output readback lifecycle</a>.</p>
+<p>When tool-emitted additional messages are materialized as persisted turns, their
+event origin is <code>engine:tool-result</code>. The engine authors the durable turn from a
+validated tool result; the tool name remains payload context rather than a new
+origin class. This keeps the origin grammar restricted to <code>user</code>, <code>engine</code>,
+<code>plugin</code>, and <code>client</code>.</p>
 <h2 id="payloads">Payloads<a class="headerlink" href="#payloads" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

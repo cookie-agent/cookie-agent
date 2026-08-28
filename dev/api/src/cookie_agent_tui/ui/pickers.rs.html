@@ -825,45 +825,46 @@
 <a href=#825 id=825 data-nosnippet>825</a>                        metadata: serde_json::Value::Null,
 <a href=#826 id=826 data-nosnippet>826</a>                        truncation: <span class="prelude-val">None</span>,
 <a href=#827 id=827 data-nosnippet>827</a>                        attachments: Vec::new(),
-<a href=#828 id=828 data-nosnippet>828</a>                    }),
-<a href=#829 id=829 data-nosnippet>829</a>                    error: <span class="prelude-val">None</span>,
-<a href=#830 id=830 data-nosnippet>830</a>                },
-<a href=#831 id=831 data-nosnippet>831</a>            },
-<a href=#832 id=832 data-nosnippet>832</a>        )));
-<a href=#833 id=833 data-nosnippet>833</a>
-<a href=#834 id=834 data-nosnippet>834</a>        <span class="macro">assert_eq!</span>(flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>store.sessions)[<span class="number">1</span>].<span class="number">0</span>, active);
-<a href=#835 id=835 data-nosnippet>835</a>        <span class="macro">assert_eq!</span>(
-<a href=#836 id=836 data-nosnippet>836</a>            store.sessions[<span class="kw-2">&amp;</span>background].last_agent_activity,
-<a href=#837 id=837 data-nosnippet>837</a>            <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T10:30:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>))
-<a href=#838 id=838 data-nosnippet>838</a>        );
-<a href=#839 id=839 data-nosnippet>839</a>    }
-<a href=#840 id=840 data-nosnippet>840</a>
-<a href=#841 id=841 data-nosnippet>841</a>    <span class="attr">#[test]
-<a href=#842 id=842 data-nosnippet>842</a>    </span><span class="kw">fn </span>tree_view_keeps_selection_inside_the_visible_window() {
-<a href=#843 id=843 data-nosnippet>843</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">0</span>;
-<a href=#844 id=844 data-nosnippet>844</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0</span>;
-<a href=#845 id=845 data-nosnippet>845</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#846 id=846 data-nosnippet>846</a>        selection = <span class="number">7</span>;
-<a href=#847 id=847 data-nosnippet>847</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#848 id=848 data-nosnippet>848</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">4</span>);
-<a href=#849 id=849 data-nosnippet>849</a>        selection = <span class="number">2</span>;
-<a href=#850 id=850 data-nosnippet>850</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#851 id=851 data-nosnippet>851</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">2</span>);
-<a href=#852 id=852 data-nosnippet>852</a>        selection = <span class="number">99</span>;
-<a href=#853 id=853 data-nosnippet>853</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
-<a href=#854 id=854 data-nosnippet>854</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">19</span>, <span class="number">16</span>));
-<a href=#855 id=855 data-nosnippet>855</a>    }
-<a href=#856 id=856 data-nosnippet>856</a>
-<a href=#857 id=857 data-nosnippet>857</a>    <span class="attr">#[test]
-<a href=#858 id=858 data-nosnippet>858</a>    </span><span class="kw">fn </span>empty_or_zero_height_tree_view_resets_state() {
-<a href=#859 id=859 data-nosnippet>859</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">8</span>;
-<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">5</span>;
-<a href=#861 id=861 data-nosnippet>861</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">0</span>, <span class="number">4</span>);
-<a href=#862 id=862 data-nosnippet>862</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">0</span>, <span class="number">0</span>));
-<a href=#863 id=863 data-nosnippet>863</a>        selection = <span class="number">8</span>;
-<a href=#864 id=864 data-nosnippet>864</a>        offset = <span class="number">5</span>;
-<a href=#865 id=865 data-nosnippet>865</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">0</span>);
-<a href=#866 id=866 data-nosnippet>866</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">8</span>, <span class="number">0</span>));
-<a href=#867 id=867 data-nosnippet>867</a>    }
-<a href=#868 id=868 data-nosnippet>868</a>}
+<a href=#828 id=828 data-nosnippet>828</a>                        additional_messages: Vec::new(),
+<a href=#829 id=829 data-nosnippet>829</a>                    }),
+<a href=#830 id=830 data-nosnippet>830</a>                    error: <span class="prelude-val">None</span>,
+<a href=#831 id=831 data-nosnippet>831</a>                },
+<a href=#832 id=832 data-nosnippet>832</a>            },
+<a href=#833 id=833 data-nosnippet>833</a>        )));
+<a href=#834 id=834 data-nosnippet>834</a>
+<a href=#835 id=835 data-nosnippet>835</a>        <span class="macro">assert_eq!</span>(flattened(<span class="kw-2">&amp;</span>tree, <span class="kw-2">&amp;</span>store.sessions)[<span class="number">1</span>].<span class="number">0</span>, active);
+<a href=#836 id=836 data-nosnippet>836</a>        <span class="macro">assert_eq!</span>(
+<a href=#837 id=837 data-nosnippet>837</a>            store.sessions[<span class="kw-2">&amp;</span>background].last_agent_activity,
+<a href=#838 id=838 data-nosnippet>838</a>            <span class="prelude-val">Some</span>(<span class="string">"2026-08-06T10:30:00Z"</span>.parse().expect(<span class="string">"timestamp"</span>))
+<a href=#839 id=839 data-nosnippet>839</a>        );
+<a href=#840 id=840 data-nosnippet>840</a>    }
+<a href=#841 id=841 data-nosnippet>841</a>
+<a href=#842 id=842 data-nosnippet>842</a>    <span class="attr">#[test]
+<a href=#843 id=843 data-nosnippet>843</a>    </span><span class="kw">fn </span>tree_view_keeps_selection_inside_the_visible_window() {
+<a href=#844 id=844 data-nosnippet>844</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">0</span>;
+<a href=#845 id=845 data-nosnippet>845</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">0</span>;
+<a href=#846 id=846 data-nosnippet>846</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#847 id=847 data-nosnippet>847</a>        selection = <span class="number">7</span>;
+<a href=#848 id=848 data-nosnippet>848</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#849 id=849 data-nosnippet>849</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">4</span>);
+<a href=#850 id=850 data-nosnippet>850</a>        selection = <span class="number">2</span>;
+<a href=#851 id=851 data-nosnippet>851</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#852 id=852 data-nosnippet>852</a>        <span class="macro">assert_eq!</span>(offset, <span class="number">2</span>);
+<a href=#853 id=853 data-nosnippet>853</a>        selection = <span class="number">99</span>;
+<a href=#854 id=854 data-nosnippet>854</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">4</span>);
+<a href=#855 id=855 data-nosnippet>855</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">19</span>, <span class="number">16</span>));
+<a href=#856 id=856 data-nosnippet>856</a>    }
+<a href=#857 id=857 data-nosnippet>857</a>
+<a href=#858 id=858 data-nosnippet>858</a>    <span class="attr">#[test]
+<a href=#859 id=859 data-nosnippet>859</a>    </span><span class="kw">fn </span>empty_or_zero_height_tree_view_resets_state() {
+<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span><span class="kw-2">mut </span>selection = <span class="number">8</span>;
+<a href=#861 id=861 data-nosnippet>861</a>        <span class="kw">let </span><span class="kw-2">mut </span>offset = <span class="number">5</span>;
+<a href=#862 id=862 data-nosnippet>862</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">0</span>, <span class="number">4</span>);
+<a href=#863 id=863 data-nosnippet>863</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">0</span>, <span class="number">0</span>));
+<a href=#864 id=864 data-nosnippet>864</a>        selection = <span class="number">8</span>;
+<a href=#865 id=865 data-nosnippet>865</a>        offset = <span class="number">5</span>;
+<a href=#866 id=866 data-nosnippet>866</a>        clamp_tree_view(<span class="kw-2">&amp;mut </span>selection, <span class="kw-2">&amp;mut </span>offset, <span class="number">20</span>, <span class="number">0</span>);
+<a href=#867 id=867 data-nosnippet>867</a>        <span class="macro">assert_eq!</span>((selection, offset), (<span class="number">8</span>, <span class="number">0</span>));
+<a href=#868 id=868 data-nosnippet>868</a>    }
+<a href=#869 id=869 data-nosnippet>869</a>}
 </code></pre></div></section></main></body></html>

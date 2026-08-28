@@ -1124,74 +1124,75 @@
 <a href=#1124 id=1124 data-nosnippet>1124</a>            metadata: serde_json::Value::Null,
 <a href=#1125 id=1125 data-nosnippet>1125</a>            truncation: <span class="prelude-val">None</span>,
 <a href=#1126 id=1126 data-nosnippet>1126</a>            attachments: Vec::new(),
-<a href=#1127 id=1127 data-nosnippet>1127</a>        }
-<a href=#1128 id=1128 data-nosnippet>1128</a>    }
-<a href=#1129 id=1129 data-nosnippet>1129</a>
-<a href=#1130 id=1130 data-nosnippet>1130</a>    <span class="attr">#[test]
-<a href=#1131 id=1131 data-nosnippet>1131</a>    </span><span class="kw">fn </span>opted_out_results_ignore_config_limits_without_retention() {
-<a href=#1132 id=1132 data-nosnippet>1132</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
-<a href=#1133 id=1133 data-nosnippet>1133</a>        <span class="kw">let </span>artifact_path = directory.path().join(<span class="string">"artifacts"</span>);
-<a href=#1134 id=1134 data-nosnippet>1134</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
-<a href=#1135 id=1135 data-nosnippet>1135</a>        <span class="kw">let </span>output = <span class="string">"line\n"</span>.repeat(<span class="number">1_000</span>);
-<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="kw">let </span>bounded = bound_tool_result(
-<a href=#1137 id=1137 data-nosnippet>1137</a>            result(output.clone()),
-<a href=#1138 id=1138 data-nosnippet>1138</a>            ToolResultTruncationPolicy::OptOut,
-<a href=#1139 id=1139 data-nosnippet>1139</a>            <span class="kw-2">&amp;</span>artifacts,
-<a href=#1140 id=1140 data-nosnippet>1140</a>            <span class="number">1</span>,
+<a href=#1127 id=1127 data-nosnippet>1127</a>            additional_messages: Vec::new(),
+<a href=#1128 id=1128 data-nosnippet>1128</a>        }
+<a href=#1129 id=1129 data-nosnippet>1129</a>    }
+<a href=#1130 id=1130 data-nosnippet>1130</a>
+<a href=#1131 id=1131 data-nosnippet>1131</a>    <span class="attr">#[test]
+<a href=#1132 id=1132 data-nosnippet>1132</a>    </span><span class="kw">fn </span>opted_out_results_ignore_config_limits_without_retention() {
+<a href=#1133 id=1133 data-nosnippet>1133</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
+<a href=#1134 id=1134 data-nosnippet>1134</a>        <span class="kw">let </span>artifact_path = directory.path().join(<span class="string">"artifacts"</span>);
+<a href=#1135 id=1135 data-nosnippet>1135</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
+<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="kw">let </span>output = <span class="string">"line\n"</span>.repeat(<span class="number">1_000</span>);
+<a href=#1137 id=1137 data-nosnippet>1137</a>        <span class="kw">let </span>bounded = bound_tool_result(
+<a href=#1138 id=1138 data-nosnippet>1138</a>            result(output.clone()),
+<a href=#1139 id=1139 data-nosnippet>1139</a>            ToolResultTruncationPolicy::OptOut,
+<a href=#1140 id=1140 data-nosnippet>1140</a>            <span class="kw-2">&amp;</span>artifacts,
 <a href=#1141 id=1141 data-nosnippet>1141</a>            <span class="number">1</span>,
-<a href=#1142 id=1142 data-nosnippet>1142</a>        )
-<a href=#1143 id=1143 data-nosnippet>1143</a>        .unwrap();
-<a href=#1144 id=1144 data-nosnippet>1144</a>        <span class="macro">assert_eq!</span>(bounded.output, output);
-<a href=#1145 id=1145 data-nosnippet>1145</a>        <span class="macro">assert!</span>(bounded.truncation.is_none());
-<a href=#1146 id=1146 data-nosnippet>1146</a>        <span class="macro">assert_eq!</span>(std::fs::read_dir(artifact_path).unwrap().count(), <span class="number">0</span>);
-<a href=#1147 id=1147 data-nosnippet>1147</a>    }
-<a href=#1148 id=1148 data-nosnippet>1148</a>
-<a href=#1149 id=1149 data-nosnippet>1149</a>    <span class="attr">#[test]
-<a href=#1150 id=1150 data-nosnippet>1150</a>    </span><span class="kw">fn </span>opted_out_result_over_event_limit_is_a_resource_error() {
-<a href=#1151 id=1151 data-nosnippet>1151</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
-<a href=#1152 id=1152 data-nosnippet>1152</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(directory.path().join(<span class="string">"artifacts"</span>)).unwrap();
-<a href=#1153 id=1153 data-nosnippet>1153</a>        <span class="kw">let </span>error = bound_tool_result(
-<a href=#1154 id=1154 data-nosnippet>1154</a>            result(<span class="string">"x"</span>.repeat(PersistedToolResult::MAX_OUTPUT_BYTES + <span class="number">1</span>)),
-<a href=#1155 id=1155 data-nosnippet>1155</a>            ToolResultTruncationPolicy::OptOut,
-<a href=#1156 id=1156 data-nosnippet>1156</a>            <span class="kw-2">&amp;</span>artifacts,
-<a href=#1157 id=1157 data-nosnippet>1157</a>            usize::MAX,
+<a href=#1142 id=1142 data-nosnippet>1142</a>            <span class="number">1</span>,
+<a href=#1143 id=1143 data-nosnippet>1143</a>        )
+<a href=#1144 id=1144 data-nosnippet>1144</a>        .unwrap();
+<a href=#1145 id=1145 data-nosnippet>1145</a>        <span class="macro">assert_eq!</span>(bounded.output, output);
+<a href=#1146 id=1146 data-nosnippet>1146</a>        <span class="macro">assert!</span>(bounded.truncation.is_none());
+<a href=#1147 id=1147 data-nosnippet>1147</a>        <span class="macro">assert_eq!</span>(std::fs::read_dir(artifact_path).unwrap().count(), <span class="number">0</span>);
+<a href=#1148 id=1148 data-nosnippet>1148</a>    }
+<a href=#1149 id=1149 data-nosnippet>1149</a>
+<a href=#1150 id=1150 data-nosnippet>1150</a>    <span class="attr">#[test]
+<a href=#1151 id=1151 data-nosnippet>1151</a>    </span><span class="kw">fn </span>opted_out_result_over_event_limit_is_a_resource_error() {
+<a href=#1152 id=1152 data-nosnippet>1152</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
+<a href=#1153 id=1153 data-nosnippet>1153</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(directory.path().join(<span class="string">"artifacts"</span>)).unwrap();
+<a href=#1154 id=1154 data-nosnippet>1154</a>        <span class="kw">let </span>error = bound_tool_result(
+<a href=#1155 id=1155 data-nosnippet>1155</a>            result(<span class="string">"x"</span>.repeat(PersistedToolResult::MAX_OUTPUT_BYTES + <span class="number">1</span>)),
+<a href=#1156 id=1156 data-nosnippet>1156</a>            ToolResultTruncationPolicy::OptOut,
+<a href=#1157 id=1157 data-nosnippet>1157</a>            <span class="kw-2">&amp;</span>artifacts,
 <a href=#1158 id=1158 data-nosnippet>1158</a>            usize::MAX,
-<a href=#1159 id=1159 data-nosnippet>1159</a>        )
-<a href=#1160 id=1160 data-nosnippet>1160</a>        .unwrap_err();
-<a href=#1161 id=1161 data-nosnippet>1161</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(error, ToolError::ResourceLimit(<span class="kw">_</span>)));
-<a href=#1162 id=1162 data-nosnippet>1162</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"event limit"</span>));
-<a href=#1163 id=1163 data-nosnippet>1163</a>    }
-<a href=#1164 id=1164 data-nosnippet>1164</a>
-<a href=#1165 id=1165 data-nosnippet>1165</a>    <span class="attr">#[test]
-<a href=#1166 id=1166 data-nosnippet>1166</a>    </span><span class="kw">fn </span>default_external_tool_policy_still_truncates_and_retains() {
-<a href=#1167 id=1167 data-nosnippet>1167</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
-<a href=#1168 id=1168 data-nosnippet>1168</a>        <span class="kw">let </span>artifact_path = directory.path().join(<span class="string">"artifacts"</span>);
-<a href=#1169 id=1169 data-nosnippet>1169</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
-<a href=#1170 id=1170 data-nosnippet>1170</a>        <span class="kw">let </span>external_spec = <span class="kw">crate</span>::ToolSpec {
-<a href=#1171 id=1171 data-nosnippet>1171</a>            name: <span class="string">"mcp_fixture"</span>.into(),
-<a href=#1172 id=1172 data-nosnippet>1172</a>            permission_name: <span class="string">"mcp"</span>.into(),
-<a href=#1173 id=1173 data-nosnippet>1173</a>            description: <span class="string">"External fixture"</span>.into(),
-<a href=#1174 id=1174 data-nosnippet>1174</a>            parameters: <span class="macro">serde_json::json!</span>({<span class="string">"type"</span>:<span class="string">"object"</span>}),
-<a href=#1175 id=1175 data-nosnippet>1175</a>            result_truncation: Default::default(),
-<a href=#1176 id=1176 data-nosnippet>1176</a>        };
-<a href=#1177 id=1177 data-nosnippet>1177</a>        <span class="macro">assert_eq!</span>(
-<a href=#1178 id=1178 data-nosnippet>1178</a>            external_spec.result_truncation,
-<a href=#1179 id=1179 data-nosnippet>1179</a>            ToolResultTruncationPolicy::Bounded
-<a href=#1180 id=1180 data-nosnippet>1180</a>        );
-<a href=#1181 id=1181 data-nosnippet>1181</a>        <span class="kw">let </span>bounded = bound_tool_result(
-<a href=#1182 id=1182 data-nosnippet>1182</a>            result(<span class="string">"first\nsecond\n"</span>.into()),
-<a href=#1183 id=1183 data-nosnippet>1183</a>            external_spec.result_truncation,
-<a href=#1184 id=1184 data-nosnippet>1184</a>            <span class="kw-2">&amp;</span>artifacts,
-<a href=#1185 id=1185 data-nosnippet>1185</a>            <span class="number">1</span>,
-<a href=#1186 id=1186 data-nosnippet>1186</a>            <span class="number">5</span>,
-<a href=#1187 id=1187 data-nosnippet>1187</a>        )
-<a href=#1188 id=1188 data-nosnippet>1188</a>        .unwrap();
-<a href=#1189 id=1189 data-nosnippet>1189</a>        <span class="macro">assert_eq!</span>(bounded.output, <span class="string">"first"</span>);
-<a href=#1190 id=1190 data-nosnippet>1190</a>        <span class="kw">let </span>truncation = bounded.truncation.expect(<span class="string">"bounded truncation metadata"</span>);
-<a href=#1191 id=1191 data-nosnippet>1191</a>        <span class="macro">assert_eq!</span>(truncation.original_bytes, <span class="number">13</span>);
-<a href=#1192 id=1192 data-nosnippet>1192</a>        <span class="macro">assert_eq!</span>(truncation.original_lines, <span class="number">3</span>);
-<a href=#1193 id=1193 data-nosnippet>1193</a>        <span class="macro">assert!</span>(truncation.retained.uri.starts_with(<span class="string">"artifact://sha256/"</span>));
-<a href=#1194 id=1194 data-nosnippet>1194</a>        <span class="macro">assert_eq!</span>(std::fs::read_dir(artifact_path).unwrap().count(), <span class="number">1</span>);
-<a href=#1195 id=1195 data-nosnippet>1195</a>    }
-<a href=#1196 id=1196 data-nosnippet>1196</a>}
+<a href=#1159 id=1159 data-nosnippet>1159</a>            usize::MAX,
+<a href=#1160 id=1160 data-nosnippet>1160</a>        )
+<a href=#1161 id=1161 data-nosnippet>1161</a>        .unwrap_err();
+<a href=#1162 id=1162 data-nosnippet>1162</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(error, ToolError::ResourceLimit(<span class="kw">_</span>)));
+<a href=#1163 id=1163 data-nosnippet>1163</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"event limit"</span>));
+<a href=#1164 id=1164 data-nosnippet>1164</a>    }
+<a href=#1165 id=1165 data-nosnippet>1165</a>
+<a href=#1166 id=1166 data-nosnippet>1166</a>    <span class="attr">#[test]
+<a href=#1167 id=1167 data-nosnippet>1167</a>    </span><span class="kw">fn </span>default_external_tool_policy_still_truncates_and_retains() {
+<a href=#1168 id=1168 data-nosnippet>1168</a>        <span class="kw">let </span>directory = tempfile::tempdir().unwrap();
+<a href=#1169 id=1169 data-nosnippet>1169</a>        <span class="kw">let </span>artifact_path = directory.path().join(<span class="string">"artifacts"</span>);
+<a href=#1170 id=1170 data-nosnippet>1170</a>        <span class="kw">let </span>artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
+<a href=#1171 id=1171 data-nosnippet>1171</a>        <span class="kw">let </span>external_spec = <span class="kw">crate</span>::ToolSpec {
+<a href=#1172 id=1172 data-nosnippet>1172</a>            name: <span class="string">"mcp_fixture"</span>.into(),
+<a href=#1173 id=1173 data-nosnippet>1173</a>            permission_name: <span class="string">"mcp"</span>.into(),
+<a href=#1174 id=1174 data-nosnippet>1174</a>            description: <span class="string">"External fixture"</span>.into(),
+<a href=#1175 id=1175 data-nosnippet>1175</a>            parameters: <span class="macro">serde_json::json!</span>({<span class="string">"type"</span>:<span class="string">"object"</span>}),
+<a href=#1176 id=1176 data-nosnippet>1176</a>            result_truncation: Default::default(),
+<a href=#1177 id=1177 data-nosnippet>1177</a>        };
+<a href=#1178 id=1178 data-nosnippet>1178</a>        <span class="macro">assert_eq!</span>(
+<a href=#1179 id=1179 data-nosnippet>1179</a>            external_spec.result_truncation,
+<a href=#1180 id=1180 data-nosnippet>1180</a>            ToolResultTruncationPolicy::Bounded
+<a href=#1181 id=1181 data-nosnippet>1181</a>        );
+<a href=#1182 id=1182 data-nosnippet>1182</a>        <span class="kw">let </span>bounded = bound_tool_result(
+<a href=#1183 id=1183 data-nosnippet>1183</a>            result(<span class="string">"first\nsecond\n"</span>.into()),
+<a href=#1184 id=1184 data-nosnippet>1184</a>            external_spec.result_truncation,
+<a href=#1185 id=1185 data-nosnippet>1185</a>            <span class="kw-2">&amp;</span>artifacts,
+<a href=#1186 id=1186 data-nosnippet>1186</a>            <span class="number">1</span>,
+<a href=#1187 id=1187 data-nosnippet>1187</a>            <span class="number">5</span>,
+<a href=#1188 id=1188 data-nosnippet>1188</a>        )
+<a href=#1189 id=1189 data-nosnippet>1189</a>        .unwrap();
+<a href=#1190 id=1190 data-nosnippet>1190</a>        <span class="macro">assert_eq!</span>(bounded.output, <span class="string">"first"</span>);
+<a href=#1191 id=1191 data-nosnippet>1191</a>        <span class="kw">let </span>truncation = bounded.truncation.expect(<span class="string">"bounded truncation metadata"</span>);
+<a href=#1192 id=1192 data-nosnippet>1192</a>        <span class="macro">assert_eq!</span>(truncation.original_bytes, <span class="number">13</span>);
+<a href=#1193 id=1193 data-nosnippet>1193</a>        <span class="macro">assert_eq!</span>(truncation.original_lines, <span class="number">3</span>);
+<a href=#1194 id=1194 data-nosnippet>1194</a>        <span class="macro">assert!</span>(truncation.retained.uri.starts_with(<span class="string">"artifact://sha256/"</span>));
+<a href=#1195 id=1195 data-nosnippet>1195</a>        <span class="macro">assert_eq!</span>(std::fs::read_dir(artifact_path).unwrap().count(), <span class="number">1</span>);
+<a href=#1196 id=1196 data-nosnippet>1196</a>    }
+<a href=#1197 id=1197 data-nosnippet>1197</a>}
 </code></pre></div></section></main></body></html>
