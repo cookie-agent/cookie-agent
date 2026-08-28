@@ -644,13 +644,10 @@ fn assemble_history_with_replay(
     for turn in logical {
         match turn {
             LogicalTurn::System(text) => {
-                history[0] = match history.remove(0) {
-                    HistoryTurn::System(mut message) => {
-                        message.content.push(SystemPart::Text(TextPart::new(text)));
-                        HistoryTurn::system(message)
-                    }
-                    _ => unreachable!("assembled history starts with a system message"),
+                let Some(HistoryTurn::System(message)) = history.first_mut() else {
+                    unreachable!("assembled history starts with a system message")
                 };
+                message.content.push(SystemPart::Text(TextPart::new(text)));
             }
             LogicalTurn::User(user) => history.push(HistoryTurn::user(user)),
             LogicalTurn::SeedAssistant(text) => {
@@ -714,14 +711,22 @@ fn assemble_history_with_replay(
                             "tool result has no retained assistant call".into(),
                         ));
                     }
+                    let call_order = assistant
+                        .turn
+                        .content
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, part)| match part {
+                            PersistedAssistantPart::ToolCall { id, .. } => {
+                                Some((id.as_str(), index))
+                            }
+                            _ => None,
+                        })
+                        .collect::<HashMap<_, _>>();
                     results.sort_by_key(|(result, _)| {
-                        assistant
-                            .turn
-                            .content
-                            .iter()
-                            .position(|part| {
-                                matches!(part, PersistedAssistantPart::ToolCall { id, .. } if id.as_str() == result.tool_call_id)
-                            })
+                        call_order
+                            .get(result.tool_call_id.as_str())
+                            .copied()
                             .unwrap_or(usize::MAX)
                     });
                     let mut additional_messages = Vec::new();

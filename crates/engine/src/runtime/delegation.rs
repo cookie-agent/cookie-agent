@@ -2681,17 +2681,20 @@ fn context_seed_from_history(history: Vec<oven_sdk::HistoryTurn>) -> Vec<Delegat
         .map(|turn| turn.text.len())
         .sum::<usize>()
         .saturating_sub(DELEGATED_CONTEXT_MAX_BYTES);
-    while excess > 0 && !turns.is_empty() {
-        if turns[0].text.len() <= excess {
-            excess -= turns.remove(0).text.len();
-            continue;
-        }
+    let mut retained_from = 0;
+    while retained_from < turns.len() && turns[retained_from].text.len() <= excess {
+        excess -= turns[retained_from].text.len();
+        retained_from += 1;
+    }
+    turns.drain(..retained_from);
+    if excess > 0
+        && let Some(turn) = turns.first_mut()
+    {
         let mut boundary = excess;
-        while !turns[0].text.is_char_boundary(boundary) {
+        while !turn.text.is_char_boundary(boundary) {
             boundary += 1;
         }
-        turns[0].text.drain(..boundary);
-        excess = 0;
+        turn.text.drain(..boundary);
     }
     turns
 }
