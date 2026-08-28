@@ -1046,6 +1046,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#tool-emitted-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tool-emitted messages
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#session-mechanics" class="md-nav__link">
     <span class="md-ellipsis">
       Session mechanics
@@ -1224,6 +1233,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#tool-emitted-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tool-emitted messages
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#session-mechanics" class="md-nav__link">
     <span class="md-ellipsis">
       Session mechanics
@@ -1294,6 +1312,27 @@ Protocol 16 is current-only. A client must call <code>handshake</code> with
 <p>The unreleased MCP approval methods and their <code>pending_approval</code> and <code>rejected</code>
 server states were removed before any release. They are not compatibility
 members of protocol 16.</p>
+<h2 id="tool-emitted-messages">Tool-emitted messages<a class="headerlink" href="#tool-emitted-messages" title="Permanent link">&para;</a></h2>
+<p>Protocol 16 adds optional <code>additional_messages</code> to <code>PersistedToolResult</code>. The
+field is an ordered array of at most four messages. Each message has role
+<code>system</code> or <code>user</code> and one or more ordered <code>text</code> or <code>file</code> content parts. Empty
+arrays are omitted on the wire; event validation bounds text and attachment
+counts and validates every referenced artifact.</p>
+<p>The engine materializes these messages from the persisted terminal result, so
+replay and restart are deterministic. The paired tool result is placed first,
+then messages are inserted in array order before the next assistant turn.
+User-role messages retain their role. System-role messages are represented as
+user turns whose first text part is the deterministic marker
+<code>[tool-emitted system message; materialized as user history]</code>; their original
+text and file parts follow in order. This translation keeps the initial system
+prefix and its cache breakpoint stable because provider families disagree on
+mid-history system semantics. Terminal result events use origin
+<code>engine:tool-result</code>.</p>
+<p>Elision treats a tool result and its <code>additional_messages</code> as one unit. If the
+parent result is elided, none of its emitted messages enter model history and
+the marker reports how many were lost. Retried or replayed termination events
+replace the call record rather than applying first-attempt messages twice.
+Attachments in compacted history are not recoverable from the checkpoint.</p>
 <h2 id="session-mechanics">Session mechanics<a class="headerlink" href="#session-mechanics" title="Permanent link">&para;</a></h2>
 <p>The JSON-RPC session layer lives in the <code>protocol</code> crate so the server, the TUI,
 and the CLI share one implementation of the protocol mechanics.</p>
