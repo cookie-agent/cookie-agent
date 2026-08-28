@@ -1526,6 +1526,7 @@ fn reduce_event(
                         )
                     }),
                     &result.attachments,
+                    &result.additional_messages,
                 ),
                 (_, Some(error)) => error.message.to_string(),
                 _ => String::new(),
@@ -2649,6 +2650,7 @@ fn render_tool_result(
     metadata: &serde_json::Value,
     truncation: Option<(&str, u64, u64)>,
     attachments: &[ToolAttachment],
+    additional_messages: &[cookie_agent_protocol::ToolEmittedMessage],
 ) -> String {
     let mut lines = vec![title.to_owned(), output.to_owned()];
     if !metadata.is_null() {
@@ -2660,15 +2662,32 @@ fn render_tool_result(
         ));
     }
     for attachment in attachments {
+        lines.push(render_attachment_summary("attachment", attachment));
+    }
+    for message in additional_messages {
         lines.push(format!(
-            "attachment: {} · {} bytes · sha256:{} · {}",
-            attachment.mime_type,
-            attachment.byte_length,
-            attachment.sha256,
-            attachment.reference.uri
+            "emitted {} message:",
+            wire_enum_label(message.role)
         ));
+        for part in &message.content {
+            match part {
+                cookie_agent_protocol::ToolEmittedContent::Text(text) => {
+                    lines.push(format!("text: {text}"));
+                }
+                cookie_agent_protocol::ToolEmittedContent::File(attachment) => {
+                    lines.push(render_attachment_summary("file", attachment));
+                }
+            }
+        }
     }
     lines.join("\n")
+}
+
+fn render_attachment_summary(label: &str, attachment: &ToolAttachment) -> String {
+    format!(
+        "{label}: {} · {} bytes · sha256:{} · {}",
+        attachment.mime_type, attachment.byte_length, attachment.sha256, attachment.reference.uri
+    )
 }
 
 /// Locate the durable tool input for an ownership reference from the
@@ -2920,7 +2939,38 @@ mod tests {
                         metadata: serde_json::Value::Null,
                         truncation: None,
                         attachments: Vec::new(),
-                        additional_messages: Vec::new(),
+                        additional_messages: vec![
+                            cookie_agent_protocol::ToolEmittedMessage::new(
+                                cookie_agent_protocol::ToolEmittedMessageRole::User,
+                                vec![
+                                    cookie_agent_protocol::ToolEmittedContent::Text(
+                                        "review this clip".into(),
+                                    ),
+                                    cookie_agent_protocol::ToolEmittedContent::File(
+                                        cookie_agent_protocol::ToolAttachment {
+                                            mime_type: cookie_agent_protocol::MimeType::new(
+                                                "video/mp4",
+                                            )
+                                            .unwrap(),
+                                            filename: Some("clip.mp4".into()),
+                                            byte_length: 4,
+                                            sha256: cookie_agent_protocol::Sha256Digest::of_bytes(
+                                                b"clip",
+                                            ),
+                                            reference: cookie_agent_protocol::ArtifactReference {
+                                                uri: format!(
+                                                    "artifact://sha256/{}",
+                                                    cookie_agent_protocol::Sha256Digest::of_bytes(
+                                                        b"clip"
+                                                    )
+                                                ),
+                                            },
+                                        },
+                                    ),
+                                ],
+                            )
+                            .unwrap(),
+                        ],
                     }),
                     error: None,
                 },
@@ -2933,7 +2983,10 @@ mod tests {
         assert!(!state.tools[&call_id].has_output_chunks);
         assert_eq!(
             state.tools[&call_id].detail,
-            "Bash\nstdout:\nonce\n\nstderr:\n"
+            format!(
+                "Bash\nstdout:\nonce\n\nstderr:\n\nemitted user message:\ntext: review this clip\nfile: video/mp4 · 4 bytes · sha256:{digest} · artifact://sha256/{digest}",
+                digest = cookie_agent_protocol::Sha256Digest::of_bytes(b"clip")
+            )
         );
     }
 
