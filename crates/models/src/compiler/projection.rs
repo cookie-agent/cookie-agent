@@ -42,6 +42,15 @@ const VERTEX_VIDEO_MIME_TYPES: &[&str] = &[
     "video/3gpp",
 ];
 
+// Keep catalog projection limited to families whose pinned Oven profiles
+// implement each modality: only the Gemini/Vertex profiles accept audio input.
+const fn audio_supported(family: OvenAdapterFamily) -> bool {
+    matches!(
+        family,
+        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini
+    )
+}
+
 // Keep catalog projection limited to families whose pinned Oven profiles accept video.
 fn video_profile(family: OvenAdapterFamily) -> Option<(&'static [&'static str], u32)> {
     match family {
@@ -83,7 +92,8 @@ pub(crate) fn capabilities_from_catalog(
         .iter()
         .filter(|value| {
             value.as_str() == "text"
-                || matches!(value.as_str(), "image" | "audio" | "pdf")
+                || matches!(value.as_str(), "image" | "pdf")
+                || value.as_str() == "audio" && audio_supported(family)
                 || value.as_str() == "video" && video_profile.is_some()
         })
         .cloned()
@@ -132,10 +142,22 @@ pub(crate) fn capabilities_from_catalog(
             );
         }
     }
-    let native_replay = if family == OvenAdapterFamily::AnthropicCompatible && model.reasoning {
-        "required"
-    } else {
+    // Anthropic reasoning blocks must be replayed verbatim, so replay is
+    // required. OpenAI/Azure Responses reasoning items can be replayed as
+    // encrypted items but the adaptor accepts falling back, so replay is
+    // optional; `oven_capabilities` derives `replay.reasoning` from this and
+    // the pinned Responses profiles reject reasoning models without
+    // reasoning-aware replay.
+    let native_replay = if !model.reasoning {
         "unsupported"
+    } else {
+        match family {
+            OvenAdapterFamily::AnthropicCompatible => "required",
+            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses => {
+                "optional"
+            }
+            _ => "unsupported",
+        }
     };
     serde_json::from_value(json!({
         "input": input,
@@ -209,6 +231,112 @@ pub(crate) fn validate_defaults(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authoring::MediaKind;
+    use crate::catalog::{
+        CatalogLimits, CatalogModalities, CatalogModelRecord, CatalogModelStatus,
+    };
+
+    fn catalog_model(reasoning: bool) -> CatalogModelRecord {
+        CatalogModelRecord {
+            id: cookie_agent_identity::ProviderModelId::new("gpt-test".to_owned()).unwrap(),
+            name: "GPT Test".to_owned(),
+            description: String::new(),
+            family: None,
+            attachment: false,
+            reasoning,
+            tool_call: true,
+            structured_output: Some(true),
+            temperature: Some(false),
+            open_weights: false,
+            status: CatalogModelStatus::Stable,
+            release_date: String::new(),
+            last_updated: String::new(),
+            modalities: CatalogModalities {
+                input: vec!["text".to_owned()],
+                output: vec!["text".to_owned()],
+            },
+            limits: CatalogLimits {
+                context: 272_000,
+                input: None,
+                output: 128_000,
+            },
+            shape: None,
+            provider: None,
+            reasoning_options: Vec::new(),
+            cost: None,
+            interleaved: None,
+            canonical_provenance: None,
+        }
+    }
+
+    #[test]
+    fn reasoning_catalog_models_project_reasoning_aware_replay() {
+        let model = catalog_model(true);
+        // The pinned Responses profiles reject reasoning models without
+        // reasoning-aware native replay (`replay.reasoning` derives from this).
+        for family in [
+            OvenAdapterFamily::OpenaiResponses,
+            OvenAdapterFamily::AzureOpenaiResponses,
+        ] {
+            let capabilities = capabilities_from_catalog(&model, family).unwrap();
+            assert_eq!(
+                capabilities.native_replay,
+                ReplayCapability::Optional,
+                "{family:?}"
+            );
+        }
+        let capabilities =
+            capabilities_from_catalog(&model, OvenAdapterFamily::AnthropicCompatible).unwrap();
+        assert_eq!(capabilities.native_replay, ReplayCapability::Required);
+        for family in [
+            OvenAdapterFamily::OpenaiChat,
+            OvenAdapterFamily::OpenaiCompatible,
+            OvenAdapterFamily::GoogleGemini,
+        ] {
+            let capabilities = capabilities_from_catalog(&model, family).unwrap();
+            assert_eq!(
+                capabilities.native_replay,
+                ReplayCapability::Unsupported,
+                "{family:?}"
+            );
+        }
+        // Non-reasoning models never project native replay.
+        let capabilities =
+            capabilities_from_catalog(&catalog_model(false), OvenAdapterFamily::OpenaiResponses)
+                .unwrap();
+        assert_eq!(capabilities.native_replay, ReplayCapability::Unsupported);
+    }
+
+    #[test]
+    fn audio_catalog_input_projects_only_for_gemini_families() {
+        let mut model = catalog_model(false);
+        model.modalities.input = vec!["text".to_owned(), "audio".to_owned()];
+        for family in [
+            OvenAdapterFamily::GoogleGemini,
+            OvenAdapterFamily::GoogleVertexGemini,
+        ] {
+            let capabilities = capabilities_from_catalog(&model, family).unwrap();
+            assert!(capabilities.input.contains(&Modality::Audio), "{family:?}");
+            assert!(
+                capabilities.media.contains_key(&MediaKind::Audio),
+                "{family:?}"
+            );
+        }
+        // The pinned OpenAI/Azure/Anthropic/Bedrock/Cohere profiles reject
+        // audio declarations; projection must drop the modality instead.
+        for family in [
+            OvenAdapterFamily::OpenaiChat,
+            OvenAdapterFamily::OpenaiResponses,
+            OvenAdapterFamily::AzureOpenaiChat,
+            OvenAdapterFamily::AzureOpenaiResponses,
+            OvenAdapterFamily::OpenaiCompatible,
+            OvenAdapterFamily::AnthropicCompatible,
+            OvenAdapterFamily::AwsBedrockConverse,
+        ] {
+            let capabilities = capabilities_from_catalog(&model, family).unwrap();
+            assert!(!capabilities.input.contains(&Modality::Audio), "{family:?}");
+        }
+    }
 
     #[test]
     fn video_profiles_match_pinned_oven_declarations() {
