@@ -2756,6 +2756,7 @@ fn map_tool_result(
         metadata,
         truncation: None,
         attachments,
+        additional_messages: Vec::new(),
     })
 }
 

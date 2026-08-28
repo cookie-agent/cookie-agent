@@ -441,6 +441,91 @@ pub struct ToolAttachment {
     pub sha256: Sha256Digest,
     pub reference: ArtifactReference,
 }
+impl ToolAttachment {
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        self.reference.validate()?;
+        if self.filename.as_ref().is_some_and(|name| {
+            name.is_empty() || name.len() > 512 || name.chars().any(char::is_control)
+        }) {
+            return Err(EventSchemaError::InvalidAttachmentFilename);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolEmittedMessageRole {
+    System,
+    User,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolEmittedContent {
+    Text(String),
+    File(ToolAttachment),
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ToolEmittedMessage {
+    pub role: ToolEmittedMessageRole,
+    #[schemars(length(min = 1))]
+    pub content: Vec<ToolEmittedContent>,
+}
+impl ToolEmittedMessage {
+    pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+    pub fn new(
+        role: ToolEmittedMessageRole,
+        content: Vec<ToolEmittedContent>,
+    ) -> Result<Self, EventSchemaError> {
+        let value = Self { role, content };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        if self.content.is_empty() {
+            return Err(EventSchemaError::EmptyToolEmittedMessage);
+        }
+        let mut text_bytes = 0_usize;
+        for part in &self.content {
+            match part {
+                ToolEmittedContent::Text(text) => {
+                    if text.trim().is_empty() {
+                        return Err(EventSchemaError::EmptyToolEmittedText);
+                    }
+                    text_bytes = text_bytes
+                        .checked_add(text.len())
+                        .ok_or(EventSchemaError::ToolEmittedTextTooLarge)?;
+                    if text_bytes > Self::MAX_TEXT_BYTES {
+                        return Err(EventSchemaError::ToolEmittedTextTooLarge);
+                    }
+                }
+                ToolEmittedContent::File(attachment) => attachment.validate()?,
+            }
+        }
+        Ok(())
+    }
+}
+impl<'de> Deserialize<'de> for ToolEmittedMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            role: ToolEmittedMessageRole,
+            content: Vec<ToolEmittedContent>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.role, wire.content).map_err(serde::de::Error::custom)
+    }
+}
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputTruncation {
@@ -460,10 +545,27 @@ pub struct PersistedToolResult {
     pub truncation: Option<ToolOutputTruncation>,
     #[schemars(length(max = 256))]
     pub attachments: Vec<ToolAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4))]
+    pub additional_messages: Vec<ToolEmittedMessage>,
 }
 impl PersistedToolResult {
     pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
     pub const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
+    pub const MAX_ADDITIONAL_MESSAGES: usize = 4;
+
+    pub fn all_attachments(&self) -> impl Iterator<Item = &ToolAttachment> {
+        self.attachments.iter().chain(
+            self.additional_messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|part| match part {
+                    ToolEmittedContent::Text(_) => None,
+                    ToolEmittedContent::File(attachment) => Some(attachment),
+                }),
+        )
+    }
+
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         if self.output.len() > Self::MAX_OUTPUT_BYTES {
             return Err(EventSchemaError::ToolOutputTooLarge);
@@ -475,16 +577,28 @@ impl PersistedToolResult {
         {
             return Err(EventSchemaError::ToolMetadataTooLarge);
         }
-        if self.attachments.len() > 256 {
+        let emitted_attachment_count = self
+            .additional_messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|part| matches!(part, ToolEmittedContent::File(_)))
+            .count();
+        if self
+            .attachments
+            .len()
+            .saturating_add(emitted_attachment_count)
+            > 256
+        {
             return Err(EventSchemaError::TooManyAttachments);
         }
-        for attachment in &self.attachments {
-            attachment.reference.validate()?;
-            if attachment.filename.as_ref().is_some_and(|name| {
-                name.is_empty() || name.len() > 512 || name.chars().any(char::is_control)
-            }) {
-                return Err(EventSchemaError::InvalidAttachmentFilename);
-            }
+        if self.additional_messages.len() > Self::MAX_ADDITIONAL_MESSAGES {
+            return Err(EventSchemaError::TooManyToolEmittedMessages);
+        }
+        for message in &self.additional_messages {
+            message.validate()?;
+        }
+        for attachment in self.all_attachments() {
+            attachment.validate()?;
         }
         if let Some(truncation) = &self.truncation {
             truncation.retained.validate()?;
@@ -506,6 +620,8 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             truncation: Option<ToolOutputTruncation>,
             attachments: Vec<ToolAttachment>,
+            #[serde(default)]
+            additional_messages: Vec<ToolEmittedMessage>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -514,6 +630,7 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
             metadata: w.metadata,
             truncation: w.truncation,
             attachments: w.attachments,
+            additional_messages: w.additional_messages,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -2771,6 +2888,10 @@ pub enum EventSchemaError {
     ToolMetadataTooLarge,
     TooManyAttachments,
     InvalidAttachmentFilename,
+    TooManyToolEmittedMessages,
+    EmptyToolEmittedMessage,
+    EmptyToolEmittedText,
+    ToolEmittedTextTooLarge,
     InvalidJson,
     ZeroModelTurnSequence,
     InvalidToolTermination,
@@ -2819,6 +2940,12 @@ impl fmt::Display for EventSchemaError {
             Self::ToolMetadataTooLarge => "persisted tool metadata exceeds 2 MiB",
             Self::TooManyAttachments => "persisted tool result exceeds 256 attachments",
             Self::InvalidAttachmentFilename => "attachment filename is invalid",
+            Self::TooManyToolEmittedMessages => {
+                "persisted tool result exceeds 4 additional messages"
+            }
+            Self::EmptyToolEmittedMessage => "tool-emitted message content must not be empty",
+            Self::EmptyToolEmittedText => "tool-emitted text must not be blank",
+            Self::ToolEmittedTextTooLarge => "tool-emitted message text exceeds 64 KiB",
             Self::InvalidJson => "JSON value could not be serialized",
             Self::ZeroModelTurnSequence => "model_turn_seq must be positive",
             Self::InvalidToolTermination => {

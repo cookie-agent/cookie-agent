@@ -1505,6 +1505,7 @@ impl PreparedExecutor for TestDelegateExecutor {
                 metadata,
                 truncation: None,
                 attachments: Vec::new(),
+                additional_messages: Vec::new(),
             })
         } else {
             engine
@@ -1623,6 +1624,7 @@ impl PreparedExecutor for TestWriteExecutor {
             metadata: serde_json::Value::Null,
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }
@@ -1754,6 +1756,7 @@ impl PreparedExecutor for TestMediaReadExecutor {
             metadata: serde_json::Value::Null,
             truncation: None,
             attachments: vec![attachment],
+            additional_messages: Vec::new(),
         })
     }
 }
@@ -1905,6 +1908,7 @@ impl PreparedExecutor for TestRehydrationReadExecutor {
             metadata: serde_json::Value::Null,
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }
@@ -3053,6 +3057,7 @@ fn completed_read_events(
                         metadata: serde_json::Value::Null,
                         truncation: None,
                         attachments: Vec::new(),
+                        additional_messages: Vec::new(),
                     }),
                     error: None,
                 },
@@ -5851,6 +5856,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
             metadata,
             truncation,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         };
 
     let full = "zero\none\ntwo\nthree";
@@ -6089,6 +6095,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 metadata: serde_json::Value::Null,
                 truncation: None,
                 attachments: Vec::new(),
+                additional_messages: Vec::new(),
             },
             latest_usage,
         );

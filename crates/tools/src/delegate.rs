@@ -427,6 +427,7 @@ impl PreparedExecutor for DelegateExecutor {
                         metadata,
                         truncation: None,
                         attachments: Vec::new(),
+                        additional_messages: Vec::new(),
                     })
                 } else {
                     engine

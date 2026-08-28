@@ -4811,6 +4811,13 @@
     "PersistedToolResult": {
       "type": "object",
       "properties": {
+        "additional_messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolEmittedMessage"
+          },
+          "maxItems": 4
+        },
         "attachments": {
           "type": "array",
           "items": {
@@ -6076,6 +6083,61 @@
             "named"
           ]
         }
+      ]
+    },
+    "ToolEmittedContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/ToolAttachment"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "file"
+          ]
+        }
+      ]
+    },
+    "ToolEmittedMessage": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolEmittedContent"
+          },
+          "minItems": 1
+        },
+        "role": {
+          "$ref": "#/$defs/ToolEmittedMessageRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ]
+    },
+    "ToolEmittedMessageRole": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user"
       ]
     },
     "ToolOutputTruncation": {

@@ -81,6 +81,7 @@ impl PreparedExecutor for SkillExecutor {
             metadata: serde_json::json!({"skill": invocation.name}),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }

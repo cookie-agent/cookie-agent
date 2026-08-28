@@ -200,6 +200,7 @@ impl PreparedExecutor for EditExecutor {
             metadata: serde_json::json!({"new_sha256":Sha256Digest::of_bytes(&self.new_bytes),"cleanup_warning":outcome.cleanup_warning}),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }

@@ -1924,6 +1924,7 @@ impl PreparedExecutor for PluginExecutor {
             }),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }
@@ -3019,6 +3020,7 @@ mod tests {
                             metadata: Value::Null,
                             truncation: None,
                             attachments: Vec::new(),
+                            additional_messages: Vec::new(),
                         }),
                         error: None,
                     },

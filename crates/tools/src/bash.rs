@@ -613,6 +613,7 @@ impl BashExecutor {
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 
@@ -761,6 +762,7 @@ impl BashExecutor {
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }

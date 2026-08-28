@@ -1488,6 +1488,7 @@ mod tests {
                 },
             }),
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         };
         let encoded = serde_json::to_value(tool_result_part(&result, call_id, &store).unwrap())
             .unwrap()
@@ -2370,6 +2371,7 @@ mod tests {
                             metadata: serde_json::json!({}),
                             truncation: None,
                             attachments: Vec::new(),
+                            additional_messages: Vec::new(),
                         }),
                         error: None,
                     },

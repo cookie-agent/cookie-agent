@@ -187,6 +187,7 @@ impl PreparedExecutor for WriteExecutor {
             metadata: serde_json::json!({"bytes":self.bytes.len(),"cleanup_warning":outcome.cleanup_warning}),
             truncation: None,
             attachments: Vec::new(),
+            additional_messages: Vec::new(),
         })
     }
 }

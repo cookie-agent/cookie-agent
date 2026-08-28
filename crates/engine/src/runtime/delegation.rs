@@ -2774,6 +2774,7 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
         }),
         truncation: None,
         attachments: Vec::new(),
+        additional_messages: Vec::new(),
     }
 }
 
@@ -2816,6 +2817,7 @@ pub(super) fn structured_delegate_result(title: &str, metadata: Value) -> ToolRe
         metadata,
         truncation: None,
         attachments: Vec::new(),
+        additional_messages: Vec::new(),
     }
 }
 

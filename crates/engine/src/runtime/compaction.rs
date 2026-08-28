@@ -1592,6 +1592,7 @@ mod tests {
                             metadata: serde_json::json!({}),
                             truncation: None,
                             attachments: Vec::new(),
+                            additional_messages: Vec::new(),
                         }),
                         error: None,
                     },

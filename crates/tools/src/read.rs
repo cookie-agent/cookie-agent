@@ -224,6 +224,7 @@ impl PreparedExecutor for ReadExecutor {
                 metadata: serde_json::json!({"kind":"directory","shown":page.len(),"total_entries":entries.len()}),
                 truncation: None,
                 attachments: Vec::new(),
+                additional_messages: Vec::new(),
             });
         }
         let bytes = self.target.verified_bytes()?;
@@ -259,6 +260,7 @@ impl PreparedExecutor for ReadExecutor {
                 metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":attachment.sha256}),
                 truncation: None,
                 attachments: vec![attachment],
+                additional_messages: Vec::new(),
             });
         }
         let text = std::str::from_utf8(&bytes)
@@ -288,6 +290,7 @@ fn text_result(path: &std::path::Path, text: &str, offset: usize, limit: usize) 
         metadata: serde_json::json!({"kind":"text","offset":offset,"limit":limit,"total_lines":lines.len()}),
         truncation: None,
         attachments: Vec::new(),
+        additional_messages: Vec::new(),
     }
 }
 
