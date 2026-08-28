@@ -562,21 +562,109 @@ fn wrong_auth(adapter: &'static str, expected: &'static str) -> ModelBuildError 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use cookie_agent_identity::{CatalogRevision, ProviderId};
+    use jiff::Timestamp;
+    use sha2::{Digest as _, Sha256};
+    use tempfile::TempDir;
+
+    use crate::{
+        ProviderDefinition,
+        catalog::{
+            CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot,
+            CatalogSource,
+        },
+        manager::{ModelManager, safe_definition_fingerprint},
+        manifests::{ModelSnapshotManifestStore, frozen_binding},
+        provider_store::ProviderStore,
+    };
+
+    fn revision(label: &str) -> CatalogRevision {
+        CatalogRevision::new(format!("sha256:{:x}", Sha256::digest(label.as_bytes())))
+            .expect("catalog revision")
+    }
+
+    fn empty_catalog() -> Arc<CatalogSnapshot> {
+        let now = Timestamp::now();
+        Arc::new(CatalogSnapshot {
+            revision: revision("custom-responses-rehydration"),
+            source: CatalogSource::Network,
+            state: CatalogRuntimeState {
+                availability: CatalogAvailability::Ready,
+                age: CatalogAgeState::Current,
+                last_error: None,
+            },
+            validated_at: now,
+            last_checked_at: now,
+            etag: None,
+            providers: BTreeMap::new(),
+            canonical_models: BTreeMap::new(),
+            quarantine: Vec::new(),
+        })
+    }
 
     #[test]
-    fn custom_provider_identity_survives_official_adapter_compilation() {
+    fn custom_responses_identity_survives_manifest_rehydration() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let provider_id = ProviderId::new("custom.gateway").expect("provider ID");
+        let definition = toml::from_str::<ProviderDefinition>(
+            r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-responses"
+auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
+
+[models.test]
+display_name = "Test Responses"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "optional", cancellation = "local_only", media = {} }
+"#,
+        )
+        .expect("custom Responses provider");
+        let authored = BTreeMap::from([(provider_id.clone(), definition)]);
+        let provider_store =
+            ProviderStore::open(temporary.path().join("providers")).expect("provider store");
+        let manager =
+            ModelManager::new(authored, empty_catalog(), provider_store).expect("model manager");
+        let runtime = manager.current();
+
+        let manifest_store =
+            ModelSnapshotManifestStore::open_directory(temporary.path().join("manifests"))
+                .expect("manifest store");
+        let manifest = manifest_store
+            .write(runtime.manifest_payload().expect("manifest payload"))
+            .expect("write manifest");
+        let blueprint = manifest
+            .payload
+            .blueprints
+            .first()
+            .expect("model blueprint");
+        let binding = frozen_binding(
+            manifest.revision.clone(),
+            blueprint,
+            blueprint.selection.clone(),
+        )
+        .expect("frozen binding");
+        let rehydrated = manifest_store
+            .scan()
+            .expect("manifest index")
+            .rehydrate(
+                &binding,
+                runtime.authored(),
+                runtime.store(),
+                safe_definition_fingerprint,
+            )
+            .expect("rehydrated blueprint");
+        let resolved = runtime
+            .resolve_frozen(&binding, &rehydrated.blueprint)
+            .expect("rehydrated executable");
+
         assert_eq!(
-            executable_provider_id("custom.gateway", OvenAdapterFamily::OpenaiResponses),
-            "custom.gateway"
+            resolved.model().descriptor().identity.provider_id.as_str(),
+            provider_id.as_str()
         );
         assert_eq!(
-            executable_provider_id("openai", OvenAdapterFamily::OpenaiResponses),
-            "openai"
-        );
-        assert_eq!(
-            executable_provider_id("custom.google", OvenAdapterFamily::GoogleGemini),
-            "google"
+            resolved.model().descriptor().identity.model_id.as_str(),
+            "test"
         );
     }
 }

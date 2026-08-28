@@ -225,6 +225,7 @@ impl Engine {
                     if invalid_internal_output(
                         &completed.turn.message.content,
                         input.reject_non_text,
+                        binding.descriptor.adapter_id.as_str(),
                     ) {
                         last_failure = InternalAgentFailure {
                             code: safe_code("invalid_non_text_output"),
@@ -775,18 +776,48 @@ pub(super) fn internal_history_tokens(
     super::compaction::estimated_request_tokens(history, tools)
 }
 
-fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
-    // Reasoning and custom parts are inert metadata, not executable output;
-    // only parts that would need execution or attachment handling are invalid.
+const OPENAI_RESPONSES_ADAPTER_ID: &str = "oven.openai.responses";
+const OPENAI_RESPONSES_CONTINUATION_KIND: &str = "openai.responses.reasoning_continuation";
+
+fn invalid_internal_output(
+    parts: &[oven_sdk::AssistantPart],
+    reject_non_text: bool,
+    adapter_id: &str,
+) -> bool {
     reject_non_text
         && parts.iter().any(|part| {
-            !matches!(
-                part,
-                oven_sdk::AssistantPart::Text(_)
-                    | oven_sdk::AssistantPart::Reasoning(_)
-                    | oven_sdk::AssistantPart::Custom(_)
-            )
+            !matches!(part, oven_sdk::AssistantPart::Text(_) | oven_sdk::AssistantPart::Reasoning(_))
+                && !matches!(part, oven_sdk::AssistantPart::Custom(custom) if valid_openai_responses_continuation(custom, adapter_id))
         })
+}
+
+fn valid_openai_responses_continuation(part: &oven_sdk::CustomPart, adapter_id: &str) -> bool {
+    if adapter_id != OPENAI_RESPONSES_ADAPTER_ID
+        || part.kind != OPENAI_RESPONSES_CONTINUATION_KIND
+        || part.metadata.is_some()
+    {
+        return false;
+    }
+    let Some(data) = part.data.as_object() else {
+        return false;
+    };
+    if data.len() != 2 || !data.contains_key("item_id") || !data.contains_key("encrypted_sha256") {
+        return false;
+    }
+    let Some(item_id) = data.get("item_id").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(encrypted_sha256) = data
+        .get("encrypted_sha256")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+    !item_id.is_empty()
+        && encrypted_sha256.len() == 64
+        && encrypted_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
@@ -810,7 +841,8 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 #[cfg(test)]
 mod tests {
     use super::{
-        FrozenInternalAgentPolicy, InternalAgentLimits, UNKNOWN_INTERNAL_CONTEXT_LIMIT,
+        FrozenInternalAgentPolicy, InternalAgentLimits, OPENAI_RESPONSES_ADAPTER_ID,
+        OPENAI_RESPONSES_CONTINUATION_KIND, UNKNOWN_INTERNAL_CONTEXT_LIMIT,
         internal_agent_input_fits, internal_agent_input_limit, internal_history_tokens,
         internal_model_request, invalid_internal_output,
     };
@@ -831,8 +863,8 @@ mod tests {
         let parts = vec![oven_sdk::AssistantPart::ToolCall(
             oven_sdk::ToolCallPart::new("call", "read", serde_json::json!({"filePath":"x"})),
         )];
-        assert!(invalid_internal_output(&parts, true));
-        assert!(!invalid_internal_output(&parts, false));
+        assert!(invalid_internal_output(&parts, true, "oven.test"));
+        assert!(!invalid_internal_output(&parts, false, "oven.test"));
     }
 
     #[test]
@@ -845,7 +877,7 @@ mod tests {
                 serde_json::json!({"filePath":"secret"}),
             )),
         ];
-        assert!(invalid_internal_output(&parts, true));
+        assert!(invalid_internal_output(&parts, true, "oven.test"));
     }
 
     #[test]
@@ -857,19 +889,59 @@ mod tests {
             oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("weighing risk")),
             oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(r#"{"decision":"allow"}"#)),
         ];
-        assert!(!invalid_internal_output(&parts, true));
+        assert!(!invalid_internal_output(&parts, true, "oven.test"));
     }
 
     #[test]
     fn custom_continuation_parts_are_not_rejected_as_non_text() {
+        use sha2::{Digest as _, Sha256};
+
+        let encrypted_sha256 = format!("{:x}", Sha256::digest(b"opaque continuation"));
+        let continuation = oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
+            OPENAI_RESPONSES_CONTINUATION_KIND,
+            serde_json::json!({
+                "item_id":"reasoning-item",
+                "encrypted_sha256":encrypted_sha256,
+            }),
+        ));
+        let continuation = serde_json::from_value::<oven_sdk::AssistantPart>(
+            serde_json::to_value(continuation).expect("serialize SDK continuation part"),
+        )
+        .expect("deserialize SDK continuation part");
         let parts = vec![
             oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new("summary")),
-            oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
-                "openai.responses.reasoning_continuation",
-                serde_json::json!({"item_id":"item","encrypted":"opaque"}),
-            )),
+            continuation,
         ];
-        assert!(!invalid_internal_output(&parts, true));
+        assert!(!invalid_internal_output(
+            &parts,
+            true,
+            OPENAI_RESPONSES_ADAPTER_ID
+        ));
+        assert!(invalid_internal_output(
+            &parts,
+            true,
+            "oven.openai-compatible.chat.custom"
+        ));
+
+        let refusal = vec![oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
+            "openai.responses.refusal",
+            serde_json::json!({"refusal":"request denied"}),
+        ))];
+        assert!(invalid_internal_output(
+            &refusal,
+            true,
+            OPENAI_RESPONSES_ADAPTER_ID
+        ));
+
+        let server_tool_call = vec![oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
+            "openai.responses.server_tool_call",
+            serde_json::json!({"id":"call","name":"search","arguments":{}}),
+        ))];
+        assert!(invalid_internal_output(
+            &server_tool_call,
+            true,
+            OPENAI_RESPONSES_ADAPTER_ID
+        ));
     }
 
     #[test]
