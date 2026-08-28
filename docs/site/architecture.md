@@ -279,7 +279,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 15 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 16 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`,
 plugin bus events through `events.plugin`, and tool output through separate
