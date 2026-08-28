@@ -8,9 +8,9 @@ use cookie_agent_config::ContextCompactionTrigger;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
     ContextCheckpointCommit, ContextRehydratedFile, ExtensionSessionBeforeCompactParams,
-    InternalAgentKind, InternalSummaryCheckpoint, PersistedAssistantPart, PluginDiagnosticKind,
-    RunId, SessionCompactResult, SessionId, SessionStatus, Sha256Digest, StoredEvent,
-    SummaryByteLimit, ToolCallId,
+    InternalAgentKind, InternalSummaryCheckpoint, PersistedAssistantPart, PersistedToolResult,
+    PluginDiagnosticKind, RunId, SessionCompactResult, SessionId, SessionStatus, Sha256Digest,
+    StoredEvent, SummaryByteLimit, ToolCallId, ToolEmittedContent,
 };
 use oven_sdk::{
     CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
@@ -602,7 +602,7 @@ impl Engine {
                 *model_turn_seq,
                 &protected_turns,
                 already_elided.contains(&termination.tool_call_id),
-                result.output.len(),
+                elidable_bytes(result),
             ) {
                 continue;
             }
@@ -816,13 +816,11 @@ pub(super) fn serialized_fit_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
-    let (history, video_parts) = fit_history(history);
+    let (history, attachment_surrogate_bytes) = fit_history(history);
     let mut writer = CountingWriter::default();
     serde_json::to_writer(&mut writer, &(history, tools))
         .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-    Ok(writer
-        .bytes
-        .saturating_add(video_parts.saturating_mul(VIDEO_FILE_FIT_SURROGATE_BYTES)))
+    Ok(writer.bytes.saturating_add(attachment_surrogate_bytes))
 }
 
 fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>, usize) {
@@ -831,14 +829,15 @@ fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>
     // because frame sampling can be materially expensive. Overestimation can spuriously compact
     // and drop attachments during rehydration, while real usage calibrates residual error.
     let mut history = history.to_vec();
-    let mut video_parts = 0_usize;
+    let mut attachment_surrogate_bytes = 0_usize;
     for turn in &mut history {
         match turn {
             oven_sdk::HistoryTurn::System(_) => {}
             oven_sdk::HistoryTurn::User(message) => {
                 message.content.retain(|part| match part {
                     oven_sdk::InputPart::File(file) => {
-                        video_parts += usize::from(file.media_type.starts_with("video/"));
+                        attachment_surrogate_bytes = attachment_surrogate_bytes
+                            .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
                         false
                     }
                     oven_sdk::InputPart::Text(_) | oven_sdk::InputPart::Custom(_) => true,
@@ -847,39 +846,70 @@ fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>
             oven_sdk::HistoryTurn::Assistant(turn) => {
                 turn.message.content.retain(|part| match part {
                     oven_sdk::AssistantPart::File(file) => {
-                        video_parts += usize::from(file.media_type.starts_with("video/"));
+                        attachment_surrogate_bytes = attachment_surrogate_bytes
+                            .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
                         false
                     }
                     _ => true,
                 });
                 for part in &mut turn.message.content {
                     if let oven_sdk::AssistantPart::ToolResult(result) = part {
-                        video_parts += remove_tool_content_files(&mut result.content);
+                        attachment_surrogate_bytes = attachment_surrogate_bytes
+                            .saturating_add(remove_tool_content_files(&mut result.content));
                     }
                 }
             }
             oven_sdk::HistoryTurn::Tool(message) => {
                 for result in &mut message.results {
-                    video_parts += remove_tool_content_files(&mut result.content);
+                    attachment_surrogate_bytes = attachment_surrogate_bytes
+                        .saturating_add(remove_tool_content_files(&mut result.content));
                 }
             }
         }
     }
-    (history, video_parts)
+    (history, attachment_surrogate_bytes)
 }
 
 fn remove_tool_content_files(content: &mut oven_sdk::ToolContent) -> usize {
-    let mut video_parts = 0_usize;
+    let mut attachment_surrogate_bytes = 0_usize;
     if let oven_sdk::ToolContent::Mixed(values) = content {
         values.retain(|value| match value {
             oven_sdk::ContentValue::File(file) => {
-                video_parts += usize::from(file.media_type.starts_with("video/"));
+                attachment_surrogate_bytes = attachment_surrogate_bytes
+                    .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
                 false
             }
             oven_sdk::ContentValue::Text(_) | oven_sdk::ContentValue::Json(_) => true,
         });
     }
-    video_parts
+    attachment_surrogate_bytes
+}
+
+fn attachment_fit_surrogate_bytes(media_type: &str) -> usize {
+    if media_type.starts_with("video/") {
+        VIDEO_FILE_FIT_SURROGATE_BYTES
+    } else {
+        0
+    }
+}
+
+fn elidable_bytes(result: &PersistedToolResult) -> usize {
+    let emitted_text_bytes = result
+        .additional_messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            ToolEmittedContent::Text(text) => Some(text.len()),
+            ToolEmittedContent::File(_) => None,
+        })
+        .fold(0_usize, usize::saturating_add);
+    result
+        .all_attachments()
+        .map(|attachment| attachment_fit_surrogate_bytes(attachment.mime_type.as_str()))
+        .fold(
+            result.output.len().saturating_add(emitted_text_bytes),
+            usize::saturating_add,
+        )
 }
 
 #[derive(Default)]
@@ -1069,11 +1099,12 @@ mod tests {
     use std::collections::HashSet;
 
     use cookie_agent_protocol::{
-        ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-        ContextCheckpointCommit, InternalSummaryCheckpoint, PersistedAssistantPart,
-        PersistedModelTurn, PersistedToolResult as ToolResult, RunId, SessionId, StoredEvent,
-        SummaryByteLimit, ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination,
-        ToolTerminationOutcome,
+        ArtifactReference, ContextCheckpoint, ContextCheckpointBoundaries,
+        ContextCheckpointBudgets, ContextCheckpointCommit, InternalSummaryCheckpoint, MimeType,
+        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult, RunId,
+        SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment,
+        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
+        ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome,
     };
     use oven_sdk::{
         CompactionCapability, FilePart, FileSource, HistoryTurn, InputPart, JsonSchema,
@@ -1082,8 +1113,9 @@ mod tests {
 
     use super::{
         COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
-        compaction_gate, compaction_history, compaction_input_fits, compaction_instruction,
+        TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES,
+        attachment_fit_surrogate_bytes, checkpoint_covers_input, compaction_gate,
+        compaction_history, compaction_input_fits, compaction_instruction, elidable_bytes,
         estimated_request_tokens, native_compaction_input_budget, raw_fit_from_real_usage,
         recent_read_candidates, resolve_compaction_trigger, serialized_fit_request_bytes,
         should_elide_tool_output, usage_reaches_compaction_trigger,
@@ -1484,6 +1516,58 @@ mod tests {
             false,
             TOOL_OUTPUT_ELISION_MIN_BYTES
         ));
+        assert!(!should_elide_tool_output(
+            7,
+            &protected,
+            true,
+            TOOL_OUTPUT_ELISION_MIN_BYTES
+        ));
+    }
+
+    #[test]
+    fn elision_uses_the_estimator_attachment_surrogate_and_emitted_text() {
+        let attachment = ToolAttachment {
+            mime_type: MimeType::new("video/mp4").unwrap(),
+            filename: Some("clip.mp4".into()),
+            byte_length: 4,
+            sha256: Sha256Digest::of_bytes(b"clip"),
+            reference: ArtifactReference {
+                uri: format!("artifact://sha256/{}", "a".repeat(64)),
+            },
+        };
+        let result = ToolResult {
+            title: SafeDisplayText::new("Video").unwrap(),
+            output: "x".repeat(60),
+            metadata: serde_json::Value::Null,
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: vec![
+                ToolEmittedMessage::new(
+                    ToolEmittedMessageRole::User,
+                    vec![ToolEmittedContent::File(attachment)],
+                )
+                .unwrap(),
+            ],
+        };
+        let surrogate = attachment_fit_surrogate_bytes("video/mp4");
+        assert_eq!(surrogate, VIDEO_FILE_FIT_SURROGATE_BYTES);
+        assert_eq!(elidable_bytes(&result), 60 + surrogate);
+        assert!(should_elide_tool_output(
+            1,
+            &HashSet::new(),
+            false,
+            elidable_bytes(&result)
+        ));
+
+        let mut emitted_text = result.clone();
+        emitted_text.additional_messages[0].content.insert(
+            0,
+            ToolEmittedContent::Text("x".repeat(TOOL_OUTPUT_ELISION_MIN_BYTES)),
+        );
+        assert_eq!(
+            elidable_bytes(&emitted_text),
+            60 + TOOL_OUTPUT_ELISION_MIN_BYTES + surrogate
+        );
     }
 
     #[test]

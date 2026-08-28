@@ -62,11 +62,18 @@ pub(crate) fn checkpoint_retained_history(
 pub(crate) fn tool_output_elision_marker(
     retained: &ArtifactReference,
     original_bytes: u64,
+    additional_message_count: usize,
 ) -> String {
-    format!(
+    let mut marker = format!(
         "[tool output elided; retained at {}; {original_bytes} bytes]",
         retained.uri
-    )
+    );
+    if additional_message_count > 0 {
+        marker.push_str(&format!(
+            " {additional_message_count} tool-emitted message(s) were elided with this result and are not recoverable."
+        ));
+    }
+    marker
 }
 
 #[derive(Debug, Error)]
@@ -490,6 +497,7 @@ fn assemble_history_with_replay(
                                     ToolContent::Text(tool_output_elision_marker(
                                         retained,
                                         *original_bytes,
+                                        result.additional_messages.len(),
                                     )),
                                 ),
                                 Vec::new(),
@@ -1712,8 +1720,12 @@ mod tests {
                     .into(),
         };
         assert_eq!(
-            tool_output_elision_marker(&retained, 12_345),
+            tool_output_elision_marker(&retained, 12_345, 0),
             "[tool output elided; retained at artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes]"
+        );
+        assert_eq!(
+            tool_output_elision_marker(&retained, 12_345, 2),
+            "[tool output elided; retained at artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes] 2 tool-emitted message(s) were elided with this result and are not recoverable."
         );
     }
     use crate::{
@@ -2398,7 +2410,7 @@ mod tests {
                 error: None,
             },
         };
-        let events = vec![
+        let mut events = vec![
             event(
                 1,
                 run,
@@ -2482,7 +2494,7 @@ mod tests {
         let history = assemble_full_history(&events, &store, &binding, "System prompt.")
             .expect("assembled history");
         drop(store);
-        let restarted_store = ArtifactStore::open(artifact_path).expect("restarted store");
+        let restarted_store = ArtifactStore::open(artifact_path.clone()).expect("restarted store");
         let replayed = assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
             .expect("replayed history");
         assert_eq!(history, replayed);
@@ -2501,5 +2513,28 @@ mod tests {
                 history
             );
         });
+
+        let (retained, _) = restarted_store.retain(b"contents").expect("retain output");
+        events.push(event(
+            8,
+            run,
+            EventPayload::ToolOutputElided {
+                tool_call_id: call,
+                original_bytes: 8,
+                retained,
+            },
+        ));
+        let elided = assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
+            .expect("elided history");
+        drop(restarted_store);
+        let restarted_store = ArtifactStore::open(artifact_path).expect("second restart");
+        let replayed_elision =
+            assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
+                .expect("replayed elision");
+        assert_eq!(elided, replayed_elision);
+        let encoded = serde_json::to_string(&elided).expect("elided history JSON");
+        assert!(!encoded.contains("emitted system context"));
+        assert!(!encoded.contains("emitted user context"));
+        assert!(encoded.contains("2 tool-emitted message(s) were elided"));
     }
 }
