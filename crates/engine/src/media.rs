@@ -147,6 +147,9 @@ pub fn gate_attachment(
             AttachmentGate::DeliverViaUserTurn,
             MAX_VIDEO_ENCODED_BYTES as u64,
         ),
+        (AdaptorId::GoogleGemini | AdaptorId::GoogleVertexGemini, CapabilityMediaKind::Audio) => {
+            (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64)
+        }
         _ => return AttachmentGate::RejectUnsupportedFamily,
     };
     let max_bytes = capability.max_bytes.min(family_limit);
@@ -169,6 +172,17 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         Some(("image/webp", MediaKind::Image(ImageFormat::WebP)))
     } else if bytes.starts_with(b"%PDF-") {
         Some(("application/pdf", MediaKind::Pdf))
+    } else if bytes.starts_with(b"ID3")
+        || bytes.starts_with(&[0xff, 0xfb])
+        || bytes.starts_with(&[0xff, 0xf3])
+    {
+        Some(("audio/mpeg", MediaKind::Audio))
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        Some(("audio/wav", MediaKind::Audio))
+    } else if bytes.starts_with(b"OggS") {
+        Some(("audio/ogg", MediaKind::Audio))
+    } else if bytes.starts_with(b"fLaC") {
+        Some(("audio/flac", MediaKind::Audio))
     } else if let Some(mime) = iso_base_media_type(bytes) {
         Some((mime, MediaKind::Video))
     } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
@@ -210,7 +224,9 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
     }
     let max_encoded_bytes = match kind {
         MediaKind::Video => MAX_VIDEO_ENCODED_BYTES,
-        MediaKind::Image(_) | MediaKind::Gif | MediaKind::Pdf => MAX_ENCODED_BYTES,
+        MediaKind::Image(_) | MediaKind::Gif | MediaKind::Pdf | MediaKind::Audio => {
+            MAX_ENCODED_BYTES
+        }
     };
     if bytes.len() > max_encoded_bytes {
         return Err(ToolError::resource_limit(format!(
@@ -222,6 +238,7 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
         MediaKind::Image(format) => validate_image(bytes, format),
         MediaKind::Gif => validate_gif(bytes),
         MediaKind::Pdf => validate_pdf(bytes),
+        MediaKind::Audio => true,
         MediaKind::Video => true,
     };
     if valid {
@@ -245,6 +262,7 @@ enum MediaKind {
     Image(ImageFormat),
     Gif,
     Pdf,
+    Audio,
     Video,
 }
 
@@ -1222,6 +1240,10 @@ fn known_media_extension(path: &Path) -> bool {
                     | "gif"
                     | "webp"
                     | "pdf"
+                    | "mp3"
+                    | "wav"
+                    | "ogg"
+                    | "flac"
                     | "mp4"
                     | "mov"
                     | "mkv"
@@ -1247,6 +1269,10 @@ fn media_extension_matches(path: &Path, mime: &str) -> bool {
                     | ("gif", "image/gif")
                     | ("webp", "image/webp")
                     | ("pdf", "application/pdf")
+                    | ("mp3", "audio/mpeg")
+                    | ("wav", "audio/wav")
+                    | ("ogg", "audio/ogg")
+                    | ("flac", "audio/flac")
                     | ("mp4", "video/mp4")
                     | ("mov", "video/quicktime" | "video/mov")
                     | ("mkv", "video/x-matroska")
@@ -1502,6 +1528,35 @@ mod tests {
             ),
             AttachmentGate::RejectUnsupportedModel
         );
+    }
+
+    #[test]
+    fn audio_signatures_are_sniffed_and_gemini_uses_user_turn_delivery() {
+        for (path, bytes, mime) in [
+            ("clip.mp3", b"ID3payload".as_slice(), "audio/mpeg"),
+            ("clip.mp3", b"\xff\xfbpayload".as_slice(), "audio/mpeg"),
+            (
+                "clip.wav",
+                b"RIFF\x04\x00\x00\x00WAVEpayload".as_slice(),
+                "audio/wav",
+            ),
+            ("clip.ogg", b"OggSpayload".as_slice(), "audio/ogg"),
+            ("clip.flac", b"fLaCpayload".as_slice(), "audio/flac"),
+        ] {
+            assert_eq!(
+                approved_media_type(Path::new(path), bytes).unwrap(),
+                Some(mime),
+                "{path}"
+            );
+        }
+
+        let audio = capabilities(Some((MediaKind::Audio, "audio/mpeg", 1024)));
+        for family in [AdaptorId::GoogleGemini, AdaptorId::GoogleVertexGemini] {
+            assert_eq!(
+                gate_attachment(family, &audio, "audio/mpeg", b"ID3payload"),
+                AttachmentGate::DeliverViaUserTurn
+            );
+        }
     }
 
     #[test]

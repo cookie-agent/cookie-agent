@@ -553,6 +553,7 @@ impl PersistedToolResult {
     pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
     pub const MAX_METADATA_BYTES: usize = 2 * 1024 * 1024;
     pub const MAX_ADDITIONAL_MESSAGES: usize = 4;
+    pub const MAX_ATTACHMENTS: usize = 256;
 
     pub fn all_attachments(&self) -> impl Iterator<Item = &ToolAttachment> {
         self.attachments.iter().chain(
@@ -587,7 +588,7 @@ impl PersistedToolResult {
             .attachments
             .len()
             .saturating_add(emitted_attachment_count)
-            > 256
+            > Self::MAX_ATTACHMENTS
         {
             return Err(EventSchemaError::TooManyAttachments);
         }

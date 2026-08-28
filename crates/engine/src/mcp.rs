@@ -2683,10 +2683,26 @@ fn map_tool_result(
         match block {
             ContentBlock::Text(text) => output.push(text.text),
             ContentBlock::Image(image) => {
+                if !mcp_attachment_budget_remaining(&attachments, &emitted_attachments) {
+                    output.push(
+                        "[MCP image attachment omitted: combined attachment limit reached]".into(),
+                    );
+                    continue;
+                }
                 match retain_base64_attachment(context, image.mime_type, &image.data) {
                     Ok(retained) => {
-                        route_mcp_attachment(retained, &mut attachments, &mut emitted_attachments);
-                        output.push("[MCP image attachment]".into());
+                        output.push(
+                            if route_mcp_attachment(
+                                retained,
+                                &mut attachments,
+                                &mut emitted_attachments,
+                            ) {
+                                "[MCP image attachment]".into()
+                            } else {
+                                "[MCP image attachment omitted: combined attachment limit reached]"
+                                    .into()
+                            },
+                        );
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
                         output.push(format!("[Invalid MCP image content: {error}]"));
@@ -2697,10 +2713,26 @@ fn map_tool_result(
                 }
             }
             ContentBlock::Audio(audio) => {
+                if !mcp_attachment_budget_remaining(&attachments, &emitted_attachments) {
+                    output.push(
+                        "[MCP audio attachment omitted: combined attachment limit reached]".into(),
+                    );
+                    continue;
+                }
                 match retain_base64_attachment(context, audio.mime_type, &audio.data) {
                     Ok(retained) => {
-                        route_mcp_attachment(retained, &mut attachments, &mut emitted_attachments);
-                        output.push("[MCP audio attachment]".into());
+                        output.push(
+                            if route_mcp_attachment(
+                                retained,
+                                &mut attachments,
+                                &mut emitted_attachments,
+                            ) {
+                                "[MCP audio attachment]".into()
+                            } else {
+                                "[MCP audio attachment omitted: combined attachment limit reached]"
+                                    .into()
+                            },
+                        );
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
                         output.push(format!("[Invalid MCP audio content: {error}]"));
@@ -2720,18 +2752,30 @@ fn map_tool_result(
                     blob,
                     ..
                 } => {
+                    if !mcp_attachment_budget_remaining(&attachments, &emitted_attachments) {
+                        output.push(format!(
+                            "[MCP embedded resource unavailable: {uri}: combined attachment limit reached]"
+                        ));
+                        continue;
+                    }
                     match retain_base64_attachment(
                         context,
                         mime_type.unwrap_or_else(|| "application/octet-stream".into()),
                         &blob,
                     ) {
                         Ok(retained) => {
-                            route_mcp_attachment(
+                            let routed = route_mcp_attachment(
                                 retained,
                                 &mut attachments,
                                 &mut emitted_attachments,
                             );
-                            output.push(format!("[MCP embedded resource attachment: {uri}]"));
+                            output.push(if routed {
+                                format!("[MCP embedded resource attachment: {uri}]")
+                            } else {
+                                format!(
+                                    "[MCP embedded resource unavailable: {uri}: combined attachment limit reached]"
+                                )
+                            });
                         }
                         Err(McpAttachmentError::Invalid(error)) => output.push(format!(
                             "[MCP embedded resource unavailable: {uri}: {error}]"
@@ -2798,7 +2842,10 @@ fn route_mcp_attachment(
     retained: RetainedMcpAttachment,
     attachments: &mut Vec<ToolAttachment>,
     emitted_attachments: &mut Vec<ToolAttachment>,
-) {
+) -> bool {
+    if !mcp_attachment_budget_remaining(attachments, emitted_attachments) {
+        return false;
+    }
     match retained.delivery {
         crate::media::AttachmentGate::AttachToolResult => attachments.push(retained.attachment),
         crate::media::AttachmentGate::DeliverViaUserTurn => {
@@ -2810,6 +2857,14 @@ fn route_mcp_attachment(
             unreachable!("rejected MCP attachment gates return an error")
         }
     }
+    true
+}
+
+fn mcp_attachment_budget_remaining(
+    attachments: &[ToolAttachment],
+    emitted_attachments: &[ToolAttachment],
+) -> bool {
+    attachments.len().saturating_add(emitted_attachments.len()) < ToolResult::MAX_ATTACHMENTS
 }
 
 fn retain_base64_attachment(
@@ -2821,9 +2876,14 @@ fn retain_base64_attachment(
         .decode(data)
         .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
     let mut delivery = crate::media::AttachmentGate::AttachToolResult;
-    if let Some(mime) = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
-        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?
-    {
+    let sniffed = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
+        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
+    let retained_mime = if mime_type.is_empty() || mime_type == "application/octet-stream" {
+        sniffed.unwrap_or(mime_type.as_str())
+    } else {
+        mime_type.as_str()
+    };
+    if let Some(mime) = sniffed {
         let gate = crate::media::gate_attachment(
             context.turn_context.adapter,
             &context.turn_context.capabilities,
@@ -2841,7 +2901,7 @@ fn retain_base64_attachment(
         delivery = gate;
     }
     let attachment = context
-        .retain_attachment(mime_type, None, &bytes)
+        .retain_attachment(retained_mime, None, &bytes)
         .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
     Ok(RetainedMcpAttachment {
         attachment,
@@ -3248,6 +3308,103 @@ for line in sys.stdin:
         )
         .expect("map ordinary MCP result");
         assert!(ordinary.additional_messages.is_empty());
+
+        let mut audio_turn = make_turn_context(AdaptorId::GoogleGemini, false);
+        audio_turn.capabilities.input.insert(Modality::Audio);
+        audio_turn.capabilities.media.insert(
+            cookie_agent_protocol::MediaKind::Audio,
+            cookie_agent_protocol::MediaCapability {
+                mime_types: [cookie_agent_protocol::MimeType::new("audio/mpeg").unwrap()]
+                    .into_iter()
+                    .collect(),
+                max_bytes: 1024,
+                max_count: 1,
+            },
+        );
+        let audio_context = context(audio_turn);
+        let encoded_audio = base64::engine::general_purpose::STANDARD.encode(b"ID3payload");
+        let audio =
+            super::retain_base64_attachment(&audio_context, "audio/mpeg".into(), &encoded_audio)
+                .expect("MCP audio must retain");
+        assert_eq!(audio.attachment.mime_type.as_str(), "audio/mpeg");
+        assert_eq!(
+            audio.delivery,
+            crate::media::AttachmentGate::DeliverViaUserTurn
+        );
+
+        let octet_stream: rmcp::model::CallToolResult = serde_json::from_value(serde_json::json!({
+            "content": [{
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///pixel.bin",
+                    "mimeType": "application/octet-stream",
+                    "blob": data
+                }
+            }]
+        }))
+        .expect("MCP octet-stream blob result");
+        let mapped = super::map_tool_result(
+            &context(make_turn_context(AdaptorId::Anthropic, true)),
+            "blob",
+            octet_stream,
+        )
+        .expect("sniffed octet-stream blob must map");
+        assert_eq!(mapped.attachments[0].mime_type.as_str(), "image/png");
+    }
+
+    #[test]
+    fn tool_result_caps_combined_attachments_and_degrades_overflow_inline() {
+        use base64::Engine as _;
+        use cookie_agent_protocol::AdaptorId;
+
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+        let data = base64::engine::general_purpose::STANDARD.encode(PNG);
+        let content = (0..=cookie_agent_protocol::PersistedToolResult::MAX_ATTACHMENTS)
+            .map(|_| {
+                serde_json::json!({
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": data
+                })
+            })
+            .collect::<Vec<_>>();
+        let result = serde_json::from_value(serde_json::json!({ "content": content }))
+            .expect("oversized MCP attachment result");
+        let directory = tempfile::tempdir().expect("tempdir");
+        let call_id = ToolCallId::new_v7();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
+        let context = ToolExecutionContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
+            cancellation: CancellationToken::new(),
+            stdin: None,
+            turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
+            artifacts: ArtifactStore::open(directory.path().join("artifacts"))
+                .expect("artifact store"),
+        };
+
+        let mapped = super::map_tool_result(&context, "images", result).expect("bounded result");
+        assert_eq!(
+            mapped.attachments.len(),
+            cookie_agent_protocol::PersistedToolResult::MAX_ATTACHMENTS
+        );
+        assert!(mapped.additional_messages.is_empty());
+        assert_eq!(
+            mapped
+                .output
+                .lines()
+                .filter(|line| line.contains("combined attachment limit reached"))
+                .count(),
+            1
+        );
+        mapped.validate().expect("bounded MCP result validates");
     }
 
     #[test]
