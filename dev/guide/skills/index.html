@@ -1257,17 +1257,23 @@ skill is a directory whose name contains lowercase letters, digits, and single
 hyphens, with an exact-case <code>SKILL.md</code> file inside it. Other files under the
 directory are available as scripts, references, or assets.</p>
 <h2 id="discovery-and-precedence">Discovery and precedence<a class="headerlink" href="#discovery-and-precedence" title="Permanent link">&para;</a></h2>
-<p>Cookie Agent discovers skills from:</p>
+<p>Cookie Agent discovers skills from these locations, lowest to highest
+precedence:</p>
 <ul>
-<li><code>~/.cookie-agent/skills/&lt;name&gt;/SKILL.md</code></li>
-<li><code>.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> from the working directory upward to
-  the worktree root</li>
+<li><code>~/.agents/skills/&lt;name&gt;/SKILL.md</code> (cross-client convention, shared with
+  other agents)</li>
+<li><code>~/.cookie-agent/skills/&lt;name&gt;/SKILL.md</code> (cookie-agent-native user skills)</li>
+<li><code>.agents/skills/&lt;name&gt;/SKILL.md</code>, then <code>.cookie-agent/skills/&lt;name&gt;/SKILL.md</code>,
+  from the worktree root downward to the working directory</li>
 </ul>
-<p>The user location is resolved from the standard home directory and is the normal
-place for reusable personal skills.</p>
-<p>Project skills override same-named user skills. The shadowed user skill remains
-visible in <code>skills.list</code> and <code>/skills</code> diagnostics, but cannot be invoked. Skill
-files are not hot-reloaded; restart the engine after changing them.</p>
+<p>The user locations resolve from the standard home directory and are the normal
+place for reusable personal skills; <code>~/.agents/skills</code> is the right home for
+skills shared with other agents that follow the cross-client convention.</p>
+<p>Same-named skills are replaced whole, never merged: a higher-precedence
+location wins, and within one directory scope the cookie-agent-native root wins
+over <code>.agents/skills</code>. Shadowed user-scope skills remain visible in
+<code>skills.list</code> and <code>/skills</code> diagnostics, but cannot be invoked. Skill files are
+not hot-reloaded; restart the engine after changing them.</p>
 <h2 id="authoring">Authoring<a class="headerlink" href="#authoring" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>---
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>name: release-check

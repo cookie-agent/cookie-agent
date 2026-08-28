@@ -1670,7 +1670,9 @@ family (<code>internal_agent_started</code>, <code>internal_agent_completed</cod
 </tbody>
 </table>
 <p>All three default to <code>${parent_model}</code>, so they run on the model the parent run
-is currently using. An internal agent's input budget is derived from each
+is currently using — including its position in the fallback chain: if the run
+has fallen back to its second model, internal agents resolve to that second
+model too. An internal agent's input budget is derived from each
 resolved model's context limit after reserving its effective maximum output,
 with a minimum of one token. A model with an unknown context limit uses a
 16,384-token input budget. Agent documents cannot set an input-token cap.</p>
