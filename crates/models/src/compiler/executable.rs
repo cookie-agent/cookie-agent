@@ -95,6 +95,9 @@ pub(crate) fn compile_executable(
 }
 
 fn executable_provider_id(provider_id: &str, family: OvenAdapterFamily) -> &str {
+    if provider_id.starts_with("custom.") && family == OvenAdapterFamily::OpenaiResponses {
+        return provider_id;
+    }
     match family {
         OvenAdapterFamily::Anthropic => "anthropic",
         OvenAdapterFamily::AnthropicCompatible => provider_id,
@@ -555,4 +558,25 @@ fn cohere_thinking(reasoning: Option<&ReasoningBehavior>) -> Value {
 
 fn wrong_auth(adapter: &'static str, expected: &'static str) -> ModelBuildError {
     ModelBuildError::WrongAuth { adapter, expected }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_provider_identity_survives_official_adapter_compilation() {
+        assert_eq!(
+            executable_provider_id("custom.gateway", OvenAdapterFamily::OpenaiResponses),
+            "custom.gateway"
+        );
+        assert_eq!(
+            executable_provider_id("openai", OvenAdapterFamily::OpenaiResponses),
+            "openai"
+        );
+        assert_eq!(
+            executable_provider_id("custom.google", OvenAdapterFamily::GoogleGemini),
+            "google"
+        );
+    }
 }

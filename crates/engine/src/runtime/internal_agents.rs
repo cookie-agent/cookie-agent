@@ -726,13 +726,15 @@ pub(super) fn internal_history_tokens(
 }
 
 fn invalid_internal_output(parts: &[oven_sdk::AssistantPart], reject_non_text: bool) -> bool {
-    // Reasoning parts are visible assistant text, not executable output; only
-    // parts that would need execution or attachment handling are invalid.
+    // Reasoning and custom parts are inert metadata, not executable output;
+    // only parts that would need execution or attachment handling are invalid.
     reject_non_text
         && parts.iter().any(|part| {
             !matches!(
                 part,
-                oven_sdk::AssistantPart::Text(_) | oven_sdk::AssistantPart::Reasoning(_)
+                oven_sdk::AssistantPart::Text(_)
+                    | oven_sdk::AssistantPart::Reasoning(_)
+                    | oven_sdk::AssistantPart::Custom(_)
             )
         })
 }
@@ -800,6 +802,18 @@ mod tests {
         let parts = vec![
             oven_sdk::AssistantPart::Reasoning(oven_sdk::ReasoningPart::new("weighing risk")),
             oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(r#"{"decision":"allow"}"#)),
+        ];
+        assert!(!invalid_internal_output(&parts, true));
+    }
+
+    #[test]
+    fn custom_continuation_parts_are_not_rejected_as_non_text() {
+        let parts = vec![
+            oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new("summary")),
+            oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
+                "openai.responses.reasoning_continuation",
+                serde_json::json!({"item_id":"item","encrypted":"opaque"}),
+            )),
         ];
         assert!(!invalid_internal_output(&parts, true));
     }
