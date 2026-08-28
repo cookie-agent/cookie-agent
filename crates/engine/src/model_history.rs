@@ -27,6 +27,8 @@ use crate::ArtifactStore;
 
 pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
+pub(crate) const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =
+    "[tool-emitted system message; materialized as user history]";
 
 pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
@@ -827,39 +829,27 @@ fn append_tool_emitted_message(
     message: &ToolEmittedMessage,
     store: &ArtifactStore,
 ) -> Result<(), HistoryError> {
-    match message.role {
-        ToolEmittedMessageRole::System => {
-            let HistoryTurn::System(system) = &mut history[0] else {
-                unreachable!("assembled history starts with a system message");
-            };
-            for part in &message.content {
-                match part {
-                    ToolEmittedContent::Text(text) => {
-                        system.content.push(SystemPart::Text(TextPart::new(text)));
-                    }
-                    ToolEmittedContent::File(_) => {
-                        return Err(HistoryError::Corrupt(
-                            "tool-emitted system files cannot be represented in model history"
-                                .into(),
-                        ));
-                    }
-                }
-            }
-        }
-        ToolEmittedMessageRole::User => {
-            let content = message
-                .content
-                .iter()
-                .map(|part| match part {
-                    ToolEmittedContent::Text(text) => Ok(InputPart::Text(TextPart::new(text))),
-                    ToolEmittedContent::File(attachment) => {
-                        attachment_file(attachment, store).map(InputPart::File)
-                    }
-                })
-                .collect::<Result<_, _>>()?;
-            history.push(HistoryTurn::user(UserMessage::new(content)));
-        }
+    let mut content = Vec::with_capacity(
+        message.content.len() + usize::from(message.role == ToolEmittedMessageRole::System),
+    );
+    if message.role == ToolEmittedMessageRole::System {
+        content.push(InputPart::Text(TextPart::new(
+            TOOL_EMITTED_SYSTEM_USER_MARKER,
+        )));
     }
+    content.extend(
+        message
+            .content
+            .iter()
+            .map(|part| match part {
+                ToolEmittedContent::Text(text) => Ok(InputPart::Text(TextPart::new(text))),
+                ToolEmittedContent::File(attachment) => {
+                    attachment_file(attachment, store).map(InputPart::File)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    history.push(HistoryTurn::user(UserMessage::new(content)));
     Ok(())
 }
 
@@ -1540,10 +1530,10 @@ mod tests {
     };
 
     use super::{
-        COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, assemble_full_history,
-        assemble_model_context, checkpoint_retained_history, framed_compaction_summary,
-        replay_decisions, replay_decisions_with_preflight, restore_replay,
-        tool_output_elision_marker, tool_result_part, wire_model,
+        COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
+        assemble_full_history, assemble_model_context, checkpoint_retained_history,
+        framed_compaction_summary, replay_decisions, replay_decisions_with_preflight,
+        restore_replay, tool_output_elision_marker, tool_result_part, wire_model,
     };
 
     #[test]
@@ -2500,8 +2490,10 @@ mod tests {
         assert_eq!(history, replayed);
         assert!(matches!(history[3], HistoryTurn::Tool(_)));
         assert!(matches!(history[4], HistoryTurn::User(_)));
-        assert!(matches!(history[5], HistoryTurn::Assistant(_)));
+        assert!(matches!(history[5], HistoryTurn::User(_)));
+        assert!(matches!(history[6], HistoryTurn::Assistant(_)));
         let encoded = serde_json::to_string(&history).expect("history JSON");
+        assert!(encoded.contains(TOOL_EMITTED_SYSTEM_USER_MARKER));
         assert_eq!(encoded.matches("emitted user context").count(), 1);
         assert_eq!(encoded.matches("emitted system context").count(), 1);
         oven_sdk::Request::new(history.clone())

@@ -18,9 +18,13 @@ counts and validates every referenced artifact.
 
 The engine materializes these messages from the persisted terminal result, so
 replay and restart are deterministic. The paired tool result is placed first,
-then user-role messages are inserted in array order before the next assistant
-turn. System-role text follows the existing mid-run system rule and folds into
-the initial system message. Terminal result events use origin
+then messages are inserted in array order before the next assistant turn.
+User-role messages retain their role. System-role messages are represented as
+user turns whose first text part is the deterministic marker
+`[tool-emitted system message; materialized as user history]`; their original
+text and file parts follow in order. This translation keeps the initial system
+prefix and its cache breakpoint stable because provider families disagree on
+mid-history system semantics. Terminal result events use origin
 `engine:tool-result`.
 
 Elision treats a tool result and its `additional_messages` as one unit. If the

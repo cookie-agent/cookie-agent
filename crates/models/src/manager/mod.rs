@@ -3217,6 +3217,54 @@ mod cache_strategy_tests {
         assert!(!has_openai_breakpoint(&later.metadata));
     }
 
+    #[test]
+    fn openai_system_breakpoint_index_is_stable_after_translated_system_emission() {
+        let base_history = vec![
+            oven_sdk::HistoryTurn::system(SystemMessage::new(vec![
+                SystemPart::Text(TextPart::new("stable system one")),
+                SystemPart::Text(TextPart::new("stable system two")),
+            ])),
+            oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
+                "conversation",
+            ))])),
+        ];
+        let mut without_emission = Request::new(base_history.clone());
+        let mut with_emission = Request::new(base_history);
+        with_emission
+            .history
+            .push(oven_sdk::HistoryTurn::user(UserMessage::new(vec![
+                InputPart::Text(TextPart::new(
+                    "[tool-emitted system message; materialized as user history]",
+                )),
+                InputPart::Text(TextPart::new("emitted system context")),
+            ])));
+
+        for request in [&mut without_emission, &mut with_emission] {
+            apply_cache_strategy(
+                request,
+                OvenAdapterFamily::OpenaiChat,
+                &openai_strategy(true, false),
+            );
+        }
+        let breakpoint_index = |request: &Request| {
+            let oven_sdk::HistoryTurn::System(system) = &request.history[0] else {
+                panic!("initial system turn");
+            };
+            system.content.iter().position(|part| {
+                matches!(part, SystemPart::Text(text) if has_openai_breakpoint(&text.metadata))
+            })
+        };
+        assert_eq!(breakpoint_index(&without_emission), Some(1));
+        assert_eq!(
+            breakpoint_index(&with_emission),
+            breakpoint_index(&without_emission)
+        );
+        let oven_sdk::HistoryTurn::System(system) = &with_emission.history[0] else {
+            panic!("initial system turn");
+        };
+        assert_eq!(system.content.len(), 2);
+    }
+
     fn real_openai_resolved(
         adapter: OvenAdapterFamily,
         endpoint: String,

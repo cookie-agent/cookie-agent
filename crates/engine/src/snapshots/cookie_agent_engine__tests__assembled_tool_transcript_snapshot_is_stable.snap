@@ -13,13 +13,6 @@ expression: history
             "text": "System prompt.",
             "metadata": null
           }
-        },
-        {
-          "type": "text",
-          "value": {
-            "text": "emitted system context",
-            "metadata": null
-          }
         }
       ],
       "provider_options": {}
@@ -104,6 +97,28 @@ expression: history
           },
           "is_error": false,
           "metadata": null
+        }
+      ],
+      "provider_options": {}
+    }
+  },
+  {
+    "type": "user",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "value": {
+            "text": "[tool-emitted system message; materialized as user history]",
+            "metadata": null
+          }
+        },
+        {
+          "type": "text",
+          "value": {
+            "text": "emitted system context",
+            "metadata": null
+          }
         }
       ],
       "provider_options": {}

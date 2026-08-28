@@ -220,7 +220,7 @@ async fn dispatch(adaptor: &str, response: &'static str) -> String {
     .await
 }
 
-async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
+async fn dispatch_video_request(adaptor: &str, response: &'static str, request: Request) -> String {
     let (mut endpoint, captured) = server(response).await;
     if adaptor == "google-gemini" {
         endpoint = endpoint.trim_end_matches("/v1").to_owned() + "/v1beta";
@@ -241,12 +241,6 @@ async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
             variant: None,
         })
         .unwrap();
-    let request = Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
-        InputPart::File(FilePart::video(
-            "video/mp4",
-            FileSource::Bytes(b"video".to_vec().into()),
-        )),
-    ]))]);
     let mut stream = resolved
         .model()
         .stream(resolved.prepare_request(request), AbortSignal::default())
@@ -256,6 +250,20 @@ async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
         part.unwrap();
     }
     captured.await.unwrap()
+}
+
+async fn dispatch_video(adaptor: &str, response: &'static str) -> String {
+    dispatch_video_request(
+        adaptor,
+        response,
+        Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
+            InputPart::File(FilePart::video(
+                "video/mp4",
+                FileSource::Bytes(b"video".to_vec().into()),
+            )),
+        ]))]),
+    )
+    .await
 }
 
 fn http_body(request: &str) -> serde_json::Value {
@@ -423,5 +431,59 @@ async fn user_turn_video_encodes_for_every_declared_delivery_family() {
             }),
             "{adaptor}"
         );
+    }
+}
+
+#[tokio::test]
+async fn translated_system_emission_stays_a_user_turn_on_each_delivery_family_wire() {
+    const MARKER: &str = "[tool-emitted system message; materialized as user history]";
+    let request = || {
+        Request::new(vec![
+            HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
+                "stable system prefix",
+            ))])),
+            HistoryTurn::user(UserMessage::new(vec![
+                InputPart::Text(TextPart::new(MARKER)),
+                InputPart::Text(TextPart::new("emitted system context")),
+            ])),
+        ])
+    };
+
+    let openai = http_body(
+        &dispatch_video_request(
+            "openai-compatible",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            request(),
+        )
+        .await,
+    );
+    assert_eq!(openai["messages"][0]["role"], "system");
+    assert_eq!(openai["messages"][1]["role"], "user");
+    assert_eq!(
+        openai["messages"][1]["content"],
+        format!("{MARKER}emitted system context")
+    );
+
+    let anthropic = http_body(
+        &dispatch_video_request(
+            "anthropic-compatible",
+            "event: message_start\ndata: {\"message\":{}}\n\nevent: message_stop\ndata: {}\n\n",
+            request(),
+        )
+        .await,
+    );
+    assert_eq!(anthropic["system"][0]["text"], "stable system prefix");
+    assert_eq!(anthropic["messages"][0]["role"], "user");
+    assert_eq!(anthropic["messages"][0]["content"][0]["text"], MARKER);
+
+    let google_response = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
+    for adaptor in ["google-gemini", "google-vertex-gemini"] {
+        let body = http_body(&dispatch_video_request(adaptor, google_response, request()).await);
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"], "stable system prefix",
+            "{adaptor}"
+        );
+        assert_eq!(body["contents"][0]["role"], "user", "{adaptor}");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], MARKER, "{adaptor}");
     }
 }

@@ -54,3 +54,8 @@ reference in the same commit: `docs/site/reference/protocol.md`,
 `crates/protocol/src/lib.rs`, `crates/tools/src/lib.rs`,
 `crates/server/src/lib.rs`, and `crates/cookie_agent/src/main.rs` (search for
 the old version number; `docs/site/api/**` is generated and excluded).
+
+Tool-emitted system-role messages must not mutate the initial model-history
+system turn. Materialize them at the emission point as user turns beginning
+with `[tool-emitted system message; materialized as user history]`; this keeps
+the cacheable system prefix stable across replay.
