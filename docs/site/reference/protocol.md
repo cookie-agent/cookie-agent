@@ -8,6 +8,27 @@ The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
 members of protocol 16.
 
+## Tool-emitted messages
+
+Protocol 16 adds optional `additional_messages` to `PersistedToolResult`. The
+field is an ordered array of at most four messages. Each message has role
+`system` or `user` and one or more ordered `text` or `file` content parts. Empty
+arrays are omitted on the wire; event validation bounds text and attachment
+counts and validates every referenced artifact.
+
+The engine materializes these messages from the persisted terminal result, so
+replay and restart are deterministic. The paired tool result is placed first,
+then user-role messages are inserted in array order before the next assistant
+turn. System-role text follows the existing mid-run system rule and folds into
+the initial system message. Terminal result events use origin
+`engine:tool-result`.
+
+Elision treats a tool result and its `additional_messages` as one unit. If the
+parent result is elided, none of its emitted messages enter model history and
+the marker reports how many were lost. Retried or replayed termination events
+replace the call record rather than applying first-attempt messages twice.
+Attachments in compacted history are not recoverable from the checkpoint.
+
 ## Session mechanics
 
 The JSON-RPC session layer lives in the `protocol` crate so the server, the TUI,

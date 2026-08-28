@@ -26,6 +26,7 @@ use cookie_agent_protocol::{
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, SafeDisplayText, Sha256Digest, ToolAttachment, ToolCallId,
+    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole,
 };
 use futures_util::StreamExt as _;
 use process_wrap::tokio::CommandWrap;
@@ -2677,13 +2678,14 @@ fn map_tool_result(
         .map_err(|error| ToolError::execution(error.to_string()))?;
     let mut output = Vec::new();
     let mut attachments = Vec::new();
+    let mut emitted_attachments = Vec::new();
     for block in result.content {
         match block {
             ContentBlock::Text(text) => output.push(text.text),
             ContentBlock::Image(image) => {
                 match retain_base64_attachment(context, image.mime_type, &image.data) {
-                    Ok(attachment) => {
-                        attachments.push(attachment);
+                    Ok(retained) => {
+                        route_mcp_attachment(retained, &mut attachments, &mut emitted_attachments);
                         output.push("[MCP image attachment]".into());
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
@@ -2696,8 +2698,8 @@ fn map_tool_result(
             }
             ContentBlock::Audio(audio) => {
                 match retain_base64_attachment(context, audio.mime_type, &audio.data) {
-                    Ok(attachment) => {
-                        attachments.push(attachment);
+                    Ok(retained) => {
+                        route_mcp_attachment(retained, &mut attachments, &mut emitted_attachments);
                         output.push("[MCP audio attachment]".into());
                     }
                     Err(McpAttachmentError::Invalid(error)) => {
@@ -2723,8 +2725,12 @@ fn map_tool_result(
                         mime_type.unwrap_or_else(|| "application/octet-stream".into()),
                         &blob,
                     ) {
-                        Ok(attachment) => {
-                            attachments.push(attachment);
+                        Ok(retained) => {
+                            route_mcp_attachment(
+                                retained,
+                                &mut attachments,
+                                &mut emitted_attachments,
+                            );
                             output.push(format!("[MCP embedded resource attachment: {uri}]"));
                         }
                         Err(McpAttachmentError::Invalid(error)) => output.push(format!(
@@ -2750,13 +2756,27 @@ fn map_tool_result(
             "content": raw_content,
         }
     });
+    let additional_messages = if emitted_attachments.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            ToolEmittedMessage::new(
+                ToolEmittedMessageRole::User,
+                emitted_attachments
+                    .into_iter()
+                    .map(ToolEmittedContent::File)
+                    .collect(),
+            )
+            .map_err(|error| ToolError::execution(error.to_string()))?,
+        ]
+    };
     Ok(ToolResult {
         title: safe_title(tool_name),
         output: output.join("\n"),
         metadata,
         truncation: None,
         attachments,
-        additional_messages: Vec::new(),
+        additional_messages,
     })
 }
 
@@ -2768,14 +2788,39 @@ enum McpAttachmentError {
     Gated(String),
 }
 
+#[derive(Debug)]
+struct RetainedMcpAttachment {
+    attachment: ToolAttachment,
+    delivery: crate::media::AttachmentGate,
+}
+
+fn route_mcp_attachment(
+    retained: RetainedMcpAttachment,
+    attachments: &mut Vec<ToolAttachment>,
+    emitted_attachments: &mut Vec<ToolAttachment>,
+) {
+    match retained.delivery {
+        crate::media::AttachmentGate::AttachToolResult => attachments.push(retained.attachment),
+        crate::media::AttachmentGate::DeliverViaUserTurn => {
+            emitted_attachments.push(retained.attachment);
+        }
+        crate::media::AttachmentGate::RejectUnsupportedModel
+        | crate::media::AttachmentGate::RejectUnsupportedFamily
+        | crate::media::AttachmentGate::RejectTooLarge { .. } => {
+            unreachable!("rejected MCP attachment gates return an error")
+        }
+    }
+}
+
 fn retain_base64_attachment(
     context: &ToolExecutionContext,
     mime_type: String,
     data: &str,
-) -> Result<ToolAttachment, McpAttachmentError> {
+) -> Result<RetainedMcpAttachment, McpAttachmentError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
+    let mut delivery = crate::media::AttachmentGate::AttachToolResult;
     if let Some(mime) = crate::media::approved_media_type(std::path::Path::new(""), &bytes)
         .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?
     {
@@ -2793,10 +2838,15 @@ fn retain_base64_attachment(
         ) {
             return Err(McpAttachmentError::Gated(error));
         }
+        delivery = gate;
     }
-    context
+    let attachment = context
         .retain_attachment(mime_type, None, &bytes)
-        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))
+        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
+    Ok(RetainedMcpAttachment {
+        attachment,
+        delivery,
+    })
 }
 
 fn sanitize_name(value: &str) -> String {
@@ -3145,6 +3195,59 @@ for line in sys.stdin:
             matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("not deliverable in tool results")),
             "unexpected error: {rejected:?}"
         );
+
+        let mut video_turn = make_turn_context(AdaptorId::OpenaiCompatible, false);
+        video_turn.capabilities.input.insert(Modality::Video);
+        video_turn.capabilities.media.insert(
+            cookie_agent_protocol::MediaKind::Video,
+            cookie_agent_protocol::MediaCapability {
+                mime_types: [cookie_agent_protocol::MimeType::new("video/mp4").unwrap()]
+                    .into_iter()
+                    .collect(),
+                max_bytes: 1024,
+                max_count: 1,
+            },
+        );
+        let mut video = 16_u32.to_be_bytes().to_vec();
+        video.extend_from_slice(b"ftypisom");
+        video.extend_from_slice(&[0; 4]);
+        let video_context = context(video_turn);
+        let encoded_video = base64::engine::general_purpose::STANDARD.encode(video);
+        let retained =
+            super::retain_base64_attachment(&video_context, "video/mp4".into(), &encoded_video)
+                .expect("user-turn video must retain");
+        assert_eq!(
+            retained.delivery,
+            crate::media::AttachmentGate::DeliverViaUserTurn
+        );
+
+        let result: rmcp::model::CallToolResult = serde_json::from_value(serde_json::json!({
+            "content": [{
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///clip.mp4",
+                    "mimeType": "video/mp4",
+                    "blob": encoded_video
+                }
+            }]
+        }))
+        .expect("MCP blob result");
+        let mapped =
+            super::map_tool_result(&video_context, "video", result).expect("map MCP video result");
+        assert!(mapped.attachments.is_empty());
+        assert!(matches!(
+            mapped.additional_messages[0].content.as_slice(),
+            [cookie_agent_protocol::ToolEmittedContent::File(attachment)]
+                if attachment.mime_type.as_str() == "video/mp4"
+        ));
+
+        let ordinary = super::map_tool_result(
+            &video_context,
+            "text",
+            rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text("plain")]),
+        )
+        .expect("map ordinary MCP result");
+        assert!(ordinary.additional_messages.is_empty());
     }
 
     #[test]

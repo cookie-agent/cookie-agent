@@ -15,15 +15,15 @@ prepared and revalidated against the target before execution.
 unambiguous replacement. Both tools stage and validate filesystem mutations
 before publication.
 
-Tool results may include image or PDF attachments. Attachments are validated,
-content-addressed, and supplied to models as file parts rather than embedded in
-text output.
+Tool results may include image, PDF, or video attachments. Attachments are
+validated, content-addressed, and supplied to models as file parts rather than
+embedded in text output.
 
 ### Media reads
 
 When `read` targets an image (PNG, JPEG, GIF, WebP), PDF, or video container,
 the file is sniffed by content (never by extension alone), strictly validated,
-and attached to the tool result. Whether the attachment reaches the model
+and retained as an attachment. Whether the attachment reaches the model
 depends on two checks, in order:
 
 1. **Model capability.** The selected model must declare the matching input
@@ -31,7 +31,7 @@ depends on two checks, in order:
    not, the call fails with a tool error naming the model and the missing
    capability.
 2. **Family deliverability.** The provider's wire API must accept the media
-   kind inside a tool result (see the
+   kind either inside a tool result or in a following user turn (see the
    [provider matrix](../guide/providers.md#media-in-tool-results)). If it does
    not, the call fails with a tool error naming the family.
 
@@ -39,12 +39,17 @@ Both rejections are ordinary tool errors: the model sees the reason and can
 recover (for example by asking the user, or by sampling the file through
 `bash`). Size is clamped to the smaller of the model's advertised limit and
 the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB
-documents, ≈18.7 MiB raw video; other families: 20 MiB). MCP media results
-follow the same gate; gated MCP media fails the tool call rather than
-degrading to an inline note. Media parts do not contribute to
-context fit estimates, except video, which carries a flat conservative cost.
-Media attachments never survive context-pressure elision or compaction
-checkpoints; the model can re-read the file to recover.
+documents, ≈18.7 MiB raw video; other families: 20 MiB images or 25 MiB
+video). Bedrock receives supported video in the tool result. OpenAI-compatible,
+Anthropic-compatible, Gemini, and Vertex models that declare video receive it
+as a file in one emitted user turn immediately after the tool result. MCP media
+uses the same delivery selection; the MCP wire format cannot author arbitrary
+additional messages. Media parts do not contribute to context fit estimates,
+except video, which carries a flat conservative cost.
+
+Media does not survive context pressure. Tool-output elision removes the parent
+result and all of its emitted messages as one unit, and compaction checkpoints
+drop attachments. The model can re-read the source file to recover it.
 
 ## Bash
 

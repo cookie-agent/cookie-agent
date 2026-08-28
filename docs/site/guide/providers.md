@@ -206,25 +206,26 @@ the `models` map.
 
 ### Media in tool results
 
-`read` and MCP tools attach media files to tool results when the model
-declares the modality and the adaptor can carry it. Per-family support:
+`read` and MCP tools deliver media when the model declares the modality and the
+adaptor can carry it. `Tool result` and `User turn` identify the delivery
+channel:
 
 | Family | Images | PDF | Video |
 |---|---|---|---|
-| `anthropic`, `anthropic-compatible` | Yes | Yes | No |
-| `aws-bedrock-converse` | Yes (≤3.75 MiB) | Yes (≤4.5 MiB) | Yes (<25 MiB base64 ≈18.7 MiB raw; Nova models) |
-| `openai-responses`, `azure-openai-responses` | Yes | No | No |
-| `openai-chat`, `azure-openai-chat`, `openai-compatible` | No | No | No |
-| `google-gemini`, `google-vertex-gemini` | No | No | No |
+| `anthropic` | Tool result | Tool result | No |
+| `anthropic-compatible` | Tool result | Tool result | User turn (capable MiniMax models) |
+| `aws-bedrock-converse` | Tool result (≤3.75 MiB) | Tool result (≤4.5 MiB) | Tool result (<25 MiB base64 ≈18.7 MiB raw; Nova models) |
+| `openai-responses`, `azure-openai-responses` | Tool result | No | No |
+| `openai-chat`, `azure-openai-chat` | No | No | No |
+| `openai-compatible` | No | No | User turn (capable Kimi/Qwen models) |
+| `google-gemini`, `google-vertex-gemini` | No | No | User turn |
 | `cohere-v2-chat` | No | No | No |
 
-Families whose tool-result channel is text-only reject attachments at request
+Families without either delivery channel reject attachments at request
 validation, and the tool surfaces a clean error instead of a corrupted result.
-Video-capable models served over user-turn-only APIs (for example Kimi and
-Qwen via OpenAI-compatible endpoints) are recognized as video-capable, but
-delivery currently requires a family that accepts video in tool results
-(Bedrock); user-turn delivery is planned. MCP tool results follow the same
-gate: gated media fails the tool call with the same actionable error.
+For user-turn delivery, the tool result is followed by one persisted emitted
+user message containing the video. MCP media follows the same channel gate,
+although MCP's `CallToolResult` cannot author arbitrary emitted messages.
 
 ### OpenAI-compatible example
 
