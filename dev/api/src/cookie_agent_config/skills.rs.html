@@ -832,7 +832,7 @@
 <a href=#832 id=832 data-nosnippet>832</a>        <span class="kw">let </span>over_user = load_skill_roots(
 <a href=#833 id=833 data-nosnippet>833</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>shared_user),
 <a href=#834 id=834 data-nosnippet>834</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>user),
-<a href=#835 id=835 data-nosnippet>835</a>            <span class="kw-2">&amp;</span>[shared_only_project.clone()],
+<a href=#835 id=835 data-nosnippet>835</a>            std::slice::from_ref(<span class="kw-2">&amp;</span>shared_only_project),
 <a href=#836 id=836 data-nosnippet>836</a>        )
 <a href=#837 id=837 data-nosnippet>837</a>        .expect(<span class="string">"registry with shared project root"</span>);
 <a href=#838 id=838 data-nosnippet>838</a>        <span class="macro">assert_eq!</span>(
