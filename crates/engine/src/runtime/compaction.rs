@@ -812,7 +812,7 @@ fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bo
     })
 }
 
-pub(super) fn serialized_fit_request_bytes(
+pub(crate) fn serialized_fit_request_bytes(
     history: &[oven_sdk::HistoryTurn],
     tools: &[ToolDefinition],
 ) -> Result<usize, EngineError> {
@@ -829,87 +829,135 @@ fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>
     // because frame sampling can be materially expensive. Overestimation can spuriously compact
     // and drop attachments during rehydration, while real usage calibrates residual error.
     let mut history = history.to_vec();
-    let mut attachment_surrogate_bytes = 0_usize;
+    let mut part_bytes = 0_usize;
     for turn in &mut history {
         match turn {
-            oven_sdk::HistoryTurn::System(_) => {}
-            oven_sdk::HistoryTurn::User(message) => {
+            oven_sdk::HistoryTurn::System(message) => {
                 message.content.retain(|part| match part {
-                    oven_sdk::InputPart::File(file) => {
-                        attachment_surrogate_bytes = attachment_surrogate_bytes
-                            .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
+                    oven_sdk::SystemPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
                         false
                     }
-                    oven_sdk::InputPart::Text(_) | oven_sdk::InputPart::Custom(_) => true,
+                    oven_sdk::SystemPart::Custom(_) => true,
+                });
+            }
+            oven_sdk::HistoryTurn::User(message) => {
+                message.content.retain(|part| match part {
+                    oven_sdk::InputPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
+                        false
+                    }
+                    oven_sdk::InputPart::File(file) => {
+                        part_bytes = part_bytes
+                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
+                        false
+                    }
+                    oven_sdk::InputPart::Custom(_) => true,
                 });
             }
             oven_sdk::HistoryTurn::Assistant(turn) => {
+                for part in &mut turn.message.content {
+                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
+                        part_bytes = part_bytes
+                            .saturating_add(remove_tool_content_parts(&mut result.content));
+                    }
+                }
                 turn.message.content.retain(|part| match part {
+                    oven_sdk::AssistantPart::Text(text) => {
+                        part_bytes =
+                            part_bytes.saturating_add(fit_part_bytes(FitPart::Text(&text.text)));
+                        false
+                    }
                     oven_sdk::AssistantPart::File(file) => {
-                        attachment_surrogate_bytes = attachment_surrogate_bytes
-                            .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
+                        part_bytes = part_bytes
+                            .saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
                         false
                     }
                     _ => true,
                 });
-                for part in &mut turn.message.content {
-                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
-                        attachment_surrogate_bytes = attachment_surrogate_bytes
-                            .saturating_add(remove_tool_content_files(&mut result.content));
-                    }
-                }
             }
             oven_sdk::HistoryTurn::Tool(message) => {
                 for result in &mut message.results {
-                    attachment_surrogate_bytes = attachment_surrogate_bytes
-                        .saturating_add(remove_tool_content_files(&mut result.content));
+                    part_bytes =
+                        part_bytes.saturating_add(remove_tool_content_parts(&mut result.content));
                 }
             }
         }
     }
-    (history, attachment_surrogate_bytes)
+    (history, part_bytes)
 }
 
-fn remove_tool_content_files(content: &mut oven_sdk::ToolContent) -> usize {
-    let mut attachment_surrogate_bytes = 0_usize;
-    if let oven_sdk::ToolContent::Mixed(values) = content {
-        values.retain(|value| match value {
-            oven_sdk::ContentValue::File(file) => {
-                attachment_surrogate_bytes = attachment_surrogate_bytes
-                    .saturating_add(attachment_fit_surrogate_bytes(&file.media_type));
-                false
-            }
-            oven_sdk::ContentValue::Text(_) | oven_sdk::ContentValue::Json(_) => true,
-        });
+fn remove_tool_content_parts(content: &mut oven_sdk::ToolContent) -> usize {
+    match content {
+        oven_sdk::ToolContent::Text(text) => {
+            let bytes = fit_part_bytes(FitPart::Text(text));
+            text.clear();
+            bytes
+        }
+        oven_sdk::ToolContent::Mixed(values) => {
+            let mut part_bytes = 0_usize;
+            values.retain(|value| match value {
+                oven_sdk::ContentValue::Text(text) => {
+                    part_bytes = part_bytes.saturating_add(fit_part_bytes(FitPart::Text(text)));
+                    false
+                }
+                oven_sdk::ContentValue::File(file) => {
+                    part_bytes =
+                        part_bytes.saturating_add(fit_part_bytes(FitPart::File(&file.media_type)));
+                    false
+                }
+                oven_sdk::ContentValue::Json(_) => true,
+            });
+            part_bytes
+        }
+        oven_sdk::ToolContent::Json(_) | oven_sdk::ToolContent::Denied { .. } => 0,
     }
-    attachment_surrogate_bytes
 }
 
-fn attachment_fit_surrogate_bytes(media_type: &str) -> usize {
-    if media_type.starts_with("video/") {
-        VIDEO_FILE_FIT_SURROGATE_BYTES
-    } else {
-        0
+#[derive(Clone, Copy)]
+enum FitPart<'a> {
+    Text(&'a str),
+    File(&'a str),
+}
+
+fn fit_part_bytes(part: FitPart<'_>) -> usize {
+    match part {
+        FitPart::Text(text) => text.len(),
+        FitPart::File(media_type) if media_type.starts_with("video/") => {
+            VIDEO_FILE_FIT_SURROGATE_BYTES
+        }
+        FitPart::File(_) => 0,
     }
 }
 
 fn elidable_bytes(result: &PersistedToolResult) -> usize {
-    let emitted_text_bytes = result
+    let emitted_bytes = result
         .additional_messages
         .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|part| match part {
-            ToolEmittedContent::Text(text) => Some(text.len()),
-            ToolEmittedContent::File(_) => None,
+        .map(|message| {
+            let marker_bytes =
+                usize::from(message.role == cookie_agent_protocol::ToolEmittedMessageRole::System)
+                    .saturating_mul(fit_part_bytes(FitPart::Text(
+                        model_history::TOOL_EMITTED_SYSTEM_USER_MARKER,
+                    )));
+            message.content.iter().fold(marker_bytes, |total, part| {
+                total.saturating_add(match part {
+                    ToolEmittedContent::Text(text) => fit_part_bytes(FitPart::Text(text)),
+                    ToolEmittedContent::File(attachment) => {
+                        fit_part_bytes(FitPart::File(attachment.mime_type.as_str()))
+                    }
+                })
+            })
         })
         .fold(0_usize, usize::saturating_add);
-    result
-        .all_attachments()
-        .map(|attachment| attachment_fit_surrogate_bytes(attachment.mime_type.as_str()))
-        .fold(
-            result.output.len().saturating_add(emitted_text_bytes),
-            usize::saturating_add,
-        )
+    result.attachments.iter().fold(
+        fit_part_bytes(FitPart::Text(&result.output)).saturating_add(emitted_bytes),
+        |total, attachment| {
+            total.saturating_add(fit_part_bytes(FitPart::File(attachment.mime_type.as_str())))
+        },
+    )
 }
 
 #[derive(Default)]
@@ -1108,17 +1156,17 @@ mod tests {
     };
     use oven_sdk::{
         CompactionCapability, FilePart, FileSource, HistoryTurn, InputPart, JsonSchema,
-        Request as ModelRequest, TextPart, ToolDefinition, UserMessage,
+        Request as ModelRequest, TextPart, ToolContent, ToolDefinition, ToolMessage,
+        ToolResultPart, UserMessage,
     };
 
     use super::{
-        COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES,
-        attachment_fit_surrogate_bytes, checkpoint_covers_input, compaction_gate,
-        compaction_history, compaction_input_fits, compaction_instruction, elidable_bytes,
-        estimated_request_tokens, native_compaction_input_budget, raw_fit_from_real_usage,
-        recent_read_candidates, resolve_compaction_trigger, serialized_fit_request_bytes,
-        should_elide_tool_output, usage_reaches_compaction_trigger,
+        COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS, FitPart,
+        TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
+        compaction_gate, compaction_history, compaction_input_fits, compaction_instruction,
+        elidable_bytes, estimated_request_tokens, fit_part_bytes, native_compaction_input_budget,
+        raw_fit_from_real_usage, recent_read_candidates, resolve_compaction_trigger,
+        serialized_fit_request_bytes, should_elide_tool_output, usage_reaches_compaction_trigger,
     };
     use crate::{
         model_history::{assemble_model_context, wire_model},
@@ -1525,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn elision_uses_the_estimator_attachment_surrogate_and_emitted_text() {
+    fn elision_and_estimator_share_emitted_part_byte_accounting() {
         let attachment = ToolAttachment {
             mime_type: MimeType::new("video/mp4").unwrap(),
             filename: Some("clip.mp4".into()),
@@ -1544,14 +1592,23 @@ mod tests {
             additional_messages: vec![
                 ToolEmittedMessage::new(
                     ToolEmittedMessageRole::User,
-                    vec![ToolEmittedContent::File(attachment)],
+                    vec![
+                        ToolEmittedContent::Text("e".repeat(4 * 1024)),
+                        ToolEmittedContent::File(attachment.clone()),
+                    ],
                 )
                 .unwrap(),
             ],
         };
-        let surrogate = attachment_fit_surrogate_bytes("video/mp4");
-        assert_eq!(surrogate, VIDEO_FILE_FIT_SURROGATE_BYTES);
-        assert_eq!(elidable_bytes(&result), 60 + surrogate);
+        let expected = fit_part_bytes(FitPart::Text(&result.output))
+            + fit_part_bytes(FitPart::Text("e".repeat(4 * 1024).as_str()))
+            + fit_part_bytes(FitPart::File(attachment.mime_type.as_str()));
+        assert_eq!(
+            fit_part_bytes(FitPart::File("video/mp4")),
+            VIDEO_FILE_FIT_SURROGATE_BYTES
+        );
+        assert_eq!(elidable_bytes(&result), expected);
+        assert!(expected >= TOOL_OUTPUT_ELISION_MIN_BYTES);
         assert!(should_elide_tool_output(
             1,
             &HashSet::new(),
@@ -1559,14 +1616,32 @@ mod tests {
             elidable_bytes(&result)
         ));
 
-        let mut emitted_text = result.clone();
-        emitted_text.additional_messages[0].content.insert(
-            0,
-            ToolEmittedContent::Text("x".repeat(TOOL_OUTPUT_ELISION_MIN_BYTES)),
-        );
+        let baseline = vec![
+            HistoryTurn::tool(ToolMessage::new(vec![ToolResultPart::new(
+                "call",
+                ToolContent::Text(String::new()),
+            )])),
+            HistoryTurn::user(UserMessage::new(Vec::new())),
+        ];
+        let with_emitted_parts = vec![
+            HistoryTurn::tool(ToolMessage::new(vec![ToolResultPart::new(
+                "call",
+                ToolContent::Text(result.output.clone()),
+            )])),
+            HistoryTurn::user(UserMessage::new(vec![
+                InputPart::Text(TextPart::new("e".repeat(4 * 1024))),
+                InputPart::File(FilePart::video(
+                    "video/mp4",
+                    FileSource::Bytes(b"clip".to_vec().into()),
+                )),
+            ])),
+        ];
+        let baseline_bytes = serialized_fit_request_bytes(&baseline, &[]).unwrap();
+        let with_emitted_bytes = serialized_fit_request_bytes(&with_emitted_parts, &[]).unwrap();
         assert_eq!(
-            elidable_bytes(&emitted_text),
-            60 + TOOL_OUTPUT_ELISION_MIN_BYTES + surrogate
+            with_emitted_bytes - baseline_bytes,
+            expected,
+            "estimator and selector must charge the same shared per-part bytes"
         );
     }
 

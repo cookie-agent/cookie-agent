@@ -6157,9 +6157,8 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             ))],
         )));
         let serialized_bytes =
-            serde_json::to_vec(&(history, Vec::<oven_sdk::ToolDefinition>::new()))
-                .expect("serialize selected compaction request")
-                .len();
+            crate::runtime::compaction::serialized_fit_request_bytes(&history, &[])
+                .expect("measure selected compaction request");
         assert_eq!(
             commit.budgets.input_tokens_before,
             (serialized_bytes as u64).div_ceil(4)
