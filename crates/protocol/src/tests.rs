@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::schema_for;
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 use super::*;
@@ -478,6 +478,146 @@ fn event_origin_grammar_accepts_only_documented_values() {
         Some("fixture")
     );
     assert_eq!(EventOrigin::new("user").unwrap().plugin_name(), None);
+    assert_eq!(
+        EventOrigin::new("engine:tool-result").unwrap().as_str(),
+        "engine:tool-result"
+    );
+}
+
+fn tool_result_with_additional_messages(additional_messages: Value) -> Value {
+    json!({
+        "title": "Tool result",
+        "output": "done",
+        "metadata": null,
+        "truncation": null,
+        "attachments": [],
+        "additional_messages": additional_messages,
+    })
+}
+
+#[test]
+fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
+    let digest = Sha256Digest::of_bytes(b"emitted file");
+    let result = PersistedToolResult {
+        title: SafeDisplayText::new("Tool result").unwrap(),
+        output: "done".into(),
+        metadata: Value::Null,
+        truncation: None,
+        attachments: vec![ToolAttachment {
+            mime_type: MimeType::new("text/plain").unwrap(),
+            filename: Some("result.txt".into()),
+            byte_length: 7,
+            sha256: Sha256Digest::of_bytes(b"result"),
+            reference: ArtifactReference {
+                uri: "artifact://sha256/result".into(),
+            },
+        }],
+        additional_messages: vec![
+            ToolEmittedMessage::new(
+                ToolEmittedMessageRole::System,
+                vec![ToolEmittedContent::Text("Use the emitted file.".into())],
+            )
+            .unwrap(),
+            ToolEmittedMessage::new(
+                ToolEmittedMessageRole::User,
+                vec![ToolEmittedContent::File(ToolAttachment {
+                    mime_type: MimeType::new("text/plain").unwrap(),
+                    filename: Some("emitted.txt".into()),
+                    byte_length: 12,
+                    sha256: digest.clone(),
+                    reference: ArtifactReference {
+                        uri: format!("artifact://sha256/{digest}"),
+                    },
+                })],
+            )
+            .unwrap(),
+        ],
+    };
+
+    let wire = serde_json::to_value(&result).unwrap();
+    assert_eq!(wire["additional_messages"][0]["role"], "system");
+    assert_eq!(
+        wire["additional_messages"][0]["content"][0],
+        json!({"text": "Use the emitted file."})
+    );
+    assert_eq!(
+        wire["additional_messages"][1]["content"][0]["file"]["byte_length"],
+        12
+    );
+    let round_trip = serde_json::from_value::<PersistedToolResult>(wire).unwrap();
+    assert_eq!(round_trip, result);
+    assert_eq!(
+        round_trip
+            .all_attachments()
+            .map(|attachment| attachment.byte_length)
+            .sum::<u64>(),
+        19
+    );
+
+    let mut compact = result;
+    compact.additional_messages.clear();
+    let compact_wire = serde_json::to_value(&compact).unwrap();
+    assert!(compact_wire.get("additional_messages").is_none());
+    assert!(
+        serde_json::from_value::<PersistedToolResult>(compact_wire)
+            .unwrap()
+            .additional_messages
+            .is_empty()
+    );
+}
+
+#[test]
+fn tool_emitted_messages_reject_invalid_roles_content_and_counts() {
+    for additional_messages in [
+        json!([{"role":"assistant","content":[{"text":"not allowed"}]}]),
+        json!([{"role":"user","content":[]}]),
+        json!([{"role":"user","content":[{"text":" \n\t"}]}]),
+        json!([{"role":"system","content":[{"text":"x".repeat(64 * 1024 + 1)}]}]),
+        json!([{"role":"system","content":[
+            {"text":"x".repeat(32 * 1024 + 1)},
+            {"text":"x".repeat(32 * 1024)},
+        ]}]),
+        json!([{"role":"user","content":[{"text":"message"}],"future":true}]),
+        json!([{"role":"user","content":[{"text":"message","future":true}]}]),
+        json!(
+            (0..5)
+                .map(|_| json!({"role":"user","content":[{"text":"message"}]}))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        assert!(
+            serde_json::from_value::<PersistedToolResult>(tool_result_with_additional_messages(
+                additional_messages
+            ))
+            .is_err()
+        );
+    }
+
+    assert!(ToolEmittedMessage::new(ToolEmittedMessageRole::User, Vec::new()).is_err());
+    assert!(
+        ToolEmittedMessage::new(
+            ToolEmittedMessageRole::System,
+            vec![ToolEmittedContent::Text(" ".into())],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn tool_emitted_files_share_the_result_attachment_count_limit() {
+    let attachment = json!({
+        "mime_type": "text/plain",
+        "filename": null,
+        "byte_length": 1,
+        "sha256": Sha256Digest::of_bytes(b"x"),
+        "reference": {"uri": "artifact://sha256/x"},
+    });
+    let mut result = tool_result_with_additional_messages(json!([{
+        "role": "user",
+        "content": [{"file": attachment.clone()}, {"file": attachment.clone()}],
+    }]));
+    result["attachments"] = Value::Array(vec![attachment; 255]);
+    assert!(serde_json::from_value::<PersistedToolResult>(result).is_err());
 }
 
 #[test]

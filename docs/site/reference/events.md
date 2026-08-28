@@ -39,6 +39,12 @@ they do not reinterpret those events without attribution.
 Terminal tool-result truncation and `tool_output_elided` references use the
 [retained-output readback lifecycle](tools.md#retained-tool-output).
 
+When tool-emitted additional messages are materialized as persisted turns, their
+event origin is `engine:tool-result`. The engine authors the durable turn from a
+validated tool result; the tool name remains payload context rather than a new
+origin class. This keeps the origin grammar restricted to `user`, `engine`,
+`plugin`, and `client`.
+
 ## Payloads
 
 | Category | Event payload types |
