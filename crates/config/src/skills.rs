@@ -326,10 +326,14 @@ pub fn load_skill_roots(
             .skills
             .get(&discovery.name)
             .expect("shadowed skill has a winner");
+        let winner_scope = match winner.source {
+            SkillSource::User => "user",
+            SkillSource::Project => "project",
+        };
         registry.diagnostics.push(SkillDiagnostic {
             name: discovery.name.clone(),
             message: format!(
-                "user skill `{}` is shadowed by project skill {}",
+                "user skill `{}` is shadowed by {winner_scope} skill {}",
                 discovery.name,
                 winner.path.display()
             ),
@@ -806,7 +810,48 @@ mod tests {
             .expect("registry without project");
         assert_eq!(
             without_project.get("contested").expect("winner").body,
-            "user body\n"
+            "user body\\n"
+        );
+        assert_eq!(without_project.diagnostics().len(), 1);
+        assert!(
+            without_project.diagnostics()[0]
+                .message
+                .contains("shadowed by user skill"),
+            "{}",
+            without_project.diagnostics()[0].message
+        );
+        // Project `.agents/skills` beats native user.
+        let shared_only_project = temp.path().join("shared-project-only");
+        write_skill(
+            &shared_only_project.join(".agents/skills"),
+            "contested",
+            "contested",
+            "",
+            "project shared body",
+        );
+        let over_user = load_skill_roots(
+            Some(&shared_user),
+            Some(&user),
+            &[shared_only_project.clone()],
+        )
+        .expect("registry with shared project root");
+        assert_eq!(
+            over_user.get("contested").expect("winner").body,
+            "project shared body\\n"
+        );
+        // Native project beats project `.agents/skills` within the same directory.
+        write_skill(
+            &shared_only_project.join(".cookie-agent/skills"),
+            "contested",
+            "contested",
+            "",
+            "project native body",
+        );
+        let within_project =
+            load_skill_roots(None, None, &[shared_only_project]).expect("registry within project");
+        assert_eq!(
+            within_project.get("contested").expect("winner").body,
+            "project native body\\n"
         );
     }
 
