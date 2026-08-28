@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use bytes::Bytes;
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, ContextRehydratedFile,
     DelegatedContextRole, EventPayload, FrozenModelBinding, ModelFinishReason, ModelSelection,
@@ -913,7 +912,7 @@ fn attachment_file(
     Ok(FilePart {
         media_type: attachment.mime_type.to_string(),
         filename: attachment.filename.clone(),
-        source: FileSource::Bytes(Bytes::from(bytes)),
+        source: FileSource::Bytes(bytes),
         metadata: None,
     })
 }

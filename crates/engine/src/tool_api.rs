@@ -190,6 +190,16 @@ impl ToolExecutionContext {
         let mime_type = mime_type.into();
         let path = filename.as_deref().map_or_else(PathBuf::new, PathBuf::from);
         validate_attachment(&mime_type, &path, bytes)?;
+        self.retain_validated_attachment(mime_type, filename, bytes)
+    }
+
+    pub fn retain_validated_attachment(
+        &self,
+        mime_type: impl Into<String>,
+        filename: Option<String>,
+        bytes: &[u8],
+    ) -> Result<ToolAttachment, ToolError> {
+        let mime_type = mime_type.into();
         let (reference, sha256) = self
             .artifacts
             .retain(bytes)

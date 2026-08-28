@@ -2883,7 +2883,14 @@ fn retain_base64_attachment(
     } else {
         mime_type.as_str()
     };
-    if let Some(mime) = sniffed {
+    let attachment = if let Some(mime) = sniffed {
+        if crate::media::canonical_video_mime_type(mime)
+            != crate::media::canonical_video_mime_type(retained_mime)
+        {
+            return Err(McpAttachmentError::Invalid(format!(
+                "attachment MIME mismatch: declared {retained_mime}, validated {mime}"
+            )));
+        }
         let gate = crate::media::gate_attachment(
             context.turn_context.adapter,
             &context.turn_context.capabilities,
@@ -2899,10 +2906,11 @@ fn retain_base64_attachment(
             return Err(McpAttachmentError::Gated(error));
         }
         delivery = gate;
+        context.retain_validated_attachment(retained_mime, None, &bytes)
+    } else {
+        context.retain_attachment(retained_mime, None, &bytes)
     }
-    let attachment = context
-        .retain_attachment(retained_mime, None, &bytes)
-        .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
+    .map_err(|error| McpAttachmentError::Invalid(error.to_string()))?;
     Ok(RetainedMcpAttachment {
         attachment,
         delivery,

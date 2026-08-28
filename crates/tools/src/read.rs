@@ -246,7 +246,7 @@ impl PreparedExecutor for ReadExecutor {
             ) {
                 return Err(ToolError::execution(error));
             }
-            let attachment = context.retain_attachment(
+            let attachment = context.retain_validated_attachment(
                 mime,
                 self.target
                     .display_path

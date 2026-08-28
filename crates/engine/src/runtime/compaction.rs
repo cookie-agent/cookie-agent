@@ -281,6 +281,7 @@ impl Engine {
             input.binding,
             &composed_prompt,
         )?;
+        let mut measured_compaction_input_tokens = None;
         let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
             input.overflow_recovery,
             projection
@@ -301,7 +302,9 @@ impl Engine {
                     compaction_focus.as_deref(),
                     &input.internal_policy.agent.composed_prompt,
                 );
-                self.estimated_request_tokens(input.session, &history, input.tools)?
+                let tokens = self.estimated_request_tokens(input.session, &history, input.tools)?;
+                measured_compaction_input_tokens = Some(tokens);
+                tokens
             };
             compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
         };
@@ -446,8 +449,14 @@ impl Engine {
             compaction_focus.as_deref(),
             &input.internal_policy.agent.composed_prompt,
         );
-        let input_tokens_before =
-            self.estimated_request_tokens(input.session, &history, input.tools)?;
+        let input_tokens_before = if raw_fits {
+            measured_compaction_input_tokens.map_or_else(
+                || self.estimated_request_tokens(input.session, &history, input.tools),
+                Ok,
+            )?
+        } else {
+            self.estimated_request_tokens(input.session, &history, input.tools)?
+        };
         let summary = self
             .run_internal_history_agent(
                 input.session,

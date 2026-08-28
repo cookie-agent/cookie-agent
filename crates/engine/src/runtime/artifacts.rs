@@ -5,6 +5,7 @@ use std::{
     path::Path,
 };
 
+use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +22,7 @@ pub(crate) struct ArtifactGcReport {
 
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
+const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
 
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
@@ -46,6 +48,56 @@ impl VerifiedFileCache {
 
     fn evict(&mut self, digest: &str) {
         let _ = self.take(digest);
+    }
+}
+
+#[derive(Debug, Default)]
+struct VerifiedBytesCache {
+    entries: VecDeque<(String, Bytes)>,
+}
+
+impl VerifiedBytesCache {
+    fn get(&mut self, digest: &str) -> Option<Bytes> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(cached, _)| cached == digest)?;
+        let entry = self.entries.remove(index)?;
+        let bytes = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(bytes)
+    }
+
+    fn insert(&mut self, digest: String, bytes: Bytes) {
+        self.evict(&digest);
+        if self.entries.len() == VERIFIED_BYTES_CACHE_CAPACITY {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((digest, bytes));
+    }
+
+    fn evict(&mut self, digest: &str) {
+        if let Some(index) = self.entries.iter().position(|(cached, _)| cached == digest) {
+            self.entries.remove(index);
+        }
+    }
+}
+
+#[cfg(test)]
+mod verified_bytes_cache_tests {
+    use bytes::Bytes;
+
+    use super::VerifiedBytesCache;
+
+    #[test]
+    fn cache_returns_shared_content_by_digest() {
+        let mut cache = VerifiedBytesCache::default();
+        let bytes = Bytes::from_static(b"verified attachment");
+        cache.insert("a".repeat(64), bytes.clone());
+
+        let cached = cache.get(&"a".repeat(64)).expect("cached bytes");
+        assert_eq!(cached, bytes);
+        assert_eq!(cached.as_ptr(), bytes.as_ptr());
     }
 }
 
@@ -199,6 +251,7 @@ mod unix {
         sync::{Arc, Mutex},
     };
 
+    use bytes::Bytes;
     use cookie_agent_protocol::{
         ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
         ToolOutputTruncation,
@@ -211,8 +264,8 @@ mod unix {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedFileCache,
-        expand_transitive_artifact_references, read_verified_file_paged,
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedBytesCache,
+        VerifiedFileCache, expand_transitive_artifact_references, read_verified_file_paged,
         scan_durable_artifact_references,
     };
 
@@ -223,6 +276,7 @@ mod unix {
         directory_handle: Arc<fs::File>,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
+        verified_attachment_bytes: Mutex<VerifiedBytesCache>,
     }
 
     impl ArtifactStore {
@@ -238,6 +292,7 @@ mod unix {
                 directory_handle: Arc::new(handle),
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
+                verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -351,6 +406,10 @@ mod unix {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 verified.evict(&digest);
+                self.verified_attachment_bytes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .evict(&digest);
                 unlinkat(&*self.directory_handle, &digest, AtFlags::empty())?;
                 report.deleted += 1;
             }
@@ -525,7 +584,7 @@ mod unix {
         pub(crate) fn read_verified_attachment(
             &self,
             attachment: &ToolAttachment,
-        ) -> std::io::Result<Vec<u8>> {
+        ) -> std::io::Result<Bytes> {
             if !is_digest_name(attachment.sha256.as_str())
                 || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
             {
@@ -533,6 +592,20 @@ mod unix {
                     std::io::ErrorKind::InvalidData,
                     "attachment reference and digest do not match",
                 ));
+            }
+            if let Some(bytes) = self
+                .verified_attachment_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(attachment.sha256.as_str())
+            {
+                if bytes.len() as u64 != attachment.byte_length {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "attachment artifact digest or length is corrupt",
+                    ));
+                }
+                return Ok(bytes);
             }
             let mut file = self
                 .open_existing(attachment.sha256.as_str())?
@@ -558,6 +631,11 @@ mod unix {
             })?;
             let mut bytes = Vec::with_capacity(capacity);
             file.read_to_end(&mut bytes)?;
+            let bytes = Bytes::from(bytes);
+            self.verified_attachment_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(attachment.sha256.to_string(), bytes.clone());
             Ok(bytes)
         }
     }
@@ -1014,6 +1092,7 @@ mod windows {
         sync::{Arc, Mutex},
     };
 
+    use bytes::Bytes;
     use cookie_agent_protocol::{
         ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
         ToolOutputTruncation,
@@ -1025,8 +1104,8 @@ mod windows {
 
     use super::super::tool_execution::truncate_tool_output;
     use super::{
-        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedFileCache,
-        expand_transitive_artifact_references, read_verified_file_paged,
+        ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedBytesCache,
+        VerifiedFileCache, expand_transitive_artifact_references, read_verified_file_paged,
         scan_durable_artifact_references,
     };
 
@@ -1037,6 +1116,7 @@ mod windows {
         directory: PathBuf,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
+        verified_attachment_bytes: Mutex<VerifiedBytesCache>,
     }
 
     impl ArtifactStore {
@@ -1048,6 +1128,7 @@ mod windows {
                 directory,
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
+                verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
             });
             store.cleanup_temporary_artifacts()?;
             Ok(store)
@@ -1150,6 +1231,10 @@ mod windows {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 verified.evict(&digest);
+                self.verified_attachment_bytes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .evict(&digest);
                 fs::remove_file(entry.path())?;
                 report.deleted += 1;
             }
@@ -1159,11 +1244,22 @@ mod windows {
         pub(crate) fn read_verified_attachment(
             &self,
             attachment: &ToolAttachment,
-        ) -> std::io::Result<Vec<u8>> {
+        ) -> std::io::Result<Bytes> {
             if !is_digest_name(attachment.sha256.as_str())
                 || attachment.reference.uri != format!("artifact://sha256/{}", attachment.sha256)
             {
                 return Err(invalid("attachment reference and digest do not match"));
+            }
+            if let Some(bytes) = self
+                .verified_attachment_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(attachment.sha256.as_str())
+            {
+                if bytes.len() as u64 != attachment.byte_length {
+                    return Err(invalid("attachment artifact digest or length is corrupt"));
+                }
+                return Ok(bytes);
             }
             let mut file = self
                 .open_existing(attachment.sha256.as_str())?
@@ -1183,6 +1279,11 @@ mod windows {
                     .map_err(|_| invalid("attachment length does not fit in memory"))?,
             );
             file.read_to_end(&mut bytes)?;
+            let bytes = Bytes::from(bytes);
+            self.verified_attachment_bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(attachment.sha256.to_string(), bytes.clone());
             Ok(bytes)
         }
 
