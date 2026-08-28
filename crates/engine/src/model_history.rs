@@ -9,8 +9,8 @@ use cookie_agent_protocol::{
     NativeContextScope, NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue,
     PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
     PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
-    SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
-    ToolTerminationOutcome, Usage,
+    SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolEmittedContent,
+    ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -250,6 +250,7 @@ struct CallRecord {
     model_call_id: cookie_agent_protocol::ModelCallId,
     engine_call_id: Option<ToolCallId>,
     result: Option<ToolResultPart>,
+    additional_messages: Vec<ToolEmittedMessage>,
     in_stream_result: bool,
 }
 
@@ -440,6 +441,7 @@ fn assemble_history_with_replay(
                             model_call_id: id.clone(),
                             engine_call_id: None,
                             result: None,
+                            additional_messages: Vec::new(),
                             in_stream_result,
                         });
                         if !in_stream_result && let Some(run_id) = envelope.run_id {
@@ -478,24 +480,33 @@ fn assemble_history_with_replay(
                 if termination.outcome == ToolTerminationOutcome::Completed =>
             {
                 if let Some(result) = &termination.result {
-                    let result = elisions.get(&termination.tool_call_id).map_or_else(
-                        || tool_result_part(result, termination.tool_call_id, store),
-                        |(original_bytes, retained)| {
-                            Ok(ToolResultPart::new(
-                                String::new(),
-                                ToolContent::Text(tool_output_elision_marker(
-                                    retained,
-                                    *original_bytes,
-                                )),
-                            ))
-                        },
-                    )?;
+                    let (result_part, additional_messages) =
+                        if let Some((original_bytes, retained)) =
+                            elisions.get(&termination.tool_call_id)
+                        {
+                            (
+                                ToolResultPart::new(
+                                    String::new(),
+                                    ToolContent::Text(tool_output_elision_marker(
+                                        retained,
+                                        *original_bytes,
+                                    )),
+                                ),
+                                Vec::new(),
+                            )
+                        } else {
+                            (
+                                tool_result_part(result, termination.tool_call_id, store)?,
+                                result.additional_messages.clone(),
+                            )
+                        };
                     attach_result(
                         &mut logical,
                         &engine_calls,
                         envelope.run_id,
                         termination.tool_call_id,
-                        result,
+                        result_part,
+                        additional_messages,
                     )?;
                 }
             }
@@ -551,6 +562,7 @@ fn assemble_history_with_replay(
                         is_error: true,
                         metadata,
                     },
+                    Vec::new(),
                 )?;
             }
             EventPayload::ContextRehydrated { files } => {
@@ -674,7 +686,7 @@ fn assemble_history_with_replay(
                 let mut results = assistant
                     .calls
                     .into_iter()
-                    .filter_map(|call| call.result)
+                    .filter_map(|call| call.result.map(|result| (result, call.additional_messages)))
                     .collect::<Vec<_>>();
                 if !results.is_empty() {
                     if !has_content {
@@ -682,7 +694,7 @@ fn assemble_history_with_replay(
                             "tool result has no retained assistant call".into(),
                         ));
                     }
-                    results.sort_by_key(|result| {
+                    results.sort_by_key(|(result, _)| {
                         assistant
                             .turn
                             .content
@@ -692,7 +704,18 @@ fn assemble_history_with_replay(
                             })
                             .unwrap_or(usize::MAX)
                     });
+                    let mut additional_messages = Vec::new();
+                    let results = results
+                        .into_iter()
+                        .map(|(result, messages)| {
+                            additional_messages.extend(messages);
+                            result
+                        })
+                        .collect();
                     history.push(HistoryTurn::tool(ToolMessage::new(results)));
+                    for message in additional_messages {
+                        append_tool_emitted_message(&mut history, &message, store)?;
+                    }
                 }
                 let _ = assistant.run_id;
             }
@@ -772,6 +795,7 @@ fn attach_result(
     run_id: Option<cookie_agent_protocol::RunId>,
     tool_call_id: ToolCallId,
     mut result: ToolResultPart,
+    additional_messages: Vec<ToolEmittedMessage>,
 ) -> Result<(), HistoryError> {
     let Some(run_id) = run_id else {
         return Ok(());
@@ -786,6 +810,48 @@ fn attach_result(
     };
     result.tool_call_id = assistant.calls[call_index].model_call_id.to_string();
     assistant.calls[call_index].result = Some(result);
+    assistant.calls[call_index].additional_messages = additional_messages;
+    Ok(())
+}
+
+fn append_tool_emitted_message(
+    history: &mut Vec<HistoryTurn>,
+    message: &ToolEmittedMessage,
+    store: &ArtifactStore,
+) -> Result<(), HistoryError> {
+    match message.role {
+        ToolEmittedMessageRole::System => {
+            let HistoryTurn::System(system) = &mut history[0] else {
+                unreachable!("assembled history starts with a system message");
+            };
+            for part in &message.content {
+                match part {
+                    ToolEmittedContent::Text(text) => {
+                        system.content.push(SystemPart::Text(TextPart::new(text)));
+                    }
+                    ToolEmittedContent::File(_) => {
+                        return Err(HistoryError::Corrupt(
+                            "tool-emitted system files cannot be represented in model history"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+        }
+        ToolEmittedMessageRole::User => {
+            let content = message
+                .content
+                .iter()
+                .map(|part| match part {
+                    ToolEmittedContent::Text(text) => Ok(InputPart::Text(TextPart::new(text))),
+                    ToolEmittedContent::File(attachment) => {
+                        attachment_file(attachment, store).map(InputPart::File)
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            history.push(HistoryTurn::user(UserMessage::new(content)));
+        }
+    }
     Ok(())
 }
 
@@ -1455,7 +1521,8 @@ mod tests {
         PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
         ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
         SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolOutputTruncation, ToolTerminationOutcome, Usage,
+        ToolCallStart, ToolCallTermination, ToolEmittedContent, ToolEmittedMessage,
+        ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -2291,7 +2358,8 @@ mod tests {
     #[test]
     fn assembled_tool_transcript_snapshot_is_stable() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let artifact_path = directory.path().join("artifacts");
+        let store = ArtifactStore::open(artifact_path.clone()).expect("store");
         let binding = binding();
         let resolved = wire_model(&binding);
         let run = RunId(uuid::Uuid::from_u128(2));
@@ -2301,6 +2369,34 @@ mod tests {
             content_index: 0,
             model_call_id: ModelCallId::new("provider-call").expect("model call id"),
             provider_item_id: None,
+        };
+        let result = PersistedToolResult {
+            title: SafeDisplayText::new("Read README.md").expect("title"),
+            output: "contents".into(),
+            metadata: serde_json::json!({}),
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: vec![
+                ToolEmittedMessage::new(
+                    ToolEmittedMessageRole::System,
+                    vec![ToolEmittedContent::Text("emitted system context".into())],
+                )
+                .expect("system emission"),
+                ToolEmittedMessage::new(
+                    ToolEmittedMessageRole::User,
+                    vec![ToolEmittedContent::Text("emitted user context".into())],
+                )
+                .expect("user emission"),
+            ],
+        };
+        let termination = EventPayload::ToolCallTerminated {
+            termination: ToolCallTermination {
+                tool_call_id: call,
+                owner: owner.clone(),
+                outcome: ToolTerminationOutcome::Completed,
+                result: Some(result),
+                error: None,
+            },
         };
         let events = vec![
             event(
@@ -2357,29 +2453,48 @@ mod tests {
                     },
                 },
             ),
+            event(5, run, termination.clone()),
+            event(6, run, termination),
             event(
-                5,
+                7,
                 run,
-                EventPayload::ToolCallTerminated {
-                    termination: ToolCallTermination {
-                        tool_call_id: call,
-                        owner,
-                        outcome: ToolTerminationOutcome::Completed,
-                        result: Some(PersistedToolResult {
-                            title: SafeDisplayText::new("Read README.md").expect("title"),
-                            output: "contents".into(),
-                            metadata: serde_json::json!({}),
-                            truncation: None,
-                            attachments: Vec::new(),
-                            additional_messages: Vec::new(),
-                        }),
-                        error: None,
+                EventPayload::ModelTurnCommitted {
+                    attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                    model_turn_seq: 2,
+                    resolved_model: wire_model(&binding),
+                    input_through_seq: 6,
+                    turn: PersistedModelTurn {
+                        content: vec![PersistedAssistantPart::Text {
+                            text: "next assistant".into(),
+                            metadata: None,
+                        }],
+                        provider_options: BTreeMap::new(),
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: Usage::default(),
+                        response_metadata: BTreeMap::new(),
+                        provider_metadata: BTreeMap::new(),
+                        native_replay: None,
                     },
+                    warnings: Vec::new(),
                 },
             ),
         ];
         let history = assemble_full_history(&events, &store, &binding, "System prompt.")
             .expect("assembled history");
+        drop(store);
+        let restarted_store = ArtifactStore::open(artifact_path).expect("restarted store");
+        let replayed = assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
+            .expect("replayed history");
+        assert_eq!(history, replayed);
+        assert!(matches!(history[3], HistoryTurn::Tool(_)));
+        assert!(matches!(history[4], HistoryTurn::User(_)));
+        assert!(matches!(history[5], HistoryTurn::Assistant(_)));
+        let encoded = serde_json::to_string(&history).expect("history JSON");
+        assert_eq!(encoded.matches("emitted user context").count(), 1);
+        assert_eq!(encoded.matches("emitted system context").count(), 1);
+        oven_sdk::Request::new(history.clone())
+            .validate_for(&binding.descriptor.capabilities)
+            .expect("user history may follow a paired tool result");
         insta::with_settings!({ prepend_module_to_snapshot => false }, {
             insta::assert_json_snapshot!(
                 "cookie_agent_engine__tests__assembled_tool_transcript_snapshot_is_stable",

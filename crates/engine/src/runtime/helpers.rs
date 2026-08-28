@@ -46,7 +46,7 @@ impl Engine {
         self.append_direct(
             session_id,
             Some(run_id),
-            super::event_origin("engine:tool-execution"),
+            super::event_origin("engine:tool-result"),
             Event::ToolCallTerminated {
                 termination: ToolCallTermination {
                     tool_call_id,

@@ -1400,7 +1400,7 @@ impl Engine {
                         self.append_direct(
                             session,
                             Some(run),
-                            super::event_origin("engine:tool-execution"),
+                            super::event_origin("engine:tool-result"),
                             event,
                         )?;
                         Ok(true)
