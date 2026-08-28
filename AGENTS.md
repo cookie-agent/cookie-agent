@@ -47,3 +47,10 @@ cargo deny --locked check advisories licenses sources
 
 `./scripts/build-docs.sh` builds workspace rustdoc and runs MkDocs in strict
 mode.
+
+Bumping `PROTOCOL_VERSION` must also update every human-readable version
+reference in the same commit: `docs/site/reference/protocol.md`,
+`docs/site/architecture.md`, and the crate-level doc strings in
+`crates/protocol/src/lib.rs`, `crates/tools/src/lib.rs`,
+`crates/server/src/lib.rs`, and `crates/cookie_agent/src/main.rs` (search for
+the old version number; `docs/site/api/**` is generated and excluded).
