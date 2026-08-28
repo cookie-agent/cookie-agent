@@ -810,7 +810,7 @@ mod tests {
             .expect("registry without project");
         assert_eq!(
             without_project.get("contested").expect("winner").body,
-            "user body\\n"
+            "user body\n"
         );
         assert_eq!(without_project.diagnostics().len(), 1);
         assert!(
@@ -837,7 +837,7 @@ mod tests {
         .expect("registry with shared project root");
         assert_eq!(
             over_user.get("contested").expect("winner").body,
-            "project shared body\\n"
+            "project shared body\n"
         );
         // Native project beats project `.agents/skills` within the same directory.
         write_skill(
@@ -851,7 +851,7 @@ mod tests {
             load_skill_roots(None, None, &[shared_only_project]).expect("registry within project");
         assert_eq!(
             within_project.get("contested").expect("winner").body,
-            "project native body\\n"
+            "project native body\n"
         );
     }
 
