@@ -832,7 +832,7 @@ mod tests {
         let over_user = load_skill_roots(
             Some(&shared_user),
             Some(&user),
-            &[shared_only_project.clone()],
+            std::slice::from_ref(&shared_only_project),
         )
         .expect("registry with shared project root");
         assert_eq!(
