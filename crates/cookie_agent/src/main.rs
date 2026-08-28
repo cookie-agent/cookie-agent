@@ -321,6 +321,28 @@ async fn compose_with<T: CatalogTransport + 'static>(
 ) -> anyhow::Result<Runtime> {
     let configuration =
         cookie_agent_config::load(workspace).context("load workspace configuration and agents")?;
+    compose_with_configuration(
+        workspace,
+        configuration,
+        open_transport,
+        open_catalog,
+        open_provider_store,
+        open_data_dir,
+    )
+    .await
+}
+
+async fn compose_with_configuration<T: CatalogTransport + 'static>(
+    workspace: &Path,
+    configuration: cookie_agent_config::LoadedConfiguration,
+    open_transport: impl FnOnce() -> anyhow::Result<T>,
+    open_catalog: impl FnOnce(T) -> CatalogManager<T>,
+    open_provider_store: impl FnOnce() -> Result<
+        ProviderStore,
+        cookie_agent_models::provider_store::ProviderStoreError,
+    >,
+    open_data_dir: impl FnOnce() -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<Runtime> {
     if configuration.runtime.server.host != "127.0.0.1" {
         anyhow::bail!("server.host must be exactly 127.0.0.1");
     }
@@ -965,6 +987,32 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    /// Compose with configuration loaded from the workspace only, isolating tests from any
+    /// real user-level configuration on the host.
+    async fn compose_isolated<T: CatalogTransport + 'static>(
+        workspace: &std::path::Path,
+        open_transport: impl FnOnce() -> anyhow::Result<T>,
+        open_catalog: impl FnOnce(T) -> CatalogManager<T>,
+        open_provider_store: impl FnOnce() -> Result<
+            ProviderStore,
+            cookie_agent_models::provider_store::ProviderStoreError,
+        >,
+        open_data_dir: impl FnOnce() -> anyhow::Result<std::path::PathBuf>,
+    ) -> anyhow::Result<Runtime> {
+        let configuration =
+            cookie_agent_config::load_from_roots(None, Some(&workspace.join(".cookie-agent")))
+                .context("load isolated workspace configuration and agents")?;
+        compose_with_configuration(
+            workspace,
+            configuration,
+            open_transport,
+            open_catalog,
+            open_provider_store,
+            open_data_dir,
+        )
+        .await
+    }
+
     use std::{
         collections::VecDeque,
         future::Future,
@@ -1490,7 +1538,7 @@ mod tests {
         write_empty_config(&workspace);
         private_directory(&cache_anchor);
         let fetches = Arc::new(AtomicUsize::new(0));
-        let mut runtime = compose_with(
+        let mut runtime = compose_isolated(
             &workspace,
             || {
                 Ok(OfflineTransport {
@@ -1530,7 +1578,7 @@ mod tests {
         let catalog_anchor = temporary.path().to_owned();
         let provider_path = temporary.path().join("providers");
         let data_path = temporary.path().join("data");
-        let result = compose_with(
+        let result = compose_isolated(
             &workspace,
             || {
                 Ok(OfflineTransport {
@@ -1651,7 +1699,7 @@ mod tests {
         );
         drop(seed_manager);
 
-        let mut runtime = compose_with(
+        let mut runtime = compose_isolated(
             &workspace_a,
             || {
                 Ok(OfflineTransport {
@@ -1694,7 +1742,7 @@ mod tests {
         runtime.stop_catalog_refresh().await;
         runtime.engine.shutdown().await;
 
-        let mut recomposed = compose_with(
+        let mut recomposed = compose_isolated(
             &workspace_b,
             || {
                 Ok(OfflineTransport {
@@ -1738,7 +1786,7 @@ mod tests {
         let cache_anchor = temporary.path().join("cache-anchor");
         write_empty_config(&workspace);
         private_directory(&cache_anchor);
-        let mut runtime = compose_with(
+        let mut runtime = compose_isolated(
             &workspace,
             || {
                 Ok(OfflineTransport {
@@ -1809,7 +1857,7 @@ mod tests {
         let cache_anchor = temporary.path().join("cache-anchor");
         write_empty_config(&workspace);
         private_directory(&cache_anchor);
-        let mut runtime = compose_with(
+        let mut runtime = compose_isolated(
             &workspace,
             || {
                 Ok(OfflineTransport {
@@ -1961,7 +2009,7 @@ mod tests {
             CatalogStep::NotModified,
             CatalogStep::NotModified,
         ])));
-        let mut runtime = compose_with(
+        let mut runtime = compose_isolated(
             &workspace,
             || {
                 Ok(ScriptedTransport {

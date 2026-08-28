@@ -6187,7 +6187,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             expect_elision
         );
         assert_eq!(
-            summary_request.contains("[image/png attachment elided for summarization]"),
+            summary_request.contains("\u{27e6}elided media attachment: image/png\u{27e7}"),
             !expect_elision
         );
         assert!(!summary_request.contains("input_image"));

@@ -14,6 +14,8 @@ use cookie_agent_protocol::{
 };
 
 const MAX_ENCODED_BYTES: usize = 20 * 1024 * 1024;
+/// Upper bound on the compatible-brand list scanned when the major brand is unrecognized.
+const MAX_BRAND_SCAN_BYTES: usize = 4 * 1024;
 const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
@@ -270,9 +272,9 @@ pub fn approved_media_type(path: &Path, bytes: &[u8]) -> Result<Option<&'static 
     } else if bytes.starts_with(b"%PDF-") {
         Some(("application/pdf", MediaKind::Pdf))
     } else if bytes.starts_with(b"ID3")
-        || bytes.starts_with(&[0xff, 0xfb])
-        || bytes.starts_with(&[0xff, 0xf3])
+        || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
     {
+        // MPEG frame sync: first 11 bits set covers CRC-protected and MPEG-2/2.5 headers.
         Some(("audio/mpeg", MediaKind::Audio))
     } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
         Some(("audio/wav", MediaKind::Audio))
@@ -386,7 +388,10 @@ fn iso_base_media_type(bytes: &[u8]) -> Option<&'static str> {
     if let Some(mime) = iso_base_brand_media_type(brand) {
         return Some(mime);
     }
-    bytes[compatible_offset..box_size]
+    // Scan the compatible-brand list with a hard bound: an oversized ftyp box must not turn
+    // sniffing into a full scan of unbounded input.
+    let scan_end = box_size.min(compatible_offset + MAX_BRAND_SCAN_BYTES);
+    bytes[compatible_offset..scan_end]
         .as_chunks::<4>()
         .0
         .iter()

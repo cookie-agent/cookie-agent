@@ -766,7 +766,9 @@ fn project_tool_content(content: &mut oven_sdk::ToolContent) {
 }
 
 fn attachment_placeholder(media_type: &str) -> String {
-    format!("[{media_type} attachment elided for summarization]")
+    // Lenticular brackets keep the marker distinct from plausible authored prose, so the
+    // summarizer never mistakes real text for an elision notice.
+    format!("\u{27e6}elided media attachment: {media_type}\u{27e7}")
 }
 
 pub(super) fn internal_history_tokens(
@@ -993,7 +995,7 @@ mod tests {
             serde_json::json!({
                 "type": "text",
                 "value": {
-                    "text": "[image/png attachment elided for summarization]",
+                    "text": "\u{27e6}elided media attachment: image/png\u{27e7}",
                     "metadata": null
                 }
             })
@@ -1002,7 +1004,7 @@ mod tests {
             wire["history"][1]["value"]["results"][0]["content"]["value"][0],
             serde_json::json!({
                 "type": "text",
-                "value": "[image/png attachment elided for summarization]"
+                "value": "\u{27e6}elided media attachment: image/png\u{27e7}"
             })
         );
         assert!(!wire.to_string().contains("raw-media-bytes"));
