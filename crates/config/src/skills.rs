@@ -263,22 +263,40 @@ impl SkillRegistry {
 /// Loads skills once for engine construction. Skill files are intentionally not hot-reloaded.
 pub fn load_skills(cwd: &Path) -> Result<SkillRegistry, ConfigError> {
     let cwd = cwd.canonicalize().map_err(ConfigError::Io)?;
+    let shared_user = paths::home_dir()
+        .ok()
+        .map(|home| home.join(".agents/skills"));
     let user = user_skill_root();
     let project = project_skill_roots(&cwd);
-    load_skill_roots(user.as_deref(), &project)
+    load_skill_roots(shared_user.as_deref(), user.as_deref(), &project)
 }
 
 /// Loads explicit skill roots in low-to-high project precedence order.
+///
+/// `shared_user_root` is the cross-client `~/.agents/skills` convention and ranks below the
+/// cookie-agent-native user root. Each project directory contributes its `.agents/skills` root
+/// before its `.cookie-agent/skills` root, so native roots win same-scope name collisions.
 pub fn load_skill_roots(
+    shared_user_root: Option<&Path>,
     user_root: Option<&Path>,
     project_roots: &[PathBuf],
 ) -> Result<SkillRegistry, ConfigError> {
     let mut candidates = Vec::new();
+    if let Some(root) = shared_user_root {
+        candidates.extend(load_root(root, SkillSource::User)?);
+    }
     if let Some(root) = user_root {
         candidates.extend(load_root(root, SkillSource::User)?);
     }
-    for root in project_roots {
-        candidates.extend(load_root(root, SkillSource::Project)?);
+    for directory in project_roots {
+        candidates.extend(load_root(
+            &directory.join(".agents/skills"),
+            SkillSource::Project,
+        )?);
+        candidates.extend(load_root(
+            &directory.join(".cookie-agent/skills"),
+            SkillSource::Project,
+        )?);
     }
 
     let mut winner_index = BTreeMap::<String, usize>::new();
@@ -340,7 +358,7 @@ fn project_skill_roots(cwd: &Path) -> Vec<PathBuf> {
     ancestors[..=stop]
         .iter()
         .rev()
-        .map(|path| path.join(".cookie-agent/skills"))
+        .map(|path| path.to_path_buf())
         .collect()
 }
 
@@ -669,13 +687,13 @@ mod tests {
     fn invalid_model_key_is_a_targeted_load_error() {
         let temp = tempfile::tempdir().expect("tempdir");
         write_skill(
-            temp.path(),
+            &temp.path().join(".cookie-agent/skills"),
             "model-test",
             "model-test",
             "model: not-a-model-key\n",
             "body",
         );
-        let error = load_skill_roots(None, &[temp.path().to_owned()]).unwrap_err();
+        let error = load_skill_roots(None, None, &[temp.path().to_owned()]).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -700,8 +718,14 @@ mod tests {
         let user = temp.path().join("user");
         let project = temp.path().join("project");
         write_skill(&user, "review", "review", "", "user body");
-        write_skill(&project, "review", "review", "", "project body");
-        let registry = load_skill_roots(Some(&user), &[project]).expect("registry");
+        write_skill(
+            &project.join(".cookie-agent/skills"),
+            "review",
+            "review",
+            "",
+            "project body",
+        );
+        let registry = load_skill_roots(None, Some(&user), &[project]).expect("registry");
         assert_eq!(
             registry.get("review").expect("winner").body,
             "project body\n"
@@ -711,20 +735,108 @@ mod tests {
     }
 
     #[test]
+    fn precedence_runs_shared_user_then_user_then_project_shared_then_native() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shared_user = temp.path().join("shared-user");
+        let user = temp.path().join("user");
+        let project = temp.path().join("project");
+        // Distinct names per root all load.
+        write_skill(
+            &shared_user,
+            "shared-only",
+            "shared-only",
+            "",
+            "shared user body",
+        );
+        write_skill(&user, "user-only", "user-only", "", "user body");
+        write_skill(
+            &project.join(".agents/skills"),
+            "project-shared-only",
+            "project-shared-only",
+            "",
+            "project shared body",
+        );
+        // Same name at every level: native project wins, then project .agents,
+        // then native user, then shared user.
+        write_skill(
+            &shared_user,
+            "contested",
+            "contested",
+            "",
+            "shared user body",
+        );
+        write_skill(&user, "contested", "contested", "", "user body");
+        write_skill(
+            &project.join(".agents/skills"),
+            "contested",
+            "contested",
+            "",
+            "project shared body",
+        );
+        write_skill(
+            &project.join(".cookie-agent/skills"),
+            "contested",
+            "contested",
+            "",
+            "project native body",
+        );
+        let registry =
+            load_skill_roots(Some(&shared_user), Some(&user), &[project]).expect("registry");
+        assert_eq!(
+            registry.get("shared-only").expect("shared").body,
+            "shared user body\n"
+        );
+        assert_eq!(registry.get("user-only").expect("user").body, "user body\n");
+        assert_eq!(
+            registry
+                .get("project-shared-only")
+                .expect("project shared")
+                .body,
+            "project shared body\n"
+        );
+        assert_eq!(
+            registry.get("contested").expect("winner").body,
+            "project native body\n"
+        );
+        // Every shadowed user-scope discovery records a diagnostic.
+        assert_eq!(registry.diagnostics().len(), 2);
+        assert_eq!(registry.discoveries().len(), 7);
+        // Native user beats shared user.
+        let without_project = load_skill_roots(Some(&shared_user), Some(&user), &[])
+            .expect("registry without project");
+        assert_eq!(
+            without_project.get("contested").expect("winner").body,
+            "user body\n"
+        );
+    }
+
+    #[test]
     fn mismatched_name_and_unknown_field_are_targeted_errors() {
         let temp = tempfile::tempdir().expect("tempdir");
-        write_skill(temp.path(), "right", "wrong", "", "body");
+        write_skill(
+            &temp.path().join(".cookie-agent/skills"),
+            "right",
+            "wrong",
+            "",
+            "body",
+        );
         assert!(
-            load_skill_roots(None, &[temp.path().to_owned()])
+            load_skill_roots(None, None, &[temp.path().to_owned()])
                 .unwrap_err()
                 .to_string()
                 .contains("name mismatch")
         );
 
         let temp = tempfile::tempdir().expect("tempdir");
-        write_skill(temp.path(), "right", "right", "surprise: true\n", "body");
+        write_skill(
+            &temp.path().join(".cookie-agent/skills"),
+            "right",
+            "right",
+            "surprise: true\n",
+            "body",
+        );
         assert!(
-            load_skill_roots(None, &[temp.path().to_owned()])
+            load_skill_roots(None, None, &[temp.path().to_owned()])
                 .unwrap_err()
                 .to_string()
                 .contains("unknown frontmatter field")
@@ -735,7 +847,7 @@ mod tests {
     fn listing_drops_when_to_use_then_truncates_without_dropping_skill() {
         let temp = tempfile::tempdir().expect("tempdir");
         let description = "d".repeat(500);
-        let directory = temp.path().join("budget");
+        let directory = temp.path().join(".cookie-agent/skills/budget");
         fs::create_dir_all(&directory).expect("skill directory");
         fs::write(
             directory.join("SKILL.md"),
@@ -745,7 +857,7 @@ mod tests {
             ),
         )
         .expect("skill document");
-        let registry = load_skill_roots(None, &[temp.path().to_owned()]).expect("registry");
+        let registry = load_skill_roots(None, None, &[temp.path().to_owned()]).expect("registry");
         let rendered = render_available_skills(registry.skills().map(|(_, skill)| skill), 10_000)
             .expect("bounded listing");
         assert!(rendered.len() <= 400);

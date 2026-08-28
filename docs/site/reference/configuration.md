@@ -10,7 +10,7 @@ Three independent configuration surfaces exist:
 |---|---|
 | Runtime, providers, MCP servers, and plugins | `~/.cookie-agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
 | Agents | `~/.cookie-agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
-| Skills | `~/.cookie-agent/skills/<name>/SKILL.md` and `.cookie-agent/skills/<name>/SKILL.md` from cwd to worktree root |
+| Skills | `~/.agents/skills/`, then `~/.cookie-agent/skills/`, then `.agents/skills/` + `.cookie-agent/skills/` from worktree root to cwd |
 | TUI | `~/.cookie-agent/tui.toml` |
 
 Examples default to the user layer. The exact-workspace layer uses the same

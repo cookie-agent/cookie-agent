@@ -7,18 +7,24 @@ directory are available as scripts, references, or assets.
 
 ## Discovery and precedence
 
-Cookie Agent discovers skills from:
+Cookie Agent discovers skills from these locations, lowest to highest
+precedence:
 
-- `~/.cookie-agent/skills/<name>/SKILL.md`
-- `.cookie-agent/skills/<name>/SKILL.md` from the working directory upward to
-  the worktree root
+- `~/.agents/skills/<name>/SKILL.md` (cross-client convention, shared with
+  other agents)
+- `~/.cookie-agent/skills/<name>/SKILL.md` (cookie-agent-native user skills)
+- `.agents/skills/<name>/SKILL.md`, then `.cookie-agent/skills/<name>/SKILL.md`,
+  from the worktree root downward to the working directory
 
-The user location is resolved from the standard home directory and is the normal
-place for reusable personal skills.
+The user locations resolve from the standard home directory and are the normal
+place for reusable personal skills; `~/.agents/skills` is the right home for
+skills shared with other agents that follow the cross-client convention.
 
-Project skills override same-named user skills. The shadowed user skill remains
-visible in `skills.list` and `/skills` diagnostics, but cannot be invoked. Skill
-files are not hot-reloaded; restart the engine after changing them.
+Same-named skills are replaced whole, never merged: a higher-precedence
+location wins, and within one directory scope the cookie-agent-native root wins
+over `.agents/skills`. Shadowed user-scope skills remain visible in
+`skills.list` and `/skills` diagnostics, but cannot be invoked. Skill files are
+not hot-reloaded; restart the engine after changing them.
 
 ## Authoring
 

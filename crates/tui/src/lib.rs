@@ -211,14 +211,15 @@ mod tests {
         );
         let agent_id = AgentId::new("primary").expect("agent id");
         let skills = if with_skills {
-            let root = directory.path().join("skills");
+            let base = directory.path().to_owned();
+            let root = base.join(".cookie-agent/skills");
             fs::create_dir_all(root.join("fresh-skill")).expect("skill directory");
             fs::write(
                 root.join("fresh-skill/SKILL.md"),
                 "---\nname: fresh-skill\ndescription: Fresh session skill\nargument-hint: <value>\n---\nFresh $ARGUMENTS.\n",
             )
             .expect("skill document");
-            cookie_agent_config::load_skill_roots(None, &[root]).expect("skill registry")
+            cookie_agent_config::load_skill_roots(None, None, &[base]).expect("skill registry")
         } else {
             cookie_agent_config::SkillRegistry::default()
         };
