@@ -1814,12 +1814,16 @@ use the exact variable name in authored configuration.</p>
 </tbody>
 </table>
 <h2 id="custom-providers">Custom providers<a class="headerlink" href="#custom-providers" title="Permanent link">&para;</a></h2>
-<p>Custom provider IDs begin with <code>custom.</code> (for example <code>custom.example</code>). They
-are config-only: they never appear in <code>/connect</code> and never use the provider
-store. A custom definition requires an HTTPS endpoint (or loopback <code>http</code>), an
-adaptor, a typed auth definition, and complete explicit model capabilities.
-Author custom providers in <code>~/.cookie-agent/config.toml</code> by default; the same
-workspace precedence rule described above applies when an override is needed.</p>
+<p>Custom provider IDs are any valid provider ID (for example <code>gateway</code> or
+<code>custom.example</code>); the <code>source = "custom"</code> tag, not the name, marks a provider
+as authored. When a custom ID collides with a catalog provider ID, the custom
+definition takes precedence and the catalog provider is shadowed. Custom
+providers are config-only: they never appear in <code>/connect</code> and never use the
+provider store. A custom definition requires an HTTPS endpoint (or loopback
+<code>http</code>), an adaptor, a typed auth definition, and complete explicit model
+capabilities. Author custom providers in <code>~/.cookie-agent/config.toml</code> by
+default; the same workspace precedence rule described above applies when an
+override is needed.</p>
 <h3 id="adaptors">Adaptors<a class="headerlink" href="#adaptors" title="Permanent link">&para;</a></h3>
 <table>
 <thead>

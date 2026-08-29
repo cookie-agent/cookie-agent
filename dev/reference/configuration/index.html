@@ -2351,8 +2351,9 @@ fails with a migration error naming the adapter-specific replacement.</p>
 </tbody>
 </table>
 <h3 id="custom-providers-source-custom">Custom providers (<code>source = "custom"</code>)<a class="headerlink" href="#custom-providers-source-custom" title="Permanent link">&para;</a></h3>
-<p>Provider IDs under <code>custom.</code> are config-only, never appear in <code>/connect</code>, and
-never use the provider store.</p>
+<p>Custom providers are config-only, never appear in <code>/connect</code>, and never use
+the provider store. Any valid provider ID is allowed; on collision with a
+catalog provider ID the custom definition takes precedence.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[providers.</span><span class="s2">"custom.example"</span><span class="k">]</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"custom"</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://api.example.invalid/v1"</span>
