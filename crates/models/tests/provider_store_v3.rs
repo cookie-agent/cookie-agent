@@ -672,7 +672,7 @@ fn adversarial_payloads_do_not_alias_and_jcs_uses_utf16_property_order() {
 }
 
 #[test]
-fn stale_revisions_generations_and_custom_providers_are_typed() {
+fn stale_revisions_generations_and_prefixed_ids_are_typed() {
     let temporary = TempDir::new().unwrap();
     let store = private_store(&temporary);
     let initial = store.load().unwrap();
@@ -687,14 +687,17 @@ fn stale_revisions_generations_and_custom_providers_are_typed() {
         Err(ProviderStoreError::StoreGenerationConflict)
     ));
 
+    // The store layer no longer discriminates by ID prefix: `custom.*` names
+    // are valid store keys (the manager rejects authored custom providers
+    // before they reach the store, by source kind).
     let custom = connect_request(&initial, "custom", "custom.local", "secret");
-    assert!(matches!(
+    assert!(
         store
             .begin_transaction()
             .unwrap()
-            .propose_connect(&custom, &catalog_revision()),
-        Err(ProviderStoreError::CustomProviderForbidden)
-    ));
+            .propose_connect(&custom, &catalog_revision())
+            .is_ok()
+    );
 
     let disconnect = DisconnectMutation {
         client_request_id: ClientRequestId::new("stale").unwrap(),

@@ -348,13 +348,10 @@ pub enum ProviderDefinition {
 impl ProviderDefinition {
     pub fn validate_for(
         &self,
-        provider_id: &cookie_agent_identity::ProviderId,
+        _provider_id: &cookie_agent_identity::ProviderId,
     ) -> Result<(), AuthoringError> {
         match self {
             Self::ModelsDev(provider) => {
-                if provider_id.as_str().starts_with("custom.") {
-                    return Err(AuthoringError::ProviderNamespace);
-                }
                 if provider.api_key.is_some() && provider.auth_override.is_some() {
                     return Err(AuthoringError::AuthConflict);
                 }
@@ -367,9 +364,6 @@ impl ProviderDefinition {
                 validate_display_overrides(provider)?;
             }
             Self::Custom(provider) => {
-                if !provider_id.as_str().starts_with("custom.") {
-                    return Err(AuthoringError::ProviderNamespace);
-                }
                 validate_custom(provider)?;
             }
         }
@@ -652,8 +646,6 @@ pub enum AuthoringError {
     HeaderName,
     #[error("invalid static header value")]
     HeaderValue,
-    #[error("provider ID does not match source namespace")]
-    ProviderNamespace,
     #[error("api_key and auth_override are mutually exclusive")]
     AuthConflict,
     #[error("authored base_url requires same-definition auth")]

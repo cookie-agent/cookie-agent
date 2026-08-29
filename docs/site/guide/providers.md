@@ -179,12 +179,16 @@ use the exact variable name in authored configuration.
 
 ## Custom providers
 
-Custom provider IDs begin with `custom.` (for example `custom.example`). They
-are config-only: they never appear in `/connect` and never use the provider
-store. A custom definition requires an HTTPS endpoint (or loopback `http`), an
-adaptor, a typed auth definition, and complete explicit model capabilities.
-Author custom providers in `~/.cookie-agent/config.toml` by default; the same
-workspace precedence rule described above applies when an override is needed.
+Custom provider IDs are any valid provider ID (for example `gateway` or
+`custom.example`); the `source = "custom"` tag, not the name, marks a provider
+as authored. When a custom ID collides with a catalog provider ID, the custom
+definition takes precedence and the catalog provider is shadowed. Custom
+providers are config-only: they never appear in `/connect` and never use the
+provider store. A custom definition requires an HTTPS endpoint (or loopback
+`http`), an adaptor, a typed auth definition, and complete explicit model
+capabilities. Author custom providers in `~/.cookie-agent/config.toml` by
+default; the same workspace precedence rule described above applies when an
+override is needed.
 
 ### Adaptors
 

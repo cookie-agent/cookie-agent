@@ -259,6 +259,132 @@ fn catalog_cost_reaches_the_compiled_runtime_model() {
 }
 
 #[test]
+fn authored_custom_provider_shadows_catalog_on_id_collision() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = cloud_catalog(
+        "openai",
+        "@ai-sdk/openai",
+        &["OPENAI_API_KEY"],
+        "gpt-test",
+        None,
+    );
+    // Establish a store-backed managed connection for the catalog provider
+    // first, so the collision test also covers stored credentials.
+    let managed =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    managed
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("openai").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: setup_values(&[]),
+                auth_method: AuthMethodId::new("bearer-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "stored-secret")]),
+                client_connect_id: ClientConnectId::new("openai-managed").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    assert!(
+        managed
+            .current()
+            .models()
+            .keys()
+            .any(|key| key.as_str() == "openai/gpt-test")
+    );
+    // A bare custom provider ID that collides with a catalog provider takes
+    // precedence: only the authored custom models are compiled and the stored
+    // managed connection is shadowed.
+    let definition = toml::from_str::<ProviderDefinition>(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
+
+[models.gateway-model]
+display_name = "Gateway Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+"#,
+    )
+    .unwrap();
+    let authored = BTreeMap::from([(ProviderId::new("openai").unwrap(), definition)]);
+    let manager = ModelManager::new(authored, catalog, store(&temporary)).unwrap();
+    let runtime = manager.current();
+
+    assert!(
+        runtime
+            .models()
+            .keys()
+            .any(|key| key.as_str() == "openai/gateway-model")
+    );
+    assert!(
+        !runtime
+            .models()
+            .keys()
+            .any(|key| key.as_str() == "openai/gpt-test")
+    );
+    assert!(runtime.models().values().all(|model| {
+        matches!(
+            model.source,
+            cookie_agent_models::manager::RuntimeProviderSource::Custom { .. }
+        )
+    }));
+    // The shadowed managed provider contributes no provider state: custom
+    // providers are config-only and the stored connection is not exposed.
+    assert!(
+        !runtime
+            .providers()
+            .iter()
+            .any(|provider| provider.id.as_str() == "openai")
+    );
+}
+
+#[test]
+fn bare_custom_provider_ids_are_supported() {
+    let temporary = TempDir::new().unwrap();
+    let definition = toml::from_str::<ProviderDefinition>(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
+
+[models.model-1]
+display_name = "Gateway Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+"#,
+    )
+    .unwrap();
+    let authored = BTreeMap::from([(ProviderId::new("gateway").unwrap(), definition)]);
+    let catalog = empty_catalog();
+    let manager = ModelManager::new(authored, Arc::clone(&catalog), store(&temporary)).unwrap();
+    let runtime = manager.current();
+    assert!(
+        runtime
+            .models()
+            .keys()
+            .any(|key| key.as_str() == "gateway/model-1")
+    );
+    // Store-backed connect is rejected for authored custom providers.
+    let error = manager
+        .connect(
+            ProviderConnectRequest {
+                provider_id: ProviderId::new("gateway").unwrap(),
+                expected_catalog_revision: catalog.revision.clone(),
+                setup_values: setup_values(&[]),
+                auth_method: AuthMethodId::new("bearer-api-key-v1").unwrap(),
+                auth_values: auth_values(&[("api_key", "secret")]),
+                client_connect_id: ClientConnectId::new("gateway-connect").unwrap(),
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ModelManagerError::CustomProviderNotStoreBacked
+    ));
+}
+
+#[test]
 fn stored_alternative_bearer_auth_is_effective_for_anthropic_and_azure() {
     for (provider, npm, environment, setup) in [
         (

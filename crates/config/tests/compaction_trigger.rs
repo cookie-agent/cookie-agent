@@ -506,7 +506,7 @@ fn interpolation_is_limited_and_static_headers_never_interpolate() {
 }
 
 #[test]
-fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
+fn managed_auth_is_mutually_exclusive_and_custom_ids_are_unprefixed() {
     let temp = TempDir::new().unwrap();
     let conflict = temp.path().join("conflict");
     write_config(
@@ -518,15 +518,14 @@ fn managed_auth_is_mutually_exclusive_and_custom_namespace_is_strict() {
         Err(ConfigError::Provider { .. })
     ));
 
-    let namespace = temp.path().join("namespace");
+    // Bare custom provider IDs are allowed; `source = "custom"`, not the
+    // name, marks a provider as authored.
+    let bare = temp.path().join("bare");
     write_config(
-        &namespace,
+        &bare,
         &custom("https://example.test/v1").replace("custom.test", "test"),
     );
-    assert!(matches!(
-        load_from_roots(None, Some(&namespace)),
-        Err(ConfigError::Provider { .. })
-    ));
+    assert!(load_from_roots(None, Some(&bare)).is_ok());
 }
 
 #[test]

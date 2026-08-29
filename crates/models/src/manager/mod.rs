@@ -1282,6 +1282,14 @@ fn compile_runtime(
     let mut providers = Vec::new();
     let mut models = BTreeMap::new();
     for provider_id in provider_ids {
+        // Authored custom providers take precedence over catalog and
+        // provider-store entries for the same ID.
+        if matches!(
+            authored.get(&provider_id),
+            Some(ProviderDefinition::Custom(_))
+        ) {
+            continue;
+        }
         let authored_managed = match authored.get(&provider_id) {
             Some(ProviderDefinition::ModelsDev(provider)) => Some(provider),
             _ => None,
@@ -1815,6 +1823,9 @@ fn compile_frozen_managed(
     let options = thaw_provider_options(frozen_behavior.options)?;
     let capabilities = thaw_capabilities(&frozen_behavior.descriptor.capabilities);
     let model = CompiledDynamicModel {
+        // compile_frozen_managed rejects Custom sources above; custom frozen
+        // bindings resolve through the current-runtime fast path instead.
+        custom: false,
         id: binding.selection.model.model_id(),
         display_name: binding.selection.model.to_string(),
         family_id: blueprint.provider_recipe.as_str().to_owned(),
@@ -2238,7 +2249,10 @@ fn normalize_connect(
     store: &ProviderStoreSnapshot,
     request: ProviderConnectRequest,
 ) -> Result<ConnectMutation, ModelManagerError> {
-    if request.provider_id.as_str().starts_with("custom.") {
+    if matches!(
+        current.authored.get(&request.provider_id),
+        Some(ProviderDefinition::Custom(_))
+    ) {
         return Err(ModelManagerError::CustomProviderNotStoreBacked);
     }
     let (recipe, package_claim, source_record_digest, catalog_revision) = if let Some(record) =

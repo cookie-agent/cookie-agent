@@ -51,7 +51,7 @@ pub(crate) fn compile_executable(
         }
         if model.adapter == OvenAdapterFamily::OpenaiResponses {
             return crate::adapters::no_auth_responses::build(
-                executable_provider_id(provider_id, model.adapter),
+                executable_provider_id(provider_id, model.adapter, model.custom),
                 &executable_model_id(model),
                 endpoint,
                 headers,
@@ -63,7 +63,7 @@ pub(crate) fn compile_executable(
     let adapter = adapter_config(model, behavior.options, behavior.reasoning)?;
     let concrete_capabilities = capabilities.clone();
     let compiled = ConcreteModel {
-        provider_id: executable_provider_id(provider_id, model.adapter).to_owned(),
+        provider_id: executable_provider_id(provider_id, model.adapter, model.custom).to_owned(),
         model_id: executable_model_id(model),
         endpoint,
         auth,
@@ -85,7 +85,7 @@ pub(crate) fn compile_executable(
     if model.auth.method == "no-auth-v1" && model.adapter == OvenAdapterFamily::OpenaiChat {
         return crate::adapters::reattribute(
             compiled,
-            executable_provider_id(provider_id, model.adapter),
+            executable_provider_id(provider_id, model.adapter, model.custom),
             &executable_model_id(model),
             &model.adapter_id,
             concrete_capabilities,
@@ -94,8 +94,11 @@ pub(crate) fn compile_executable(
     Ok(compiled)
 }
 
-fn executable_provider_id(provider_id: &str, family: OvenAdapterFamily) -> &str {
-    if provider_id.starts_with("custom.") && family == OvenAdapterFamily::OpenaiResponses {
+fn executable_provider_id(provider_id: &str, family: OvenAdapterFamily, custom: bool) -> &str {
+    // Custom Responses providers keep their full authored ID as replay
+    // identity so separate gateways never share native replay history with
+    // each other or with the managed `openai` family identity.
+    if custom && family == OvenAdapterFamily::OpenaiResponses {
         return provider_id;
     }
     match family {
@@ -606,8 +609,16 @@ mod tests {
 
     #[test]
     fn custom_responses_identity_survives_manifest_rehydration() {
+        // Custom Responses providers keep their full authored ID as replay
+        // identity: prefixed, bare, and even a catalog-colliding bare ID.
+        for id in ["custom.gateway", "gateway", "openai"] {
+            custom_responses_identity_survives_manifest_rehydration_for(id);
+        }
+    }
+
+    fn custom_responses_identity_survives_manifest_rehydration_for(id: &str) {
         let temporary = TempDir::new().expect("temporary directory");
-        let provider_id = ProviderId::new("custom.gateway").expect("provider ID");
+        let provider_id = ProviderId::new(id).expect("provider ID");
         let definition = toml::from_str::<ProviderDefinition>(
             r#"source = "custom"
 endpoint = "http://127.0.0.1:9/v1"

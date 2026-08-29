@@ -581,8 +581,6 @@ pub enum ProviderStoreError {
     UnsupportedStoreVersion,
     #[error("provider store request is invalid")]
     InvalidRequest,
-    #[error("custom providers are not store-backed")]
-    CustomProviderForbidden,
     #[error("catalog revision conflict")]
     CatalogRevisionConflict,
     #[error("runtime revision conflict")]

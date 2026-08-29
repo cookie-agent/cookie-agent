@@ -425,8 +425,9 @@ fails with a migration error naming the adapter-specific replacement.
 
 ### Custom providers (`source = "custom"`)
 
-Provider IDs under `custom.` are config-only, never appear in `/connect`, and
-never use the provider store.
+Custom providers are config-only, never appear in `/connect`, and never use
+the provider store. Any valid provider ID is allowed; on collision with a
+catalog provider ID the custom definition takes precedence.
 
 ```toml
 [providers."custom.example"]

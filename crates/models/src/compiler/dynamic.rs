@@ -58,6 +58,10 @@ pub enum CompiledModelStatus {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CompiledDynamicModel {
+    /// Whether this model comes from an authored custom provider
+    /// (`source = "custom"`). Replay identity is attributed per provider for
+    /// custom Responses providers so separate gateways never share history.
+    pub custom: bool,
     pub id: ProviderModelId,
     pub display_name: String,
     pub family_id: String,
@@ -368,6 +372,7 @@ impl DynamicCompiler {
             ),
         );
         Ok(CompiledDynamicModel {
+            custom: false,
             id: model.id.clone(),
             display_name,
             family_id: resolved.recipe.family.id().to_owned(),
@@ -406,9 +411,6 @@ impl DynamicCompiler {
         provider_id: &ProviderId,
         provider: &CustomProvider,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
-        if !provider_id.as_str().starts_with("custom.") {
-            return Err(DynamicCompileError::UnsupportedProvider);
-        }
         let adapter = OvenAdapterFamily::parse(provider.adaptor.as_str())
             .ok_or(DynamicCompileError::UnsupportedAdapter)?;
         let wire = wire_adapter_for_custom(adapter);
@@ -477,6 +479,7 @@ impl DynamicCompiler {
             models.insert(
                 id.clone(),
                 CompiledDynamicModel {
+                    custom: true,
                     id: id.clone(),
                     display_name: model.display_name.clone(),
                     family_id: "custom".into(),

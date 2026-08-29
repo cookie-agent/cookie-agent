@@ -134,7 +134,6 @@ impl ProviderStoreTransaction<'_> {
         request: &ConnectMutation,
         current_catalog_revision: &CatalogRevision,
     ) -> Result<ConnectProposal, ProviderStoreError> {
-        validate_managed_provider(&request.provider_id)?;
         validate_setup_values(&request.setup_values)?;
         request.policy.validate()?;
 
@@ -229,7 +228,6 @@ impl ProviderStoreTransaction<'_> {
         request: &DisconnectMutation,
         current_runtime_revision: &RuntimeRevision,
     ) -> Result<DisconnectProposal, ProviderStoreError> {
-        validate_managed_provider(&request.provider_id)?;
         let payload_digest = disconnect_payload_digest(request)?;
         if let Some(stored) = self
             .state
@@ -494,7 +492,6 @@ impl StoreState {
             return Err(ProviderStoreError::InvalidStore);
         }
         for (provider_id, connection) in &self.providers {
-            validate_managed_provider(provider_id).map_err(|_| ProviderStoreError::InvalidStore)?;
             if provider_id != &connection.provider_id {
                 return Err(ProviderStoreError::InvalidStore);
             }
@@ -506,8 +503,6 @@ impl StoreState {
             connection.policy.validate()?;
         }
         for receipt in self.connect_receipts.values() {
-            validate_managed_provider(&receipt.result.durable_connection.provider_id)
-                .map_err(|_| ProviderStoreError::InvalidStore)?;
             validate_setup_values(&receipt.result.durable_connection.setup_values)
                 .map_err(|_| ProviderStoreError::InvalidStore)?;
             if receipt.result.durable_connection.setup_fingerprint
@@ -527,8 +522,6 @@ impl StoreState {
             }
         }
         for receipt in self.disconnect_receipts.values() {
-            validate_managed_provider(&receipt.result.provider_id)
-                .map_err(|_| ProviderStoreError::InvalidStore)?;
             if !receipt.result.disconnected
                 || receipt.result.durable_receipt.provider_state_revision
                     != provider_state_revision(&receipt.result.durable_receipt.store_revision)
@@ -643,14 +636,6 @@ fn reject_obsolete_files(lock: &SecureDirectoryLock<'_>) -> Result<(), ProviderS
         return Err(ProviderStoreError::UnversionedStore);
     }
     Ok(())
-}
-
-fn validate_managed_provider(provider_id: &ProviderId) -> Result<(), ProviderStoreError> {
-    if provider_id.as_str().starts_with("custom.") {
-        Err(ProviderStoreError::CustomProviderForbidden)
-    } else {
-        Ok(())
-    }
 }
 
 fn validate_expectation(
