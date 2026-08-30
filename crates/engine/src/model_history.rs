@@ -1239,6 +1239,21 @@ fn restore_replay(
             }),
         );
     }
+    // Persisted-turn integrity: the artifact must have been recorded by the
+    // adapter the turn itself resolved to, before any current-eligibility
+    // checks expose its opaque payload. Artifacts record the Oven adapter ID
+    // while the persisted turn carries the protocol adapter ID, so compare
+    // through the shared family mapping.
+    if crate::policy::wire_adapter(artifact.adapter_id().as_str()) != resolved_model.adapter_id {
+        return (
+            None,
+            Some(ReplayDisposition::DiscardedInvalidPayload {
+                reason: safe_replay_reason(
+                    "native replay adapter does not match its persisted model turn",
+                ),
+            }),
+        );
+    }
     if artifact.selection_fingerprint() != &resolved_model.selection_fingerprint
         || artifact.scope().provider_id != resolved_model.provider_id
         || artifact.scope().model_id != resolved_model.model_id
@@ -1252,27 +1267,14 @@ fn restore_replay(
             }),
         );
     }
-    if resolved_model.selection != binding.selection {
-        let disposition = if resolved_model.selection.model == binding.selection.model {
-            ReplayDisposition::DiscardedForeignVariant {
-                found: resolved_model.selection.variant.clone(),
-                expected: binding.selection.variant.clone(),
-            }
-        } else {
-            ReplayDisposition::DiscardedForeignModelSelection {
-                found: resolved_model.selection.clone(),
-                expected: binding.selection.clone(),
-            }
-        };
-        return (None, Some(disposition));
-    }
-    if artifact.selection_fingerprint().as_str() != binding.selection_fingerprint.as_str() {
+    // Exact fingerprints validate the persisted turn above; current replay
+    // eligibility is model-scoped so variants share their native history.
+    if resolved_model.selection.model != binding.selection.model {
         return (
             None,
-            Some(ReplayDisposition::DiscardedInvalidPayload {
-                reason: safe_replay_reason(
-                    "native replay selection fingerprint no longer matches the frozen binding",
-                ),
+            Some(ReplayDisposition::DiscardedForeignModelSelection {
+                found: resolved_model.selection.clone(),
+                expected: binding.selection.clone(),
             }),
         );
     }
@@ -1462,12 +1464,20 @@ fn restore_turn_with_store(
         .map_or((None, None), |artifact| {
             restore_replay(artifact, resolved_model, binding)
         });
+    // A model switch may project normalized reasoning only when the target
+    // declares support for replaying provider-authoritative reasoning.
+    let preserve_reasoning = resolved_model.selection.model == binding.selection.model
+        || binding.descriptor.capabilities.replay.reasoning;
     Ok((
         CompletedTurn {
             message: AssistantMessage {
                 content: turn
                     .content
                     .iter()
+                    .filter(|part| {
+                        preserve_reasoning
+                            || !matches!(part, PersistedAssistantPart::Reasoning { .. })
+                    })
                     .map(|part| restore_assistant_part_with_store(part, store))
                     .collect::<Result<_, _>>()?,
                 provider_options: turn.provider_options.clone(),
@@ -1526,16 +1536,17 @@ mod tests {
     use cookie_agent_protocol::{
         AgentMdEntry, ArtifactReference, AssistantToolCallRef, ContextCheckpoint,
         ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
-        DelegatedContextRole, DelegatedContextTurn, EventPayload, InternalAgentInvocationId,
-        InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey,
-        ModelSelection, NativeContextScope, NativeReplayArtifact, OperationFingerprint,
-        PermissionAction, PersistedAssistantPart, PersistedModelTurn, PersistedToolResult,
-        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
-        ProviderModelId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SafeDisplayText,
-        SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation,
-        ToolCallStart, ToolCallTermination, ToolEmittedContent, ToolEmittedMessage,
-        ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome, Usage,
+        DelegatedContextRole, DelegatedContextTurn, EventPayload, FrozenModelBinding,
+        InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
+        ModelFinishReason, ModelKey, ModelSelection, NativeContextScope, NativeReplayArtifact,
+        OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
+        PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
+        SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId,
+        ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
+        ToolEmittedMessage, ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome,
+        Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -1739,7 +1750,7 @@ mod tests {
     }
     use crate::{
         ArtifactStore,
-        test_support::{model_binding as binding, variant_model_binding},
+        test_support::{model_binding as binding, model_binding_named, variant_model_binding},
     };
 
     fn event(seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
@@ -1752,6 +1763,84 @@ mod tests {
             timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
             payload,
         }
+    }
+
+    fn replay_turn_event(binding: &FrozenModelBinding) -> StoredEvent {
+        let resolved = wire_model(binding);
+        let artifact = NativeReplayArtifact::new(
+            SafeCode::new(binding.descriptor.adapter_id.as_str()).expect("adapter id"),
+            resolved.selection_fingerprint.clone(),
+            NativeContextScope {
+                provider_id: resolved.provider_id.clone(),
+                model_id: resolved.model_id.clone(),
+                resource_id: SafeDisplayText::new("resource").expect("resource"),
+            },
+            serde_json::json!({"opaque": true}),
+        )
+        .expect("artifact");
+        event(
+            1,
+            RunId::new_v7(),
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![
+                        PersistedAssistantPart::Reasoning {
+                            text: "historical reasoning".into(),
+                            metadata: None,
+                        },
+                        PersistedAssistantPart::Text {
+                            text: "answer".into(),
+                            metadata: None,
+                        },
+                    ],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: Some(artifact),
+                },
+                warnings: Vec::new(),
+            },
+        )
+    }
+
+    fn reasoning_replay_binding(model_id: &str) -> FrozenModelBinding {
+        let mut binding = model_binding_named(model_id);
+        binding
+            .descriptor
+            .capabilities
+            .features
+            .insert(oven_sdk::Capability::REASONING);
+        binding.descriptor.capabilities.replay.reasoning = true;
+        binding
+    }
+
+    fn switched_context(current: &FrozenModelBinding) -> super::ModelContext {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let original = binding();
+        assemble_model_context(
+            &[replay_turn_event(&original)],
+            &store,
+            current,
+            "System prompt.",
+        )
+        .expect("switched context")
+    }
+
+    fn context_has_reasoning(context: &super::ModelContext) -> bool {
+        let HistoryTurn::Assistant(turn) = &context.history[1] else {
+            panic!("assistant turn");
+        };
+        turn.message
+            .content
+            .iter()
+            .any(|part| matches!(part, oven_sdk::AssistantPart::Reasoning(_)))
     }
 
     fn operation() -> PreparedOperationIdentity {
@@ -1831,7 +1920,7 @@ mod tests {
     }
 
     #[test]
-    fn native_replay_is_not_reused_across_variants() {
+    fn native_replay_is_reused_across_variants_with_the_same_protocol() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
         let base = binding();
@@ -1872,48 +1961,203 @@ mod tests {
             },
         )];
         let variant = variant_model_binding();
+        assert_ne!(base.selection_fingerprint, variant.selection_fingerprint);
+        assert_eq!(base.selection.model, variant.selection.model);
         let context = assemble_model_context(&events, &store, &variant, "System prompt.")
-            .expect("foreign variant falls back to normalized history");
+            .expect("same-protocol variant reuses native history");
         let oven_sdk::HistoryTurn::Assistant(turn) = &context.history[1] else {
             panic!("assistant turn");
         };
-        assert!(turn.finish.native_replay.is_none());
-        assert!(matches!(
-            &context.replay_decisions[0].disposition,
-            ReplayDisposition::DiscardedForeignVariant { found, expected }
-                if found.is_none() && expected.as_ref().is_some_and(|variant| variant.as_str() == "fast")
-        ));
+        let replay = turn.finish.native_replay.as_ref().expect("native replay");
+        assert_eq!(
+            replay.scope().model_id,
+            variant.descriptor.identity.model_id
+        );
+        assert!(context.replay_decisions.is_empty());
         let merged = replay_decisions_with_preflight(
-            &[
-                OvenReplayDecision {
-                    history_index: 1,
-                    disposition: OvenReplayDisposition::NoArtifact,
-                },
-                OvenReplayDecision {
-                    history_index: 1,
-                    disposition: OvenReplayDisposition::ReconstructedNormalized,
-                },
-            ],
+            &[OvenReplayDecision {
+                history_index: 1,
+                disposition: OvenReplayDisposition::Replayed,
+            }],
             &variant,
             &context.replay_decisions,
         );
         assert!(matches!(
             merged.as_slice(),
-            [
-                cookie_agent_protocol::ReplayDecision {
-                    disposition: ReplayDisposition::DiscardedForeignVariant { .. },
-                    ..
-                },
-                cookie_agent_protocol::ReplayDecision {
-                    disposition: ReplayDisposition::ReconstructedNormalizedHistory,
-                    ..
-                }
-            ]
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::Replayed,
+                ..
+            }]
         ));
     }
 
     #[test]
-    fn exact_foreign_adapter_is_recorded_without_generic_conversion() {
+    fn native_replay_with_adapter_mismatching_persisted_turn_is_discarded() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let base = binding();
+        let resolved = wire_model(&base);
+        // The artifact matches the CURRENT binding's adapter, but the
+        // persisted turn was recorded under a different adapter: the payload
+        // must never be exposed to an adapter other than the recorded one.
+        let artifact = NativeReplayArtifact::new(
+            SafeCode::new(base.descriptor.adapter_id.as_str()).expect("adapter id"),
+            resolved.selection_fingerprint.clone(),
+            NativeContextScope {
+                provider_id: resolved.provider_id.clone(),
+                model_id: resolved.model_id.clone(),
+                resource_id: SafeDisplayText::new("resource").expect("resource"),
+            },
+            serde_json::json!({"opaque": true}),
+        )
+        .expect("artifact");
+        let mut persisted_resolved = resolved;
+        persisted_resolved.adapter_id = cookie_agent_protocol::AdaptorId::Anthropic;
+        let events = vec![event(
+            1,
+            RunId::new_v7(),
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: persisted_resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::Text {
+                        text: "answer".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: Some(artifact),
+                },
+                warnings: Vec::new(),
+            },
+        )];
+        let context = assemble_model_context(&events, &store, &base, "System prompt.")
+            .expect("mismatched persisted adapter discards artifact");
+        let oven_sdk::HistoryTurn::Assistant(turn) = &context.history[1] else {
+            panic!("assistant turn");
+        };
+        assert!(turn.finish.native_replay.is_none());
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedInvalidPayload { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn model_switch_to_reasoning_replay_target_keeps_normalized_reasoning() {
+        let context = switched_context(&reasoning_replay_binding("fallback-zero"));
+        let HistoryTurn::Assistant(turn) = &context.history[1] else {
+            panic!("assistant turn");
+        };
+        assert!(turn.finish.native_replay.is_none());
+        assert!(context_has_reasoning(&context));
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn model_switch_to_non_reasoning_replay_target_discards_reasoning() {
+        let context = switched_context(&model_binding_named("fallback-zero"));
+        let HistoryTurn::Assistant(turn) = &context.history[1] else {
+            panic!("assistant turn");
+        };
+        assert!(turn.finish.native_replay.is_none());
+        assert!(!context_has_reasoning(&context));
+        assert!(
+            turn.message
+                .content
+                .iter()
+                .any(|part| matches!(part, oven_sdk::AssistantPart::Text(_)))
+        );
+    }
+
+    #[test]
+    fn cross_protocol_reasoning_replay_target_keeps_normalized_reasoning() {
+        let mut current = reasoning_replay_binding("fallback-zero");
+        current.descriptor.adapter_id = AdapterId::new("anthropic");
+        let context = switched_context(&current);
+        assert!(context_has_reasoning(&context));
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn cross_protocol_non_reasoning_target_discards_reasoning() {
+        let mut current = model_binding_named("fallback-zero");
+        current.descriptor.adapter_id = AdapterId::new("other-protocol");
+        let context = switched_context(&current);
+        assert!(!context_has_reasoning(&context));
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn cross_provider_reasoning_replay_target_keeps_normalized_reasoning() {
+        let mut current = reasoning_replay_binding("fallback-zero");
+        let provider_id = ProviderId::new("other").expect("provider");
+        current.selection.model = ModelKey::new(
+            provider_id.clone(),
+            current.selection.model.model_id().clone(),
+        )
+        .expect("model key");
+        current.descriptor.identity.provider_id = oven_sdk::ProviderId::new(provider_id.as_str());
+        let context = switched_context(&current);
+        assert!(context_has_reasoning(&context));
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn cross_provider_non_reasoning_target_discards_reasoning() {
+        let mut current = model_binding_named("fallback-zero");
+        let provider_id = ProviderId::new("other").expect("provider");
+        current.selection.model = ModelKey::new(
+            provider_id.clone(),
+            current.selection.model.model_id().clone(),
+        )
+        .expect("model key");
+        current.descriptor.identity.provider_id = oven_sdk::ProviderId::new(provider_id.as_str());
+        let context = switched_context(&current);
+        assert!(!context_has_reasoning(&context));
+        assert!(matches!(
+            context.replay_decisions.as_slice(),
+            [cookie_agent_protocol::ReplayDecision {
+                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn cross_protocol_native_replay_is_discarded() {
         let binding = binding();
         let resolved = wire_model(&binding);
         let artifact = NativeReplayArtifact::new(
@@ -2000,11 +2244,11 @@ mod tests {
     }
 
     #[test]
-    fn foreign_model_selection_discards_without_aborting_history_restore() {
+    fn cross_provider_native_replay_is_discarded() {
         let binding = binding();
         let current = wire_model(&binding);
         let provider_id = ProviderId::new("other").expect("provider");
-        let model_id = ProviderModelId::new("model").expect("model");
+        let model_id = current.model_id.clone();
         let selection = ModelSelection {
             model: ModelKey::new(provider_id.clone(), model_id.clone()).expect("model key"),
             variant: None,
