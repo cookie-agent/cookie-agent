@@ -313,6 +313,7 @@ pub(super) enum HoverTarget {
     QueueEntry(usize),
     ProviderField(ProviderFormFocus),
     ProviderSubmit,
+    ProviderCancel,
 }
 
 /// Per-frame hit targets built from the same geometry and transcript layout
@@ -346,6 +347,7 @@ pub(super) struct UiHitMap {
     pub(super) event_level_filter: Option<Rect>,
     pub(super) provider_fields: Vec<ProviderFieldHit>,
     pub(super) provider_submit: Option<Rect>,
+    pub(super) provider_cancel: Option<Rect>,
 }
 
 struct BottomBarRender {
@@ -3620,6 +3622,9 @@ impl App {
             if self.hit_map.provider_submit.is_some_and(over) {
                 return Some(HoverTarget::ProviderSubmit);
             }
+            if self.hit_map.provider_cancel.is_some_and(over) {
+                return Some(HoverTarget::ProviderCancel);
+            }
             if let Some(hit) = self
                 .hit_map
                 .provider_fields
@@ -3775,6 +3780,11 @@ impl App {
             }
             HoverTarget::ProviderSubmit => {
                 if let Some(rect) = self.hit_map.provider_submit {
+                    patch(frame, rect, fill_style);
+                }
+            }
+            HoverTarget::ProviderCancel => {
+                if let Some(rect) = self.hit_map.provider_cancel {
                     patch(frame, rect, fill_style);
                 }
             }
@@ -3942,6 +3952,14 @@ impl App {
                 .is_some_and(|rect| contains(rect, column, row))
             {
                 self.dispatch_provider_connect();
+                return;
+            }
+            if self
+                .hit_map
+                .provider_cancel
+                .is_some_and(|rect| contains(rect, column, row))
+            {
+                self.cancel_connect_form();
                 return;
             }
             if let Some(hit) = self
@@ -4142,7 +4160,9 @@ impl App {
             ProviderFormFocus::Setup(index) => {
                 form.setup.get_mut(index).map(|field| &mut field.input)
             }
-            ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => None,
+            ProviderFormFocus::AuthMethod
+            | ProviderFormFocus::Submit
+            | ProviderFormFocus::Cancel => None,
         };
         if let Some(editor) = editor {
             editor.state_mut().set_cursor_from_display_position(
@@ -4498,7 +4518,9 @@ impl App {
                             .input
                             .insert_owned(std::mem::take(&mut *sanitized));
                     }
-                    ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
+                    ProviderFormFocus::AuthMethod
+                    | ProviderFormFocus::Submit
+                    | ProviderFormFocus::Cancel => {}
                 }
             }
             return;
@@ -4789,9 +4811,7 @@ impl App {
 
     fn handle_connect_setup_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
-            self.clear_connect_secrets();
-            self.modal = Modal::None;
-            self.status = "Provider connection cancelled; credentials were cleared.".into();
+            self.cancel_connect_form();
             return;
         }
         if key.code == KeyCode::Char('d')
@@ -4815,10 +4835,14 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::BackTab => form.move_focus(true),
             KeyCode::Down | KeyCode::Tab => form.move_focus(false),
-            // Enter submits from wherever focus is — the same path as the
-            // Submit button. Traversal is Tab/Down-only; validation
-            // failures keep the modal and the focus where they are.
-            KeyCode::Enter => self.dispatch_provider_connect(),
+            // Enter activates the focused button and submits from any other
+            // focus — the same path as the Submit button. Traversal is
+            // Tab/Down-only; validation failures keep the modal and the
+            // focus where they are.
+            KeyCode::Enter => match form.focus() {
+                ProviderFormFocus::Cancel => self.cancel_connect_form(),
+                _ => self.dispatch_provider_connect(),
+            },
             KeyCode::Left if form.focus() == ProviderFormFocus::AuthMethod => {
                 form.cycle_auth_method(true);
             }
@@ -4837,9 +4861,19 @@ impl App {
                     form.error = None;
                     edit_credential_input(&mut form.setup[index].input, key);
                 }
-                ProviderFormFocus::AuthMethod | ProviderFormFocus::Submit => {}
+                ProviderFormFocus::AuthMethod
+                | ProviderFormFocus::Submit
+                | ProviderFormFocus::Cancel => {}
             },
         }
+    }
+
+    /// Abort the connect form exactly like Escape: wipe every secret,
+    /// dismiss the modal, and report the cancellation.
+    fn cancel_connect_form(&mut self) {
+        self.clear_connect_secrets();
+        self.modal = Modal::None;
+        self.status = "Provider connection cancelled; credentials were cleared.".into();
     }
 
     fn handle_connect_error_key(&mut self, key: KeyEvent) {
@@ -7079,9 +7113,9 @@ impl App {
         );
         let focus = form.focus();
         let instructions = if form.can_disconnect {
-            "Tab/Down: next · Shift-Tab/Up: previous · Enter: submit · Esc: cancel · Ctrl-D: disconnect"
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: activate/submit · Esc: cancel · Ctrl-D: disconnect"
         } else {
-            "Tab/Down: next · Shift-Tab/Up: previous · Enter: submit · Esc: cancel"
+            "Tab/Down: next · Shift-Tab/Up: previous · Enter: activate/submit · Esc: cancel"
         };
         // A validation failure renders inline above the fields instead of
         // taking over the panel; editing any value clears it.
@@ -7234,30 +7268,38 @@ impl App {
             });
             y = y.saturating_add(height);
         }
-        let submit_area = Rect::new(
-            inner.x,
-            y,
-            inner.width,
-            3.min(inner.bottom().saturating_sub(y)),
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "Enter to {} with {auth_label}",
-                if form.reconnect {
-                    "reconnect/update"
-                } else {
-                    "connect"
-                }
-            ))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(self.theme.input_border(focus == ProviderFormFocus::Submit))
-                    .title("Submit"),
-            ),
-            submit_area,
-        );
+        let submit_label = if form.reconnect {
+            "Reconnect"
+        } else {
+            "Connect"
+        };
+        let buttons_height = 3.min(inner.bottom().saturating_sub(y));
+        // Two compact buttons centered as one group, never a panel-wide
+        // strip. Width is the label plus a one-column border each side; a
+        // two-cell gutter separates the frames.
+        let button_width = |text: &str| {
+            (u16::try_from(text.len()).unwrap_or(u16::MAX))
+                .saturating_add(4)
+                .min(inner.width)
+        };
+        let submit_width = button_width(submit_label);
+        let cancel_width = button_width("Cancel");
+        let group_width = submit_width.saturating_add(2).saturating_add(cancel_width);
+        let group_x = inner
+            .x
+            .saturating_add(inner.width.saturating_sub(group_width) / 2);
+        let submit_area = Rect::new(group_x, y, submit_width, buttons_height);
+        let cancel_x = group_x
+            .saturating_add(submit_width)
+            .saturating_add(2)
+            .min(inner.right().saturating_sub(cancel_width));
+        let cancel_area = Rect::new(cancel_x, y, cancel_width, buttons_height);
+        let submit_style = self.theme.input_border(focus == ProviderFormFocus::Submit);
+        let cancel_style = self.theme.input_border(focus == ProviderFormFocus::Cancel);
+        render_connect_button(frame, submit_area, submit_label, submit_style);
+        render_connect_button(frame, cancel_area, "Cancel", cancel_style);
         self.hit_map.provider_submit = Some(submit_area);
+        self.hit_map.provider_cancel = Some(cancel_area);
     }
 
     fn render_connect_error(&mut self, frame: &mut ratatui::Frame, area: Rect) {
@@ -7917,6 +7959,33 @@ fn inner_rect(area: Rect) -> Rect {
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     )
+}
+
+/// One compact connect-form action button: a border-colored frame sized to
+/// its label so it reads as a button, not a panel-wide strip. The label sits
+/// on the middle row (or the only row when the panel is vertically cramped).
+fn render_connect_button(frame: &mut ratatui::Frame, area: Rect, label: &str, style: Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    if area.height > 1 {
+        frame.render_widget(
+            Block::default().borders(Borders::ALL).border_style(style),
+            area,
+        );
+        let label_area = Rect::new(
+            area.x.saturating_add(1),
+            area.y.saturating_add(1),
+            area.width.saturating_sub(2),
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(label.to_owned(), style)),
+            label_area,
+        );
+    } else {
+        frame.render_widget(Paragraph::new(Span::styled(label.to_owned(), style)), area);
+    }
 }
 
 /// Paint an overlay panel: reset every cell like `Clear` (a styled `Block`

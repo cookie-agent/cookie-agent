@@ -68,6 +68,7 @@ pub(crate) enum ProviderFormFocus {
     Credential(usize),
     Setup(usize),
     Submit,
+    Cancel,
 }
 
 impl ProviderForm {
@@ -164,7 +165,11 @@ impl ProviderForm {
         if index < self.setup.len() {
             return ProviderFormFocus::Setup(index);
         }
-        ProviderFormFocus::Submit
+        index -= self.setup.len();
+        if index == 0 {
+            return ProviderFormFocus::Submit;
+        }
+        ProviderFormFocus::Cancel
     }
 
     pub(crate) fn move_focus(&mut self, backward: bool) {
@@ -184,7 +189,8 @@ impl ProviderForm {
             ProviderFormFocus::AuthMethod => 0,
             ProviderFormFocus::Credential(index) => offset + index,
             ProviderFormFocus::Setup(index) => offset + self.secrets.len() + index,
-            ProviderFormFocus::Submit => self.focus_count().saturating_sub(1),
+            ProviderFormFocus::Submit => self.focus_count().saturating_sub(2),
+            ProviderFormFocus::Cancel => self.focus_count().saturating_sub(1),
         }
         .min(self.focus_count().saturating_sub(1));
     }
@@ -234,7 +240,8 @@ impl ProviderForm {
     }
 
     fn focus_count(&self) -> usize {
-        usize::from(self.has_auth_selector()) + self.secrets.len() + self.setup.len() + 1
+        // The trailing action row contributes two stops: Submit and Cancel.
+        usize::from(self.has_auth_selector()) + self.secrets.len() + self.setup.len() + 2
     }
 
     fn wipe_auth_values(&mut self) {

@@ -9632,10 +9632,20 @@ mod tests {
         frame_rows(&mut app, 120, 40);
 
         // Every rendered control registered a hit: the auth selector, one
-        // credential, two setup fields, and the submit box.
+        // credential, two setup fields, and both action buttons.
         let fields = app.hit_map.provider_fields.clone();
         assert_eq!(fields.len(), 4);
         let submit = app.hit_map.provider_submit.expect("submit hit");
+        let cancel = app.hit_map.provider_cancel.expect("cancel hit");
+        // The buttons are compact: sized to their labels, side by side on
+        // one row with a gutter between frames, never a panel-wide strip.
+        assert_eq!(submit.y, cancel.y);
+        assert_eq!(submit.height, cancel.height);
+        assert!(
+            cancel.x > submit.x + submit.width,
+            "gutter: {submit:?} {cancel:?}"
+        );
+        assert!(submit.width < 20, "submit stays compact: {submit:?}");
 
         // Hovering a control resolves to its own target.
         let credential = fields
@@ -9650,6 +9660,10 @@ mod tests {
         assert_eq!(
             app.hover_target_at(submit.x + 1, submit.y + 1),
             Some(HoverTarget::ProviderSubmit)
+        );
+        assert_eq!(
+            app.hover_target_at(cancel.x + 1, cancel.y + 1),
+            Some(HoverTarget::ProviderCancel)
         );
 
         // Clicking the auth selector cycles the method, mirroring Enter, and
@@ -9689,6 +9703,55 @@ mod tests {
             ProviderFormFocus::Credential(0)
         );
         assert!(app.provider_form.as_ref().expect("form").error.is_some());
+    }
+
+    #[tokio::test]
+    async fn connect_form_cancel_button_cancels_by_click_focus_and_enter() {
+        let before = credential_wipe_count();
+        let mut app = test_app().await;
+        app.begin_provider_form(multi_auth_provider());
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "cancelled-secret").await;
+        frame_rows(&mut app, 120, 40);
+        let cancel = app.hit_map.provider_cancel.expect("cancel hit");
+
+        // Clicking Cancel does exactly what Escape does: wipe the secrets,
+        // dismiss the modal, and keep the form gone.
+        app.handle_click(cancel.x + 1, cancel.y + 1).await;
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.provider_form.is_none());
+        assert!(credential_wipe_count() > before);
+        assert!(app.status.contains("cancelled"));
+
+        // Cancel is the final Tab stop, after Submit…
+        let mut app = test_app().await;
+        app.begin_provider_form(multi_auth_provider());
+        let form = app.provider_form.as_mut().expect("form");
+        form.set_focus(ProviderFormFocus::Submit);
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").focus(),
+            ProviderFormFocus::Cancel
+        );
+        // …and Shift-Tab walks back to Submit.
+        app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .await;
+        assert_eq!(
+            app.provider_form.as_ref().expect("form").focus(),
+            ProviderFormFocus::Submit
+        );
+
+        // Enter on the focused Cancel button aborts like Escape, without
+        // dispatching a connect.
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.provider_form.is_none());
+        assert!(app.provider_operations.is_empty());
     }
 
     #[tokio::test]
@@ -10209,7 +10272,8 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         let submit = rendered_frame(&mut app, 140, 32);
-        assert!(submit.contains("reconnect/update"));
+        assert!(submit.contains("Reconnect"));
+        assert!(submit.contains("Cancel"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
@@ -10385,8 +10449,9 @@ mod tests {
             .await;
         type_input(&mut app, "us-east-1").await;
         let submit = rendered_frame(&mut app, 140, 32);
-        assert!(submit.contains("Enter to connect"));
-        assert!(!submit.contains("Enter to reconnect/update"));
+        assert!(submit.contains("Connect"));
+        assert!(submit.contains("Cancel"));
+        assert!(!submit.contains("Reconnect"));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         settle_recording().await;
