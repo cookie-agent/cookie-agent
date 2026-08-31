@@ -334,6 +334,10 @@ impl Default for BashTool {
 
 #[async_trait]
 impl ToolProvider for BashTool {
+    fn provider_id(&self) -> &'static str {
+        "builtin.bash"
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),

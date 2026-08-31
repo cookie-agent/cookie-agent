@@ -48,7 +48,7 @@ use tempfile::TempDir;
 
 use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
-    PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
+    PreparedTool, PromptSection, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, TurnAgentContext,
 };
 
@@ -1121,6 +1121,10 @@ struct TestStreamingBashExecutor {
 
 #[async_trait]
 impl ToolProvider for TestStreamingBashProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.streaming_bash"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),
@@ -1336,6 +1340,28 @@ async fn ordinary_delegate_rejects_forged_staged_skill_prefix() {
 
 #[async_trait]
 impl ToolProvider for TestDelegateProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.delegate"
+    }
+
+    fn prompt_sections(&self, ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
+        let Some(targets) = ctx.prompt_delegate_targets() else {
+            return Ok(Vec::new());
+        };
+        let targets = targets.collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut body = String::from("Available subagents:");
+        for (id, description) in targets {
+            body.push_str(&format!("\n- {id}: {description}"));
+        }
+        Ok(vec![PromptSection {
+            title: "Available subagents".into(),
+            body,
+        }])
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let targets = self
             .engine
@@ -1528,6 +1554,10 @@ struct TestWriteExecutor {
 
 #[async_trait]
 impl ToolProvider for TestWriteProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.write"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),
@@ -1639,6 +1669,10 @@ struct TestMediaReadExecutor {
 
 #[async_trait]
 impl ToolProvider for TestMediaReadProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.media_read"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),
@@ -1776,6 +1810,10 @@ struct TestRehydrationReadExecutor {
 
 #[async_trait]
 impl ToolProvider for TestRehydrationReadProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.rehydration_read"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),
@@ -1916,12 +1954,86 @@ impl PreparedExecutor for TestRehydrationReadExecutor {
 
 struct TestToolDefinitionProvider;
 
+#[derive(Clone)]
+struct TestPromptProvider {
+    id: &'static str,
+    sections: Arc<std::sync::Mutex<Vec<PromptSection>>>,
+}
+
+impl TestPromptProvider {
+    fn new(id: &'static str, sections: Vec<PromptSection>) -> Self {
+        Self {
+            id,
+            sections: Arc::new(std::sync::Mutex::new(sections)),
+        }
+    }
+
+    fn replace_sections(&self, sections: Vec<PromptSection>) {
+        *self
+            .sections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sections;
+    }
+}
+
+#[async_trait]
+impl ToolProvider for TestPromptProvider {
+    fn provider_id(&self) -> &'static str {
+        self.id
+    }
+
+    fn prompt_sections(&self, _ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
+        Ok(self
+            .sections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone())
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(Vec::new())
+    }
+
+    fn get_permission_name(_tool_name: &str) -> Result<&'static str, ToolError> {
+        Err(ToolError::execution("prompt-only provider has no tools"))
+    }
+
+    fn get_permission_resource(
+        &self,
+        _tool_name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Err(ToolError::execution("prompt-only provider has no tools"))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Err(ToolError::execution("prompt-only provider has no tools"))
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        _call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        Err(ToolError::execution("prompt-only provider has no tools"))
+    }
+}
+
 struct OrderedToolDefinitionProvider {
+    id: &'static str,
     tools: Vec<(&'static str, &'static str)>,
 }
 
 #[async_trait]
 impl ToolProvider for OrderedToolDefinitionProvider {
+    fn provider_id(&self) -> &'static str {
+        self.id
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(self
             .tools
@@ -1979,6 +2091,10 @@ impl ToolProvider for OrderedToolDefinitionProvider {
 
 #[async_trait]
 impl ToolProvider for TestToolDefinitionProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.definition"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok([
             ("read", "read"),
@@ -3497,7 +3613,426 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
 
     let requests = captured.await.unwrap();
     assert_eq!(requests.len(), 3);
+    let parent_prompt = request_body(&requests[0]).to_string();
+    assert!(parent_prompt.contains("Available subagents:"));
+    assert!(parent_prompt.contains("- sub-worker: Wildcard worker"));
+    assert!(parent_prompt.contains("tool_instructions provider=\\\"test.delegate\\\""));
+    let child_prompt = request_body(&requests[1]).to_string();
+    assert!(!child_prompt.contains("Available subagents:"));
+    assert!(!child_prompt.contains("tool_instructions"));
     assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
+    fixture.engine.shutdown().await;
+}
+
+#[test]
+fn provider_registration_rejects_duplicate_provenance_ids() {
+    let fixture = fixture();
+    let duplicate_options = EngineOptions {
+        data_dir: fixture._directory.path().join("duplicate-provider-data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&fixture.manager),
+        tools: vec![
+            Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
+            Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
+        ],
+    };
+    let startup_error = match Engine::open(duplicate_options) {
+        Ok(_) => panic!("duplicate startup provider ID must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(startup_error, EngineError::MissingTool(_)));
+    assert!(
+        startup_error
+            .to_string()
+            .contains("tool provider ID `test.duplicate` is already registered")
+    );
+
+    let provider: Arc<dyn ToolProvider> =
+        Arc::new(TestPromptProvider::new("test.runtime", Vec::new()));
+    fixture
+        .engine
+        .try_register_tool_provider(Arc::clone(&provider))
+        .expect("first provider registration");
+    let duplicate_error = fixture
+        .engine
+        .try_register_tool_provider(provider)
+        .expect_err("duplicate runtime provider ID must fail");
+    assert!(matches!(duplicate_error, EngineError::MissingTool(_)));
+    assert!(
+        duplicate_error
+            .to_string()
+            .contains("tool provider ID `test.runtime` is already registered")
+    );
+
+    for reserved_id in ["mcp", "plugin"] {
+        let error = fixture
+            .engine
+            .try_register_tool_provider(Arc::new(TestPromptProvider::new(reserved_id, Vec::new())))
+            .expect_err("startup provider ID must remain reserved");
+        assert!(matches!(error, EngineError::MissingTool(_)));
+        assert!(
+            error.to_string().contains(&format!(
+                "tool provider ID `{reserved_id}` is already registered"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    for input in ["first prompt run", "same prompt run", "changed prompt run"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                input,
+                scripted_text_body("done"),
+            ))
+            .expect("scripted response");
+    }
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let first_provider = TestPromptProvider::new(
+        "test.first&local",
+        vec![PromptSection {
+            title: "First".into(),
+            body: "First section\r\nnormalized.".into(),
+        }],
+    );
+    let second_provider = TestPromptProvider::new(
+        "test.second",
+        vec![PromptSection {
+            title: "Second".into(),
+            body: "Second section.".into(),
+        }],
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(first_provider.clone()));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(second_provider.clone()));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+
+    for (index, input) in ["first prompt run", "same prompt run", "changed prompt run"]
+        .into_iter()
+        .enumerate()
+    {
+        if index == 2 {
+            second_provider.replace_sections(vec![PromptSection {
+                title: "Second".into(),
+                body: "Changed second section.".into(),
+            }]);
+        }
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("tool-prompt-{index}")).unwrap(),
+                    selection: selection.clone(),
+                    input: input.into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("tool prompt run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let snapshots = (0..3)
+        .map(|index| {
+            projection
+                .runs
+                .values()
+                .find(|run| run.client_run_id.as_str() == format!("tool-prompt-{index}"))
+                .expect("run projection")
+                .agent
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    let first_prompt = &snapshots[0].composed_prompt;
+    let first_position = first_prompt.find("First section\nnormalized.").unwrap();
+    let second_position = first_prompt.find("Second section.").unwrap();
+    assert!(first_position < second_position);
+    assert!(first_prompt.contains("provider=\"test.first&amp;local\""));
+    assert_eq!(snapshots[0].composed_prompt, snapshots[1].composed_prompt);
+    assert_eq!(
+        snapshots[0].prompt_fingerprint,
+        snapshots[1].prompt_fingerprint
+    );
+    assert_ne!(
+        snapshots[1].prompt_fingerprint,
+        snapshots[2].prompt_fingerprint
+    );
+    assert_eq!(
+        snapshots[0].prompt_fingerprint,
+        Sha256Digest::of_bytes(snapshots[0].composed_prompt.as_bytes())
+    );
+    assert!(snapshots[0].composed_prompt.contains("Second section."));
+    assert!(
+        !snapshots[0]
+            .composed_prompt
+            .contains("Changed second section.")
+    );
+
+    let requests = captured.await.expect("captured prompt requests");
+    assert_eq!(requests.len(), 3);
+    let first_request = request_body(&requests[0]).to_string();
+    assert!(first_request.contains("First section\\nnormalized."));
+    assert!(first_request.contains("Second section."));
+    let changed_request = request_body(&requests[2]).to_string();
+    assert!(changed_request.contains("Changed second section."));
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    let replayed = reopened.inner.store.get(session.session_id).unwrap();
+    let replayed_first = replayed
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "tool-prompt-0")
+        .expect("replayed first run");
+    assert_eq!(replayed_first.agent.composed_prompt, *first_prompt);
+    assert_eq!(
+        replayed_first.agent.prompt_fingerprint,
+        snapshots[0].prompt_fingerprint
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let primary = "---\ndescription: Prompt order agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  skill: allow\n---\nTest prompt.\n";
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            32_768,
+            None,
+            "openai-chat",
+        );
+    let skill_dir = fixture
+        ._directory
+        .path()
+        .join(".cookie-agent/skills/order-skill");
+    fs::create_dir_all(&skill_dir).expect("skill directory");
+    write_private_test_file(
+        &skill_dir.join("SKILL.md"),
+        "---\nname: order-skill\ndescription: Order fixture skill\n---\nOrder skill body.\n",
+    );
+    fixture.config.skills =
+        cookie_agent_config::load_skill_roots(None, None, &[fixture._directory.path().to_owned()])
+            .expect("fixture skills");
+    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
+    reopen_with_interception_plugins(
+        &mut fixture,
+        vec![(
+            "prompt-tail".into(),
+            interception_plugin(
+                "prompt-tail",
+                &[
+                    ("FIXTURE_CAPABILITIES", capabilities.into()),
+                    (
+                        "FIXTURE_AGENT_BEFORE_RESULT",
+                        r#"{"append_to_system_prompt":"Plugin tail."}"#.into(),
+                    ),
+                ],
+            ),
+        )],
+    )
+    .await;
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestPromptProvider::new(
+            "test.order",
+            vec![PromptSection {
+                title: "Order".into(),
+                body: "Provider section.".into(),
+            }],
+        )));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("tool-prompt-order").unwrap(),
+                selection,
+                input: "check composition order".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("ordered composition run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let prompt = &projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "tool-prompt-order")
+        .expect("ordered run")
+        .agent
+        .composed_prompt;
+    let agent = prompt.find("Test prompt.").unwrap();
+    let provider = prompt.find("Provider section.").unwrap();
+    let skills = prompt.find("<available_skills>").unwrap();
+    let plugin = prompt.find("Plugin tail.").unwrap();
+    assert!(agent < provider && provider < skills && skills < plugin);
+    assert_eq!(
+        Sha256Digest::of_bytes(prompt.as_bytes()),
+        projection
+            .runs
+            .values()
+            .find(|run| run.client_run_id.as_str() == "tool-prompt-order")
+            .unwrap()
+            .agent
+            .prompt_fingerprint
+    );
+    captured.await.expect("captured ordered request");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_tool_prompt_sections_fail_run_admission() {
+    fn section(title: &str, body: String) -> PromptSection {
+        PromptSection {
+            title: title.into(),
+            body,
+        }
+    }
+
+    let cases = vec![
+        (
+            "section-budget",
+            vec![TestPromptProvider::new(
+                "builtin.test",
+                vec![section("oversized", "x".repeat(8 * 1024 + 1))],
+            )],
+            "body exceeds 8192 bytes",
+        ),
+        (
+            "provider-budget",
+            vec![TestPromptProvider::new(
+                "plugin:test",
+                vec![
+                    section("one", "x".repeat(6_000)),
+                    section("two", "x".repeat(6_000)),
+                    section("three", "x".repeat(6_000)),
+                ],
+            )],
+            "provider bodies exceed 16384 bytes",
+        ),
+        (
+            "total-budget",
+            ["test.one", "test.two", "test.three"]
+                .into_iter()
+                .map(|id| {
+                    TestPromptProvider::new(
+                        id,
+                        vec![
+                            section("one", "x".repeat(6_000)),
+                            section("two", "x".repeat(6_000)),
+                        ],
+                    )
+                })
+                .collect(),
+            "all provider bodies exceed 32768 bytes",
+        ),
+        (
+            "validation",
+            vec![TestPromptProvider::new(
+                "test.invalid",
+                vec![section("control", "bad\0body".into())],
+            )],
+            "disallowed control character",
+        ),
+    ];
+
+    for (name, providers, expected) in cases {
+        let (fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
+        for provider in providers {
+            fixture.engine.register_tool_provider(Arc::new(provider));
+        }
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        let error = fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("tool-prompt-error-{name}")).unwrap(),
+                    selection,
+                    input: "must not reach the model".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect_err("invalid section must reject admission");
+        assert!(
+            matches!(error, EngineError::ToolPrompt(_)),
+            "unexpected error: {error}"
+        );
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(
+            fixture
+                .engine
+                .inner
+                .store
+                .get(session.session_id)
+                .unwrap()
+                .runs
+                .is_empty()
+        );
+        fixture.engine.shutdown().await;
+    }
+
+    let primary = format!(
+        "---\ndescription: Prompt limit agent\nmode: primary\nenabled: true\nmodels: [{{ model: \"custom.test/group/model\", variant: base }}]\npermissions: {{}}\n---\n{}\n",
+        "x".repeat(121 * 1024)
+    );
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_and_primary_agent("http://127.0.0.1:9/v1", &primary);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestPromptProvider::new(
+            "test.composed_limit",
+            vec![section("maximum section", "x".repeat(8 * 1024))],
+        )));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let error = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("tool-prompt-composed-limit").unwrap(),
+                selection,
+                input: "must not reach the model".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect_err("composed prompt limit must reject admission");
+    assert!(
+        error
+            .to_string()
+            .contains("composed prompt exceeds 131072 bytes"),
+        "{error}"
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .runs
+            .is_empty()
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -6599,18 +7134,22 @@ fn published_tool_order_is_stable_across_registration_and_overlay_order() {
         let providers: Vec<Arc<dyn ToolProvider>> = if reversed {
             vec![
                 Arc::new(OrderedToolDefinitionProvider {
+                    id: "test.ordered_definition.middle",
                     tools: vec![("middle", "bash")],
                 }),
                 Arc::new(OrderedToolDefinitionProvider {
+                    id: "test.ordered_definition.edges",
                     tools: vec![("zeta", "read"), ("alpha", "write")],
                 }),
             ]
         } else {
             vec![
                 Arc::new(OrderedToolDefinitionProvider {
+                    id: "test.ordered_definition.edges",
                     tools: vec![("alpha", "write"), ("zeta", "read")],
                 }),
                 Arc::new(OrderedToolDefinitionProvider {
+                    id: "test.ordered_definition.middle",
                     tools: vec![("middle", "bash")],
                 }),
             ]
@@ -16131,6 +16670,10 @@ struct DivergentReadExecutor;
 
 #[async_trait]
 impl ToolProvider for DivergentReadProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.divergent_read"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),

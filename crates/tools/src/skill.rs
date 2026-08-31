@@ -88,6 +88,10 @@ impl PreparedExecutor for SkillExecutor {
 
 #[async_trait]
 impl ToolProvider for SkillTool {
+    fn provider_id(&self) -> &'static str {
+        "builtin.skill"
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         if !self
             .engine

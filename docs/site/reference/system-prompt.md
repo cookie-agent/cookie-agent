@@ -10,14 +10,17 @@ agent but is not copied into prompt text.
 For a root or delegated run, the engine composes the model request in this order:
 
 1. The selected agent document body becomes `AgentSnapshot.composed_prompt`.
-2. If skills are visible to the model, a generated available-skills listing is
+2. Trusted in-process tool providers may append bounded behavioral-policy
+   sections. Sections retain provider provenance and update both prompt and
+   document fingerprints.
+3. If skills are visible to the model, a generated available-skills listing is
    appended to that prompt. The prompt and document fingerprints are updated.
-3. `agent_before_start` plugins run in configured order. A plugin can replace the
+4. `agent_before_start` plugins run in configured order. A plugin can replace the
    composed prompt or append an addendum, subject to the 128 KiB prompt limit.
    Each accepted change recomputes the prompt fingerprint.
-4. History assembly puts the final composed prompt in `history[0]` as the sole
+5. History assembly puts the final composed prompt in `history[0]` as the sole
    system turn.
-5. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
+6. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
    user turn. Loaded skill bodies follow as user turns, followed by normal
    session history.
 
@@ -30,13 +33,43 @@ needs current history.
 ## Fingerprints
 
 The document fingerprint covers the agent identity, strict frontmatter, and
-body. The prompt fingerprint covers prompt text only. Skill-listing and plugin
-composition update the effective fingerprints before `run_started` is persisted.
-Model-attempt events record the prompt fingerprint, and replay validation rejects
-attempt attribution that contradicts the frozen run snapshot.
+body. The prompt fingerprint covers prompt text only. Tool-provider sections,
+skill listings, and plugin composition update the effective fingerprints before
+`run_started` is persisted. Model-attempt events record the prompt fingerprint,
+and replay validation rejects attempt attribution that contradicts the frozen
+run snapshot.
 
 AGENTS.md context is intentionally excluded from the system-prompt fingerprint. It
 has its own durable event, provenance, and user-role boundary.
+
+## Tool-provider sections
+
+Reviewed in-process providers can contribute cross-tool behavioral policy at
+run admission. Each section is normalized, validated, and rendered with an
+engine-derived identity:
+
+```text
+<tool_instructions provider="builtin.delegate">
+Available subagents:
+- sub-fixer: Coder for anything that touches code
+</tool_instructions>
+```
+
+Provider registration order determines block order; declaration order determines
+section order within a provider. Bodies are limited to 8 KiB per section,
+16 KiB per provider, and 32 KiB across all providers. Any invalid content or
+overflow rejects run admission instead of truncating or omitting policy. The
+existing 128 KiB composed-prompt limit still applies.
+
+This channel is for durable behavioral policy that must survive compaction and
+carry system priority. Per-tool guidance remains in typed tool descriptions;
+reference material belongs in explicit user-role context. Built-in providers
+should use compiled-in stable text. Local in-process provider and plugin code is
+reviewed and trusted like other installed code.
+
+MCP providers are architecturally excluded. Remote MCP output remains delimited
+data and typed tool metadata; it cannot contribute durable system instructions,
+and no configuration switch enables that path.
 
 ## AGENTS.md context turn
 
@@ -84,8 +117,8 @@ the [prompt-caching configuration reference](configuration.md#prompt_caching).
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; optional skill listing and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
-| Delegated | Frozen delegated agent body; optional skill listing and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, loaded skill bodies, then session history |
+| Delegated | Frozen delegated agent body; optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns. |
 | Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 
 The built-in `approval`, `compaction`, and `title` prompts are each roughly 100
@@ -98,9 +131,11 @@ the built-in backend while retaining the same isolated invocation contract.
 The system prompt does not contain an environment dump, tool-schema prose, MCP
 server instructions, filesystem inventories, or generic operational boilerplate.
 Tools and MCP capabilities are represented by typed request definitions and
-permission policy. Runtime state belongs in events or request fields. The design
-is simple yet mighty: keep stable authority in a lean prompt, and put changing,
-attributed information in explicit context turns.
+permission policy. Runtime state belongs in events or request fields. The narrow
+exception is the bounded set of authored behavioral-policy sections from trusted
+local providers: reviewed local code supplies them, fingerprints cover them, and
+the admitted run freezes them. Changing, externally controlled, or redundant
+information remains in typed fields or explicit context turns.
 
 See [Agents](../guide/agents.md), [Events](events.md), and
 [Configuration](configuration.md).

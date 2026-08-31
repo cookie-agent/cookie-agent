@@ -1271,9 +1271,9 @@ impl McpRegistry {
     }
 
     pub(crate) fn reserve_provider(&self, provider: &dyn ToolProvider) -> Result<(), ToolError> {
-        let Ok(tools) = provider.tools_for_session(&SessionToolContext {
-            session: cookie_agent_protocol::SessionId::new_v7(),
-        }) else {
+        let Ok(tools) = provider.tools_for_session(&SessionToolContext::new(
+            cookie_agent_protocol::SessionId::new_v7(),
+        )) else {
             // Session-dependent providers are checked when they publish tools.
             return Ok(());
         };
@@ -2482,6 +2482,10 @@ impl ServerRuntime {
 
 #[async_trait]
 impl ToolProvider for McpRegistry {
+    fn provider_id(&self) -> &'static str {
+        "mcp"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(self
             .servers()
@@ -3456,9 +3460,7 @@ for line in sys.stdin:
         let server = registry.server("fixture").expect("fixture server");
         server.connect().await.expect("connect fixture");
         let specs = registry
-            .tools_for_session(&SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .expect("MCP tools");
         assert_eq!(specs.len(), 2);
         assert!(specs.iter().any(|tool| tool.name == "fixture_echo_text"));
@@ -3476,9 +3478,7 @@ for line in sys.stdin:
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let names = registry
-                    .tools_for_session(&SessionToolContext {
-                        session: SessionId::new_v7(),
-                    })
+                    .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
                     .expect("refreshed tools")
                     .into_iter()
                     .map(|tool| tool.name)
@@ -3496,6 +3496,18 @@ for line in sys.stdin:
         assert_eq!(error.output, "fixture failure");
         assert_eq!(error.metadata["mcp"]["is_error"], true);
         registry.shutdown().await;
+    }
+
+    #[test]
+    fn mcp_registry_has_no_system_prompt_contribution() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let registry = registry(&directory, McpServerSource::UserFile, false);
+        assert!(
+            registry
+                .prompt_sections(&SessionToolContext::new(SessionId::new_v7()))
+                .expect("default MCP prompt sections")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3682,9 +3694,7 @@ for line in sys.stdin:
         let registry = registry(&directory, McpServerSource::UserFile, true);
         assert!(
             registry
-                .tools_for_session(&SessionToolContext {
-                    session: SessionId::new_v7()
-                })
+                .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
                 .expect("initial tools")
                 .is_empty()
         );
@@ -3862,17 +3872,13 @@ for line in sys.stdin:
         registry.start_eager(&tokio::runtime::Handle::current());
         assert!(
             registry
-                .tools_for_session(&SessionToolContext {
-                    session: SessionId::new_v7(),
-                })
+                .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
                 .expect("tools before readiness")
                 .is_empty()
         );
         registry.await_eager_ready().await;
         let tools = registry
-            .tools_for_session(&SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .expect("tools after readiness");
         assert_eq!(tools.len(), 2);
         registry.shutdown().await;

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    DelegateInvocation, Engine, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall,
-    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    DelegateInvocation, Engine, PreparedExecutor, PreparedTool, PromptSection, SessionToolContext,
+    ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use cookie_agent_protocol::{
     AgentId, ApprovalResourceSource, PermissionAction, PersistedToolResult as ToolResult,
@@ -164,6 +164,31 @@ struct PreparedToolParts {
 
 #[async_trait]
 impl ToolProvider for DelegateToolProvider {
+    fn provider_id(&self) -> &'static str {
+        "builtin.delegate"
+    }
+
+    fn prompt_sections(&self, ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
+        let Some(targets) = ctx.prompt_delegate_targets() else {
+            return Ok(Vec::new());
+        };
+        let targets = targets.collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut body = String::from("Available subagents:");
+        for (id, description) in targets {
+            body.push_str("\n- ");
+            body.push_str(id.as_str());
+            body.push_str(": ");
+            body.push_str(description);
+        }
+        Ok(vec![PromptSection {
+            title: "Available subagents".into(),
+            body,
+        }])
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let targets = self.targets(ctx.session)?;
         Ok(if targets.is_empty() {

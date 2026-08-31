@@ -119,3 +119,9 @@ requested with a smaller limit.
 Delegation tools start, inspect, steer, and cancel owned subagent sessions.
 Skill tools load configured skill instructions for the current turn. Their
 availability and targets are derived from the frozen agent policy.
+
+When delegation is available, its provider also freezes the currently eligible
+target IDs and agent descriptions into the run's system prompt under
+`<tool_instructions provider="builtin.delegate">`. The list uses the same depth
+ceiling and enabled-target filtering as `delegate_subagent`; no section is added
+when no target is available.

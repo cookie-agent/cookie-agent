@@ -83,6 +83,10 @@ impl ReadToolResultProvider {
 
 #[async_trait]
 impl ToolProvider for ReadToolResultProvider {
+    fn provider_id(&self) -> &'static str {
+        "builtin.read_tool_result"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![Self::tool_spec()])
     }

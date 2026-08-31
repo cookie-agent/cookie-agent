@@ -331,6 +331,10 @@ impl Default for BuiltinTools {
 
 #[async_trait]
 impl ToolProvider for BuiltinTools {
+    fn provider_id(&self) -> &'static str {
+        "builtin.tools"
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let mut tools = Vec::new();
         tools.extend(self.read.tools_for_session(ctx)?);
@@ -437,9 +441,7 @@ mod tests {
     #[test]
     fn self_paginating_tools_declare_truncation_opt_out() {
         let read = ReadTool::new("/tmp")
-            .tools_for_session(&SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .unwrap()
             .remove(0);
         assert_eq!(
@@ -460,9 +462,7 @@ mod tests {
     fn builtin_tools_do_not_expose_grep_or_glob() {
         let tools = BuiltinTools::new("/tmp");
         let names = tools
-            .tools_for_session(&SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .expect("built-in tools")
             .into_iter()
             .map(|tool| tool.name)

@@ -159,13 +159,7 @@ impl Engine {
         let depth = session_depth(&session.meta.origin);
         let permission_overlay = &session.permission_overlay;
         let grants = self.skill_grants_for_session(session_id);
-        let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
-            depth < delegation.effective_depth_ceiling
-                && delegation
-                    .targets
-                    .iter()
-                    .any(|target| policy.delegation_target_available(target))
-        });
+        let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         let providers = self
             .inner
             .tools
@@ -174,9 +168,7 @@ impl Engine {
             .clone();
         let current = providers.iter().find_map(|provider| {
             provider
-                .tools_for_session(&SessionToolContext {
-                    session: session_id,
-                })
+                .tools_for_session(&SessionToolContext::new(session_id))
                 .ok()?
                 .into_iter()
                 .find(|tool| tool.name == call.name)
@@ -769,13 +761,7 @@ impl Engine {
         let session_projection = self.inner.store.get(session)?;
         let grants = self.skill_grants_for_session(session);
         let depth = session_depth(&session_projection.meta.origin);
-        let delegate_enabled = policy.agent.delegation.as_ref().is_some_and(|delegation| {
-            depth < delegation.effective_depth_ceiling
-                && delegation
-                    .targets
-                    .iter()
-                    .any(|target| policy.delegation_target_available(target))
-        });
+        let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         let mut names = HashSet::new();
         let mut output = Vec::new();
         let mut published = std::collections::HashMap::new();
@@ -787,7 +773,7 @@ impl Engine {
             .clone();
         for provider in &providers {
             for tool in provider
-                .tools_for_session(&SessionToolContext { session })
+                .tools_for_session(&SessionToolContext::new(session))
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
                 let delegation_tool = tool.permission_name == "delegate";

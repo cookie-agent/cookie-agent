@@ -56,6 +56,10 @@ impl Default for ReadTool {
 
 #[async_trait]
 impl ToolProvider for ReadTool {
+    fn provider_id(&self) -> &'static str {
+        "builtin.read"
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
@@ -441,9 +445,7 @@ mod tests {
         assert!(result.output.len() > 50 * 1024);
         assert!(result.truncation.is_none());
         let spec = ReadTool::new("/tmp")
-            .tools_for_session(&SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
             .unwrap()
             .remove(0);
         assert_eq!(spec.result_truncation, ToolResultTruncationPolicy::OptOut);
@@ -527,9 +529,9 @@ mod tests {
     fn schema_documents_zero_based_offset_and_limit_default() {
         let tool = ReadTool::new("/workspace");
         let parameters = &tool
-            .tools_for_session(&cookie_agent_engine::SessionToolContext {
-                session: SessionId::new_v7(),
-            })
+            .tools_for_session(&cookie_agent_engine::SessionToolContext::new(
+                SessionId::new_v7(),
+            ))
             .expect("read spec")[0]
             .parameters;
         assert_eq!(

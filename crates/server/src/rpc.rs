@@ -258,6 +258,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Model(_) => "model",
         EngineError::ModelHistory(_) => "model_history",
         EngineError::MissingTool(_) => "missing_tool",
+        EngineError::ToolPrompt(_) => "tool_prompt",
         EngineError::MissingActor(_) => "missing_actor",
         EngineError::ActorStopped => "actor_stopped",
         EngineError::NoRunnableModel => "no_runnable_model",

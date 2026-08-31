@@ -75,6 +75,7 @@ mod sessions;
 mod skills;
 mod titles;
 pub(crate) mod tool_execution;
+mod tool_prompts;
 mod tool_results;
 
 use admission::InflightDelegation;
@@ -158,6 +159,8 @@ pub enum EngineError {
     ModelHistory(#[from] model_history::HistoryError),
     #[error("tool `{0}` is unavailable")]
     MissingTool(String),
+    #[error("tool prompt composition failed: {0}")]
+    ToolPrompt(String),
     #[error("session actor for {0} is unavailable")]
     MissingActor(SessionId),
     #[error("session actor stopped before replying")]
@@ -1038,6 +1041,7 @@ pub(crate) struct Inner {
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
+    provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
@@ -1129,6 +1133,10 @@ pub struct Engine {
 
 impl Engine {
     pub fn open(options: EngineOptions) -> Result<Self, EngineError> {
+        let mut provider_ids = HashSet::new();
+        for provider in &options.tools {
+            reserve_provider_id(&mut provider_ids, provider.as_ref())?;
+        }
         let skills = Arc::new(options.config.skills.clone());
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
@@ -1153,6 +1161,7 @@ impl Engine {
             )
             .map_err(|error| EngineError::MissingTool(error.to_string()))?,
         );
+        reserve_provider_id(&mut provider_ids, mcp.as_ref())?;
         for provider in &options.tools {
             mcp.reserve_provider(provider.as_ref())
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?;
@@ -1161,6 +1170,7 @@ impl Engine {
             options.config.plugins.clone(),
             Arc::clone(&mcp),
         ));
+        reserve_provider_id(&mut provider_ids, plugins.as_ref())?;
         let mut tools = options.tools;
         tools.push(mcp.clone());
         tools.push(plugins.clone());
@@ -1197,6 +1207,7 @@ impl Engine {
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 manifest_store,
                 tools: Mutex::new(tools),
+                provider_ids: Mutex::new(provider_ids),
                 mcp,
                 plugins,
                 mcp_mutation: tokio::sync::Mutex::new(()),
@@ -1735,17 +1746,23 @@ impl Engine {
     /// require an Engine (notably delegate) to break the construction cycle.
     pub fn register_tool_provider(&self, provider: Arc<dyn ToolProvider>) {
         self.try_register_tool_provider(provider)
-            .expect("tool provider name collision");
+            .expect("tool provider collision");
     }
 
     pub fn try_register_tool_provider(
         &self,
         provider: Arc<dyn ToolProvider>,
     ) -> Result<(), EngineError> {
-        self.inner
-            .mcp
-            .reserve_provider(provider.as_ref())
-            .map_err(|error| EngineError::MissingTool(error.to_string()))?;
+        let mut provider_ids = self
+            .inner
+            .provider_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reserve_provider_id(&mut provider_ids, provider.as_ref())?;
+        if let Err(error) = self.inner.mcp.reserve_provider(provider.as_ref()) {
+            provider_ids.remove(provider.provider_id());
+            return Err(EngineError::MissingTool(error.to_string()));
+        }
         self.inner
             .tools
             .lock()
@@ -1878,6 +1895,19 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
+}
+
+fn reserve_provider_id(
+    provider_ids: &mut HashSet<&'static str>,
+    provider: &dyn ToolProvider,
+) -> Result<(), EngineError> {
+    let provider_id = provider.provider_id();
+    if !provider_ids.insert(provider_id) {
+        return Err(EngineError::MissingTool(format!(
+            "tool provider ID `{provider_id}` is already registered"
+        )));
+    }
+    Ok(())
 }
 
 type ResolvedAgentRegistries = (Arc<AgentRegistry>, BTreeMap<String, Arc<AgentRegistry>>);

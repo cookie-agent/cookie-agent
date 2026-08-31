@@ -1754,6 +1754,10 @@ fn parse_tool_call(response: Response) -> Result<ExtensionToolCallResult, String
 
 #[async_trait]
 impl ToolProvider for PluginRegistry {
+    fn provider_id(&self) -> &'static str {
+        "plugin"
+    }
+
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         let mut tools = Vec::new();
         for runtime in self.inner.plugins.values() {
@@ -2418,9 +2422,7 @@ mod tests {
         assert!(
             harness
                 .registry
-                .tools_for_session(&crate::SessionToolContext {
-                    session: SessionId::new_v7(),
-                })
+                .tools_for_session(&crate::SessionToolContext::new(SessionId::new_v7()))
                 .expect("tool listing")
                 .is_empty()
         );

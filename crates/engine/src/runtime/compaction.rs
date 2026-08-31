@@ -1175,8 +1175,8 @@ mod tests {
     };
     use oven_sdk::{
         CompactionCapability, FilePart, FileSource, HistoryTurn, InputPart, JsonSchema,
-        Request as ModelRequest, TextPart, ToolContent, ToolDefinition, ToolMessage,
-        ToolResultPart, UserMessage,
+        Request as ModelRequest, SystemMessage, SystemPart, TextPart, ToolContent, ToolDefinition,
+        ToolMessage, ToolResultPart, UserMessage,
     };
 
     use super::{
@@ -1222,6 +1222,22 @@ mod tests {
                 }
             ),
             0
+        );
+    }
+
+    #[test]
+    fn request_estimate_counts_tool_prompt_section_bytes() {
+        let base = vec![HistoryTurn::system(SystemMessage::new(vec![
+            SystemPart::Text(TextPart::new("Base prompt.")),
+        ]))];
+        let with_section = vec![HistoryTurn::system(SystemMessage::new(vec![
+            SystemPart::Text(TextPart::new(
+                "Base prompt.\n<tool_instructions provider=\"test\">\nProvider policy text.\n</tool_instructions>",
+            )),
+        ]))];
+        assert!(
+            estimated_request_tokens(&with_section, &[]).unwrap()
+                > estimated_request_tokens(&base, &[]).unwrap()
         );
     }
 

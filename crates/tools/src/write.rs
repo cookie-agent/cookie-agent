@@ -45,6 +45,10 @@ impl Default for WriteTool {
 
 #[async_trait]
 impl ToolProvider for WriteTool {
+    fn provider_id(&self) -> &'static str {
+        "builtin.write"
+    }
+
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
             result_truncation: Default::default(),

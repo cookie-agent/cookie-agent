@@ -21,6 +21,48 @@ use crate::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionToolContext {
     pub session: SessionId,
+    #[serde(skip)]
+    prompt_delegate_targets: Option<Vec<(AgentId, String)>>,
+}
+
+impl SessionToolContext {
+    #[must_use]
+    pub const fn new(session: SessionId) -> Self {
+        Self {
+            session,
+            prompt_delegate_targets: None,
+        }
+    }
+
+    pub(crate) fn for_prompt_composition(
+        session: SessionId,
+        delegate_targets: Vec<(AgentId, String)>,
+    ) -> Self {
+        Self {
+            session,
+            prompt_delegate_targets: Some(delegate_targets),
+        }
+    }
+
+    /// Delegate targets frozen for the run currently composing its prompt.
+    pub fn prompt_delegate_targets(
+        &self,
+    ) -> Option<impl ExactSizeIterator<Item = (&AgentId, &str)>> {
+        self.prompt_delegate_targets.as_ref().map(|targets| {
+            targets
+                .iter()
+                .map(|(id, description)| (id, description.as_str()))
+        })
+    }
+}
+
+/// One labeled system-prompt section contributed by a tool provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptSection {
+    /// Short human-meaningful title used to identify validation failures.
+    pub title: String,
+    /// Markdown-like body rendered inside the provider provenance wrapper.
+    pub body: String,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ToolSpec {
@@ -410,6 +452,14 @@ impl PreparedTool {
 
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
+    /// Stable engine-facing identity used for system-prompt provenance labels.
+    fn provider_id(&self) -> &'static str;
+
+    /// Sections resolved once at run admission and frozen into the agent snapshot.
+    fn prompt_sections(&self, _ctx: &SessionToolContext) -> Result<Vec<PromptSection>, ToolError> {
+        Ok(Vec::new())
+    }
+
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError>;
     /// Claims a currently undiscovered dynamic tool, allowing preparation to make it available.
     fn permission_for_unlisted_tool(

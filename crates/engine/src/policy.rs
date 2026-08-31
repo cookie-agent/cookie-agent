@@ -120,6 +120,21 @@ impl FrozenRunPolicy {
                 )
         })
     }
+
+    pub(crate) fn delegate_targets(&self, depth: u32) -> Vec<protocol::AgentId> {
+        let Some(delegation) = &self.agent.delegation else {
+            return Vec::new();
+        };
+        if depth >= delegation.effective_depth_ceiling {
+            return Vec::new();
+        }
+        delegation
+            .targets
+            .iter()
+            .filter(|target| self.delegation_target_available(target))
+            .cloned()
+            .collect()
+    }
 }
 
 pub(crate) fn freeze_root_agent_policy(

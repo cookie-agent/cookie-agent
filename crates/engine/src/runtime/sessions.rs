@@ -247,18 +247,7 @@ impl Engine {
             return Ok(Vec::new());
         };
         let depth = session_depth(&session.meta.origin);
-        let Some(delegation) = &active.policy.agent.delegation else {
-            return Ok(Vec::new());
-        };
-        if depth >= delegation.effective_depth_ceiling {
-            return Ok(Vec::new());
-        }
-        Ok(delegation
-            .targets
-            .iter()
-            .filter(|target| active.policy.delegation_target_available(target))
-            .cloned()
-            .collect())
+        Ok(active.policy.delegate_targets(depth))
     }
     #[must_use]
     pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
