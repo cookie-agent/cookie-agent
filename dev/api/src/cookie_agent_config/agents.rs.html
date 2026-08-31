@@ -358,42 +358,74 @@
 <a href=#358 id=358 data-nosnippet>358</a>    }
 <a href=#359 id=359 data-nosnippet>359</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(delegate) = frontmatter.permissions.get(<span class="kw-2">&amp;</span>PermissionAction::Delegate) {
 <a href=#360 id=360 data-nosnippet>360</a>        <span class="kw">let </span>rules = delegate.rules(PermissionAction::Delegate);
-<a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">for </span>rule <span class="kw">in </span>rules {
-<a href=#362 id=362 data-nosnippet>362</a>            <span class="kw">if </span>rule.effect == PermissionEffect::Deny {
-<a href=#363 id=363 data-nosnippet>363</a>                <span class="kw">continue</span>;
-<a href=#364 id=364 data-nosnippet>364</a>            }
-<a href=#365 id=365 data-nosnippet>365</a>            <span class="kw">let </span>target = AgentId::new(rule.resource.as_str())
-<a href=#366 id=366 data-nosnippet>366</a>                .map_err(|<span class="kw">_</span>| ConfigError::Delegation(document.id.clone()))<span class="question-mark">?</span>;
-<a href=#367 id=367 data-nosnippet>367</a>            <span class="kw">let </span>target_document =
-<a href=#368 id=368 data-nosnippet>368</a>                all.get(<span class="kw-2">&amp;</span>target)
-<a href=#369 id=369 data-nosnippet>369</a>                    .ok_or_else(|| ConfigError::UnknownDelegationTarget {
-<a href=#370 id=370 data-nosnippet>370</a>                        agent: document.id.clone(),
-<a href=#371 id=371 data-nosnippet>371</a>                        target: target.clone(),
-<a href=#372 id=372 data-nosnippet>372</a>                    })<span class="question-mark">?</span>;
-<a href=#373 id=373 data-nosnippet>373</a>            <span class="kw">if </span>!target_document.frontmatter.enabled
-<a href=#374 id=374 data-nosnippet>374</a>                || !<span class="macro">matches!</span>(
-<a href=#375 id=375 data-nosnippet>375</a>                    target_document.frontmatter.mode,
-<a href=#376 id=376 data-nosnippet>376</a>                    AgentMode::Subagent | AgentMode::All
-<a href=#377 id=377 data-nosnippet>377</a>                )
-<a href=#378 id=378 data-nosnippet>378</a>            {
-<a href=#379 id=379 data-nosnippet>379</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::IneligibleDelegationTarget {
-<a href=#380 id=380 data-nosnippet>380</a>                    agent: document.id.clone(),
-<a href=#381 id=381 data-nosnippet>381</a>                    target: target.clone(),
-<a href=#382 id=382 data-nosnippet>382</a>                });
-<a href=#383 id=383 data-nosnippet>383</a>            }
-<a href=#384 id=384 data-nosnippet>384</a>        }
-<a href=#385 id=385 data-nosnippet>385</a>    }
-<a href=#386 id=386 data-nosnippet>386</a>    <span class="kw">for </span>(action, value) <span class="kw">in </span><span class="kw-2">&amp;</span>frontmatter.permissions {
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">if </span>!<span class="macro">matches!</span>(action, PermissionAction::Read | PermissionAction::Write)
-<a href=#388 id=388 data-nosnippet>388</a>            &amp;&amp; value.rules(<span class="kw-2">*</span>action).iter().any(|rule| {
-<a href=#389 id=389 data-nosnippet>389</a>                rule.resource
-<a href=#390 id=390 data-nosnippet>390</a>                    .as_str()
-<a href=#391 id=391 data-nosnippet>391</a>                    .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)
-<a href=#392 id=392 data-nosnippet>392</a>            })
-<a href=#393 id=393 data-nosnippet>393</a>        {
-<a href=#394 id=394 data-nosnippet>394</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::AgentPermissionExpression(document.id.clone()));
-<a href=#395 id=395 data-nosnippet>395</a>        }
-<a href=#396 id=396 data-nosnippet>396</a>    }
-<a href=#397 id=397 data-nosnippet>397</a>    <span class="prelude-val">Ok</span>(())
-<a href=#398 id=398 data-nosnippet>398</a>}
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="comment">// Expanded targets land in AgentDescriptor and FrozenDelegationPolicy,
+<a href=#362 id=362 data-nosnippet>362</a>        // both limited to 256 IDs; validate the deduplicated union exactly as
+<a href=#363 id=363 data-nosnippet>363</a>        // the runtime expansion produces it.
+<a href=#364 id=364 data-nosnippet>364</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>expanded = BTreeSet::new();
+<a href=#365 id=365 data-nosnippet>365</a>        <span class="kw">for </span>rule <span class="kw">in </span>rules {
+<a href=#366 id=366 data-nosnippet>366</a>            <span class="kw">if </span>rule.effect == PermissionEffect::Deny {
+<a href=#367 id=367 data-nosnippet>367</a>                <span class="kw">continue</span>;
+<a href=#368 id=368 data-nosnippet>368</a>            }
+<a href=#369 id=369 data-nosnippet>369</a>            <span class="kw">let </span>eligible = |target_document: <span class="kw-2">&amp;</span>AgentDocument| {
+<a href=#370 id=370 data-nosnippet>370</a>                target_document.frontmatter.enabled
+<a href=#371 id=371 data-nosnippet>371</a>                    &amp;&amp; <span class="macro">matches!</span>(
+<a href=#372 id=372 data-nosnippet>372</a>                        target_document.frontmatter.mode,
+<a href=#373 id=373 data-nosnippet>373</a>                        AgentMode::Subagent | AgentMode::All
+<a href=#374 id=374 data-nosnippet>374</a>                    )
+<a href=#375 id=375 data-nosnippet>375</a>            };
+<a href=#376 id=376 data-nosnippet>376</a>            <span class="kw">let </span>pattern = rule.resource.as_str();
+<a href=#377 id=377 data-nosnippet>377</a>            <span class="kw">if </span>pattern.contains(<span class="string">'*'</span>) || pattern.contains(<span class="string">'?'</span>) {
+<a href=#378 id=378 data-nosnippet>378</a>                <span class="comment">// Wildcard delegation uses the same runtime matching as every
+<a href=#379 id=379 data-nosnippet>379</a>                // other permission; statically the pattern must match at
+<a href=#380 id=380 data-nosnippet>380</a>                // least one known eligible subagent so it cannot be dead.
+<a href=#381 id=381 data-nosnippet>381</a>                </span><span class="kw">let </span>matches = all
+<a href=#382 id=382 data-nosnippet>382</a>                    .iter()
+<a href=#383 id=383 data-nosnippet>383</a>                    .filter(|(id, target_document)| {
+<a href=#384 id=384 data-nosnippet>384</a>                        <span class="kw">crate</span>::simple_wildcard_match(pattern, id.as_str())
+<a href=#385 id=385 data-nosnippet>385</a>                            &amp;&amp; eligible(target_document)
+<a href=#386 id=386 data-nosnippet>386</a>                    })
+<a href=#387 id=387 data-nosnippet>387</a>                    .map(|(id, <span class="kw">_</span>)| id.clone())
+<a href=#388 id=388 data-nosnippet>388</a>                    .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#389 id=389 data-nosnippet>389</a>                <span class="kw">if </span>matches.is_empty() {
+<a href=#390 id=390 data-nosnippet>390</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::UnmatchedDelegationPattern {
+<a href=#391 id=391 data-nosnippet>391</a>                        agent: document.id.clone(),
+<a href=#392 id=392 data-nosnippet>392</a>                        pattern: pattern.to_owned(),
+<a href=#393 id=393 data-nosnippet>393</a>                    });
+<a href=#394 id=394 data-nosnippet>394</a>                }
+<a href=#395 id=395 data-nosnippet>395</a>                expanded.extend(matches);
+<a href=#396 id=396 data-nosnippet>396</a>                <span class="kw">continue</span>;
+<a href=#397 id=397 data-nosnippet>397</a>            }
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="kw">let </span>target =
+<a href=#399 id=399 data-nosnippet>399</a>                AgentId::new(pattern).map_err(|<span class="kw">_</span>| ConfigError::Delegation(document.id.clone()))<span class="question-mark">?</span>;
+<a href=#400 id=400 data-nosnippet>400</a>            <span class="kw">let </span>target_document =
+<a href=#401 id=401 data-nosnippet>401</a>                all.get(<span class="kw-2">&amp;</span>target)
+<a href=#402 id=402 data-nosnippet>402</a>                    .ok_or_else(|| ConfigError::UnknownDelegationTarget {
+<a href=#403 id=403 data-nosnippet>403</a>                        agent: document.id.clone(),
+<a href=#404 id=404 data-nosnippet>404</a>                        target: target.clone(),
+<a href=#405 id=405 data-nosnippet>405</a>                    })<span class="question-mark">?</span>;
+<a href=#406 id=406 data-nosnippet>406</a>            <span class="kw">if </span>!eligible(target_document) {
+<a href=#407 id=407 data-nosnippet>407</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::IneligibleDelegationTarget {
+<a href=#408 id=408 data-nosnippet>408</a>                    agent: document.id.clone(),
+<a href=#409 id=409 data-nosnippet>409</a>                    target: target.clone(),
+<a href=#410 id=410 data-nosnippet>410</a>                });
+<a href=#411 id=411 data-nosnippet>411</a>            }
+<a href=#412 id=412 data-nosnippet>412</a>            expanded.insert(target);
+<a href=#413 id=413 data-nosnippet>413</a>        }
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="kw">if </span>expanded.len() &gt; MAX_LIST {
+<a href=#415 id=415 data-nosnippet>415</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::AgentLimit(document.id.clone()));
+<a href=#416 id=416 data-nosnippet>416</a>        }
+<a href=#417 id=417 data-nosnippet>417</a>    }
+<a href=#418 id=418 data-nosnippet>418</a>    <span class="kw">for </span>(action, value) <span class="kw">in </span><span class="kw-2">&amp;</span>frontmatter.permissions {
+<a href=#419 id=419 data-nosnippet>419</a>        <span class="kw">if </span>!<span class="macro">matches!</span>(action, PermissionAction::Read | PermissionAction::Write)
+<a href=#420 id=420 data-nosnippet>420</a>            &amp;&amp; value.rules(<span class="kw-2">*</span>action).iter().any(|rule| {
+<a href=#421 id=421 data-nosnippet>421</a>                rule.resource
+<a href=#422 id=422 data-nosnippet>422</a>                    .as_str()
+<a href=#423 id=423 data-nosnippet>423</a>                    .contains(WildcardPattern::WORKSPACE_DIR_EXPRESSION)
+<a href=#424 id=424 data-nosnippet>424</a>            })
+<a href=#425 id=425 data-nosnippet>425</a>        {
+<a href=#426 id=426 data-nosnippet>426</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(ConfigError::AgentPermissionExpression(document.id.clone()));
+<a href=#427 id=427 data-nosnippet>427</a>        }
+<a href=#428 id=428 data-nosnippet>428</a>    }
+<a href=#429 id=429 data-nosnippet>429</a>    <span class="prelude-val">Ok</span>(())
+<a href=#430 id=430 data-nosnippet>430</a>}
 </code></pre></div></section></main></body></html>

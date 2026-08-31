@@ -283,7 +283,7 @@
 <a href=#283 id=283 data-nosnippet>283</a>        <span class="kw">return </span><span class="prelude-val">Err</span>(EngineError::NoRunnableModel);
 <a href=#284 id=284 data-nosnippet>284</a>    }
 <a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">let </span>document = <span class="kw-2">&amp;</span>agent.document;
-<a href=#286 id=286 data-nosnippet>286</a>    <span class="kw">let </span>targets = delegation_targets(<span class="kw-2">&amp;</span>document.frontmatter.permissions);
+<a href=#286 id=286 data-nosnippet>286</a>    <span class="kw">let </span>targets = delegation_targets(<span class="kw-2">&amp;</span>document.frontmatter.permissions, registry.agents());
 <a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">let </span>delegation = (!targets.is_empty()).then(|| protocol::FrozenDelegationPolicy {
 <a href=#288 id=288 data-nosnippet>288</a>        targets,
 <a href=#289 id=289 data-nosnippet>289</a>        effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),
