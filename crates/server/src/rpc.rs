@@ -336,6 +336,7 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::Delegation(_) => "config_delegation",
         ConfigError::UnknownDelegationTarget { .. } => "config_unknown_delegation_target",
         ConfigError::IneligibleDelegationTarget { .. } => "config_ineligible_delegation_target",
+        ConfigError::UnmatchedDelegationPattern { .. } => "config_unmatched_delegation_pattern",
         ConfigError::DuplicateFallbackModel { .. } => "config_duplicate_fallback_model",
         ConfigError::SkillName { .. } => "config_skill_name",
         ConfigError::SkillNameMismatch { .. } => "config_skill_name_mismatch",

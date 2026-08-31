@@ -41,6 +41,10 @@ pub struct AgentRegistry {
 }
 
 impl AgentRegistry {
+    pub(crate) fn agents(&self) -> &BTreeMap<AgentId, ResolvedAgent> {
+        &self.agents
+    }
+
     pub(crate) fn resolve(
         authored: &ConfigAgentRegistry,
         models: &CompiledModelRuntime,
@@ -143,7 +147,10 @@ impl AgentRegistry {
                         ResolvedAgentFallback::ParentModel { .. } => None,
                     })
                     .collect(),
-                delegation_targets: delegation_targets(&agent.document.frontmatter.permissions),
+                delegation_targets: delegation_targets(
+                    &agent.document.frontmatter.permissions,
+                    &agents,
+                ),
             })
             .collect();
         Ok(Self {
@@ -366,17 +373,51 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
 
 pub(crate) fn delegation_targets(
     permissions: &IndexMap<PermissionAction, PermissionValue>,
+    known_agents: &BTreeMap<AgentId, ResolvedAgent>,
 ) -> Vec<AgentId> {
-    let Some(PermissionValue::Resources(resources)) = permissions.get(&PermissionAction::Delegate)
-    else {
-        return Vec::new();
+    let eligible_matches = |pattern: &str| -> Vec<AgentId> {
+        known_agents
+            .iter()
+            .filter(move |(id, agent)| {
+                // Only eligible subagents become targets; runtime
+                // spawn enforces the same eligibility again.
+                agent.document.frontmatter.enabled
+                    && matches!(
+                        agent.document.frontmatter.mode,
+                        cookie_agent_protocol::AgentMode::Subagent
+                            | cookie_agent_protocol::AgentMode::All
+                    )
+                    && cookie_agent_config::simple_wildcard_match(pattern, id.as_str())
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
     };
-    let mut targets = resources
-        .iter()
-        .filter(|(_, effect)| **effect != PermissionEffect::Deny)
-        .filter_map(|(resource, _)| AgentId::new(resource.as_str()).ok())
-        .collect::<Vec<_>>();
+    let mut targets = Vec::new();
+    match permissions.get(&PermissionAction::Delegate) {
+        // Scalar effects are documented as equivalent to a `"*"` mapping:
+        // expand them over every eligible subagent like any wildcard rule.
+        Some(PermissionValue::Effect(effect)) if *effect != PermissionEffect::Deny => {
+            targets.extend(eligible_matches("*"));
+        }
+        Some(PermissionValue::Resources(resources)) => {
+            for (resource, effect) in resources {
+                if *effect == PermissionEffect::Deny {
+                    continue;
+                }
+                let pattern = resource.as_str();
+                if pattern.contains('*') || pattern.contains('?') {
+                    // Wildcard delegation uses the same matching as every
+                    // other permission: expand against the known agent set.
+                    targets.extend(eligible_matches(pattern));
+                } else if let Ok(target) = AgentId::new(pattern) {
+                    targets.push(target);
+                }
+            }
+        }
+        _ => {}
+    }
     targets.sort();
+    targets.dedup();
     targets
 }
 
@@ -396,11 +437,19 @@ mod tests {
     use cookie_agent_identity::WildcardPattern;
     use indexmap::IndexMap;
 
-    use super::delegation_targets;
+    use std::collections::BTreeMap;
+
+    use super::{ResolvedAgent, delegation_targets, fingerprint};
+    use cookie_agent_config::{
+        AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
+        AgentModelFallback, AgentModelRef,
+    };
+    use cookie_agent_identity::AgentId as IdentityAgentId;
 
     #[test]
     fn delegation_targets_require_named_non_deny_permissions() {
-        assert!(delegation_targets(&IndexMap::new()).is_empty());
+        let known = BTreeMap::new();
+        assert!(delegation_targets(&IndexMap::new(), &known).is_empty());
 
         let mut resources = IndexMap::new();
         resources.insert(WildcardPattern::new("*").unwrap(), PermissionEffect::Deny);
@@ -413,8 +462,102 @@ mod tests {
             PermissionValue::Resources(resources),
         )]);
         assert_eq!(
-            delegation_targets(&permissions),
+            delegation_targets(&permissions, &known),
             [cookie_agent_protocol::AgentId::new("reviewer").unwrap()]
         );
+    }
+
+    fn test_agent(id: &str, mode: AgentMode, enabled: bool) -> ResolvedAgent {
+        let id = IdentityAgentId::new(id).expect("agent ID");
+        let body = "Test agent.\n".to_owned();
+        let frontmatter = AgentFrontmatter {
+            description: "Test agent".to_owned(),
+            mode,
+            enabled,
+            models: vec![AgentModelFallback {
+                model: AgentModelRef::ParentModel,
+                variant: None,
+                cache: None,
+            }],
+            limits: AgentLimits {
+                timeout_ms: 0,
+                max_output_tokens: 1_024,
+            },
+            permissions: IndexMap::new(),
+        };
+        let document_fingerprint = fingerprint(
+            "cookie-agent/test-agent-document/v1",
+            &(id.as_str(), &frontmatter, &body),
+        )
+        .expect("fingerprint");
+        let prompt_fingerprint =
+            fingerprint("cookie-agent/system-prompt/v1", &body).expect("fingerprint");
+        ResolvedAgent {
+            document: AgentDocument {
+                id,
+                frontmatter,
+                body,
+                source: AgentDocumentSource::BuiltIn,
+                document_fingerprint,
+                prompt_fingerprint,
+            },
+            resolved_fallback: Vec::new(),
+            runnable_as_root: false,
+        }
+    }
+
+    #[test]
+    fn wildcard_delegation_expands_to_matching_eligible_subagents() {
+        let mut known = BTreeMap::new();
+        for (id, mode, enabled) in [
+            ("sub-worker", AgentMode::Subagent, true),
+            ("sub-disabled", AgentMode::Subagent, false),
+            ("sub-primary", AgentMode::Primary, true),
+            ("explore", AgentMode::Subagent, true),
+        ] {
+            let agent = test_agent(id, mode, enabled);
+            known.insert(agent.document.id.clone(), agent);
+        }
+        let mut resources = IndexMap::new();
+        resources.insert(
+            WildcardPattern::new("sub-*").unwrap(),
+            PermissionEffect::Allow,
+        );
+        resources.insert(
+            WildcardPattern::new("explore").unwrap(),
+            PermissionEffect::Allow,
+        );
+        let permissions = IndexMap::from([(
+            PermissionAction::Delegate,
+            PermissionValue::Resources(resources),
+        )]);
+        // Disabled and non-subagent matches are excluded; concrete and
+        // wildcard targets merge and dedupe.
+        assert_eq!(
+            delegation_targets(&permissions, &known),
+            [
+                cookie_agent_protocol::AgentId::new("explore").unwrap(),
+                cookie_agent_protocol::AgentId::new("sub-worker").unwrap(),
+            ]
+        );
+
+        // A scalar `delegate: allow` is equivalent to a `"*"` mapping and
+        // expands over every eligible subagent.
+        let scalar = IndexMap::from([(
+            PermissionAction::Delegate,
+            PermissionValue::Effect(PermissionEffect::Allow),
+        )]);
+        assert_eq!(
+            delegation_targets(&scalar, &known),
+            [
+                cookie_agent_protocol::AgentId::new("explore").unwrap(),
+                cookie_agent_protocol::AgentId::new("sub-worker").unwrap(),
+            ]
+        );
+        let scalar_deny = IndexMap::from([(
+            PermissionAction::Delegate,
+            PermissionValue::Effect(PermissionEffect::Deny),
+        )]);
+        assert!(delegation_targets(&scalar_deny, &known).is_empty());
     }
 }

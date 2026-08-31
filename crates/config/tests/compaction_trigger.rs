@@ -281,6 +281,61 @@ fn agent_internal_mode_and_parent_model_are_strict() {
 }
 
 #[test]
+fn wildcard_delegation_patterns_validate_against_known_subagents() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("wildcard-delegation");
+    write_config(&root, "");
+    write_agent(
+        &root,
+        "sub-worker.md",
+        "---\ndescription: Worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nWork.\n",
+    );
+    write_agent(
+        &root,
+        "sub-disabled.md",
+        "---\ndescription: Disabled\nmode: subagent\nenabled: false\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nDisabled.\n",
+    );
+    write_agent(
+        &root,
+        "primary.md",
+        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nPrimary.\n",
+    );
+    // The pattern matches at least one known eligible subagent.
+    assert!(load_from_roots(None, Some(&root)).is_ok());
+
+    // A pattern matching only disabled/ineligible agents is dead.
+    let dead = temp.path().join("wildcard-delegation-dead");
+    write_config(&dead, "");
+    write_agent(
+        &dead,
+        "sub-disabled.md",
+        "---\ndescription: Disabled\nmode: subagent\nenabled: false\nmodels: [{ model: \"custom.test/model\" }]\npermissions: {}\n---\nDisabled.\n",
+    );
+    write_agent(
+        &dead,
+        "primary.md",
+        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nPrimary.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&dead)),
+        Err(ConfigError::UnmatchedDelegationPattern { .. })
+    ));
+
+    // A pattern matching no agents at all is dead too.
+    let unknown = temp.path().join("wildcard-delegation-unknown");
+    write_config(&unknown, "");
+    write_agent(
+        &unknown,
+        "primary.md",
+        "---\ndescription: Primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/model\" }]\npermissions:\n  delegate:\n    ghost-*: allow\n---\nPrimary.\n",
+    );
+    assert!(matches!(
+        load_from_roots(None, Some(&unknown)),
+        Err(ConfigError::UnmatchedDelegationPattern { .. })
+    ));
+}
+
+#[test]
 fn timeout_ms_is_rejected_for_non_internal_agents() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("non-internal-timeout");

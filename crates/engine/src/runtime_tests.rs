@@ -2823,6 +2823,37 @@ fn custom_fixture_with_capabilities(
     adaptor: &str,
     capabilities_override: Option<&str>,
 ) -> (Fixture, RunSelection) {
+    custom_fixture_with_capabilities_and_worker_name(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        max_concurrency,
+        mcp_server,
+        context_tokens,
+        worker_agent,
+        adaptor,
+        capabilities_override,
+        "worker",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_fixture_with_capabilities_and_worker_name(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
+    context_tokens: u64,
+    worker_agent: Option<&str>,
+    adaptor: &str,
+    capabilities_override: Option<&str>,
+    worker_name: &str,
+) -> (Fixture, RunSelection) {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -2878,7 +2909,7 @@ __MODEL_CAPABILITIES__
     create_private_test_dir(&agents);
     write_private_test_file(&agents.join("primary.md"), primary_agent);
     write_private_test_file(
-        &agents.join("worker.md"),
+        &agents.join(format!("{worker_name}.md")),
         worker_agent.unwrap_or(
             "---\ndescription: Worker test agent\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n",
         ),
@@ -3385,6 +3416,88 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
                 )
         )
     }));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn wildcard_delegation_pattern_spawns_matching_subagent() {
+    // `sub-*` delegation validates statically against known subagents and
+    // expands into frozen targets, so the scripted delegate call to
+    // `sub-worker` spawns and completes like a concrete rule.
+    let primary = "---\ndescription: Wildcard owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    sub-*: allow\n---\nWildcard owner prompt.\n";
+    let worker = "---\ndescription: Wildcard worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nWorker prompt.\n";
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "delegate this task",
+            scripted_tool_body(
+                "wildcard-delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"sub-worker",
+                    "description":"Wildcard child",
+                    "prompt":"wildcard child task"
+                }),
+            ),
+        ))
+        .expect("wildcard tool response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "wildcard child task",
+            scripted_text_body("wildcard child report"),
+        ))
+        .expect("wildcard child response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent accepted wildcard report"),
+        ))
+        .expect("wildcard parent response");
+    let (fixture, selection) = custom_fixture_with_capabilities_and_worker_name(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        Some(worker),
+        "openai-chat",
+        None,
+        "sub-worker",
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("wildcard-delegation")
+                    .unwrap(),
+                selection,
+                input: "delegate this task".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "wildcard delegation completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
     fixture.engine.shutdown().await;
 }
 

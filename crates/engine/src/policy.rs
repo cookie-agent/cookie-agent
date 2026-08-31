@@ -283,7 +283,7 @@ fn freeze_with_bindings(
         return Err(EngineError::NoRunnableModel);
     }
     let document = &agent.document;
-    let targets = delegation_targets(&document.frontmatter.permissions);
+    let targets = delegation_targets(&document.frontmatter.permissions, registry.agents());
     let delegation = (!targets.is_empty()).then(|| protocol::FrozenDelegationPolicy {
         targets,
         effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),

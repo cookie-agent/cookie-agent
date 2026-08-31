@@ -358,29 +358,61 @@ fn validate_agent_document(
     }
     if let Some(delegate) = frontmatter.permissions.get(&PermissionAction::Delegate) {
         let rules = delegate.rules(PermissionAction::Delegate);
+        // Expanded targets land in AgentDescriptor and FrozenDelegationPolicy,
+        // both limited to 256 IDs; validate the deduplicated union exactly as
+        // the runtime expansion produces it.
+        let mut expanded = BTreeSet::new();
         for rule in rules {
             if rule.effect == PermissionEffect::Deny {
                 continue;
             }
-            let target = AgentId::new(rule.resource.as_str())
-                .map_err(|_| ConfigError::Delegation(document.id.clone()))?;
+            let eligible = |target_document: &AgentDocument| {
+                target_document.frontmatter.enabled
+                    && matches!(
+                        target_document.frontmatter.mode,
+                        AgentMode::Subagent | AgentMode::All
+                    )
+            };
+            let pattern = rule.resource.as_str();
+            if pattern.contains('*') || pattern.contains('?') {
+                // Wildcard delegation uses the same runtime matching as every
+                // other permission; statically the pattern must match at
+                // least one known eligible subagent so it cannot be dead.
+                let matches = all
+                    .iter()
+                    .filter(|(id, target_document)| {
+                        crate::simple_wildcard_match(pattern, id.as_str())
+                            && eligible(target_document)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    return Err(ConfigError::UnmatchedDelegationPattern {
+                        agent: document.id.clone(),
+                        pattern: pattern.to_owned(),
+                    });
+                }
+                expanded.extend(matches);
+                continue;
+            }
+            let target =
+                AgentId::new(pattern).map_err(|_| ConfigError::Delegation(document.id.clone()))?;
             let target_document =
                 all.get(&target)
                     .ok_or_else(|| ConfigError::UnknownDelegationTarget {
                         agent: document.id.clone(),
                         target: target.clone(),
                     })?;
-            if !target_document.frontmatter.enabled
-                || !matches!(
-                    target_document.frontmatter.mode,
-                    AgentMode::Subagent | AgentMode::All
-                )
-            {
+            if !eligible(target_document) {
                 return Err(ConfigError::IneligibleDelegationTarget {
                     agent: document.id.clone(),
                     target: target.clone(),
                 });
             }
+            expanded.insert(target);
+        }
+        if expanded.len() > MAX_LIST {
+            return Err(ConfigError::AgentLimit(document.id.clone()));
         }
     }
     for (action, value) in &frontmatter.permissions {

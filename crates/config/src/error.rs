@@ -85,6 +85,8 @@ pub enum ConfigError {
     UnknownDelegationTarget { agent: AgentId, target: AgentId },
     #[error("agent `{agent}` delegates to ineligible agent `{target}`")]
     IneligibleDelegationTarget { agent: AgentId, target: AgentId },
+    #[error("agent `{agent}` delegation pattern `{pattern}` matches no known eligible subagent")]
+    UnmatchedDelegationPattern { agent: AgentId, pattern: String },
     #[error("agent `{agent}` repeats fallback model `{model}`")]
     DuplicateFallbackModel { agent: AgentId, model: ModelKey },
     #[error(
