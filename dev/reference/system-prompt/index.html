@@ -1041,6 +1041,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#tool-provider-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tool-provider sections
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agentsmd-context-turn" class="md-nav__link">
     <span class="md-ellipsis">
       AGENTS.md context turn
@@ -1251,6 +1260,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#tool-provider-sections" class="md-nav__link">
+    <span class="md-ellipsis">
+      Tool-provider sections
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agentsmd-context-turn" class="md-nav__link">
     <span class="md-ellipsis">
       AGENTS.md context turn
@@ -1314,6 +1332,9 @@ agent but is not copied into prompt text.</p>
 <p>For a root or delegated run, the engine composes the model request in this order:</p>
 <ol>
 <li>The selected agent document body becomes <code>AgentSnapshot.composed_prompt</code>.</li>
+<li>Trusted in-process tool providers may append bounded behavioral-policy
+   sections. Sections retain provider provenance and update both prompt and
+   document fingerprints.</li>
 <li>If skills are visible to the model, a generated available-skills listing is
    appended to that prompt. The prompt and document fingerprints are updated.</li>
 <li><code>agent_before_start</code> plugins run in configured order. A plugin can replace the
@@ -1332,19 +1353,42 @@ for the first attempt and refreshes session events only when a later attempt
 needs current history.</p>
 <h2 id="fingerprints">Fingerprints<a class="headerlink" href="#fingerprints" title="Permanent link">&para;</a></h2>
 <p>The document fingerprint covers the agent identity, strict frontmatter, and
-body. The prompt fingerprint covers prompt text only. Skill-listing and plugin
-composition update the effective fingerprints before <code>run_started</code> is persisted.
-Model-attempt events record the prompt fingerprint, and replay validation rejects
-attempt attribution that contradicts the frozen run snapshot.</p>
+body. The prompt fingerprint covers prompt text only. Tool-provider sections,
+skill listings, and plugin composition update the effective fingerprints before
+<code>run_started</code> is persisted. Model-attempt events record the prompt fingerprint,
+and replay validation rejects attempt attribution that contradicts the frozen
+run snapshot.</p>
 <p>AGENTS.md context is intentionally excluded from the system-prompt fingerprint. It
 has its own durable event, provenance, and user-role boundary.</p>
+<h2 id="tool-provider-sections">Tool-provider sections<a class="headerlink" href="#tool-provider-sections" title="Permanent link">&para;</a></h2>
+<p>Reviewed in-process providers can contribute cross-tool behavioral policy at
+run admission. Each section is normalized, validated, and rendered with an
+engine-derived identity:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;tool_instructions provider="builtin.delegate"&gt;
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Available subagents:
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>- sub-fixer: Coder for anything that touches code
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>&lt;/tool_instructions&gt;
+</code></pre></div>
+<p>Provider registration order determines block order; declaration order determines
+section order within a provider. Bodies are limited to 8 KiB per section,
+16 KiB per provider, and 32 KiB across all providers. Any invalid content or
+overflow rejects run admission instead of truncating or omitting policy. The
+existing 128 KiB composed-prompt limit still applies.</p>
+<p>This channel is for durable behavioral policy that must survive compaction and
+carry system priority. Per-tool guidance remains in typed tool descriptions;
+reference material belongs in explicit user-role context. Built-in providers
+should use compiled-in stable text. Local in-process provider and plugin code is
+reviewed and trusted like other installed code.</p>
+<p>MCP providers are architecturally excluded. Remote MCP output remains delimited
+data and typed tool metadata; it cannot contribute durable system instructions,
+and no configuration switch enables that path.</p>
 <h2 id="agentsmd-context-turn">AGENTS.md context turn<a class="headerlink" href="#agentsmd-context-turn" title="Permanent link">&para;</a></h2>
 <p>At each root run start, cookie agent discovers applicable <code>AGENTS.md</code> files and
 stores their bounded content in <code>agent_md_loaded</code>. History replays the
 latest run's entries as one user turn, with each file delimited as:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;agent_md source="AGENTS.md"&gt;
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>...
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>&lt;/agent_md&gt;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>&lt;agent_md source="AGENTS.md"&gt;
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>...
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>&lt;/agent_md&gt;
 </code></pre></div>
 <p>Truncated entries include their original byte size. Making this context a turn
 rather than system text keeps the stable system cache key independent of normal
@@ -1384,12 +1428,12 @@ the <a href="../configuration/#prompt_caching">prompt-caching configuration refe
 <tbody>
 <tr>
 <td>Root</td>
-<td>Selected authored agent body, or the concise built-in default coding prompt; optional skill listing and plugin composition</td>
+<td>Selected authored agent body, or the concise built-in default coding prompt; optional tool-provider sections, skill listing, and plugin composition</td>
 <td>Root-only AGENTS.md context turn, loaded skill bodies, then session history</td>
 </tr>
 <tr>
 <td>Delegated</td>
-<td>Frozen delegated agent body; optional skill listing and plugin composition</td>
+<td>Frozen delegated agent body; optional tool-provider sections, skill listing, and plugin composition</td>
 <td>No filesystem AGENTS.md context load. Explicit inherited user/assistant text and ordinary child history remain separate turns.</td>
 </tr>
 <tr>
@@ -1407,9 +1451,11 @@ the built-in backend while retaining the same isolated invocation contract.</p>
 <p>The system prompt does not contain an environment dump, tool-schema prose, MCP
 server instructions, filesystem inventories, or generic operational boilerplate.
 Tools and MCP capabilities are represented by typed request definitions and
-permission policy. Runtime state belongs in events or request fields. The design
-is simple yet mighty: keep stable authority in a lean prompt, and put changing,
-attributed information in explicit context turns.</p>
+permission policy. Runtime state belongs in events or request fields. The narrow
+exception is the bounded set of authored behavioral-policy sections from trusted
+local providers: reviewed local code supplies them, fingerprints cover them, and
+the admitted run freezes them. Changing, externally controlled, or redundant
+information remains in typed fields or explicit context turns.</p>
 <p>See <a href="../../guide/agents/">Agents</a>, <a href="../events/">Events</a>, and
 <a href="../configuration/">Configuration</a>.</p>
 
