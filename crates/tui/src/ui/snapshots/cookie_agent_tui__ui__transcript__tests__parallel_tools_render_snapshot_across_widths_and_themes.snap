@@ -3,6 +3,10 @@ source: crates/tui/src/ui/transcript.rs
 expression: "snapshots.join(\"\\n\")"
 ---
 == width 24 ==
+-- EVENT [I]
+· ⚙ ▸ system prompt (2
+  lines)
+
 ╭─ primary •
 │ gateway/arbitrary-mode
 │ l[base]
@@ -12,18 +16,27 @@ expression: "snapshots.join(\"\\n\")"
 │ hidden)
 │ 🔨 ▸ read src/lib.rs
 == width 48 ==
+-- EVENT [I]
+· ⚙ ▸ system prompt (2 lines)
+
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │ 🔨 ▸ bash sleep 2 …
 │ 💭 ▸ thought (1 lines hidden)
 │ 🔨 ▸ read src/lib.rs
 == width 96 ==
+-- EVENT [I]
+· ⚙ ▸ system prompt (2 lines)
+
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │ 🔨 ▸ bash sleep 2 …
 │ 💭 ▸ thought (1 lines hidden)
 │ 🔨 ▸ read src/lib.rs
 == mono 48 ==
+-- EVENT [I]
+· ⚙ ▸ system prompt (2 lines)
+
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │ 🔨 ▸ bash sleep 2 …

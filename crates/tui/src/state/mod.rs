@@ -196,6 +196,21 @@ pub enum TranscriptItem {
         level: EventLevel,
         text: String,
     },
+    /// A committed context checkpoint rendered inline at its durable event.
+    Compaction {
+        id: u64,
+        version: u64,
+        seq: u64,
+        commit: cookie_agent_protocol::ContextCheckpointCommit,
+    },
+    /// A plugin-injected model message rendered inline at its durable event.
+    PluginMessage {
+        id: u64,
+        version: u64,
+        seq: u64,
+        role: cookie_agent_protocol::ExtensionMessageRole,
+        input: String,
+    },
 }
 
 /// One ordered child segment inside an assistant item, owned by the committed
@@ -229,20 +244,32 @@ pub enum AssistantChild {
         turn_seq: u64,
         content_index: u32,
     },
+    /// A durable assistant media part at its exact committed content index.
+    MediaFile {
+        turn_seq: u64,
+        content_index: u32,
+        file: cookie_agent_protocol::PersistedFilePart,
+    },
 }
 
 impl AssistantChild {
     pub fn id(&self) -> u64 {
         match self {
             Self::Text { id, .. } | Self::Thinking { id, .. } => *id,
-            Self::Tool { .. } | Self::Attribution { .. } | Self::CommittedTool { .. } => 0,
+            Self::Tool { .. }
+            | Self::Attribution { .. }
+            | Self::CommittedTool { .. }
+            | Self::MediaFile { .. } => 0,
         }
     }
 
     pub fn version(&self) -> u64 {
         match self {
             Self::Text { version, .. } | Self::Thinking { version, .. } => *version,
-            Self::Tool { .. } | Self::Attribution { .. } | Self::CommittedTool { .. } => 0,
+            Self::Tool { .. }
+            | Self::Attribution { .. }
+            | Self::CommittedTool { .. }
+            | Self::MediaFile { .. } => 0,
         }
     }
 }
@@ -267,7 +294,11 @@ pub(crate) struct OpenAssistantProjection {
 impl TranscriptItem {
     pub fn id(&self) -> u64 {
         match self {
-            Self::User { id, .. } | Self::Assistant { id, .. } | Self::Event { id, .. } => *id,
+            Self::User { id, .. }
+            | Self::Assistant { id, .. }
+            | Self::Event { id, .. }
+            | Self::Compaction { id, .. }
+            | Self::PluginMessage { id, .. } => *id,
         }
     }
 
@@ -275,7 +306,9 @@ impl TranscriptItem {
         match self {
             Self::User { version, .. }
             | Self::Assistant { version, .. }
-            | Self::Event { version, .. } => *version,
+            | Self::Event { version, .. }
+            | Self::Compaction { version, .. }
+            | Self::PluginMessage { version, .. } => *version,
         }
     }
 
@@ -1757,20 +1790,12 @@ fn reduce_event(
             .to_lowercase(),
         ),
         EventPayload::ContextCheckpointCommitted { commit } => {
-            let kind = match &commit.checkpoint {
-                cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => {
-                    "internal summary"
-                }
-                cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => "native window",
-            };
-            push_event(
-                state,
-                EventLevel::Info,
-                format!(
-                    "context checkpoint committed ({kind}, input through sequence {})",
-                    commit.boundaries.input_through_seq
-                ),
-            );
+            push_item(state, |id| TranscriptItem::Compaction {
+                id,
+                version: 0,
+                seq: sequence,
+                commit,
+            })
         }
         EventPayload::ToolOutputElided {
             tool_call_id,
@@ -1885,8 +1910,16 @@ fn reduce_event(
                     .record_cost(estimated_cost_pico_usd);
             }
         }
+        EventPayload::MessageInjected { role, input } => {
+            push_item(state, |id| TranscriptItem::PluginMessage {
+                id,
+                version: 0,
+                seq: sequence,
+                role,
+                input,
+            })
+        }
         EventPayload::DelegatedContextSeeded { .. }
-        | EventPayload::MessageInjected { .. }
         | EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationStarted { .. }
@@ -2071,6 +2104,13 @@ fn rebuild_committed_children(
                     content_index: index,
                 });
             }
+            cookie_agent_protocol::PersistedAssistantPart::File { file } => {
+                children.push(AssistantChild::MediaFile {
+                    turn_seq: model_turn_seq,
+                    content_index: index,
+                    file: file.clone(),
+                });
+            }
             _ => {}
         }
     }
@@ -2085,6 +2125,7 @@ fn rebuild_committed_children(
             }
             AssistantChild::Attribution { .. }
             | AssistantChild::CommittedTool { .. }
+            | AssistantChild::MediaFile { .. }
             | AssistantChild::Tool { .. } => {}
         }
     }

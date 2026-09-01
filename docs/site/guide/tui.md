@@ -82,6 +82,14 @@ to close, or the `c`, `r`, and `f` accelerators.
 Assistant and tool rows keep their normal expand/collapse behavior and do not
 open the message menu.
 
+## Transcript details
+
+System prompts, context compaction checkpoints, plugin-injected messages, and
+committed media parts appear collapsed by default. Click one of these rows to
+show or hide its text or metadata. Expansion state is kept separately for
+each session. Expanded bodies are display-bounded; oversized content ends with
+a truncated-lines indicator while the complete data remains in session state.
+
 ## Live tool output
 
 Expanded bash rows show sanitized stdout and stderr while the command runs.

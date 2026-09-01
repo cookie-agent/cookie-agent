@@ -2,6 +2,9 @@
 source: crates/tui/src/ui/transcript.rs
 expression: rendered
 ---
+-- EVENT [I]
+· ⚙ ▸ system prompt (2 lines)
+
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │ 🔨 ▾ bash sleep 2 …

@@ -196,6 +196,10 @@ impl ConversationScroll {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum BlockId {
+    SystemPrompt,
+    Compaction(u64),
+    PluginMessage(u64),
+    MediaFile { turn_seq: u64, content_index: u32 },
     Thinking(u64),
     Tool(cookie_agent_protocol::ToolCallId),
     CommittedTool { turn_seq: u64, content_index: u32 },
@@ -244,9 +248,22 @@ pub(super) struct LayoutCache {
     pub(super) layout: TranscriptLayout,
     items: Vec<CachedItemLayout>,
     assistant_parts: HashMap<u64, CachedAssistantPartLayout>,
+    system_prompt: Option<CachedSystemPromptLayout>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
     pub(super) assistant_part_layout_passes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SystemPromptLayoutKey {
+    fingerprint: cookie_agent_protocol::Sha256Digest,
+    expanded: bool,
+}
+
+#[derive(Clone)]
+struct CachedSystemPromptLayout {
+    key: SystemPromptLayoutKey,
+    layout: ItemLayout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -333,9 +350,44 @@ pub(super) fn ensure_cached_transcript_layout(
         cache.key = Some(key);
         cache.items.clear();
         cache.assistant_parts.clear();
+        cache.system_prompt = None;
     }
     let mut all_cached = cache.items.len() >= state.transcript.len();
     let mut assembled = TranscriptLayout::default();
+    if let Some(snapshot) = state
+        .run_snapshot
+        .as_deref()
+        .or(state.creation_agent.as_deref())
+    {
+        let prompt_key = SystemPromptLayoutKey {
+            fingerprint: snapshot.prompt_fingerprint.clone(),
+            expanded: expanded.is_some_and(|blocks| blocks.contains(&BlockId::SystemPrompt)),
+        };
+        let layout = if cache
+            .system_prompt
+            .as_ref()
+            .is_some_and(|cached| cached.key == prompt_key)
+        {
+            cache
+                .system_prompt
+                .as_ref()
+                .expect("checked above")
+                .layout
+                .clone()
+        } else {
+            all_cached = false;
+            let layout =
+                system_prompt_layout(snapshot.composed_prompt.as_str(), expanded, width, theme);
+            cache.system_prompt = Some(CachedSystemPromptLayout {
+                key: prompt_key,
+                layout: layout.clone(),
+            });
+            layout
+        };
+        append_item_layout(&mut assembled, layout);
+    } else {
+        cache.system_prompt = None;
+    }
     for (index, item) in state.transcript.iter().enumerate() {
         let item_key = ItemLayoutKey {
             id: item.id(),
@@ -447,7 +499,11 @@ impl App {
         let transcript_empty = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
-            .is_none_or(|state| state.transcript.is_empty());
+            .is_none_or(|state| {
+                state.transcript.is_empty()
+                    && state.run_snapshot.is_none()
+                    && state.creation_agent.is_none()
+            });
         let mut lines = if session_present && !transcript_empty {
             self.layout_cache.layout.lines.clone()
         } else {
@@ -492,10 +548,11 @@ impl App {
         // the content can overflow; content layout and block hit regions never
         // extend into it, so the track can be grabbed without hitting blocks.
         let scrollable = self.selected.is_some_and(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .is_some_and(|state| !state.transcript.is_empty())
+            self.store.sessions.get(&session_id).is_some_and(|state| {
+                !state.transcript.is_empty()
+                    || state.run_snapshot.is_some()
+                    || state.creation_agent.is_some()
+            })
         }) || !self.transient_notices.is_empty()
             || (self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning
                 && self
@@ -534,7 +591,10 @@ impl App {
             // A fresh session greets with guidance instead of a blank pane;
             // a filtered-down transcript (lines hidden by the event level)
             // keeps its own rows, empty-looking or not.
-            if state.transcript.is_empty() {
+            if state.transcript.is_empty()
+                && state.run_snapshot.is_none()
+                && state.creation_agent.is_none()
+            {
                 &empty_layout
             } else {
                 &self.layout_cache.layout
@@ -733,6 +793,16 @@ fn transcript_layout_with_level(
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut assistant_part_layout_passes = 0;
+    if let Some(snapshot) = state
+        .run_snapshot
+        .as_deref()
+        .or(state.creation_agent.as_deref())
+    {
+        append_item_layout(
+            &mut layout,
+            system_prompt_layout(snapshot.composed_prompt.as_str(), expanded, width, theme),
+        );
+    }
     for item in &state.transcript {
         let item_layout = transcript_item_layout(
             state,
@@ -802,11 +872,21 @@ fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
             .filter_map(|child| match child {
                 AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
                 AssistantChild::Tool { call_id } => Some(BlockId::Tool(*call_id)),
+                AssistantChild::MediaFile {
+                    turn_seq,
+                    content_index,
+                    ..
+                } => Some(BlockId::MediaFile {
+                    turn_seq: *turn_seq,
+                    content_index: *content_index,
+                }),
                 AssistantChild::Text { .. }
                 | AssistantChild::Attribution { .. }
                 | AssistantChild::CommittedTool { .. } => None,
             })
             .collect(),
+        TranscriptItem::Compaction { seq, .. } => vec![BlockId::Compaction(*seq)],
+        TranscriptItem::PluginMessage { seq, .. } => vec![BlockId::PluginMessage(*seq)],
         _ => Vec::new(),
     }
 }
@@ -837,10 +917,14 @@ fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool {
                     .is_some_and(|tool| tool.status == ToolStatus::Running),
                 AssistantChild::Text { .. }
                 | AssistantChild::Attribution { .. }
-                | AssistantChild::CommittedTool { .. } => false,
+                | AssistantChild::CommittedTool { .. }
+                | AssistantChild::MediaFile { .. } => false,
             })
         }
-        TranscriptItem::User { .. } | TranscriptItem::Event { .. } => false,
+        TranscriptItem::User { .. }
+        | TranscriptItem::Event { .. }
+        | TranscriptItem::Compaction { .. }
+        | TranscriptItem::PluginMessage { .. } => false,
     }
 }
 
@@ -891,7 +975,275 @@ fn transcript_item_layout(
                 user_seq: None,
             }
         }
+        TranscriptItem::Compaction { seq, commit, .. } => compaction_layout(*seq, commit, context),
+        TranscriptItem::PluginMessage {
+            seq, role, input, ..
+        } => plugin_message_layout(*seq, *role, input, context),
     }
+}
+
+fn system_prompt_layout(
+    prompt: &str,
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let block_id = BlockId::SystemPrompt;
+    let is_expanded = expanded.is_some_and(|blocks| blocks.contains(&block_id));
+    let line_count = display_line_count(prompt);
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let mut body = vec![Line::styled(
+        format!("⚙ {chevron} system prompt ({line_count} lines)"),
+        theme.internal(),
+    )];
+    if is_expanded {
+        body.extend(bounded_safe_display_text(prompt, theme.internal()));
+    }
+    let lines = role_block(Role::Internal, body, width, theme);
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+        }],
+        lines,
+        user_seq: None,
+    }
+}
+
+fn compaction_layout(
+    seq: u64,
+    commit: &cookie_agent_protocol::ContextCheckpointCommit,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::Compaction(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let kind = match &commit.checkpoint {
+        cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => "internal summary",
+        cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => "native window",
+    };
+    let mut body = vec![Line::styled(
+        format!(
+            "🗜 {chevron} context compacted ({kind}, {}→{} tokens)",
+            commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
+        ),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        match &commit.checkpoint {
+            cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint } => {
+                body.extend(bounded_safe_display_text(
+                    checkpoint.summary(),
+                    context.theme.internal(),
+                ));
+            }
+            cookie_agent_protocol::ContextCheckpoint::NativeWindow { window } => {
+                let scope = window.scope();
+                let details = [
+                    format!("adapter: {}", window.adapter_id()),
+                    format!("model: {}/{}", scope.provider_id, scope.model_id),
+                    format!("resource: {}", scope.resource_id),
+                    format!("selection fingerprint: {}", window.selection_fingerprint()),
+                ];
+                body.extend(bounded_safe_display_lines(
+                    details.iter().map(String::as_str),
+                    context.theme.internal(),
+                ));
+            }
+        }
+        body.push(Line::styled(
+            format!(
+                "retained range: {}..{}",
+                commit.boundaries.source_from_seq, commit.boundaries.input_through_seq
+            ),
+            context.theme.muted(),
+        ));
+    }
+    collapsible_event_block(block_id, body, context)
+}
+
+fn plugin_message_layout(
+    seq: u64,
+    role: cookie_agent_protocol::ExtensionMessageRole,
+    input: &str,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::PluginMessage(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let role = match role {
+        cookie_agent_protocol::ExtensionMessageRole::System => "system",
+        cookie_agent_protocol::ExtensionMessageRole::User => "user",
+        cookie_agent_protocol::ExtensionMessageRole::Assistant => "assistant",
+        cookie_agent_protocol::ExtensionMessageRole::Tool => "tool",
+    };
+    let mut body = vec![Line::styled(
+        format!(
+            "🧩 {chevron} plugin message ({role}, {} lines)",
+            display_line_count(input)
+        ),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        body.extend(bounded_safe_display_text(input, context.theme.internal()));
+    }
+    collapsible_event_block(block_id, body, context)
+}
+
+fn collapsible_event_block(
+    block_id: BlockId,
+    body: Vec<Line<'static>>,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let lines = role_block(Role::Internal, body, context.width, context.theme);
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+        }],
+        lines,
+        user_seq: None,
+    }
+}
+
+fn media_file_layout(
+    turn_seq: u64,
+    content_index: u32,
+    file: &cookie_agent_protocol::PersistedFilePart,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::MediaFile {
+        turn_seq,
+        content_index,
+    };
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let filename = safe_display_text(file.filename.as_deref().unwrap_or("unnamed"));
+    let mut body = vec![Line::styled(
+        format!("🖼 {chevron} {} · {filename}", file.media_type),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        let mut details = vec![
+            format!("media type: {}", file.media_type),
+            format!("filename: {filename}"),
+        ];
+        match &file.source {
+            cookie_agent_protocol::PersistedFileSource::Artifact {
+                byte_length,
+                sha256,
+                reference,
+            } => details.extend([
+                format!("byte size: {byte_length}"),
+                format!("sha256: {sha256}"),
+                format!("uri: {}", reference.uri),
+            ]),
+            cookie_agent_protocol::PersistedFileSource::Url { url } => {
+                details.push(format!("uri: {url}"));
+            }
+            cookie_agent_protocol::PersistedFileSource::ProviderReference { provider_id, id } => {
+                details.extend([
+                    format!("provider: {provider_id}"),
+                    format!("reference: {id}"),
+                ]);
+            }
+        }
+        body.extend(bounded_safe_display_lines(
+            details.iter().map(String::as_str),
+            context.theme.internal(),
+        ));
+    }
+    let lines = body
+        .into_iter()
+        .flat_map(|line| assistant_body_line(line, context.width, context.theme))
+        .collect::<Vec<_>>();
+    ItemLayout {
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+        }],
+        lines,
+        user_seq: None,
+    }
+}
+
+fn display_line_count(text: &str) -> usize {
+    text.split('\n').count()
+}
+
+const MAX_EXPANDED_BODY_LINES: usize = 64;
+const MAX_EXPANDED_BODY_BYTES: usize = 8 * 1024;
+
+fn bounded_safe_display_text(text: &str, style: Style) -> Vec<Line<'static>> {
+    bounded_safe_display_lines(text.split('\n'), style)
+}
+
+fn bounded_safe_display_lines<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    let mut rendered_bytes = 0;
+    let mut fully_rendered_lines = 0usize;
+    let mut total_lines = 0usize;
+
+    for line in lines {
+        total_lines += 1;
+        if rendered.len() >= MAX_EXPANDED_BODY_LINES || rendered_bytes >= MAX_EXPANDED_BODY_BYTES {
+            continue;
+        }
+        let available = MAX_EXPANDED_BODY_BYTES - rendered_bytes;
+        let (sanitized, complete) = sanitized_display_prefix(line, available);
+        if complete {
+            rendered_bytes += sanitized.len();
+            rendered.push(Line::styled(sanitized, style));
+            fully_rendered_lines += 1;
+            continue;
+        }
+
+        if !sanitized.is_empty() {
+            rendered.push(Line::styled(sanitized, style));
+        }
+        rendered_bytes = MAX_EXPANDED_BODY_BYTES;
+    }
+
+    let omitted_lines = total_lines.saturating_sub(fully_rendered_lines);
+    if omitted_lines > 0 {
+        rendered.push(Line::styled(
+            format!("… truncated ({omitted_lines} more lines)"),
+            style,
+        ));
+    }
+    rendered
+}
+
+fn safe_display_text(text: &str) -> String {
+    sanitized_display_prefix(text, usize::MAX).0
+}
+
+fn sanitized_display_prefix(text: &str, max_bytes: usize) -> (String, bool) {
+    let mut sanitized = String::with_capacity(text.len().min(max_bytes));
+    for character in text.chars() {
+        let character = if character.is_control() && character != '\t' {
+            '\u{FFFD}'
+        } else {
+            character
+        };
+        if sanitized.len().saturating_add(character.len_utf8()) > max_bytes {
+            return (sanitized, false);
+        }
+        sanitized.push(character);
+    }
+    (sanitized, true)
 }
 
 fn assistant_item_layout(
@@ -914,7 +1266,8 @@ fn assistant_item_layout(
                     AssistantChild::Text { .. } => None,
                     AssistantChild::Tool { .. }
                     | AssistantChild::Attribution { .. }
-                    | AssistantChild::CommittedTool { .. } => {
+                    | AssistantChild::CommittedTool { .. }
+                    | AssistantChild::MediaFile { .. } => {
                         unreachable!()
                     }
                 };
@@ -1011,6 +1364,22 @@ fn assistant_item_layout(
                         end_line: start_line + region.end_line,
                     }));
             }
+            AssistantChild::MediaFile {
+                turn_seq,
+                content_index,
+                file,
+            } => {
+                let child_layout = media_file_layout(*turn_seq, *content_index, file, context);
+                let start_line = layout.lines.len();
+                layout.lines.extend(child_layout.lines);
+                layout
+                    .regions
+                    .extend(child_layout.regions.into_iter().map(|region| BlockRegion {
+                        id: region.id,
+                        start_line: start_line + region.start_line,
+                        end_line: start_line + region.end_line,
+                    }));
+            }
         }
     }
     // The block footer closes the run: one muted, gutter-aligned row with
@@ -1079,7 +1448,8 @@ fn assistant_child_layout(
         }
         AssistantChild::Tool { .. }
         | AssistantChild::Attribution { .. }
-        | AssistantChild::CommittedTool { .. } => {
+        | AssistantChild::CommittedTool { .. }
+        | AssistantChild::MediaFile { .. } => {
             unreachable!("tool children use tool_child_layout")
         }
     }
@@ -2325,6 +2695,34 @@ mod tests {
         }
     }
 
+    fn checkpoint_commit(summary: &str) -> cookie_agent_protocol::ContextCheckpointCommit {
+        let max = cookie_agent_protocol::SummaryByteLimit::new(1024).expect("summary limit");
+        cookie_agent_protocol::ContextCheckpointCommit {
+            checkpoint: cookie_agent_protocol::ContextCheckpoint::InternalSummary {
+                checkpoint: cookie_agent_protocol::InternalSummaryCheckpoint::new(
+                    summary.into(),
+                    cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+                    cookie_agent_protocol::InternalAgentRunId::new_v7(),
+                    max,
+                )
+                .expect("summary checkpoint"),
+            },
+            boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
+                source_from_seq: 2,
+                source_through_seq: 3,
+                input_through_seq: 4,
+                prior_checkpoint_seq: None,
+            },
+            budgets: cookie_agent_protocol::ContextCheckpointBudgets {
+                context_limit_tokens: 10_000,
+                trigger_tokens: 8_000,
+                input_tokens_before: 9_000,
+                input_tokens_after: 1_200,
+                max_summary_bytes: max,
+            },
+        }
+    }
+
     fn attempt_started(
         session_id: SessionId,
         seq: u64,
@@ -3213,6 +3611,11 @@ mod tests {
                                 turn_seq,
                                 content_index,
                             } => format!("placeholder:{turn_seq}:{content_index}"),
+                            AssistantChild::MediaFile {
+                                turn_seq,
+                                content_index,
+                                ..
+                            } => format!("media:{turn_seq}:{content_index}"),
                         })
                         .collect(),
                 )),
@@ -4053,6 +4456,425 @@ mod tests {
     // ------------------------------------------------------------------
     // Transcript rendering: headers, children, tools, chevrons
     // ------------------------------------------------------------------
+
+    #[test]
+    fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let media = cookie_agent_protocol::PersistedFilePart {
+            media_type: cookie_agent_protocol::MimeType::new("image/png").expect("mime"),
+            filename: Some("chart.png".into()),
+            source: cookie_agent_protocol::PersistedFileSource::Artifact {
+                byte_length: 4_096,
+                sha256: Sha256Digest::of_bytes(b"image"),
+                reference: cookie_agent_protocol::ArtifactReference {
+                    uri: "artifact://chart".into(),
+                },
+            },
+            metadata: None,
+        };
+        let events = [
+            session_created(session, 1),
+            runless_event(
+                session,
+                2,
+                EventPayload::MessageInjected {
+                    role: cookie_agent_protocol::ExtensionMessageRole::User,
+                    input: "plugin first\nplugin second".into(),
+                },
+            ),
+            runless_event(
+                session,
+                3,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint_commit("summary first\nsummary second"),
+                },
+            ),
+            attempt_started(session, 4, run, attempt, None),
+            turn_committed(
+                session,
+                5,
+                run,
+                attempt,
+                77,
+                vec![cookie_agent_protocol::PersistedAssistantPart::File { file: media }],
+                Vec::new(),
+                None,
+            ),
+        ];
+        let mut store = StateStore::default();
+        for event in events {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+
+        let collapsed = transcript_layout_with_level(
+            state,
+            None,
+            100,
+            &Theme::default(),
+            &crate::markdown::SyntectHighlighter::default(),
+            crate::state::EventLevel::Warning,
+        );
+        let rendered = snapshot_lines(&collapsed.lines);
+        assert!(
+            rendered.contains("⚙ ▸ system prompt (2 lines)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("🧩 ▸ plugin message (user, 2 lines)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("🗜 ▸ context compacted (internal summary, 9000→1200 tokens)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("🖼 ▸ image/png · chart.png"), "{rendered}");
+        assert!(!rendered.contains("plugin first"), "{rendered}");
+        assert!(!rendered.contains("summary first"), "{rendered}");
+        assert!(!rendered.contains("byte size: 4096"), "{rendered}");
+        assert_eq!(
+            collapsed
+                .regions
+                .iter()
+                .map(|region| region.id)
+                .collect::<Vec<_>>(),
+            vec![
+                BlockId::SystemPrompt,
+                BlockId::PluginMessage(2),
+                BlockId::Compaction(3),
+                BlockId::MediaFile {
+                    turn_seq: 77,
+                    content_index: 0,
+                },
+            ]
+        );
+
+        let expanded = HashSet::from([
+            BlockId::SystemPrompt,
+            BlockId::PluginMessage(2),
+            BlockId::Compaction(3),
+            BlockId::MediaFile {
+                turn_seq: 77,
+                content_index: 0,
+            },
+        ]);
+        let rendered = snapshot_lines(
+            &transcript_layout_with_level(
+                state,
+                Some(&expanded),
+                100,
+                &Theme::default(),
+                &crate::markdown::SyntectHighlighter::default(),
+                crate::state::EventLevel::Warning,
+            )
+            .lines,
+        );
+        assert!(
+            rendered.contains("You are the primary test agent."),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("plugin first\n· plugin second"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("summary first\n· summary second"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("retained range: 2..4"), "{rendered}");
+        assert!(rendered.contains("byte size: 4096"), "{rendered}");
+        assert!(rendered.contains("sha256:"), "{rendered}");
+        assert!(rendered.contains("uri: artifact://chart"), "{rendered}");
+    }
+
+    #[test]
+    fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
+        let oversized = (0..100)
+            .map(|index| format!("line-{index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let control_input = "\u{1b}".repeat(MAX_EXPANDED_BODY_BYTES);
+        let created = session_created(SessionId::new_v7(), 1);
+        let EventPayload::SessionCreated {
+            mut creation_agent, ..
+        } = created.payload
+        else {
+            unreachable!()
+        };
+        creation_agent.composed_prompt = oversized.clone();
+        creation_agent.prompt_fingerprint = Sha256Digest::of_bytes(oversized.as_bytes());
+        let media_url = "x".repeat(MAX_EXPANDED_BODY_BYTES + 128);
+        let state = SessionState {
+            creation_agent: Some(creation_agent),
+            transcript: vec![
+                TranscriptItem::Compaction {
+                    id: 1,
+                    version: 0,
+                    seq: 10,
+                    commit: checkpoint_commit(&oversized),
+                },
+                TranscriptItem::PluginMessage {
+                    id: 2,
+                    version: 0,
+                    seq: 11,
+                    role: cookie_agent_protocol::ExtensionMessageRole::System,
+                    input: control_input.clone(),
+                },
+                TranscriptItem::Assistant {
+                    id: 3,
+                    version: 0,
+                    attribution: attribution(None),
+                    committed_turn_seq: Some(12),
+                    children: vec![AssistantChild::MediaFile {
+                        turn_seq: 12,
+                        content_index: 0,
+                        file: cookie_agent_protocol::PersistedFilePart {
+                            media_type: cookie_agent_protocol::MimeType::new("image/png")
+                                .expect("mime"),
+                            filename: Some("large.png".into()),
+                            source: cookie_agent_protocol::PersistedFileSource::Url {
+                                url: media_url.clone(),
+                            },
+                            metadata: None,
+                        },
+                    }],
+                },
+            ],
+            ..SessionState::default()
+        };
+        let expanded = HashSet::from([
+            BlockId::SystemPrompt,
+            BlockId::Compaction(10),
+            BlockId::PluginMessage(11),
+            BlockId::MediaFile {
+                turn_seq: 12,
+                content_index: 0,
+            },
+        ]);
+        let rendered = snapshot_lines(&transcript_layout(&state, Some(&expanded), 100).lines);
+
+        assert_eq!(rendered.matches("… truncated (").count(), 4, "{rendered}");
+        assert!(
+            rendered.contains("… truncated (36 more lines)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("… truncated (1 more lines)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("line-000"), "{rendered}");
+        assert!(!rendered.contains("line-099"), "{rendered}");
+        assert!(!rendered.contains('\u{1b}'), "{rendered}");
+        let bounded_control = bounded_safe_display_text(&control_input, Style::default());
+        assert!(
+            bounded_control
+                .last()
+                .is_some_and(|line| line.to_string() == "… truncated (1 more lines)")
+        );
+        assert!(
+            bounded_control[..bounded_control.len() - 1]
+                .iter()
+                .map(|line| line.to_string().len())
+                .sum::<usize>()
+                <= MAX_EXPANDED_BODY_BYTES
+        );
+        assert_eq!(
+            state
+                .creation_agent
+                .as_ref()
+                .expect("creation agent")
+                .composed_prompt,
+            oversized
+        );
+        assert!(matches!(
+            &state.transcript[1],
+            TranscriptItem::PluginMessage { input, .. } if input == &control_input
+        ));
+        assert!(matches!(
+            &state.transcript[2],
+            TranscriptItem::Assistant { children, .. }
+                if matches!(&children[0], AssistantChild::MediaFile { file, .. }
+                    if matches!(&file.source, cookie_agent_protocol::PersistedFileSource::Url { url }
+                        if url == &media_url))
+        ));
+    }
+
+    #[test]
+    fn system_prompt_uses_latest_run_then_creation_fallback() {
+        let session = SessionId::new_v7();
+        let mut store = StateStore::default();
+        assert!(store.apply_event(session_created(session, 1)));
+        let expanded = HashSet::from([BlockId::SystemPrompt]);
+        let creation = snapshot_lines(
+            &transcript_layout(&store.sessions[&session], Some(&expanded), 80).lines,
+        );
+        assert!(creation.contains("You are the primary test agent."));
+
+        for (seq, prompt) in [(2, "first run prompt"), (3, "latest run prompt")] {
+            let mut started =
+                run_started_with_suffix(session, seq, RunId::new_v7(), vec![resolved_model(None)]);
+            let EventPayload::RunStarted { agent, .. } = &mut started.payload else {
+                unreachable!()
+            };
+            agent.composed_prompt = prompt.into();
+            agent.prompt_fingerprint = Sha256Digest::of_bytes(prompt.as_bytes());
+            assert!(store.apply_event(started));
+        }
+        let latest = snapshot_lines(
+            &transcript_layout(&store.sessions[&session], Some(&expanded), 80).lines,
+        );
+        assert!(latest.contains("latest run prompt"), "{latest}");
+        assert!(!latest.contains("first run prompt"), "{latest}");
+
+        assert!(
+            transcript_layout(&SessionState::default(), None, 80)
+                .lines
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_compaction_expands_window_reference_details() {
+        let fingerprint = Sha256Digest::of_bytes(b"native selection");
+        let window = cookie_agent_protocol::NativeContextWindow::new(
+            SafeCode::new("openai-responses").expect("adapter"),
+            fingerprint.clone(),
+            cookie_agent_protocol::NativeContextScope {
+                provider_id: ProviderId::new("gateway").expect("provider"),
+                model_id: cookie_agent_protocol::ProviderModelId::new("arbitrary-model")
+                    .expect("model"),
+                resource_id: SafeDisplayText::new("response-123").expect("resource"),
+            },
+            serde_json::json!({"opaque": true}),
+        )
+        .expect("native window");
+        let max = cookie_agent_protocol::SummaryByteLimit::new(1024).expect("summary limit");
+        let state = SessionState {
+            transcript: vec![TranscriptItem::Compaction {
+                id: 1,
+                version: 0,
+                seq: 9,
+                commit: cookie_agent_protocol::ContextCheckpointCommit {
+                    checkpoint: cookie_agent_protocol::ContextCheckpoint::NativeWindow { window },
+                    boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
+                        source_from_seq: 2,
+                        source_through_seq: 3,
+                        input_through_seq: 4,
+                        prior_checkpoint_seq: None,
+                    },
+                    budgets: cookie_agent_protocol::ContextCheckpointBudgets {
+                        context_limit_tokens: 10_000,
+                        trigger_tokens: 8_000,
+                        input_tokens_before: 9_000,
+                        input_tokens_after: 1_200,
+                        max_summary_bytes: max,
+                    },
+                },
+            }],
+            ..SessionState::default()
+        };
+        let collapsed = snapshot_lines(&transcript_layout(&state, None, 100).lines);
+        assert!(collapsed.contains("context compacted (native window, 9000→1200 tokens)"));
+        assert!(!collapsed.contains("response-123"));
+
+        let expanded = HashSet::from([BlockId::Compaction(9)]);
+        let rendered = snapshot_lines(&transcript_layout(&state, Some(&expanded), 100).lines);
+        assert!(rendered.contains("adapter: openai-responses"), "{rendered}");
+        assert!(
+            rendered.contains("model: gateway/arbitrary-model"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("resource: response-123"), "{rendered}");
+        assert!(rendered.contains(&format!("selection fingerprint: {fingerprint}")));
+        assert!(rendered.contains("retained range: 2..4"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn new_transcript_block_click_is_mouse_only_and_state_is_per_session() {
+        let mut app = test_app().await;
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(first, 1)));
+        assert!(app.store.apply_event(session_created(second, 1)));
+        app.selected = Some(first);
+        app.tree_root = Some(first);
+        rendered_frame(&mut app, 80, 24);
+        let hit = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == BlockId::SystemPrompt)
+            .copied()
+            .expect("system prompt hit");
+        app.handle_click(hit.rect.x, hit.rect.y).await;
+        assert!(app.expanded_blocks[&first].contains(&BlockId::SystemPrompt));
+
+        app.selected = Some(second);
+        rendered_frame(&mut app, 80, 24);
+        assert!(!app.expanded_blocks.contains_key(&second));
+        assert!(rendered_frame(&mut app, 80, 24).contains('▸'));
+
+        app.selected = Some(first);
+        assert!(rendered_frame(&mut app, 80, 24).contains('▾'));
+    }
+
+    #[test]
+    fn replay_rebuild_restores_new_event_backed_blocks() {
+        let session = SessionId::new_v7();
+        let events = [
+            session_created(session, 1),
+            runless_event(
+                session,
+                2,
+                EventPayload::MessageInjected {
+                    role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
+                    input: "replayed plugin text".into(),
+                },
+            ),
+            runless_event(
+                session,
+                3,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint_commit("replayed summary text"),
+                },
+            ),
+        ];
+        let mut store = StateStore::default();
+        let _ = store.apply_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 0,
+            final_seq: 3,
+            rebuild: true,
+        });
+        for event in events {
+            let _ = store.apply_delivery(ClientDelivery::ReplayEvent {
+                session_id: session,
+                generation: 0,
+                final_seq: 3,
+                event: Box::new(event),
+            });
+        }
+        let _ = store.apply_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 0,
+            final_seq: 3,
+        });
+        let state = &store.sessions[&session];
+        assert!(matches!(
+            state.transcript[0],
+            TranscriptItem::PluginMessage { seq: 2, .. }
+        ));
+        assert!(matches!(
+            state.transcript[1],
+            TranscriptItem::Compaction { seq: 3, .. }
+        ));
+        let expanded = HashSet::from([BlockId::PluginMessage(2), BlockId::Compaction(3)]);
+        let rendered = snapshot_lines(&transcript_layout(state, Some(&expanded), 80).lines);
+        assert!(rendered.contains("replayed plugin text"), "{rendered}");
+        assert!(rendered.contains("replayed summary text"), "{rendered}");
+    }
 
     #[test]
     fn assistant_header_projects_exact_agent_model_and_variant() {
@@ -8660,10 +9482,13 @@ mod tests {
             for (width, height) in [(100, 30), (40, 12), (20, 8)] {
                 let rendered = rendered_frame(&mut app, width, height);
                 // Every theme kind renders the same textual chrome: the
-                // empty-state guidance, the composer placeholder, the
+                // pinned system prompt, the composer placeholder, and the
                 // command hint. State never depends on color alone.
                 if width >= 100 {
-                    assert!(rendered.contains("Fresh session"), "{kind:?}: {rendered}");
+                    assert!(
+                        rendered.contains("⚙ ▸ system prompt"),
+                        "{kind:?}: {rendered}"
+                    );
                     assert!(rendered.contains("ctrl+p"), "{kind:?}: {rendered}");
                 }
                 if width >= 40 {
@@ -11323,6 +12148,7 @@ mod tests {
                 AssistantChild::Tool { .. } => "tool",
                 AssistantChild::Attribution { .. } => "attribution",
                 AssistantChild::CommittedTool { .. } => "placeholder",
+                AssistantChild::MediaFile { .. } => "media",
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -11397,9 +12223,10 @@ mod tests {
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Error,
         );
-        // One chevron per row, expanded markers only.
+        // Tool and thinking rows are expanded; the independent pinned system
+        // prompt remains collapsed.
         let rendered = snapshot_lines(&layout.lines);
-        assert!(!rendered.contains('▸'));
+        assert_eq!(rendered.matches('▸').count(), 1);
         assert_eq!(rendered.matches('▾').count(), 3);
         assert!(
             rendered.contains("arguments: {\"command\":\"sleep 2\"}")
@@ -11771,19 +12598,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_launch_and_fresh_session_show_warm_empty_states() {
+    async fn first_launch_shows_guidance_and_fresh_session_shows_system_prompt() {
         let mut app = test_app().await;
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("No session selected."), "{rendered}");
         assert!(rendered.contains("/sessions"), "{rendered}");
 
-        // A fresh, empty session greets instead of showing a blank pane.
+        // SessionCreated already has enough frozen state to show the prompt.
         let session = SessionId::new_v7();
         assert!(app.store.apply_event(session_created(session, 1)));
         app.selected = Some(session);
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("Fresh session"), "{rendered}");
-        assert!(rendered.contains("ctrl+p"), "{rendered}");
+        assert!(rendered.contains("⚙ ▸ system prompt"), "{rendered}");
+        assert!(!rendered.contains("Fresh session"), "{rendered}");
 
         // Once content exists the guidance is gone.
         let run = run_id();
