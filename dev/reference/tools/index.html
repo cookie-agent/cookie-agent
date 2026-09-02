@@ -1092,6 +1092,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#execution-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution concurrency
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#filesystem-tools" class="md-nav__link">
     <span class="md-ellipsis">
       Filesystem tools
@@ -1230,6 +1239,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#execution-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      Execution concurrency
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#filesystem-tools" class="md-nav__link">
     <span class="md-ellipsis">
       Filesystem tools
@@ -1303,6 +1321,56 @@
 <p>Cookie Agent publishes tools according to the active agent's permissions and the
 capabilities of the selected model. Tool argument objects are strict: unknown
 fields and wrong types are rejected.</p>
+<h2 id="execution-concurrency">Execution concurrency<a class="headerlink" href="#execution-concurrency" title="Permanent link">&para;</a></h2>
+<p>Tool providers declare whether each tool is safe to overlap with sibling calls
+from the same model turn through <code>ToolSpec::concurrency</code>. <code>ToolConcurrency</code> is
+<code>Exclusive</code> by default; parallel execution requires an explicit <code>Parallel</code>
+declaration.</p>
+<table>
+<thead>
+<tr>
+<th>Tools</th>
+<th>Eligibility</th>
+<th>Coordination</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read</code>, <code>read_tool_result</code>, <code>bash</code></td>
+<td>Parallel</td>
+<td>Each call owns its execution and streaming state.</td>
+</tr>
+<tr>
+<td><code>write</code>, <code>edit</code></td>
+<td>Parallel</td>
+<td>Matching prepared serialization keys serialize mutations to the same target.</td>
+</tr>
+<tr>
+<td><code>delegate_subagent</code></td>
+<td>Parallel</td>
+<td>Delegate admission serializes durable child reservation and session creation internally.</td>
+</tr>
+<tr>
+<td>MCP tools</td>
+<td>Parallel</td>
+<td>Each MCP server's service mutex serializes calls to that server; different servers can overlap.</td>
+</tr>
+<tr>
+<td><code>skill</code>, <code>get_subagent_result</code>, <code>steer_subagent</code>, <code>cancel_subagent</code></td>
+<td>Exclusive</td>
+<td>These calls interact with session-scoped state.</td>
+</tr>
+<tr>
+<td>Plugin and otherwise undeclared tools</td>
+<td>Exclusive</td>
+<td>External declarations cannot currently opt in.</td>
+</tr>
+</tbody>
+</table>
+<p>All parallel-eligible calls in the turn are dispatched together without a
+fan-out limit. Exclusive calls run one at a time after the parallel calls have
+finished. Results remain associated with their tool call IDs, while terminal
+events are persisted in completion order.</p>
 <h2 id="filesystem-tools">Filesystem tools<a class="headerlink" href="#filesystem-tools" title="Permanent link">&para;</a></h2>
 <p><code>read</code> accepts <code>filePath</code>, plus optional zero-based <code>offset</code> and positive
 <code>limit</code>. The defaults return at most 2,000 lines or directory entries. Reads are
@@ -1310,7 +1378,11 @@ prepared and revalidated against the target before execution.</p>
 <p><code>write</code> accepts <code>filePath</code> and complete <code>content</code>. <code>edit</code> accepts <code>filePath</code>,
 <code>oldString</code>, and <code>newString</code>, and requires the old text to identify one
 unambiguous replacement. Both tools stage and validate filesystem mutations
-before publication.</p>
+before publication. Writes and edits to the same existing file, or writes to the
+same absent path, share a prepared serialization key and cannot execute at the
+same time. Because all calls are prepared before execution, an edit in the same
+turn does not observe bytes written by an earlier sibling call; models must not
+use same-turn calls to express a write-then-edit dependency.</p>
 <p>Tool results may include image, PDF, audio, or video attachments. Attachments
 are validated, content-addressed, and supplied to models as file parts rather
 than embedded in text output.</p>
