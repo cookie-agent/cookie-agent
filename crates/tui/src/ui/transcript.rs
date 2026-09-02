@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use cookie_agent_protocol::SessionId;
+use cookie_agent_protocol::{AgentId, SessionId};
 use ratatui::{
     layout::Rect,
     style::Style,
@@ -257,6 +257,8 @@ pub(super) struct LayoutCache {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SystemPromptLayoutKey {
     fingerprint: cookie_agent_protocol::Sha256Digest,
+    snapshot_agent: AgentId,
+    draft_agent: Option<AgentId>,
     expanded: bool,
 }
 
@@ -332,6 +334,7 @@ pub(super) fn ensure_cached_transcript_layout(
     cache: &mut LayoutCache,
     session_id: SessionId,
     state: &SessionState,
+    draft_agent: Option<&AgentId>,
     expanded: Option<&HashSet<BlockId>>,
     width: u16,
     theme: &Theme,
@@ -354,13 +357,11 @@ pub(super) fn ensure_cached_transcript_layout(
     }
     let mut all_cached = cache.items.len() >= state.transcript.len();
     let mut assembled = TranscriptLayout::default();
-    if let Some(snapshot) = state
-        .run_snapshot
-        .as_deref()
-        .or(state.creation_agent.as_deref())
-    {
+    if let Some(snapshot) = state.run_snapshot.as_deref() {
         let prompt_key = SystemPromptLayoutKey {
             fingerprint: snapshot.prompt_fingerprint.clone(),
+            snapshot_agent: snapshot.agent.clone(),
+            draft_agent: draft_agent.cloned(),
             expanded: expanded.is_some_and(|blocks| blocks.contains(&BlockId::SystemPrompt)),
         };
         let layout = if cache
@@ -376,8 +377,7 @@ pub(super) fn ensure_cached_transcript_layout(
                 .clone()
         } else {
             all_cached = false;
-            let layout =
-                system_prompt_layout(snapshot.composed_prompt.as_str(), expanded, width, theme);
+            let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
             cache.system_prompt = Some(CachedSystemPromptLayout {
                 key: prompt_key,
                 layout: layout.clone(),
@@ -499,11 +499,7 @@ impl App {
         let transcript_empty = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
-            .is_none_or(|state| {
-                state.transcript.is_empty()
-                    && state.run_snapshot.is_none()
-                    && state.creation_agent.is_none()
-            });
+            .is_none_or(|state| state.transcript.is_empty() && state.run_snapshot.is_none());
         let mut lines = if session_present && !transcript_empty {
             self.layout_cache.layout.lines.clone()
         } else {
@@ -548,11 +544,10 @@ impl App {
         // the content can overflow; content layout and block hit regions never
         // extend into it, so the track can be grabbed without hitting blocks.
         let scrollable = self.selected.is_some_and(|session_id| {
-            self.store.sessions.get(&session_id).is_some_and(|state| {
-                !state.transcript.is_empty()
-                    || state.run_snapshot.is_some()
-                    || state.creation_agent.is_some()
-            })
+            self.store
+                .sessions
+                .get(&session_id)
+                .is_some_and(|state| !state.transcript.is_empty() || state.run_snapshot.is_some())
         }) || !self.transient_notices.is_empty()
             || (self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning
                 && self
@@ -571,6 +566,7 @@ impl App {
             user_regions: Vec::new(),
         };
         let clock_bucket = self.clock_bucket();
+        let draft_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
         let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
             self.store
                 .sessions
@@ -581,6 +577,7 @@ impl App {
                 &mut self.layout_cache,
                 session_id,
                 state,
+                draft_agent.as_ref(),
                 self.expanded_blocks.get(&session_id),
                 width,
                 &self.theme,
@@ -591,10 +588,7 @@ impl App {
             // A fresh session greets with guidance instead of a blank pane;
             // a filtered-down transcript (lines hidden by the event level)
             // keeps its own rows, empty-looking or not.
-            if state.transcript.is_empty()
-                && state.run_snapshot.is_none()
-                && state.creation_agent.is_none()
-            {
+            if state.transcript.is_empty() && state.run_snapshot.is_none() {
                 &empty_layout
             } else {
                 &self.layout_cache.layout
@@ -793,14 +787,10 @@ fn transcript_layout_with_level(
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut assistant_part_layout_passes = 0;
-    if let Some(snapshot) = state
-        .run_snapshot
-        .as_deref()
-        .or(state.creation_agent.as_deref())
-    {
+    if let Some(snapshot) = state.run_snapshot.as_deref() {
         append_item_layout(
             &mut layout,
-            system_prompt_layout(snapshot.composed_prompt.as_str(), expanded, width, theme),
+            system_prompt_layout(snapshot, Some(&snapshot.agent), expanded, width, theme),
         );
     }
     for item in &state.transcript {
@@ -983,21 +973,34 @@ fn transcript_item_layout(
 }
 
 fn system_prompt_layout(
-    prompt: &str,
+    snapshot: &cookie_agent_protocol::AgentSnapshot,
+    draft_agent: Option<&AgentId>,
     expanded: Option<&HashSet<BlockId>>,
     width: u16,
     theme: &Theme,
 ) -> ItemLayout {
     let block_id = BlockId::SystemPrompt;
     let is_expanded = expanded.is_some_and(|blocks| blocks.contains(&block_id));
-    let line_count = display_line_count(prompt);
+    let line_count = display_line_count(&snapshot.composed_prompt);
     let chevron = if is_expanded { '▾' } else { '▸' };
+    let next_agent = draft_agent
+        .filter(|draft_agent| *draft_agent != &snapshot.agent)
+        .map(|draft_agent| format!(" · next: {draft_agent}"))
+        .unwrap_or_default();
     let mut body = vec![Line::styled(
-        format!("⚙ {chevron} system prompt ({line_count} lines)"),
+        format!(
+            "⚙ {chevron} system prompt · {} (last run){next_agent} ({line_count} lines)",
+            snapshot.agent
+        ),
         theme.internal(),
     )];
     if is_expanded {
-        body.extend(bounded_safe_display_text(prompt, theme.internal()));
+        body.extend(bounded_safe_display_text(
+            &snapshot.composed_prompt,
+            theme.internal(),
+            MAX_SYSTEM_PROMPT_BODY_LINES,
+            MAX_SYSTEM_PROMPT_BODY_BYTES,
+        ));
     }
     let lines = role_block(Role::Internal, body, width, theme);
     ItemLayout {
@@ -1038,6 +1041,8 @@ fn compaction_layout(
                 body.extend(bounded_safe_display_text(
                     checkpoint.summary(),
                     context.theme.internal(),
+                    MAX_EXPANDED_BODY_LINES,
+                    MAX_EXPANDED_BODY_BYTES,
                 ));
             }
             cookie_agent_protocol::ContextCheckpoint::NativeWindow { window } => {
@@ -1051,6 +1056,8 @@ fn compaction_layout(
                 body.extend(bounded_safe_display_lines(
                     details.iter().map(String::as_str),
                     context.theme.internal(),
+                    MAX_EXPANDED_BODY_LINES,
+                    MAX_EXPANDED_BODY_BYTES,
                 ));
             }
         }
@@ -1090,7 +1097,12 @@ fn plugin_message_layout(
         context.theme.internal(),
     )];
     if is_expanded {
-        body.extend(bounded_safe_display_text(input, context.theme.internal()));
+        body.extend(bounded_safe_display_text(
+            input,
+            context.theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        ));
     }
     collapsible_event_block(block_id, body, context)
 }
@@ -1159,6 +1171,8 @@ fn media_file_layout(
         body.extend(bounded_safe_display_lines(
             details.iter().map(String::as_str),
             context.theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
         ));
     }
     let lines = body
@@ -1182,14 +1196,23 @@ fn display_line_count(text: &str) -> usize {
 
 const MAX_EXPANDED_BODY_LINES: usize = 64;
 const MAX_EXPANDED_BODY_BYTES: usize = 8 * 1024;
+const MAX_SYSTEM_PROMPT_BODY_LINES: usize = 256;
+const MAX_SYSTEM_PROMPT_BODY_BYTES: usize = 32 * 1024;
 
-fn bounded_safe_display_text(text: &str, style: Style) -> Vec<Line<'static>> {
-    bounded_safe_display_lines(text.split('\n'), style)
+fn bounded_safe_display_text(
+    text: &str,
+    style: Style,
+    max_lines: usize,
+    max_bytes: usize,
+) -> Vec<Line<'static>> {
+    bounded_safe_display_lines(text.split('\n'), style, max_lines, max_bytes)
 }
 
 fn bounded_safe_display_lines<'a>(
     lines: impl IntoIterator<Item = &'a str>,
     style: Style,
+    max_lines: usize,
+    max_bytes: usize,
 ) -> Vec<Line<'static>> {
     let mut rendered = Vec::new();
     let mut rendered_bytes = 0;
@@ -1198,10 +1221,10 @@ fn bounded_safe_display_lines<'a>(
 
     for line in lines {
         total_lines += 1;
-        if rendered.len() >= MAX_EXPANDED_BODY_LINES || rendered_bytes >= MAX_EXPANDED_BODY_BYTES {
+        if rendered.len() >= max_lines || rendered_bytes >= max_bytes {
             continue;
         }
-        let available = MAX_EXPANDED_BODY_BYTES - rendered_bytes;
+        let available = max_bytes - rendered_bytes;
         let (sanitized, complete) = sanitized_display_prefix(line, available);
         if complete {
             rendered_bytes += sanitized.len();
@@ -1213,7 +1236,7 @@ fn bounded_safe_display_lines<'a>(
         if !sanitized.is_empty() {
             rendered.push(Line::styled(sanitized, style));
         }
-        rendered_bytes = MAX_EXPANDED_BODY_BYTES;
+        rendered_bytes = max_bytes;
     }
 
     let omitted_lines = total_lines.saturating_sub(fully_rendered_lines);
@@ -4491,10 +4514,11 @@ mod tests {
                     commit: checkpoint_commit("summary first\nsummary second"),
                 },
             ),
-            attempt_started(session, 4, run, attempt, None),
+            run_started_with_suffix(session, 4, run, vec![resolved_model(None)]),
+            attempt_started(session, 5, run, attempt, None),
             turn_committed(
                 session,
-                5,
+                6,
                 run,
                 attempt,
                 77,
@@ -4519,7 +4543,7 @@ mod tests {
         );
         let rendered = snapshot_lines(&collapsed.lines);
         assert!(
-            rendered.contains("⚙ ▸ system prompt (2 lines)"),
+            rendered.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
             "{rendered}"
         );
         assert!(
@@ -4591,11 +4615,15 @@ mod tests {
 
     #[test]
     fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
+        let system_prompt = (0..300)
+            .map(|index| format!("system-line-{index:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let oversized = (0..100)
             .map(|index| format!("line-{index:03}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let control_input = "\u{1b}".repeat(MAX_EXPANDED_BODY_BYTES);
+        let control_input = "\u{1b}".repeat(MAX_SYSTEM_PROMPT_BODY_BYTES);
         let created = session_created(SessionId::new_v7(), 1);
         let EventPayload::SessionCreated {
             mut creation_agent, ..
@@ -4603,11 +4631,11 @@ mod tests {
         else {
             unreachable!()
         };
-        creation_agent.composed_prompt = oversized.clone();
-        creation_agent.prompt_fingerprint = Sha256Digest::of_bytes(oversized.as_bytes());
+        creation_agent.composed_prompt = system_prompt.clone();
+        creation_agent.prompt_fingerprint = Sha256Digest::of_bytes(system_prompt.as_bytes());
         let media_url = "x".repeat(MAX_EXPANDED_BODY_BYTES + 128);
         let state = SessionState {
-            creation_agent: Some(creation_agent),
+            run_snapshot: Some(creation_agent),
             transcript: vec![
                 TranscriptItem::Compaction {
                     id: 1,
@@ -4661,13 +4689,24 @@ mod tests {
             "{rendered}"
         );
         assert!(
+            rendered.contains("… truncated (44 more lines)"),
+            "{rendered}"
+        );
+        assert!(
             rendered.contains("… truncated (1 more lines)"),
             "{rendered}"
         );
-        assert!(rendered.contains("line-000"), "{rendered}");
-        assert!(!rendered.contains("line-099"), "{rendered}");
+        assert!(rendered.contains("system-line-255"), "{rendered}");
+        assert!(!rendered.contains("system-line-256"), "{rendered}");
+        assert!(rendered.contains("\n· line-063"), "{rendered}");
+        assert!(!rendered.contains("\n· line-064"), "{rendered}");
         assert!(!rendered.contains('\u{1b}'), "{rendered}");
-        let bounded_control = bounded_safe_display_text(&control_input, Style::default());
+        let bounded_control = bounded_safe_display_text(
+            &control_input,
+            Style::default(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        );
         assert!(
             bounded_control
                 .last()
@@ -4680,13 +4719,25 @@ mod tests {
                 .sum::<usize>()
                 <= MAX_EXPANDED_BODY_BYTES
         );
+        let bounded_system_control = bounded_safe_display_text(
+            &control_input,
+            Style::default(),
+            MAX_SYSTEM_PROMPT_BODY_LINES,
+            MAX_SYSTEM_PROMPT_BODY_BYTES,
+        );
+        let system_control_bytes = bounded_system_control[..bounded_system_control.len() - 1]
+            .iter()
+            .map(|line| line.to_string().len())
+            .sum::<usize>();
+        assert!(system_control_bytes > MAX_EXPANDED_BODY_BYTES);
+        assert!(system_control_bytes <= MAX_SYSTEM_PROMPT_BODY_BYTES);
         assert_eq!(
             state
-                .creation_agent
+                .run_snapshot
                 .as_ref()
-                .expect("creation agent")
+                .expect("run snapshot")
                 .composed_prompt,
-            oversized
+            system_prompt
         );
         assert!(matches!(
             &state.transcript[1],
@@ -4702,15 +4753,15 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_uses_latest_run_then_creation_fallback() {
+    fn system_prompt_is_hidden_until_first_run_then_uses_latest_snapshot() {
         let session = SessionId::new_v7();
         let mut store = StateStore::default();
         assert!(store.apply_event(session_created(session, 1)));
         let expanded = HashSet::from([BlockId::SystemPrompt]);
-        let creation = snapshot_lines(
+        let before_run = snapshot_lines(
             &transcript_layout(&store.sessions[&session], Some(&expanded), 80).lines,
         );
-        assert!(creation.contains("You are the primary test agent."));
+        assert!(before_run.is_empty(), "{before_run}");
 
         for (seq, prompt) in [(2, "first run prompt"), (3, "latest run prompt")] {
             let mut started =
@@ -4725,6 +4776,10 @@ mod tests {
         let latest = snapshot_lines(
             &transcript_layout(&store.sessions[&session], Some(&expanded), 80).lines,
         );
+        assert!(
+            latest.contains("⚙ ▾ system prompt · primary (last run) (1 lines)"),
+            "{latest}"
+        );
         assert!(latest.contains("latest run prompt"), "{latest}");
         assert!(!latest.contains("first run prompt"), "{latest}");
 
@@ -4732,6 +4787,234 @@ mod tests {
             transcript_layout(&SessionState::default(), None, 80)
                 .lines
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn system_prompt_provenance_tracks_draft_agent_across_cache_reuse() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true), descriptor("reviewer", true)];
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            session,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
+        app.selected = Some(session);
+
+        let initial = rendered_frame(&mut app, 100, 24);
+        assert!(
+            initial.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
+            "{initial}"
+        );
+        assert!(!initial.contains("next:"), "{initial}");
+        let cache_key = app.layout_cache.key;
+        let cached = rendered_frame(&mut app, 100, 24);
+        assert_eq!(app.layout_cache.key, cache_key);
+        assert_eq!(cached, initial);
+
+        app.cycle_agent(false);
+        let next = rendered_frame(&mut app, 100, 24);
+        assert_eq!(app.layout_cache.key, cache_key);
+        assert!(
+            next.contains("⚙ ▸ system prompt · primary (last run) · next: reviewer (2 lines)"),
+            "{next}"
+        );
+
+        app.cycle_agent(false);
+        let restored = rendered_frame(&mut app, 100, 24);
+        assert_eq!(app.layout_cache.key, cache_key);
+        assert!(
+            restored.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
+            "{restored}"
+        );
+        assert!(!restored.contains("next:"), "{restored}");
+    }
+
+    #[tokio::test]
+    async fn new_session_draft_does_not_leak_into_selected_prompt_provenance() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true), descriptor("reviewer", true)];
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            session,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
+        app.selected = Some(session);
+
+        let expected = "⚙ ▸ system prompt · primary (last run) (2 lines)";
+        let before = rendered_frame(&mut app, 100, 30);
+        assert!(before.contains(expected), "{before}");
+
+        app.run_command(SlashCommand::New).await;
+        app.cycle_agent(false);
+        assert_eq!(
+            app.new_session_draft
+                .as_ref()
+                .map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("primary")
+        );
+        let while_new = rendered_frame(&mut app, 100, 30);
+        assert!(while_new.contains(expected), "{while_new}");
+        assert!(
+            !while_new.contains("system prompt · primary (last run) · next: reviewer"),
+            "{while_new}"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(app.new_session_draft.is_none());
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("primary")
+        );
+        let cancelled = rendered_frame(&mut app, 100, 30);
+        assert!(cancelled.contains(expected), "{cancelled}");
+        assert!(!cancelled.contains("next:"), "{cancelled}");
+    }
+
+    #[tokio::test]
+    async fn session_switch_during_new_rebinds_provenance_without_draft_transfer() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true), descriptor("reviewer", true)];
+        let current = SessionId::new_v7();
+        let forked = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(current, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            current,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
+        assert!(app.store.apply_event(session_created_with(
+            forked,
+            1,
+            "reviewer",
+            vec![resolved_model(None)],
+            0,
+        )));
+        let mut forked_run =
+            run_started_with_suffix(forked, 2, RunId::new_v7(), vec![resolved_model(None)]);
+        let EventPayload::RunStarted {
+            selection, agent, ..
+        } = &mut forked_run.payload
+        else {
+            unreachable!()
+        };
+        let reviewer = AgentId::new("reviewer").expect("reviewer");
+        selection.agent = reviewer.clone();
+        agent.agent = reviewer.clone();
+        assert!(app.store.apply_event(forked_run));
+        let mut forked_meta = session_meta(forked);
+        forked_meta.creation_selection.agent = reviewer;
+        app.sessions = vec![session_meta(current), forked_meta];
+        app.selected = Some(current);
+
+        app.run_command(SlashCommand::New).await;
+        app.cycle_agent(false);
+        assert_eq!(
+            app.new_session_draft
+                .as_ref()
+                .map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+
+        app.handle_rpc_update(RpcUpdate::Forked { forked });
+        assert_eq!(app.selected, Some(forked));
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        let switched = rendered_frame(&mut app, 100, 30);
+        assert!(
+            switched.contains("system prompt · reviewer (last run) (2 lines)"),
+            "{switched}"
+        );
+        assert!(!switched.contains("next:"), "{switched}");
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(app.new_session_draft.is_none());
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        let cancelled = rendered_frame(&mut app, 100, 30);
+        assert!(!cancelled.contains("next:"), "{cancelled}");
+    }
+
+    #[tokio::test]
+    async fn failed_then_repeated_new_never_replaces_selected_session_draft() {
+        let mut app = test_app().await;
+        app.agents = vec![descriptor("primary", true), descriptor("reviewer", true)];
+        let session = SessionId::new_v7();
+        assert!(app.store.apply_event(session_created(session, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            session,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
+        app.selected = Some(session);
+        app.set_draft_agent(AgentId::new("reviewer").expect("reviewer"));
+        let expected = "⚙ ▸ system prompt · primary (last run) · next: reviewer (2 lines)";
+        let before = rendered_frame(&mut app, 100, 30);
+        assert!(before.contains(expected), "{before}");
+
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+        app.run_command(SlashCommand::New).await;
+        let recorded_for_response = recorded.clone();
+        let response = tokio::spawn(async move {
+            let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
+            incoming
+                .send(MessageFrame::Value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "create failed"}
+                })))
+                .expect("script create failure");
+        });
+        app.choose_picker_entry(0).await;
+        response.await.expect("create failure response");
+
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.new_session_draft.is_none());
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        let failed = rendered_frame(&mut app, 100, 30);
+        assert!(failed.contains(expected), "{failed}");
+
+        app.run_command(SlashCommand::New).await;
+        assert_eq!(
+            app.new_session_draft
+                .as_ref()
+                .map(|draft| draft.agent.as_str()),
+            Some("primary")
+        );
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
+        );
+        let repeated = rendered_frame(&mut app, 100, 30);
+        assert!(repeated.contains(expected), "{repeated}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert!(app.new_session_draft.is_none());
+        assert_eq!(
+            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            Some("reviewer")
         );
     }
 
@@ -4798,6 +5081,18 @@ mod tests {
         let second = SessionId::new_v7();
         assert!(app.store.apply_event(session_created(first, 1)));
         assert!(app.store.apply_event(session_created(second, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            first,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            second,
+            2,
+            RunId::new_v7(),
+            vec![resolved_model(None)],
+        )));
         app.selected = Some(first);
         app.tree_root = Some(first);
         rendered_frame(&mut app, 80, 24);
@@ -5515,6 +5810,7 @@ mod tests {
                 session,
                 state,
                 None,
+                None,
                 60,
                 &Theme::default(),
                 &crate::markdown::SyntectHighlighter::default(),
@@ -5651,6 +5947,7 @@ mod tests {
                 &mut cache,
                 session,
                 state,
+                None,
                 None,
                 60,
                 &Theme::default(),
@@ -8073,6 +8370,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_from_delegated_session_renders_and_submits_root_agent_candidates() {
+        let mut app = test_app().await;
+        app.agents = vec![
+            descriptor("primary", true),
+            descriptor("reviewer", true),
+            descriptor("worker", false),
+        ];
+        app.models = vec![model_descriptor()];
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        app.tree_root = Some(root);
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: delegated_meta(child, root, "worker"),
+                children: Vec::new(),
+            }],
+        });
+        assert!(app.store.apply_event(session_created_with(
+            child,
+            1,
+            "worker",
+            vec![resolved_model(None)],
+            0,
+        )));
+        app.set_selected_session(child);
+        let (client, recorded, incoming) = live_recording_client();
+        app.client = client;
+
+        app.run_command(SlashCommand::New).await;
+        assert_eq!(app.modal, Modal::Agents);
+        let rendered = rendered_frame(&mut app, 140, 30);
+        assert!(
+            rendered.contains("primary — Test primary agent"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("reviewer — Test reviewer agent"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("fixed (delegated session)"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("worker —"), "{rendered}");
+
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.picker_state.selected(), Some(1));
+        let recorded_for_response = recorded.clone();
+        let response = tokio::spawn(async move {
+            let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
+            incoming
+                .send(MessageFrame::Value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "stop after capture"}
+                })))
+                .expect("script create response");
+        });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        response.await.expect("create response");
+
+        let request = recorded
+            .lock()
+            .expect("recorded")
+            .iter()
+            .find(|value| value["method"].as_str() == Some("session.create"))
+            .cloned()
+            .expect("session.create request");
+        assert_eq!(request["params"]["selection"]["agent"], "reviewer");
+    }
+
+    #[tokio::test]
     async fn descriptor_revisions_are_coherent_and_refresh_revalidates_root_drafts_only() {
         let mut app = test_app().await;
         // Revision coherence: agent and model snapshot revisions travel
@@ -9482,11 +9854,12 @@ mod tests {
             for (width, height) in [(100, 30), (40, 12), (20, 8)] {
                 let rendered = rendered_frame(&mut app, width, height);
                 // Every theme kind renders the same textual chrome: the
-                // pinned system prompt, the composer placeholder, and the
+                // fresh-session guidance, the composer placeholder, and the
                 // command hint. State never depends on color alone.
                 if width >= 100 {
                     assert!(
-                        rendered.contains("⚙ ▸ system prompt"),
+                        rendered.contains("Fresh session")
+                            && !rendered.contains("⚙ ▸ system prompt"),
                         "{kind:?}: {rendered}"
                     );
                     assert!(rendered.contains("ctrl+p"), "{kind:?}: {rendered}");
@@ -9739,10 +10112,12 @@ mod tests {
         app.choose_picker_entry(1).await;
 
         app.run_command(SlashCommand::New).await;
-        assert!(app.new_session_draft);
+        assert!(app.new_session_draft.is_some());
         assert_eq!(app.modal, Modal::Agents);
         assert_eq!(
-            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            app.new_session_draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref()),
             Some("python")
         );
         assert_eq!(
@@ -9756,17 +10131,21 @@ mod tests {
         assert!(rendered.contains("preset: python"));
         app.cycle_agent(false);
         assert_eq!(
-            app.draft.as_ref().map(|draft| draft.agent.as_str()),
+            app.new_session_draft
+                .as_ref()
+                .map(|draft| draft.agent.as_str()),
             Some("reviewer")
         );
         assert_eq!(
-            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            app.new_session_draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref()),
             Some("python")
         );
 
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .await;
-        assert!(!app.new_session_draft);
+        assert!(app.new_session_draft.is_none());
         let fresh = test_app().await;
         assert_eq!(fresh.selected_preset, None);
     }
@@ -11982,6 +12361,7 @@ mod tests {
             session,
             &state,
             None,
+            None,
             60,
             &Theme::default(),
             &crate::markdown::SyntectHighlighter::default(),
@@ -11996,6 +12376,7 @@ mod tests {
             &mut cache,
             session,
             &state,
+            None,
             None,
             60,
             &Theme::default(),
@@ -12023,6 +12404,7 @@ mod tests {
             &mut cache,
             session,
             &changed,
+            None,
             None,
             60,
             &Theme::default(),
@@ -12223,10 +12605,10 @@ mod tests {
             &crate::markdown::SyntectHighlighter::default(),
             crate::state::EventLevel::Error,
         );
-        // Tool and thinking rows are expanded; the independent pinned system
-        // prompt remains collapsed.
+        // Tool and thinking rows are expanded. This synthetic log has no
+        // RunStarted event, so it has no pinned system prompt.
         let rendered = snapshot_lines(&layout.lines);
-        assert_eq!(rendered.matches('▸').count(), 1);
+        assert_eq!(rendered.matches('▸').count(), 0);
         assert_eq!(rendered.matches('▾').count(), 3);
         assert!(
             rendered.contains("arguments: {\"command\":\"sleep 2\"}")
@@ -12598,19 +12980,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_launch_shows_guidance_and_fresh_session_shows_system_prompt() {
+    async fn first_launch_and_fresh_session_show_guidance_without_system_prompt() {
         let mut app = test_app().await;
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(rendered.contains("No session selected."), "{rendered}");
         assert!(rendered.contains("/sessions"), "{rendered}");
 
-        // SessionCreated already has enough frozen state to show the prompt.
+        // The creation snapshot is intentionally not rendered before a run.
         let session = SessionId::new_v7();
         assert!(app.store.apply_event(session_created(session, 1)));
         app.selected = Some(session);
         let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("⚙ ▸ system prompt"), "{rendered}");
-        assert!(!rendered.contains("Fresh session"), "{rendered}");
+        assert!(!rendered.contains("⚙ ▸ system prompt"), "{rendered}");
+        assert!(rendered.contains("Fresh session"), "{rendered}");
 
         // Once content exists the guidance is gone.
         let run = run_id();

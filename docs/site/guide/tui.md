@@ -85,10 +85,15 @@ open the message menu.
 ## Transcript details
 
 System prompts, context compaction checkpoints, plugin-injected messages, and
-committed media parts appear collapsed by default. Click one of these rows to
-show or hide its text or metadata. Expansion state is kept separately for
-each session. Expanded bodies are display-bounded; oversized content ends with
-a truncated-lines indicator while the complete data remains in session state.
+committed media parts appear collapsed by default. A session's system-prompt
+row remains hidden until its first run starts, then identifies the agent from
+the latest run snapshot. If the next-run draft uses another agent, the row also
+shows `next: <agent>`. Click one of these rows to show or hide its text or
+metadata. Expansion state is kept separately for each session. Expanded system
+prompts are display-bounded to 256 lines or 32 KiB of sanitized text;
+compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
+Oversized content ends with a truncated-lines indicator while the complete data
+remains in session state.
 
 ## Live tool output
 

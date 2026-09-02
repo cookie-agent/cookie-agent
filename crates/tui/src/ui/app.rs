@@ -426,7 +426,8 @@ pub struct App {
     pub(super) agents: Vec<AgentDescriptor>,
     /// Client-local preset used only when creating a new root session.
     pub(super) selected_preset: Option<String>,
-    pub(super) new_session_draft: bool,
+    /// Draft owned by the `/new` flow, independent of the viewed session draft.
+    pub(super) new_session_draft: Option<RunSelection>,
     /// Revision of the current agent descriptor snapshot; refreshed
     /// coherently with the model revision.
     pub(super) agent_revision: Option<cookie_agent_protocol::AgentRevision>,
@@ -794,7 +795,7 @@ impl App {
             runtime: RuntimeState::default(),
             agents: Vec::new(),
             selected_preset: None,
-            new_session_draft: false,
+            new_session_draft: None,
             agent_revision: None,
             models: Vec::new(),
             model_revision: None,
@@ -912,11 +913,14 @@ impl App {
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
                 self.open_session(session_id).await;
-                self.new_session_draft = false;
+                self.new_session_draft = None;
                 self.status =
                     format!("New root session opened with agent {agent}. Type /help for commands.");
             }
-            Err(error) => self.status = error.to_string(),
+            Err(error) => {
+                self.new_session_draft = None;
+                self.status = error.to_string();
+            }
         }
     }
 
@@ -1110,17 +1114,30 @@ impl App {
     /// Root-selectable agents: exactly the descriptors with
     /// `runnable_as_root = true`.
     pub(super) fn selectable_agents(&self) -> Vec<&AgentDescriptor> {
-        let preset = if self.new_session_draft {
-            self.selected_preset.as_deref()
+        let preset = self
+            .draft
+            .as_ref()
+            .and_then(|draft| draft.preset.as_deref())
+            .or_else(|| {
+                self.selected_session_meta()
+                    .and_then(|session| session.creation_selection.preset.as_deref())
+            });
+        self.root_agents_for_preset(preset)
+    }
+
+    fn new_session_selectable_agents(&self) -> Vec<&AgentDescriptor> {
+        self.root_agents_for_preset(self.selected_preset.as_deref())
+    }
+
+    fn agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
+        if self.new_session_draft.is_some() {
+            self.new_session_selectable_agents()
         } else {
-            self.draft
-                .as_ref()
-                .and_then(|draft| draft.preset.as_deref())
-                .or_else(|| {
-                    self.selected_session_meta()
-                        .and_then(|session| session.creation_selection.preset.as_deref())
-                })
-        };
+            self.selectable_agents()
+        }
+    }
+
+    fn root_agents_for_preset(&self, preset: Option<&str>) -> Vec<&AgentDescriptor> {
         self.agents
             .iter()
             .filter(|agent| {
@@ -1265,7 +1282,9 @@ impl App {
     /// affect the next run only.
     pub(super) fn open_selection_modal(&mut self, modal: Modal) {
         match modal {
-            Modal::Agents if !self.agent_switching_allowed() => {
+            Modal::Agents
+                if self.new_session_draft.is_none() && !self.agent_switching_allowed() =>
+            {
                 self.status = self
                     .delegated_pin_reason()
                     .unwrap_or_else(|| "agent switching requires a root session".into());
@@ -1518,13 +1537,13 @@ impl App {
     }
 
     pub(super) fn set_draft_agent(&mut self, agent: AgentId) {
-        let preset = if self.new_session_draft {
-            self.selected_preset.as_deref()
+        let targets_new_session = self.new_session_draft.is_some();
+        let current = if targets_new_session {
+            self.new_session_draft.as_ref()
         } else {
-            self.draft
-                .as_ref()
-                .and_then(|draft| draft.preset.as_deref())
+            self.draft.as_ref()
         };
+        let preset = current.and_then(|draft| draft.preset.as_deref());
         let Some(descriptor) = self.agents.iter().find(|candidate| {
             candidate.id == agent
                 && candidate.runnable_as_root
@@ -1532,9 +1551,7 @@ impl App {
         }) else {
             return;
         };
-        let model = self
-            .draft
-            .as_ref()
+        let model = current
             .map(|draft| draft.model.clone())
             .filter(|selection| self.selection_is_live(selection))
             .or_else(|| {
@@ -1548,12 +1565,18 @@ impl App {
         let Some(model) = model else {
             return;
         };
-        self.draft = Some(RunSelection {
+        let selection = RunSelection {
             agent,
             model,
             preset: descriptor.preset.clone(),
-        });
-        self.status = self.draft_status("Draft run agent");
+        };
+        if targets_new_session {
+            self.status = format!("New session agent: {}", draft_title(&selection));
+            self.new_session_draft = Some(selection);
+        } else {
+            self.draft = Some(selection);
+            self.status = self.draft_status("Draft run agent");
+        }
     }
 
     pub(super) fn set_draft_model(&mut self, model: ModelKey) {
@@ -1704,14 +1727,14 @@ impl App {
     }
 
     pub(super) fn cycle_agent(&mut self, backward: bool) {
-        if !self.agent_switching_allowed() {
+        if self.new_session_draft.is_none() && !self.agent_switching_allowed() {
             self.status = self
                 .delegated_pin_reason()
                 .unwrap_or_else(|| "agent switching requires a root session".into());
             return;
         }
         let selectable = self
-            .selectable_agents()
+            .agent_picker_candidates()
             .into_iter()
             .map(|agent| agent.id.clone())
             .collect::<Vec<_>>();
@@ -1719,7 +1742,11 @@ impl App {
             self.status = "no root-runnable agent is available".into();
             return;
         }
-        let current = self.draft.as_ref().map(|draft| draft.agent.clone());
+        let current = self
+            .new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .map(|draft| draft.agent.clone());
         let index = current.and_then(|id| selectable.iter().position(|agent| *agent == id));
         let next = match (index, backward) {
             (Some(index), true) => (index + selectable.len() - 1) % selectable.len(),
@@ -3304,7 +3331,7 @@ impl App {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
-            Modal::Agents => self.selectable_agents().len(),
+            Modal::Agents => self.agent_picker_candidates().len(),
             Modal::Models => self.draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
@@ -4630,7 +4657,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.modal = Modal::None;
-                self.new_session_draft = false;
+                self.new_session_draft = None;
             }
             KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
             KeyCode::Down => move_picker_selection(&mut self.picker_state, count, false),
@@ -5063,22 +5090,20 @@ impl App {
                 }
             }
             Modal::Agents => {
-                if !self.agent_switching_allowed() {
+                if self.new_session_draft.is_none() && !self.agent_switching_allowed() {
                     self.status = self
                         .delegated_pin_reason()
                         .unwrap_or_else(|| "agent switching requires a root session".into());
                     return;
                 }
                 let agent = self
-                    .selectable_agents()
+                    .agent_picker_candidates()
                     .get(index)
                     .map(|agent| agent.id.clone());
                 if let Some(agent) = agent {
                     self.set_draft_agent(agent);
                     self.modal = Modal::None;
-                    if self.new_session_draft
-                        && let Some(selection) = self.draft.clone()
-                    {
+                    if let Some(selection) = self.new_session_draft.clone() {
                         self.create_root_session(selection).await;
                     }
                 }
@@ -5093,7 +5118,7 @@ impl App {
                     let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
                     let preferred_model = self.draft.as_ref().map(|draft| draft.model.clone());
                     self.selected_preset = preset;
-                    if self.new_session_draft || self.watching_root_session() {
+                    if self.watching_root_session() {
                         self.draft = self.draft_selection_for_preset(
                             self.selected_preset.as_deref(),
                             preferred_agent.as_ref(),
@@ -5674,8 +5699,8 @@ impl App {
                     self.status = EMPTY_RUNTIME_GUIDANCE.into();
                     return;
                 }
-                self.new_session_draft = true;
-                self.draft = self.default_draft_selection();
+                self.new_session_draft =
+                    self.draft_selection_for_preset(self.selected_preset.as_deref(), None, None);
                 self.open_selection_modal(Modal::Agents);
                 if self.modal == Modal::Agents {
                     self.status = "Select the agent for the new root session.".into();
@@ -6274,11 +6299,11 @@ impl App {
                 self.render_session_search(frame, centered(frame.area(), 72, 60));
             }
             Modal::Agents => {
-                // Root sessions may draft any currently root-runnable
-                // primary/all agent between runs; delegated sessions are
-                // pinned to their frozen child agent, shown as a fixed row
-                // with a clear non-color reason.
-                let (entries, title) = if let Some(pin) = self.delegated_pin_reason() {
+                // Normal delegated-session selection is pinned to its frozen
+                // child agent. `/new` always owns an independent root draft.
+                let (entries, title) = if self.new_session_draft.is_none()
+                    && let Some(pin) = self.delegated_pin_reason()
+                {
                     let agent = self
                         .selected_session_meta()
                         .map(|meta| meta.creation_selection.agent.to_string())
@@ -6301,11 +6326,11 @@ impl App {
                     )
                 } else {
                     (
-                        self.selectable_agents()
+                        self.agent_picker_candidates()
                             .iter()
                             .map(|agent| format!("{} — {}", agent.id, agent.description))
                             .collect(),
-                        if self.new_session_draft {
+                        if self.new_session_draft.is_some() {
                             format!(
                                 "Agent — preset: {} · {}",
                                 self.selected_preset_label(),
