@@ -460,6 +460,7 @@ pub struct App {
     pub(super) tree_viewport_height: usize,
     pub(super) collapsed_sessions: HashSet<SessionId>,
     pub(super) expanded_blocks: HashMap<SessionId, HashSet<BlockId>>,
+    /// Runtime permission modes keyed by delegation-tree root.
     pub(super) permission_modes: HashMap<SessionId, PermissionMode>,
     permission_mode_generations: HashMap<SessionId, u64>,
     pub(super) mcp_panel: McpPanel,
@@ -1651,9 +1652,28 @@ impl App {
         );
     }
 
+    fn permission_mode_root(&self, session_id: SessionId) -> SessionId {
+        let meta = self
+            .sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .or_else(|| {
+                self.tree
+                    .as_ref()
+                    .and_then(|tree| find_session(tree, session_id))
+            });
+        match meta.map(|meta| &meta.origin) {
+            Some(cookie_agent_protocol::SessionOrigin::Delegated {
+                root_session_id, ..
+            }) => *root_session_id,
+            _ => session_id,
+        }
+    }
+
     fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
+        let root = self.permission_mode_root(session_id);
         self.permission_modes
-            .get(&session_id)
+            .get(&root)
             .copied()
             .unwrap_or_default()
     }
@@ -1668,9 +1688,10 @@ impl App {
     }
 
     fn cycle_permission_mode(&mut self) {
-        let Some(session_id) = self.selected else {
+        let Some(selected) = self.selected else {
             return;
         };
+        let session_id = self.permission_mode_root(selected);
         let previous = self.permission_mode(session_id);
         let mode = match previous {
             PermissionMode::AutoApprove => PermissionMode::AutoApproveN,
@@ -1682,7 +1703,7 @@ impl App {
         let generation = self.next_permission_mode_generation(session_id);
         self.permission_modes.insert(session_id, mode);
         self.status = format!(
-            "Permission mode: {} — applies to subsequent approvals in this session",
+            "Permission mode: {} — applies to subsequent approvals in this session tree",
             permission_mode_label(mode)
         );
         let client = self.client.clone();
@@ -2347,7 +2368,8 @@ impl App {
         }
         self.selected = Some(session_id);
         if changed {
-            self.permission_modes.remove(&session_id);
+            let root = self.permission_mode_root(session_id);
+            self.permission_modes.remove(&root);
             self.refresh_permission_mode_for_session(session_id);
             self.load_skills_for_session(session_id);
         }
@@ -2627,6 +2649,7 @@ impl App {
     }
 
     fn refresh_permission_mode_for_session(&mut self, session_id: SessionId) {
+        let session_id = self.permission_mode_root(session_id);
         let generation = self.next_permission_mode_generation(session_id);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();

@@ -113,9 +113,10 @@ request is cancellable. Long approval details scroll with arrows, Page Up/Page
 Down, Home, and End.
 
 The permission mode appears in the bottom bar. Click it to cycle
-`auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies only to
-subsequent approvals in the selected session. Hard policy denies and doom-loop
-rejection still win in every mode. See [Permissions](permissions.md).
+`auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies to
+subsequent approvals throughout the selected session tree, including delegated
+descendants. Hard policy denies and doom-loop rejection still win in every
+mode. See [Permissions](permissions.md).
 
 When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to

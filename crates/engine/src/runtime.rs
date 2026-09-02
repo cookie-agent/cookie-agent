@@ -1136,6 +1136,7 @@ pub(crate) struct Inner {
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
+    // Runtime-only permission modes keyed by delegation-tree root.
     permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
     pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
     pub(crate) skills: Arc<cookie_agent_config::SkillRegistry>,

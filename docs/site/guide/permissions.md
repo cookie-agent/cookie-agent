@@ -132,7 +132,9 @@ Old tool calls and prepared-operation grants therefore fail closed. The
 
 ## Live permission modes
 
-Each session starts in `auto_approve` unless changed:
+Each session tree starts in `auto_approve` unless changed. The mode is runtime
+only, is keyed by the tree root, and can be changed through any session in the
+tree:
 
 - `auto_approve` runs the stateless approval classifier and asks the user when
   it escalates or fails safely.
@@ -147,7 +149,9 @@ Each session starts in `auto_approve` unless changed:
 
 Hard denies, the doom-loop guard, and existing tree grants are evaluated before
 the mode shortcut. Changing a mode does not alter an already pending approval
-and does not cascade to delegated sessions.
+but does apply to subsequent approvals in every delegated descendant. As a
+result, root trees in `ask` or `yolo` now gate descendant tool calls with that
+same mode.
 
 When one model turn contains multiple tool calls, the engine computes every
 permission decision before executing any call. Policy asks and model-requested
