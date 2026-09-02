@@ -640,16 +640,16 @@ impl Engine {
     }
 
     pub(crate) fn spawn_actor(&self, session: SessionId) -> Result<(), EngineError> {
-        if !self.inner.store.is_owned(session) {
-            return Err(EngineError::SessionOwnedByAnotherProcess(session));
-        }
-        if self
+        let mut actors = self
             .inner
             .actors
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains_key(&session)
-        {
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_not_shutting_down()?;
+        if !self.inner.store.is_owned(session) {
+            return Err(EngineError::SessionOwnedByAnotherProcess(session));
+        }
+        if actors.contains_key(&session) {
             return Ok(());
         }
         self.inner
@@ -663,35 +663,52 @@ impl Engine {
             let engine = engine.clone();
             async move { engine.handle_actor_command(session, command).await }
         });
-        self.inner
-            .actors
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session, actor);
+        actors.insert(session, actor);
         Ok(())
     }
 
-    pub(super) fn ensure_session_owned(&self, session: SessionId) -> Result<(), EngineError> {
+    pub(crate) fn ensure_session_owned(&self, session: SessionId) -> Result<(), EngineError> {
+        self.ensure_not_shutting_down()?;
         let adoption_lock = self.inner.store.adoption_lock(session);
         let _adoption = adoption_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let write_open = self.inner.store.begin_write(session).map_err(|error| {
-            if matches!(error, SessionError::SessionLocked(_)) {
-                EngineError::SessionOwnedByAnotherProcess(session)
-            } else {
-                error.into()
+        self.ensure_not_shutting_down()?;
+        let write_open = self
+            .inner
+            .store
+            .begin_write(session)
+            .map_err(|error| match error {
+                SessionError::SessionLocked(_) => {
+                    EngineError::SessionOwnedByAnotherProcess(session)
+                }
+                SessionError::StoreClosed => EngineError::ActorStopped,
+                error => error.into(),
+            })?;
+        if let Err(error) = self.ensure_not_shutting_down() {
+            if write_open == crate::session::WriteOpen::Adopting {
+                self.inner.store.rollback_adoption(session);
             }
-        })?;
+            return Err(error);
+        }
         if write_open == crate::session::WriteOpen::Adopting {
             if let Err(error) = self.reconcile_session(session) {
                 self.inner.store.rollback_adoption(session);
                 return Err(error);
             }
+            if let Err(error) = self.ensure_not_shutting_down() {
+                self.inner.store.rollback_adoption(session);
+                return Err(error);
+            }
             if let Err(error) = self.inner.store.commit_adoption(session) {
                 self.inner.store.rollback_adoption(session);
-                return Err(error.into());
+                return Err(if matches!(error, SessionError::StoreClosed) {
+                    EngineError::ActorStopped
+                } else {
+                    error.into()
+                });
             }
+            self.ensure_not_shutting_down()?;
             if let Err(error) = self.recover_missing_delegation_children(session) {
                 eprintln!("session {session} missing-child recovery deferred: {error}");
             }
@@ -702,6 +719,18 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    fn ensure_not_shutting_down(&self) -> Result<(), EngineError> {
+        if self
+            .inner
+            .admission_tasks_closing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Err(EngineError::ActorStopped)
+        } else {
+            Ok(())
+        }
     }
 
     fn reserve_compaction(&self, session: SessionId) -> bool {

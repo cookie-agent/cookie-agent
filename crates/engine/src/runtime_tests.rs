@@ -115,6 +115,22 @@ fn write_private_test_file(path: &std::path::Path, contents: impl AsRef<[u8]>) {
     }
 }
 
+fn copy_private_test_tree(source: &std::path::Path, target: &std::path::Path) {
+    create_private_test_dir(target);
+    for entry in fs::read_dir(source).expect("snapshot source") {
+        let entry = entry.expect("snapshot entry");
+        if crate::ownership::is_owner_lock_path(&entry.path()) {
+            continue;
+        }
+        let destination = target.join(entry.file_name());
+        if entry.file_type().expect("snapshot type").is_dir() {
+            copy_private_test_tree(&entry.path(), &destination);
+        } else {
+            write_private_test_file(&destination, fs::read(entry.path()).expect("snapshot file"));
+        }
+    }
+}
+
 fn python_command() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
@@ -2401,6 +2417,48 @@ struct Fixture {
     engine: Engine,
     config: LoadedConfiguration,
     manager: Arc<ModelManager>,
+}
+
+#[tokio::test]
+async fn shutdown_is_idempotent_and_blocks_ownership_reacquisition() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(session.session_id)
+        .expect("persist session");
+    let retained = fixture.engine.clone();
+
+    fixture.engine.shutdown().await;
+    retained.shutdown().await;
+
+    assert!(matches!(
+        retained.ensure_session_owned(session.session_id),
+        Err(EngineError::ActorStopped)
+    ));
+    assert!(matches!(
+        retained.spawn_actor(session.session_id),
+        Err(EngineError::ActorStopped)
+    ));
+    assert!(matches!(
+        retained.create_session(selection),
+        Err(EngineError::Session(
+            crate::session::SessionError::StoreClosed
+        ))
+    ));
+    assert!(!retained.inner.store.is_owned(session.session_id));
+    assert!(!retained.actor_resident_for_test(session.session_id));
+
+    let reopened = reopen_engine(&fixture);
+    reopened
+        .ensure_session_owned(session.session_id)
+        .expect("new engine adopts released session");
+    reopened.shutdown().await;
 }
 
 #[tokio::test]
@@ -8328,6 +8386,9 @@ fn copy_test_tree(source: &std::path::Path, target: &std::path::Path) {
     };
     for entry in entries {
         let Ok(entry) = entry else { continue };
+        if crate::ownership::is_owner_lock_path(&entry.path()) {
+            continue;
+        }
         let destination = target.join(entry.file_name());
         let Ok(file_type) = entry.file_type() else {
             continue;
@@ -13945,22 +14006,6 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
 
 #[tokio::test]
 async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool() {
-    fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        create_private_test_dir(target);
-        for entry in fs::read_dir(source).expect("snapshot source") {
-            let entry = entry.expect("snapshot entry");
-            let destination = target.join(entry.file_name());
-            if entry.file_type().expect("snapshot type").is_dir() {
-                copy_tree(&entry.path(), &destination);
-            } else {
-                write_private_test_file(
-                    &destination,
-                    fs::read(entry.path()).expect("snapshot file"),
-                );
-            }
-        }
-    }
-
     let (endpoint, responses, server) = scripted_channel_server(1).await;
     responses
         .send(MatchedScriptedResponse::last_message_role(
@@ -14021,7 +14066,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
     );
 
     let snapshot = private_tempdir();
-    copy_tree(
+    copy_private_test_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),
     );
@@ -14088,22 +14133,6 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
 
 #[tokio::test]
 async fn staged_skill_child_recovers_after_reservation_before_install_restart() {
-    fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
-        create_private_test_dir(target);
-        for entry in fs::read_dir(source).expect("snapshot source") {
-            let entry = entry.expect("snapshot entry");
-            let destination = target.join(entry.file_name());
-            if entry.file_type().expect("snapshot type").is_dir() {
-                copy_tree(&entry.path(), &destination);
-            } else {
-                write_private_test_file(
-                    &destination,
-                    fs::read(entry.path()).expect("snapshot file"),
-                );
-            }
-        }
-    }
-
     let (endpoint, responses, server) = scripted_staged_recovery_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture
@@ -14155,7 +14184,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
     );
 
     let snapshot = private_tempdir();
-    copy_tree(
+    copy_private_test_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),
     );

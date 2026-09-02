@@ -289,6 +289,7 @@ fn session_debug_code(error: &SessionError) -> &'static str {
         SessionError::Json { .. } => "session_json",
         SessionError::Missing(_) => "session_missing",
         SessionError::SessionLocked(_) => "session_locked",
+        SessionError::StoreClosed => "session_store_closed",
         SessionError::InvalidSequence { .. } => "session_invalid_sequence",
         SessionError::InvalidForkTitle(_) => "session_invalid_fork_title",
     }

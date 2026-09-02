@@ -1968,6 +1968,7 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        self.inner.store.release_ownership();
     }
 }
 

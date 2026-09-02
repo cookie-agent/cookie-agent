@@ -6,8 +6,13 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{
     create_private_dir_all as create_windows_private_dir_all,
-    create_private_file as create_windows_private_file, replace_path as replace_windows_path,
+    create_private_file as create_windows_private_file,
+    create_private_lock_file as create_windows_private_lock_file,
+    open_private_lock_file as open_windows_private_lock_file,
+    repair_private_file_handle_acl as repair_windows_private_file_handle_acl,
+    replace_path as replace_windows_path,
     verify_private_creation as verify_windows_private_creation,
+    verify_private_file_handle as verify_windows_private_file_handle,
 };
 
 use std::{

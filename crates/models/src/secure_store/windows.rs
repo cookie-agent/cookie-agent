@@ -20,18 +20,19 @@ use windows_sys::Win32::{
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
         AddAccessAllowedAceEx,
-        Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
+        Authorization::{GetNamedSecurityInfoW, GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
         GetSecurityDescriptorControl, GetTokenInformation, INHERITED_ACE, InitializeAcl,
-        InitializeSecurityDescriptor, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PSID,
-        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
-        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        InitializeSecurityDescriptor, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+        SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
         FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
         FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, UnlockFileEx,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, UnlockFileEx, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         IO::OVERLAPPED,
@@ -67,7 +68,7 @@ struct LocalSecurityDescriptor(*mut core::ffi::c_void);
 impl Drop for LocalSecurityDescriptor {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: GetNamedSecurityInfoW allocates this descriptor with LocalAlloc.
+            // SAFETY: the security-info APIs allocate this descriptor with LocalAlloc.
             unsafe {
                 LocalFree(self.0);
             }
@@ -84,9 +85,9 @@ impl SidBuffer {
     }
 }
 
-fn with_private_security_attributes<T>(
+fn with_private_acl<T>(
     directory: bool,
-    operation: impl FnOnce(*const SECURITY_ATTRIBUTES) -> io::Result<T>,
+    operation: impl FnOnce(PSID, *mut ACL) -> io::Result<T>,
 ) -> io::Result<T> {
     let sid = current_user_sid()?;
     let sid_length = unsafe { windows_sys::Win32::Security::GetLengthSid(sid.as_sid()) } as usize;
@@ -116,24 +117,33 @@ fn with_private_security_attributes<T>(
     {
         return Err(io::Error::last_os_error());
     }
-    let mut descriptor = SECURITY_DESCRIPTOR::default();
-    let descriptor_ptr = (&raw mut descriptor).cast();
-    // SAFETY: descriptor, SID, and ACL remain live through the creation call.
-    if unsafe { InitializeSecurityDescriptor(descriptor_ptr, 1) } == 0
-        || unsafe { SetSecurityDescriptorOwner(descriptor_ptr, sid.as_sid(), 0) } == 0
-        || unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, acl, 0) } == 0
-        || unsafe {
-            SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
-        } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor_ptr,
-        bInheritHandle: 0,
-    };
-    operation(&raw const attributes)
+    operation(sid.as_sid(), acl)
+}
+
+fn with_private_security_attributes<T>(
+    directory: bool,
+    operation: impl FnOnce(*const SECURITY_ATTRIBUTES) -> io::Result<T>,
+) -> io::Result<T> {
+    with_private_acl(directory, |owner, acl| {
+        let mut descriptor = SECURITY_DESCRIPTOR::default();
+        let descriptor_ptr = (&raw mut descriptor).cast();
+        // SAFETY: descriptor, SID, and ACL remain live through the creation call.
+        if unsafe { InitializeSecurityDescriptor(descriptor_ptr, 1) } == 0
+            || unsafe { SetSecurityDescriptorOwner(descriptor_ptr, owner, 0) } == 0
+            || unsafe { SetSecurityDescriptorDacl(descriptor_ptr, 1, acl, 0) } == 0
+            || unsafe {
+                SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
+            } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor_ptr,
+            bInheritHandle: 0,
+        };
+        operation(&raw const attributes)
+    })
 }
 
 fn current_user_sid() -> io::Result<SidBuffer> {
@@ -224,13 +234,55 @@ pub fn verify_private_creation(path: &Path) -> io::Result<()> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let descriptor = LocalSecurityDescriptor(descriptor);
+    verify_private_security_descriptor(
+        &sid,
+        owner,
+        dacl,
+        descriptor.0,
+        fs::metadata(path)?.is_dir(),
+    )
+}
+
+/// Verifies owner-only security on the exact file object referenced by a handle.
+pub fn verify_private_file_handle(file: &fs::File) -> io::Result<()> {
+    let sid = current_user_sid()?;
+    let mut owner = null_mut();
+    let mut dacl = null_mut();
+    let mut descriptor = null_mut();
+    // SAFETY: the handle is valid and output pointers are writable.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle(file),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    verify_private_security_descriptor(&sid, owner, dacl, descriptor.0, file.metadata()?.is_dir())
+}
+
+fn verify_private_security_descriptor(
+    sid: &SidBuffer,
+    owner: PSID,
+    dacl: *mut ACL,
+    descriptor: *mut core::ffi::c_void,
+    directory: bool,
+) -> io::Result<()> {
     if owner.is_null() || dacl.is_null() || unsafe { EqualSid(owner, sid.as_sid()) } == 0 {
         return Err(unsafe_path_error());
     }
     let mut control = 0u16;
     let mut revision = 0u32;
     // SAFETY: descriptor is valid until the guard drops.
-    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
         || control & SE_DACL_PROTECTED == 0
     {
         return Err(unsafe_path_error());
@@ -255,7 +307,7 @@ pub fn verify_private_creation(path: &Path) -> io::Result<()> {
         return Err(unsafe_path_error());
     }
     let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
-    let expected_inheritance = if fs::metadata(path)?.is_dir() {
+    let expected_inheritance = if directory {
         (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8
     } else {
         0
@@ -273,6 +325,31 @@ pub fn verify_private_creation(path: &Path) -> io::Result<()> {
     } else {
         Err(unsafe_path_error())
     }
+}
+
+/// Replaces the owner and DACL on the exact file object referenced by a handle.
+pub fn repair_private_file_handle_acl(file: &fs::File) -> io::Result<()> {
+    with_private_acl(file.metadata()?.is_dir(), |owner, dacl| {
+        // SAFETY: the handle is valid and the SID and ACL remain live for the call.
+        let status = unsafe {
+            SetSecurityInfo(
+                handle(file),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION
+                    | DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION,
+                owner,
+                null_mut(),
+                dacl,
+                null_mut(),
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(status as i32))
+        }
+    })
 }
 
 fn unsafe_path_error() -> io::Error {
@@ -419,15 +496,19 @@ fn open_existing(path: &Path, write: bool) -> Result<Option<fs::File>, SecureSto
     }
 }
 
-fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
+fn create_file_with_access_and_share(
+    path: &Path,
+    access_mode: u32,
+    share_mode: u32,
+) -> Result<fs::File, SecureStoreError> {
     let wide = wide_path(path).map_err(SecureStoreError::Io)?;
     let handle = with_private_security_attributes(false, |attributes| {
         // SAFETY: path and security attributes remain valid for the call.
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
-                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                access_mode,
+                share_mode,
                 attributes,
                 CREATE_NEW,
                 FILE_ATTRIBUTE_NORMAL,
@@ -446,9 +527,49 @@ fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
     Ok(file)
 }
 
+fn create_file(path: &Path) -> Result<fs::File, SecureStoreError> {
+    create_file_with_access_and_share(
+        path,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )
+}
+
 /// Atomically creates a new private file with its final owner and protected DACL.
 pub fn create_private_file(path: &Path) -> io::Result<fs::File> {
-    create_file(path).map_err(|error| match error {
+    create_file(path).map_err(private_file_error)
+}
+
+/// Creates a private lock file whose open handle prevents rename or replacement.
+pub fn create_private_lock_file(path: &Path) -> io::Result<fs::File> {
+    create_file_with_access_and_share(
+        path,
+        private_lock_access_mode(),
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+    )
+    .map_err(private_file_error)
+}
+
+/// Opens an existing private lock with the rights needed for handle-based ACL repair.
+pub fn open_private_lock_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .access_mode(private_lock_access_mode())
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(path)
+}
+
+fn private_lock_access_mode() -> u32 {
+    // FILE_GENERIC_READ includes READ_CONTROL, required by GetSecurityInfo. SetSecurityInfo
+    // additionally requires WRITE_DAC for the DACL and WRITE_OWNER for the owner SID.
+    const _: () = assert!(FILE_GENERIC_READ & READ_CONTROL == READ_CONTROL);
+    FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC | WRITE_OWNER
+}
+
+fn private_file_error(error: SecureStoreError) -> io::Error {
+    match error {
         SecureStoreError::Io(error) => error,
         SecureStoreError::UnsafePath => {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid private file path")
@@ -456,7 +577,7 @@ pub fn create_private_file(path: &Path) -> io::Result<fs::File> {
         SecureStoreError::HomeUnavailable | SecureStoreError::TooLarge => {
             io::Error::other("private file creation failed")
         }
-    })
+    }
 }
 
 fn open_or_create(path: &Path) -> Result<fs::File, SecureStoreError> {

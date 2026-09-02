@@ -6,7 +6,10 @@ use std::{
     hash::{Hash, Hasher},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 #[cfg(unix)]
@@ -54,6 +57,8 @@ pub enum SessionError {
     Missing(SessionId),
     #[error("session {0} is owned by another cookie process")]
     SessionLocked(SessionId),
+    #[error("session store is closed")]
+    StoreClosed,
     #[error("sequence {through_seq} is not a valid event in session {session_id}")]
     InvalidSequence {
         session_id: SessionId,
@@ -155,6 +160,7 @@ pub struct SessionStore {
     ownership: Mutex<HashMap<SessionId, StoreOwnership>>,
     adoption_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     mutation: Mutex<()>,
+    closed: AtomicBool,
     #[cfg(test)]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
     #[cfg(test)]
@@ -193,6 +199,7 @@ impl SessionStore {
             ownership: Mutex::new(HashMap::new()),
             adoption_locks: Mutex::new(HashMap::new()),
             mutation: Mutex::new(()),
+            closed: AtomicBool::new(false),
             #[cfg(test)]
             eviction_transition_hook: Mutex::new(None),
             #[cfg(test)]
@@ -223,6 +230,7 @@ impl SessionStore {
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_open()?;
         if let Some(existing) = self
             .residency
             .lock()
@@ -332,6 +340,7 @@ impl SessionStore {
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_open()?;
         self.begin_write_locked(id)
     }
 
@@ -425,6 +434,7 @@ impl SessionStore {
     }
 
     pub(crate) fn commit_adoption(&self, id: SessionId) -> Result<(), SessionError> {
+        self.ensure_open()?;
         let mut ownership = self
             .ownership
             .lock()
@@ -464,7 +474,10 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&id);
-        debug_assert!(matches!(removed, Some(StoreOwnership::Adopting { .. })));
+        debug_assert!(
+            matches!(removed, Some(StoreOwnership::Adopting { .. }))
+                || self.closed.load(Ordering::Acquire)
+        );
     }
 
     pub(crate) fn adoption_lock(&self, id: SessionId) -> Arc<Mutex<()>> {
@@ -624,11 +637,12 @@ impl SessionStore {
         event: EventPayload,
         recovery: bool,
     ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
-        let capability = self.write_capability(id, recovery)?;
         let _mutation = self
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_open()?;
+        let capability = self.write_capability(id, recovery)?;
         let current = self.get(id)?;
         let first_user_message = !current.log.is_persisted()
             && matches!(
@@ -669,6 +683,7 @@ impl SessionStore {
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_open()?;
         let source = self.get(source_id)?;
         if !source.log.is_persisted() {
             return Err(SessionError::InvalidSequence {
@@ -899,6 +914,7 @@ impl SessionStore {
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.ensure_open()?;
         let projection = self.get(id)?;
         if !projection.log.is_persisted() {
             self.persist_buffered(id, &projection)?;
@@ -1114,21 +1130,38 @@ impl SessionStore {
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
-}
 
-impl Drop for SessionStore {
-    fn drop(&mut self) {
+    pub(crate) fn release_ownership(&self) {
+        self.closed.store(true, Ordering::Release);
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let residency = self
             .residency
-            .get_mut()
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for session in residency.resident.values() {
             let _ = session.log.suspend_writer();
         }
         self.ownership
-            .get_mut()
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+    }
+
+    fn ensure_open(&self) -> Result<(), SessionError> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(SessionError::StoreClosed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        self.release_ownership();
     }
 }
 
@@ -1935,6 +1968,94 @@ mod tests {
             appending.join().expect("stale append thread"),
             Err(crate::events::EventLogError::ReadOnly(_))
         ));
+    }
+
+    #[test]
+    fn ownership_release_does_not_wait_for_store_drop() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        let stale_log = owner.get(session_id).expect("owned projection").log;
+
+        owner.release_ownership();
+        owner.release_ownership();
+
+        assert!(!owner.is_owned(session_id));
+        assert!(matches!(
+            owner.append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            ),
+            Err(SessionError::StoreClosed)
+        ));
+        assert!(matches!(
+            stale_log.append(
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            ),
+            Err(crate::events::EventLogError::ReadOnly(_))
+        ));
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        observer
+            .open_for_write(session_id)
+            .expect("adopt after explicit ownership release");
+    }
+
+    #[test]
+    fn ownership_release_waits_for_an_append_that_already_won_serialization() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        let log = owner.get(session_id).expect("owned projection").log;
+        let (authorized, release_append) = log.install_append_authorization_hook_for_test();
+        let append_store = Arc::clone(&owner);
+        let appending = thread::spawn(move || {
+            append_store.append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            )
+        });
+        authorized.recv().expect("append passed authorization");
+
+        let release_store = Arc::clone(&owner);
+        let (released, release_observed) = mpsc::channel();
+        let releasing = thread::spawn(move || {
+            release_store.release_ownership();
+            released.send(()).expect("report ownership release");
+        });
+        assert!(matches!(
+            release_observed.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        assert!(matches!(
+            observer.open_for_write(session_id),
+            Err(SessionError::SessionLocked(id)) if id == session_id
+        ));
+
+        release_append.send(()).expect("release append");
+        appending
+            .join()
+            .expect("append thread")
+            .expect("append wins");
+        release_observed
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("ownership releases after append");
+        releasing.join().expect("release thread");
+        observer
+            .open_for_write(session_id)
+            .expect("adopt after append and release");
     }
 
     #[test]
