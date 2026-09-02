@@ -1409,29 +1409,40 @@ want to change:</p>
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="k">[approval]</span>
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">[context_compaction]</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">percent</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">70</span><span class="w"> </span><span class="p">}</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">[model_retry]</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">standard_retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">overload_retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">backoff_ceiling_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">60000</span>
 <a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">[session_title]</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">max_chars</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">80</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">max_input_messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">generate_on_first_turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="n">fallback_to_input_excerpt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>
-<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="k">[delegation]</span>
-<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">max_depth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
-<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="n">max_concurrency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
-<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>
-<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="k">[providers]</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">[context_compaction]</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">percent</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">70</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="k">[session_title]</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="n">max_chars</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">80</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">max_input_messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="n">generate_on_first_turn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="n">fallback_to_input_excerpt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="k">[delegation]</span>
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="n">max_depth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+<a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a><span class="n">max_concurrency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span>
+<a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>
+<a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a><span class="k">[providers]</span>
 </code></pre></div>
 <p>Validation rules that apply regardless of what you set:</p>
 <ul>
 <li>The <code>cookie</code> binary requires <code>server.host</code> to be exactly <code>127.0.0.1</code>.</li>
-<li>Positive limits are required everywhere; compaction trigger percentages must
-  be from 1 through 99, and <code>context_compaction.max_summary_bytes</code> may not exceed
-  2 MiB.</li>
+<li>Positive size and timeout limits are required; compaction trigger percentages
+  must be from 1 through 99, and <code>context_compaction.max_summary_bytes</code> may not
+  exceed 2 MiB.</li>
+<li>Model retry counts are signed: zero disables retries after the first attempt,
+  and a negative value retries that error class until success or cancellation.
+  The default standard budget is three retries, or four total attempts; the
+  default overload budget is five retries, or six total attempts.
+  <code>model_retry.backoff_ceiling_ms</code> must be positive. A longer provider
+  <code>Retry-After</code> may exceed this local ceiling without a cap.</li>
 <li><code>delegation.max_concurrency</code> defaults to <code>4</code>; <code>0</code> is rejected. Excess
   root-level background delegations queue up to four times the concurrency
   limit. Foreground and nested delegations bypass the queue.</li>
