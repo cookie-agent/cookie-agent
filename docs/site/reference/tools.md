@@ -4,6 +4,27 @@ Cookie Agent publishes tools according to the active agent's permissions and the
 capabilities of the selected model. Tool argument objects are strict: unknown
 fields and wrong types are rejected.
 
+## Execution concurrency
+
+Tool providers declare whether each tool is safe to overlap with sibling calls
+from the same model turn through `ToolSpec::concurrency`. `ToolConcurrency` is
+`Exclusive` by default; parallel execution requires an explicit `Parallel`
+declaration.
+
+| Tools | Eligibility | Coordination |
+|---|---|---|
+| `read`, `read_tool_result`, `bash` | Parallel | Each call owns its execution and streaming state. |
+| `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
+| `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
+| MCP tools | Parallel | Each MCP server's service mutex serializes calls to that server; different servers can overlap. |
+| `skill`, `get_subagent_result`, `steer_subagent`, `cancel_subagent` | Exclusive | These calls interact with session-scoped state. |
+| Plugin and otherwise undeclared tools | Exclusive | External declarations cannot currently opt in. |
+
+All parallel-eligible calls in the turn are dispatched together without a
+fan-out limit. Exclusive calls run one at a time after the parallel calls have
+finished. Results remain associated with their tool call IDs, while terminal
+events are persisted in completion order.
+
 ## Filesystem tools
 
 `read` accepts `filePath`, plus optional zero-based `offset` and positive
@@ -13,7 +34,11 @@ prepared and revalidated against the target before execution.
 `write` accepts `filePath` and complete `content`. `edit` accepts `filePath`,
 `oldString`, and `newString`, and requires the old text to identify one
 unambiguous replacement. Both tools stage and validate filesystem mutations
-before publication.
+before publication. Writes and edits to the same existing file, or writes to the
+same absent path, share a prepared serialization key and cannot execute at the
+same time. Because all calls are prepared before execution, an edit in the same
+turn does not observe bytes written by an earlier sibling call; models must not
+use same-turn calls to express a write-then-edit dependency.
 
 Tool results may include image, PDF, audio, or video attachments. Attachments
 are validated, content-addressed, and supplied to models as file parts rather

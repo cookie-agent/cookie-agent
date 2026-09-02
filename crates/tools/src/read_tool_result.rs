@@ -62,6 +62,7 @@ impl ReadToolResultProvider {
 
     pub(crate) fn tool_spec() -> ToolSpec {
         ToolSpec {
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "read_tool_result".into(),
             permission_name: "read_tool_result".into(),

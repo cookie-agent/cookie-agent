@@ -210,6 +210,12 @@ session and drive the run loop:
   to the user, reject automatically, or approve once automatically according to
   the mode. `ask` skips the classifier, and `yolo` approves immediately. A
   doom-loop guard rejects repeated identical approvals.
+- **Tool dispatch.** Calls from one committed model turn are prepared and
+  started in model order, then all permission decisions and serialized approval
+  prompts resolve before execution begins. Tools explicitly marked parallel are
+  dispatched together without a fan-out limit; exclusive tools run sequentially
+  after that set. Prepared serialization keys still prevent conflicting
+  mutations from overlapping. Terminal events commit as calls finish.
 - **Delegation.** The `delegate_subagent` tool reserves a child session by
   appending lifecycle events to the parent session, then runs the target
   subagent with an inherited model suffix. Depth and concurrency limits come

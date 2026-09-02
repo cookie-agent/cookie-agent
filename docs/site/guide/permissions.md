@@ -149,6 +149,13 @@ Hard denies, the doom-loop guard, and existing tree grants are evaluated before
 the mode shortcut. Changing a mode does not alter an already pending approval
 and does not cascade to delegated sessions.
 
+When one model turn contains multiple tool calls, the engine computes every
+permission decision before executing any call. Policy asks and model-requested
+approvals are then resolved one at a time in model order. Auto-allowed calls wait
+for every ask in the batch to resolve, so no tool side effect begins while a
+sibling approval is pending. Denied or rejected calls fail independently; after
+the approval pass, surviving parallel-eligible calls are dispatched together.
+
 Mode-decided escalations use the `permission_mode` decision source in the audit
 trail. Their final reason codes are `auto_approve_n_rejected` and
 `auto_approve_y_approved`; the classifier's preceding evaluation remains an

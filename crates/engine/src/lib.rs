@@ -37,7 +37,7 @@ pub use runtime::{
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    SessionToolContext, StdinWrite, ToolCall, ToolError, ToolExecutionContext,
+    SessionToolContext, StdinWrite, ToolCall, ToolConcurrency, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy, ToolSpec,
     ToolStdin, TurnAgentContext,
 };

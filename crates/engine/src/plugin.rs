@@ -1771,6 +1771,7 @@ impl ToolProvider for PluginRegistry {
                     .into_iter()
                     .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
                     .map(|tool| ToolSpec {
+                        concurrency: Default::default(),
                         // External opt-out requires a future extension-protocol capability.
                         result_truncation: Default::default(),
                         name: tool.name,

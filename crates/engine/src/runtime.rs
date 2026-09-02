@@ -87,8 +87,8 @@ pub use skills::SkillInvocation;
 pub use tool_results::ToolResultReadPage;
 
 use crate::tool_api::{
-    PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolError,
-    ToolProvider, ToolSpec, TurnAgentContext,
+    PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall,
+    ToolConcurrency, ToolError, ToolProvider, ToolSpec, TurnAgentContext,
 };
 
 #[derive(Clone)]
@@ -364,6 +364,16 @@ struct PreparedToolCall {
     intercepted_arguments: Arc<Mutex<Value>>,
 }
 
+impl PreparedToolCall {
+    fn concurrency(&self) -> ToolConcurrency {
+        self.interception
+            .as_ref()
+            .map_or(ToolConcurrency::Exclusive, |context| {
+                context.spec.concurrency
+            })
+    }
+}
+
 struct ToolInterceptionContext {
     provider: Arc<dyn ToolProvider>,
     spec: ToolSpec,
@@ -471,7 +481,10 @@ struct InternalAgentExecution<'a> {
 }
 
 enum PendingTool {
-    Prepared(Box<PreparedToolCall>),
+    Prepared {
+        prepared: Box<PreparedToolCall>,
+        permission: crate::permissions::PermissionDecision,
+    },
     ImmediateFailure(ToolFailure),
 }
 

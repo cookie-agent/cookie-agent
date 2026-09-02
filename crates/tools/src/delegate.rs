@@ -196,6 +196,7 @@ impl ToolProvider for DelegateToolProvider {
         } else {
             vec![
                 ToolSpec {
+                    concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
                     result_truncation: result_truncation_policy("delegate_subagent"),
                     name: "delegate_subagent".into(),
                     permission_name: Self::get_permission_name("delegate_subagent")?.into(),
@@ -214,6 +215,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    concurrency: Default::default(),
                     result_truncation: result_truncation_policy("get_subagent_result"),
                     name: "get_subagent_result".into(),
                     permission_name: Self::get_permission_name("get_subagent_result")?.into(),
@@ -230,6 +232,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    concurrency: Default::default(),
                     result_truncation: result_truncation_policy("steer_subagent"),
                     name: "steer_subagent".into(),
                     permission_name: Self::get_permission_name("steer_subagent")?.into(),
@@ -245,6 +248,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    concurrency: Default::default(),
                     result_truncation: result_truncation_policy("cancel_subagent"),
                     name: "cancel_subagent".into(),
                     permission_name: Self::get_permission_name("cancel_subagent")?.into(),

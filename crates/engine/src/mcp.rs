@@ -64,8 +64,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolConcurrency, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -2663,6 +2663,7 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
     Ok(CachedTool {
         raw_name: tool.name.into_owned(),
         spec: ToolSpec {
+            concurrency: ToolConcurrency::Parallel,
             // External opt-out requires a future extension-protocol capability.
             result_truncation: Default::default(),
             name: generated,
