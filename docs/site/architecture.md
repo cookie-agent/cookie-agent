@@ -228,10 +228,10 @@ session and drive the run loop:
 ## Sessions and persistence
 
 Sessions are append-only event logs. A new session exists only in memory until
-its first user message, when its directory, `events.jsonl`, and `meta.json`
-cache are created atomically. Revert appends a `session_reverted` marker and
-fork copies a persisted prefix under a new session ID; neither truncates
-physical events.
+its first user message, when its directory, `events.jsonl`, `meta.json` cache,
+and locked `owner.lock` are published atomically. Revert appends a
+`session_reverted` marker and fork copies a persisted prefix under a new session
+ID; neither truncates physical events.
 
 Session data lives under the user data directory keyed by a hash of the
 canonical working directory:
@@ -243,7 +243,7 @@ canonical working directory:
   catalog/                         # validated models.dev cache
   projects/<16-hex-cwd-hash>/
     cwd                            # canonical project path
-    sessions/<session-id>/         # versionless events.jsonl + rebuildable meta.json cache
+    sessions/<session-id>/         # events.jsonl + meta.json + owner.lock
     artifacts/                     # content-addressed tool output
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
@@ -257,6 +257,30 @@ agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
 rejects recovery. A delegation event skipped by best-effort reading is absent
 from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.
+
+Multiple cookie processes may share this project data directory. Ownership is
+per session, not per project: the process that successfully locks `owner.lock`
+is the only writer and retains that lock until process exit, including while an
+idle session is evicted from memory. Session listing reads `meta.json` without
+locking. Opening an existing session for mutation attempts the lock; success
+enters a non-writable adoption state, reconciles only that session's interrupted
+work, and then publishes ownership. Reconciliation failure revokes the log's
+write capability and releases the lock so a later attempt can retry. A retained
+event-log projection cannot append after its store drops ownership. A
+live foreign owner produces `session is owned by another cookie process`.
+Classification failures fail closed as foreign-owned.
+
+Foreign sessions remain inspectable as read-only snapshots. The TUI disables
+input for them and refreshes the snapshot when reopened; there is no live event
+tail. Forking a foreign snapshot is allowed because the new fork has its own
+lock. Grants and grant invalidations committed by another process become
+visible after restart. Concurrent MCP configuration edits remain last-writer
+wins. Protocol 16 is unchanged; ownership failures use an ordinary fault
+message rather than a new wire error.
+
+The data directory must be on a local filesystem with correct `flock` or
+`LockFileEx` semantics. NFS-class and other network filesystems are unsupported
+for this directory because they cannot guarantee single-writer ownership.
 
 Legacy project-level `delegations.jsonl` files are ignored. In-flight
 delegations that existed only in that pre-release journal are not recovered;

@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::events::{EventLogError, append_jsonl, load_jsonl};
+use crate::events::{EventLogError, append_jsonl, load_jsonl_shared};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +58,7 @@ pub(crate) enum TestFailure {
 
 impl GrantInvalidationJournal {
     pub fn open(path: PathBuf) -> Result<Arc<Self>, GrantJournalError> {
-        let records = load_jsonl::<GrantInvalidationRecord>(&path)?;
+        let records = load_jsonl_shared::<GrantInvalidationRecord>(&path)?;
         for (index, record) in records.iter().enumerate() {
             let expected = index as u64 + 1;
             if record.seq != expected {
@@ -296,10 +296,11 @@ mod tests {
         );
         drop(journal);
 
-        let reopened = GrantInvalidationJournal::open(path).expect("recover torn tail");
-        invalidate(&reopened, second);
+        let before = fs::read(&path).expect("read torn journal");
+        let reopened = GrantInvalidationJournal::open(path.clone()).expect("read torn tail");
         assert!(!reopened.invalidated_ids().contains(&first));
-        assert!(reopened.invalidated_ids().contains(&second));
+        assert!(!reopened.invalidated_ids().contains(&second));
+        assert_eq!(fs::read(path).expect("reread torn journal"), before);
     }
 
     #[test]

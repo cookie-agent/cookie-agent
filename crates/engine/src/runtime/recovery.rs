@@ -18,9 +18,15 @@ use super::{
 use crate::delegation_api::DelegateHandle;
 
 impl Engine {
-    pub(super) fn reconcile(&self) -> Result<(), EngineError> {
-        // Every active run from a previous process is terminally interrupted.
-        for session in self.inner.store.all() {
+    pub(super) fn reconcile_session(&self, session_id: SessionId) -> Result<(), EngineError> {
+        let session = self.inner.store.get(session_id)?;
+        let interrupted_runs = session
+            .runs
+            .values()
+            .filter(|run| run.status == SessionStatus::Running)
+            .map(|run| run.id)
+            .collect::<Vec<_>>();
+        {
             let mut internal = HashMap::new();
             for event in session.log.events() {
                 match event.payload {
@@ -58,7 +64,7 @@ impl Engine {
                 }
             }
             for ((invocation_id, internal_run_id), (kind, parent_run)) in internal {
-                self.append_blocking(
+                self.append_recovery_direct(
                     session.meta.session_id,
                     parent_run,
                     super::event_origin("engine:recovery"),
@@ -75,7 +81,7 @@ impl Engine {
                 .values()
                 .filter(|run| run.status == SessionStatus::Running)
             {
-                self.append_blocking(
+                self.append_recovery_direct(
                     session.meta.session_id,
                     Some(run.id),
                     super::event_origin("engine:recovery"),
@@ -84,13 +90,26 @@ impl Engine {
                     },
                 )?;
             }
+            #[cfg(test)]
+            if self
+                .inner
+                .adoption_reconcile_failures
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |remaining| remaining.checked_sub(1),
+                )
+                .is_ok()
+            {
+                return Err(EngineError::ActorStopped);
+            }
             for run in session.runs.values() {
                 for (tool_call_id, tool) in &run.pending_calls {
                     if tool == "delegate_subagent" {
                         continue;
                     }
                     let failure = restart_tool_failure();
-                    self.append_blocking(
+                    self.append_recovery_direct(
                         session.meta.session_id,
                         Some(run.id),
                         super::event_origin("engine:recovery"),
@@ -125,7 +144,7 @@ impl Engine {
                 let approval_run =
                     approval_run_id(&session.log.events(), record.request.approval_id())
                         .ok_or(EngineError::ApprovalConflict)?;
-                self.append_blocking(
+                self.append_recovery_direct(
                     session.meta.session_id,
                     Some(approval_run),
                     super::event_origin("engine:recovery"),
@@ -134,7 +153,7 @@ impl Engine {
                         reason_code: ApprovalReasonCode::PreparedCapabilityLost,
                     },
                 )?;
-                self.append_blocking(
+                self.append_recovery_direct(
                     session.meta.session_id,
                     Some(approval_run),
                     super::event_origin("engine:recovery"),
@@ -151,177 +170,73 @@ impl Engine {
                 )?;
             }
         }
-        let mut delegation_entries = self.inner.delegation_events.entries();
-        let mut latest_invocations = std::collections::HashMap::new();
-        for entry in &delegation_entries {
-            latest_invocations.insert(
-                entry.reservation.child_session_id,
-                entry.reservation.invocation_id,
-            );
-        }
-        for entry in &mut delegation_entries {
-            if self
-                .inner
-                .store
-                .get(entry.reservation.child_session_id)
-                .is_err()
+        for entry in self.inner.delegation_events.entries() {
+            if entry.reservation.child_session_id == session_id
+                && entry.request.resume_session_id.is_none()
             {
-                if entry.terminal_status.is_none() {
-                    let reason = safe_error("child_missing: child session was never created");
-                    self.inner.delegation_events.mark_finished_with_reason(
-                        entry.reservation.invocation_id,
-                        SessionStatus::Failed,
-                        Some(reason.clone()),
-                    )?;
-                    entry.terminal_status = Some(SessionStatus::Failed);
-                    entry.terminal_reason = Some(reason);
-                }
-                let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
-                let pending = parent
-                    .runs
-                    .get(&entry.reservation.parent_run_id)
-                    .and_then(|run| {
-                        run.pending_calls
-                            .get(&entry.reservation.parent_tool_call_id)
-                    })
-                    .is_some_and(|tool| tool == "delegate_subagent");
-                if pending {
-                    self.terminate_tool_direct(
-                        entry.reservation.parent_session_id,
-                        entry.reservation.parent_run_id,
-                        entry.reservation.parent_tool_call_id,
-                        ToolTerminationOutcome::Failed,
-                        Some(delegate_failure_result(
-                            Some(entry.reservation.child_session_id),
-                            "delegate child session was never created",
-                        )),
-                        Some(SafeToolError {
-                            code: safe_code("child_missing"),
-                            message: safe_error("delegate child session was never created"),
-                        }),
-                    )?;
-                }
+                self.ensure_delegated_context_seed_blocking(
+                    session_id,
+                    entry.reservation.invocation_id,
+                    entry.request.seeded_context,
+                )?;
+                self.ensure_delegated_title_blocking(
+                    session_id,
+                    entry.reservation.invocation_id,
+                    entry.request.title,
+                )?;
+            }
+        }
+        self.interrupt_delegation_accounting(session_id, &interrupted_runs)?;
+        Ok(())
+    }
+
+    pub(super) fn recover_missing_delegation_children(
+        &self,
+        parent_session_id: SessionId,
+    ) -> Result<(), EngineError> {
+        for entry in self.inner.delegation_events.entries() {
+            if entry.reservation.parent_session_id != parent_session_id
+                || entry.terminal_status.is_some()
+                || self
+                    .inner
+                    .store
+                    .get(entry.reservation.child_session_id)
+                    .is_ok()
+            {
                 continue;
             }
-            if self
-                .inner
-                .store
-                .get(entry.reservation.child_session_id)
-                .is_ok()
-            {
-                if entry.terminal_status.is_none() {
-                    let child = self.inner.store.get(entry.reservation.child_session_id)?;
-                    let recovered_status = entry
-                        .child_run_id
-                        .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
-                        .or_else(|| {
-                            matches!(
-                                child.status,
-                                SessionStatus::Completed
-                                    | SessionStatus::Failed
-                                    | SessionStatus::Cancelled
-                                    | SessionStatus::Interrupted
-                            )
-                            .then_some(child.status)
-                        });
-                    if let Some(status) = recovered_status.filter(|status| {
-                        matches!(
-                            status,
-                            SessionStatus::Completed
-                                | SessionStatus::Failed
-                                | SessionStatus::Cancelled
-                                | SessionStatus::Interrupted
-                        )
-                    }) {
-                        self.inner
-                            .delegation_events
-                            .mark_finished(entry.reservation.invocation_id, status)?;
-                        entry.terminal_status = Some(status);
-                    }
-                }
-                if entry.request.resume_session_id.is_none() {
-                    self.ensure_delegated_context_seed_blocking(
-                        entry.reservation.child_session_id,
-                        entry.reservation.invocation_id,
-                        entry.request.seeded_context.clone(),
-                    )?;
-                    self.ensure_delegated_title_blocking(
-                        entry.reservation.child_session_id,
-                        entry.reservation.invocation_id,
-                        entry.request.title.clone(),
-                    )?;
-                }
-                let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
-                let parent_cancelled = parent
-                    .runs
-                    .get(&entry.reservation.parent_run_id)
-                    .is_some_and(|run| run.status == SessionStatus::Cancelled)
-                    && !parent.log.events().iter().any(|event| {
-                        matches!(
-                            &event.payload,
-                            Event::ToolCallTerminated { termination }
-                                if termination.tool_call_id
-                                    == entry.reservation.parent_tool_call_id
-                        )
-                    });
-                if parent_cancelled {
-                    if let Some(child_run_id) = entry.child_run_id {
-                        let child = self.inner.store.get(entry.reservation.child_session_id)?;
-                        if child.runs.get(&child_run_id).is_some_and(|run| {
-                            matches!(
-                                run.status,
-                                SessionStatus::Running | SessionStatus::Interrupted
-                            )
-                        }) {
-                            self.append_blocking(
-                                entry.reservation.child_session_id,
-                                Some(child_run_id),
-                                super::event_origin("engine:recovery"),
-                                Event::RunCancelled {
-                                    reason: Some(safe_error("parent delegate run was cancelled")),
-                                },
-                            )?;
-                        }
-                    } else if entry.terminal_status.is_none()
-                        && latest_invocations.get(&entry.reservation.child_session_id)
-                            == Some(&entry.reservation.invocation_id)
-                    {
-                        self.inner.delegation_events.mark_finished(
-                            entry.reservation.invocation_id,
-                            SessionStatus::Cancelled,
-                        )?;
-                        entry.terminal_status = Some(SessionStatus::Cancelled);
-                        self.void_runless_pending_inputs_blocking(
-                            entry.reservation.child_session_id,
-                        )?;
-                        let child = self.inner.store.get(entry.reservation.child_session_id)?;
-                        if child.status == SessionStatus::Idle {
-                            self.append_blocking(
-                                entry.reservation.child_session_id,
-                                None,
-                                super::event_origin("engine:recovery"),
-                                Event::DelegateChildTerminated {
-                                    status: SessionStatus::Cancelled,
-                                    reason: Some(safe_error("parent delegate run was cancelled")),
-                                },
-                            )?;
-                        }
-                    }
-                }
-                self.ensure_parent_link_blocking(
-                    entry.reservation.parent_session_id,
+            let reason = safe_error("child_missing: child session was never created");
+            let parent = self.inner.store.get(parent_session_id)?;
+            let pending = parent
+                .runs
+                .get(&entry.reservation.parent_run_id)
+                .and_then(|run| {
+                    run.pending_calls
+                        .get(&entry.reservation.parent_tool_call_id)
+                })
+                .is_some_and(|tool| tool == "delegate_subagent");
+            self.inner.delegation_events.mark_finished_with_reason(
+                entry.reservation.invocation_id,
+                SessionStatus::Failed,
+                Some(reason),
+            )?;
+            if pending {
+                self.terminate_tool_direct(
+                    parent_session_id,
                     entry.reservation.parent_run_id,
                     entry.reservation.parent_tool_call_id,
-                    entry.reservation.child_session_id,
+                    ToolTerminationOutcome::Failed,
+                    Some(delegate_failure_result(
+                        Some(entry.reservation.child_session_id),
+                        "delegate child session was never created",
+                    )),
+                    Some(SafeToolError {
+                        code: safe_code("child_missing"),
+                        message: safe_error("delegate child session was never created"),
+                    }),
                 )?;
-                if !entry.started {
-                    self.inner
-                        .delegation_events
-                        .mark_started(entry.reservation.invocation_id)?;
-                }
             }
         }
-        self.rebuild_delegation_registry(&delegation_entries)?;
         Ok(())
     }
 
@@ -569,7 +484,7 @@ impl Engine {
     }
 
     pub(super) fn rebuild_approvals(&self) {
-        for session in self.inner.store.all() {
+        for session in self.inner.store.all_snapshots() {
             for envelope in session.log.events() {
                 if let Event::TreeApprovalGrantCommitted { grant } = envelope.payload
                     && !grant.resources.is_empty()

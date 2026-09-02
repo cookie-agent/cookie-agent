@@ -28,6 +28,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
+use crate::ownership::{HeldLock, SessionOwnership, WriteAuthority, WriteCapability, try_acquire};
 
 const PROJECT_CWD_FILE: &str = "cwd";
 
@@ -49,6 +50,8 @@ pub enum SessionError {
     },
     #[error("session {0} not found")]
     Missing(SessionId),
+    #[error("session {0} is owned by another cookie process")]
+    SessionLocked(SessionId),
     #[error("sequence {through_seq} is not a valid event in session {session_id}")]
     InvalidSequence {
         session_id: SessionId,
@@ -105,11 +108,40 @@ struct SessionResidency {
     evicted: HashMap<SessionId, SessionSummary>,
 }
 
+#[derive(Debug)]
+enum StoreOwnership {
+    PendingPublish {
+        authority: WriteAuthority,
+    },
+    Adopting {
+        _lock: HeldLock,
+        authority: WriteAuthority,
+    },
+    Owned {
+        _lock: HeldLock,
+        authority: WriteAuthority,
+    },
+    Foreign,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WriteOpen {
+    AlreadyOwned,
+    Adopting,
+}
+
 #[cfg(test)]
 #[derive(Debug)]
 struct EvictionTransitionHook {
     reached: Mutex<Option<tokio::sync::oneshot::Sender<SessionId>>>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PublishHook {
+    reached: std::sync::mpsc::Sender<SessionId>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[derive(Debug)]
@@ -118,9 +150,13 @@ pub struct SessionStore {
     sessions_dir: PathBuf,
     cwd: PathBuf,
     residency: Mutex<SessionResidency>,
+    ownership: Mutex<HashMap<SessionId, StoreOwnership>>,
+    adoption_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     mutation: Mutex<()>,
     #[cfg(test)]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
+    #[cfg(test)]
+    publish_hook: Mutex<Option<PublishHook>>,
 }
 
 impl SessionStore {
@@ -152,33 +188,15 @@ impl SessionStore {
             sessions_dir: sessions_dir.clone(),
             cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
             residency: Mutex::new(SessionResidency::default()),
+            ownership: Mutex::new(HashMap::new()),
+            adoption_locks: Mutex::new(HashMap::new()),
             mutation: Mutex::new(()),
             #[cfg(test)]
             eviction_transition_hook: Mutex::new(None),
+            #[cfg(test)]
+            publish_hook: Mutex::new(None),
         });
-        for entry in fs::read_dir(&sessions_dir).map_err(|source| SessionError::Io {
-            path: sessions_dir.clone(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| SessionError::Io {
-                path: sessions_dir.clone(),
-                source,
-            })?;
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
-                continue;
-            };
-            let log = EventLog::open(entry.path().join("events.jsonl"), id)?;
-            let projection = projection(log)?;
-            store
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .resident
-                .insert(id, projection);
-        }
+        store.refresh_discovered();
         Ok(store)
     }
 
@@ -215,23 +233,21 @@ impl SessionStore {
         }
         let final_dir = self.sessions_dir.join(session_id.to_string());
         if final_dir.exists() {
-            let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
-            let existing = projection(log.clone())?;
-            let mut residency = self
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            residency.resident.insert(session_id, existing);
-            residency.evicted.remove(&session_id);
-            return Ok((log, false));
+            return Err(SessionError::SessionLocked(session_id));
         }
-        let log = EventLog::create_buffered(
+        let authority = WriteAuthority::new();
+        let log = EventLog::create_buffered_owned(
             final_dir.join("events.jsonl"),
             session_id,
             origin,
             creation,
+            authority.capability(),
         )?;
         let result = projection(log.clone())?;
+        self.ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(session_id, StoreOwnership::PendingPublish { authority });
         let mut residency = self
             .residency
             .lock()
@@ -245,7 +261,10 @@ impl SessionStore {
         if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
-        self.reopen(id)
+        if self.is_owned(id) {
+            return self.reopen_owned(id);
+        }
+        self.open_snapshot(id)
     }
 
     #[must_use]
@@ -258,7 +277,7 @@ impl SessionStore {
             .cloned()
     }
 
-    fn reopen(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    fn reopen_owned(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
         let _mutation = self
             .mutation
             .lock()
@@ -277,7 +296,8 @@ impl SessionStore {
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
-        let log = EventLog::open(session_dir.join("events.jsonl"), id)?;
+        let capability = self.write_capability(id, false)?;
+        let log = EventLog::open_owned(session_dir.join("events.jsonl"), id, capability)?;
         let reopened = projection(log)?;
         let mut residency = self
             .residency
@@ -286,6 +306,204 @@ impl SessionStore {
         residency.resident.insert(id, reopened.clone());
         residency.evicted.remove(&id);
         Ok(reopened)
+    }
+
+    fn open_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+        let session_dir = self.sessions_dir.join(id.to_string());
+        if !session_dir.is_dir() {
+            return Err(SessionError::Missing(id));
+        }
+        let snapshot = projection(EventLog::open_read_only(
+            session_dir.join("events.jsonl"),
+            id,
+        )?)?;
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .evicted
+            .insert(id, summary_from_projection(&snapshot));
+        Ok(snapshot)
+    }
+
+    pub(crate) fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.begin_write_locked(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_write(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+        let adoption_lock = self.adoption_lock(id);
+        let _adoption = adoption_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.begin_write(id)? == WriteOpen::Adopting {
+            self.commit_adoption(id)?;
+        }
+        self.get(id)
+    }
+
+    fn begin_write_locked(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
+        if self.is_owned(id) {
+            if let Some(session) = self.get_resident(id) {
+                drop(session);
+                return Ok(WriteOpen::AlreadyOwned);
+            }
+            let session_dir = self.sessions_dir.join(id.to_string());
+            let capability = self.write_capability(id, false)?;
+            let reopened = projection(EventLog::open_owned(
+                session_dir.join("events.jsonl"),
+                id,
+                capability,
+            )?)?;
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(id, reopened.clone());
+            residency.evicted.remove(&id);
+            return Ok(WriteOpen::AlreadyOwned);
+        }
+        let session_dir = self.sessions_dir.join(id.to_string());
+        if !session_dir.is_dir() {
+            return Err(SessionError::Missing(id));
+        }
+        let lock = match try_acquire(&session_dir) {
+            Ok(SessionOwnership::Owned(lock)) => lock,
+            Ok(SessionOwnership::Foreign) => {
+                self.ownership
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(id, StoreOwnership::Foreign);
+                return Err(SessionError::SessionLocked(id));
+            }
+            Err(error) => {
+                eprintln!("session {id} ownership classification failed: {error}");
+                self.ownership
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(id, StoreOwnership::Foreign);
+                return Err(SessionError::SessionLocked(id));
+            }
+        };
+        let authority = WriteAuthority::new();
+        let opened =
+            EventLog::open_owned(session_dir.join("events.jsonl"), id, authority.capability());
+        let projection = match opened.and_then(|log| {
+            projection(log).map_err(|error| match error {
+                SessionError::Event(error) => error,
+                _ => unreachable!("projection only returns event-log errors"),
+            })
+        }) {
+            Ok(projection) => projection,
+            Err(error) => {
+                eprintln!("session {id} adoption failed closed: {error}");
+                return Err(SessionError::SessionLocked(id));
+            }
+        };
+        self.ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                id,
+                StoreOwnership::Adopting {
+                    _lock: lock,
+                    authority,
+                },
+            );
+        let mut residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        residency.resident.insert(id, projection.clone());
+        residency.evicted.remove(&id);
+        Ok(WriteOpen::Adopting)
+    }
+
+    pub(crate) fn commit_adoption(&self, id: SessionId) -> Result<(), SessionError> {
+        let mut ownership = self
+            .ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = ownership
+            .remove(&id)
+            .ok_or(SessionError::SessionLocked(id))?;
+        match state {
+            StoreOwnership::Adopting { _lock, authority } => {
+                ownership.insert(id, StoreOwnership::Owned { _lock, authority });
+                Ok(())
+            }
+            state => {
+                ownership.insert(id, state);
+                Err(SessionError::SessionLocked(id))
+            }
+        }
+    }
+
+    pub(crate) fn rollback_adoption(&self, id: SessionId) {
+        let projection = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .remove(&id);
+        if let Some(projection) = projection {
+            let _ = projection.log.suspend_writer();
+            self.residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .evicted
+                .insert(id, summary_from_projection(&projection));
+        }
+        let removed = self
+            .ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        debug_assert!(matches!(removed, Some(StoreOwnership::Adopting { .. })));
+    }
+
+    pub(crate) fn adoption_lock(&self, id: SessionId) -> Arc<Mutex<()>> {
+        self.adoption_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn write_capability(
+        &self,
+        id: SessionId,
+        allow_adopting: bool,
+    ) -> Result<WriteCapability, SessionError> {
+        let ownership = self
+            .ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match ownership.get(&id) {
+            Some(
+                StoreOwnership::PendingPublish { authority }
+                | StoreOwnership::Owned { authority, .. },
+            ) => Ok(authority.capability()),
+            Some(StoreOwnership::Adopting { authority, .. }) if allow_adopting => {
+                Ok(authority.capability())
+            }
+            _ => Err(SessionError::SessionLocked(id)),
+        }
+    }
+
+    #[must_use]
+    pub fn is_owned(&self, id: SessionId) -> bool {
+        matches!(
+            self.ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&id),
+            Some(StoreOwnership::PendingPublish { .. } | StoreOwnership::Owned { .. })
+        )
     }
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
@@ -357,6 +575,25 @@ impl SessionStore {
         (receiver, release)
     }
 
+    #[cfg(test)]
+    fn install_publish_hook_for_test(
+        &self,
+    ) -> (
+        std::sync::mpsc::Receiver<SessionId>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (reached, reached_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .publish_hook
+            .lock()
+            .expect("publish hook lock poisoned") = Some(PublishHook {
+            reached,
+            release: release_receiver,
+        });
+        (reached_receiver, release)
+    }
+
     pub fn append(
         &self,
         id: SessionId,
@@ -364,6 +601,28 @@ impl SessionStore {
         origin: cookie_agent_protocol::EventOrigin,
         event: EventPayload,
     ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+        self.append_with_mode(id, run, origin, event, false)
+    }
+
+    pub(crate) fn append_recovery(
+        &self,
+        id: SessionId,
+        run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
+        event: EventPayload,
+    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+        self.append_with_mode(id, run, origin, event, true)
+    }
+
+    fn append_with_mode(
+        &self,
+        id: SessionId,
+        run: Option<RunId>,
+        origin: cookie_agent_protocol::EventOrigin,
+        event: EventPayload,
+        recovery: bool,
+    ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
+        let capability = self.write_capability(id, recovery)?;
         let _mutation = self
             .mutation
             .lock()
@@ -379,7 +638,7 @@ impl SessionStore {
                     | EventPayload::SkillLoaded { .. }
                     | EventPayload::AgentMdLoaded { .. }
             );
-        let envelope = current.log.append(run, origin, event)?;
+        let envelope = current.log.append_owned(&capability, run, origin, event)?;
         let rebuilt = projection(current.log.clone())?;
         if first_user_message {
             self.persist_buffered(id, &rebuilt)?;
@@ -453,6 +712,8 @@ impl SessionStore {
                 source,
             }
         })?;
+        let authority = WriteAuthority::new();
+        let capability = authority.capability();
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
             #[cfg(windows)]
@@ -472,11 +733,17 @@ impl SessionStore {
                     source,
                 },
             )?;
-            let log = EventLog::open(log_path, session_id)?;
-            log.append(None, origin, EventPayload::SessionReverted { through_seq })?;
+            let log = EventLog::open_owned(log_path, session_id, capability.clone())?;
+            log.append_owned(
+                &capability,
+                None,
+                origin,
+                EventPayload::SessionReverted { through_seq },
+            )?;
             let prefix_projection = projection(log.clone())?;
             let title = fork_title(prefix_projection.meta.title.as_ref())?;
-            log.append(
+            log.append_owned(
+                &capability,
                 None,
                 cookie_agent_protocol::EventOrigin::new("user")
                     .expect("static event origin is valid"),
@@ -492,13 +759,40 @@ impl SessionStore {
             log.suspend_writer()?;
             let fork_projection = projection(log)?;
             write_cache(&temporary.join("meta.json"), &fork_projection.meta)?;
+            let lock = match try_acquire(&temporary).map_err(|source| SessionError::Io {
+                path: temporary.join("owner.lock"),
+                source,
+            })? {
+                SessionOwnership::Owned(lock) => lock,
+                SessionOwnership::Foreign => return Err(SessionError::SessionLocked(session_id)),
+            };
+            #[cfg(test)]
+            if let Some(hook) = self
+                .publish_hook
+                .lock()
+                .expect("publish hook lock poisoned")
+                .take()
+            {
+                let _ = hook.reached.send(session_id);
+                let _ = hook.release.recv();
+            }
             fsync_directory(&temporary)?;
             fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
                 path: final_dir.clone(),
                 source,
             })?;
             fsync_directory(&self.sessions_dir)?;
-            let log = EventLog::open(final_dir.join("events.jsonl"), session_id)?;
+            self.ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(
+                    session_id,
+                    StoreOwnership::Owned {
+                        _lock: lock,
+                        authority,
+                    },
+                );
+            let log = EventLog::open_owned(final_dir.join("events.jsonl"), session_id, capability)?;
             let fork_projection = projection(log)?;
             self.residency
                 .lock()
@@ -518,6 +812,7 @@ impl SessionStore {
         session_id: SessionId,
         projection: &SessionProjection,
     ) -> Result<(), SessionError> {
+        self.write_capability(session_id, false)?;
         let final_dir = self.sessions_dir.join(session_id.to_string());
         let temporary = self
             .sessions_dir
@@ -534,12 +829,51 @@ impl SessionStore {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
             write_cache(&temporary.join("meta.json"), &projection.meta)?;
+            let lock = match try_acquire(&temporary).map_err(|source| SessionError::Io {
+                path: temporary.join("owner.lock"),
+                source,
+            })? {
+                SessionOwnership::Owned(lock) => lock,
+                SessionOwnership::Foreign => return Err(SessionError::SessionLocked(session_id)),
+            };
+            #[cfg(test)]
+            if let Some(hook) = self
+                .publish_hook
+                .lock()
+                .expect("publish hook lock poisoned")
+                .take()
+            {
+                let _ = hook.reached.send(session_id);
+                let _ = hook.release.recv();
+            }
             fsync_directory(&temporary)?;
             fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
                 path: final_dir.clone(),
                 source,
             })?;
             fsync_directory(&self.sessions_dir)?;
+            let mut ownership = self
+                .ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = ownership
+                .remove(&session_id)
+                .ok_or(SessionError::SessionLocked(session_id))?;
+            match state {
+                StoreOwnership::PendingPublish { authority } => {
+                    ownership.insert(
+                        session_id,
+                        StoreOwnership::Owned {
+                            _lock: lock,
+                            authority,
+                        },
+                    );
+                }
+                state => {
+                    ownership.insert(session_id, state);
+                    return Err(SessionError::SessionLocked(session_id));
+                }
+            }
             Ok::<(), SessionError>(())
         })();
         if result.is_err() {
@@ -572,8 +906,34 @@ impl SessionStore {
             .cloned()
             .collect()
     }
+
+    pub fn all_snapshots(&self) -> Vec<SessionProjection> {
+        self.refresh_discovered();
+        let ids = {
+            let residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency
+                .resident
+                .keys()
+                .chain(residency.evicted.keys())
+                .copied()
+                .collect::<HashSet<_>>()
+        };
+        ids.into_iter()
+            .filter_map(|id| match self.get(id) {
+                Ok(session) => Some(session),
+                Err(error) => {
+                    eprintln!("session {id} snapshot skipped: {error}");
+                    None
+                }
+            })
+            .collect()
+    }
     #[must_use]
     pub fn all_summaries(&self) -> Vec<SessionSummary> {
+        self.refresh_discovered();
         let residency = self
             .residency
             .lock()
@@ -594,23 +954,68 @@ impl SessionStore {
     }
 
     pub fn summary(&self, id: SessionId) -> Result<SessionSummary, SessionError> {
-        let residency = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(session) = residency.resident.get(&id) {
-            return Ok(SessionSummary {
-                meta: session.meta.clone(),
-                usage: session.usage.clone(),
-                usage_rollup: session.usage_rollup.clone(),
-                agent_usage: session.agent_usage.clone(),
-            });
+        {
+            let residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(session) = residency.resident.get(&id) {
+                return Ok(summary_from_projection(session));
+            }
+            if let Some(summary) = residency.evicted.get(&id) {
+                return Ok(summary.clone());
+            }
         }
-        residency
-            .evicted
-            .get(&id)
-            .cloned()
-            .ok_or(SessionError::Missing(id))
+        self.get(id)
+            .map(|session| summary_from_projection(&session))
+    }
+
+    fn refresh_discovered(&self) {
+        let entries = match fs::read_dir(&self.sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                eprintln!("session discovery failed: {error}");
+                return;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
+                continue;
+            };
+            if self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .resident
+                .contains_key(&id)
+            {
+                continue;
+            }
+            match read_cache(
+                &entry.path().join("meta.json"),
+                &entry.path().join("events.jsonl"),
+            ) {
+                Ok(meta) if meta.session_id == id => {
+                    self.residency
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .evicted
+                        .entry(id)
+                        .or_insert(SessionSummary {
+                            meta,
+                            usage: None,
+                            usage_rollup: UsageRollup::default(),
+                            agent_usage: BTreeMap::new(),
+                        });
+                }
+                Ok(_) => eprintln!("session {id} metadata ID does not match its directory"),
+                Err(error) => eprintln!("session {id} metadata skipped: {error}"),
+            }
+        }
     }
 
     pub fn session_usage(
@@ -698,6 +1103,22 @@ impl SessionStore {
                 .map(|child| self.tree(child.session_id))
                 .collect::<Result<Vec<_>, _>>()?,
         })
+    }
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        let residency = self
+            .residency
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for session in residency.resident.values() {
+            let _ = session.log.suspend_writer();
+        }
+        self.ownership
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 }
 
@@ -1007,6 +1428,15 @@ pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, Sessio
     })
 }
 
+fn summary_from_projection(session: &SessionProjection) -> SessionSummary {
+    SessionSummary {
+        meta: session.meta.clone(),
+        usage: session.usage.clone(),
+        usage_rollup: session.usage_rollup.clone(),
+        agent_usage: session.agent_usage.clone(),
+    }
+}
+
 fn fork_title(title: Option<&SessionTitle>) -> Result<SessionTitle, SessionError> {
     const SUFFIX: &str = " (fork)";
     let base = title.map_or("Untitled", SessionTitle::as_str);
@@ -1047,66 +1477,111 @@ fn turns_tool_name(
 }
 
 fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
-    let mut persisted = serde_json::to_value(cache).map_err(|source| SessionError::Json {
+    let persisted = serde_json::to_value(cache).map_err(|source| SessionError::Json {
         path: path.to_owned(),
         source,
     })?;
-    persisted
-        .as_object_mut()
-        .expect("SessionMeta serializes as an object")
-        .remove("last_activity");
     let bytes = serde_json::to_vec_pretty(&persisted).map_err(|source| SessionError::Json {
         path: path.to_owned(),
         source,
     })?;
-    #[cfg(unix)]
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|source| SessionError::Io {
+    let parent = path.parent().expect("session cache has a parent");
+    let temporary = parent.join(format!(".meta.json.{}.tmp", Uuid::now_v7()));
+    let result = (|| -> Result<(), SessionError> {
+        #[cfg(unix)]
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+                .map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            drop(file);
+            fs::rename(&temporary, path).map_err(|source| SessionError::Io {
                 path: path.to_owned(),
                 source,
             })?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|source| SessionError::Io {
-                path: path.to_owned(),
+            fsync_directory(parent)?;
+        }
+        #[cfg(windows)]
+        {
+            let mut file =
+                cookie_agent_models::secure_store::create_windows_private_file(&temporary)
+                    .map_err(|source| SessionError::Io {
+                        path: temporary.clone(),
+                        source,
+                    })?;
+            file.write_all(&bytes).map_err(|source| SessionError::Io {
+                path: temporary.clone(),
                 source,
-            })
-    }
-    #[cfg(windows)]
-    {
-        let mut file = if path.exists() {
-            fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(path)
-                .map_err(|source| SessionError::Io {
-                    path: path.to_owned(),
-                    source,
-                })?
-        } else {
-            cookie_agent_models::secure_store::create_windows_private_file(path).map_err(
+            })?;
+            file.sync_all().map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            drop(file);
+            cookie_agent_models::secure_store::replace_windows_path(&temporary, path).map_err(
                 |source| SessionError::Io {
                     path: path.to_owned(),
                     source,
                 },
-            )?
-        };
-        file.write_all(&bytes).map_err(|source| SessionError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        file.sync_all().map_err(|source| SessionError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+            )?;
+        }
         Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
+    result
+}
+
+fn read_cache(path: &Path, events_path: &Path) -> Result<SessionMeta, SessionError> {
+    let bytes = fs::read(path).map_err(|source| SessionError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut value = serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|source| {
+        SessionError::Json {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    if value.get("last_activity").is_none() {
+        let modified = fs::metadata(events_path)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|source| SessionError::Io {
+                path: events_path.to_owned(),
+                source,
+            })?;
+        let timestamp =
+            jiff::Timestamp::try_from(modified).unwrap_or_else(|_| jiff::Timestamp::now());
+        value
+            .as_object_mut()
+            .ok_or_else(|| SessionError::Json {
+                path: path.to_owned(),
+                source: serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "session metadata is not an object",
+                )),
+            })?
+            .insert(
+                "last_activity".into(),
+                serde_json::to_value(timestamp).expect("timestamp serializes"),
+            );
+    }
+    serde_json::from_value(value).map_err(|source| SessionError::Json {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 #[cfg(unix)]
@@ -1257,7 +1732,7 @@ mod tests {
         SessionId, SessionOrigin, Sha256Digest, Usage,
     };
 
-    use super::{PROJECT_CWD_FILE, SessionStore, projection};
+    use super::{PROJECT_CWD_FILE, SessionError, SessionStore, projection};
 
     #[cfg(unix)]
     fn cwd_file(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
@@ -1383,6 +1858,312 @@ mod tests {
             )
             .unwrap();
         session_id
+    }
+
+    fn create_buffered_test_session(store: &SessionStore) -> SessionId {
+        let session_id = SessionId::new_v7();
+        let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
+        let selection = crate::test_support::run_selection("test");
+        let binding = agent.fallback_chain[0].clone();
+        let revision = |label: char| format!("sha256:{}", label.to_string().repeat(64));
+        store
+            .create(
+                session_id,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionCreated {
+                    origin: SessionOrigin::Root,
+                    cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
+                        .unwrap(),
+                    creation_selection: selection,
+                    creation_agent: Box::new(agent),
+                    runtime_revision: RuntimeRevision::new(revision('1')).unwrap(),
+                    catalog_revision: CatalogRevision::new(revision('2')).unwrap(),
+                    provider_state_revision: ProviderStateRevision::new(revision('3')).unwrap(),
+                    model_revision: ModelRevision::new(revision('4')).unwrap(),
+                    agent_revision: AgentRevision::new(revision('5')).unwrap(),
+                    recipe_registry_revision: RecipeRegistryRevision::new(revision('6')).unwrap(),
+                    manifest_revision: binding.manifest_revision,
+                },
+            )
+            .expect("create buffered session");
+        session_id
+    }
+
+    #[test]
+    fn ownership_is_acquired_on_write_open_and_released_with_the_store() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        assert!(owner.session_dir(session_id).join("owner.lock").is_file());
+        let stale_log = owner.get(session_id).expect("owned projection").log;
+        let (authorized, release_append) = stale_log.install_append_authorization_hook_for_test();
+        let appending = thread::spawn(move || {
+            stale_log.append(
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            )
+        });
+        authorized
+            .recv()
+            .expect("append passed initial authorization");
+
+        assert_eq!(Arc::strong_count(&owner), 1);
+        drop(owner);
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        observer
+            .open_for_write(session_id)
+            .expect("adopt after owner drops");
+        assert!(observer.is_owned(session_id));
+        release_append.send(()).expect("release stale append");
+        assert!(matches!(
+            appending.join().expect("stale append thread"),
+            Err(crate::events::EventLogError::ReadOnly(_))
+        ));
+    }
+
+    #[test]
+    fn eviction_retains_ownership_and_reopens_for_the_owner() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        assert!(owner.evict(session_id).expect("evict owned session"));
+        assert!(!owner.is_resident(session_id));
+
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        let snapshot = observer.get(session_id).expect("read-only snapshot");
+        assert!(matches!(
+            snapshot.log.append(
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            ),
+            Err(crate::events::EventLogError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            observer.open_for_write(session_id),
+            Err(SessionError::SessionLocked(id)) if id == session_id
+        ));
+        owner
+            .open_for_write(session_id)
+            .expect("owner reopens after eviction");
+    }
+
+    #[test]
+    fn foreign_snapshot_preserves_torn_tail_until_owned_adoption() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        let event_path = owner.session_dir(session_id).join("events.jsonl");
+        let mut bytes = fs::read(&event_path).expect("read event log");
+        bytes.extend_from_slice(b"{\"torn\"");
+        fs::write(&event_path, &bytes).expect("write torn tail");
+
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        observer.get(session_id).expect("read foreign snapshot");
+        assert_eq!(fs::read(&event_path).expect("tail remains"), bytes);
+        assert!(matches!(
+            observer.open_for_write(session_id),
+            Err(SessionError::SessionLocked(id)) if id == session_id
+        ));
+
+        drop(owner);
+        observer.open_for_write(session_id).expect("adopt torn log");
+        assert_ne!(fs::read(&event_path).expect("tail truncated"), bytes);
+        assert!(
+            fs::read(&event_path)
+                .expect("read repaired log")
+                .ends_with(b"\n")
+        );
+    }
+
+    #[test]
+    fn failed_adoption_is_unobservable_and_retryable() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        assert_eq!(Arc::strong_count(&owner), 1);
+        drop(owner);
+
+        let first = SessionStore::open(&data, &cwd).expect("first adopter");
+        assert_eq!(
+            first.begin_write(session_id).unwrap(),
+            super::WriteOpen::Adopting
+        );
+        assert!(!first.is_owned(session_id));
+        assert!(matches!(
+            first.append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::SessionReverted { through_seq: 1 },
+            ),
+            Err(SessionError::SessionLocked(id)) if id == session_id
+        ));
+        first.rollback_adoption(session_id);
+
+        let second = SessionStore::open(&data, &cwd).expect("second adopter");
+        assert_eq!(
+            second.begin_write(session_id).unwrap(),
+            super::WriteOpen::Adopting
+        );
+        second.commit_adoption(session_id).expect("commit retry");
+        assert!(second.is_owned(session_id));
+    }
+
+    #[test]
+    fn concurrent_adoption_has_one_winner() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        drop(owner);
+        let stores = [
+            SessionStore::open(&data, &cwd).expect("first contender"),
+            SessionStore::open(&data, &cwd).expect("second contender"),
+        ];
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads = stores.clone().map(|store| {
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                match store.begin_write(session_id) {
+                    Ok(super::WriteOpen::Adopting) => {
+                        store.commit_adoption(session_id).expect("commit winner");
+                        true
+                    }
+                    Err(SessionError::SessionLocked(id)) if id == session_id => false,
+                    result => panic!("unexpected adoption result: {result:?}"),
+                }
+            })
+        });
+        barrier.wait();
+        let winners = threads
+            .into_iter()
+            .map(|thread| usize::from(thread.join().expect("adoption contender")))
+            .sum::<usize>();
+        assert_eq!(winners, 1);
+    }
+
+    #[test]
+    fn buffered_publish_is_locked_before_the_directory_becomes_visible() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let creator = SessionStore::open(&data, &cwd).expect("creator store");
+        let session_id = create_buffered_test_session(&creator);
+        let (reached, release) = creator.install_publish_hook_for_test();
+        let publishing = {
+            let creator = Arc::clone(&creator);
+            thread::spawn(move || creator.persist_buffered_session(session_id))
+        };
+        assert_eq!(
+            reached.recv().expect("publisher acquired temp lock"),
+            session_id
+        );
+
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        assert!(
+            matches!(observer.get(session_id), Err(SessionError::Missing(id)) if id == session_id)
+        );
+        release.send(()).expect("release publisher");
+        publishing
+            .join()
+            .expect("publisher thread")
+            .expect("publish session");
+        assert!(matches!(
+            observer.open_for_write(session_id),
+            Err(SessionError::SessionLocked(id)) if id == session_id
+        ));
+    }
+
+    #[test]
+    fn fork_publish_is_locked_before_the_directory_becomes_visible() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let creator = SessionStore::open(&data, &cwd).expect("creator store");
+        let source_id = persist_test_session(&creator);
+        let through_seq = creator
+            .get(source_id)
+            .expect("source projection")
+            .log
+            .events()
+            .into_iter()
+            .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+            .expect("source user input")
+            .seq;
+        let (reached, release) = creator.install_publish_hook_for_test();
+        let publishing = {
+            let creator = Arc::clone(&creator);
+            thread::spawn(move || {
+                creator.fork(
+                    source_id,
+                    through_seq,
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                )
+            })
+        };
+        let fork_id = reached.recv().expect("fork acquired temp lock");
+
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        assert!(matches!(observer.get(fork_id), Err(SessionError::Missing(id)) if id == fork_id));
+        release.send(()).expect("release fork publisher");
+        assert_eq!(
+            publishing
+                .join()
+                .expect("fork publisher thread")
+                .expect("publish fork"),
+            fork_id
+        );
+        assert!(matches!(
+            observer.open_for_write(fork_id),
+            Err(SessionError::SessionLocked(id)) if id == fork_id
+        ));
+    }
+
+    #[test]
+    fn metadata_cache_reads_never_observe_partial_replacements() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("session store");
+        let session_id = persist_test_session(&store);
+        let session_dir = store.session_dir(session_id);
+        let cache_path = session_dir.join("meta.json");
+        let event_path = session_dir.join("events.jsonl");
+        let meta = store.get(session_id).expect("projection").meta;
+        let writer = thread::spawn({
+            let cache_path = cache_path.clone();
+            let meta = meta.clone();
+            move || {
+                for _ in 0..100 {
+                    super::write_cache(&cache_path, &meta).expect("replace metadata cache");
+                }
+            }
+        });
+        for _ in 0..100 {
+            let read = super::read_cache(&cache_path, &event_path).expect("read complete cache");
+            assert_eq!(read.session_id, session_id);
+        }
+        writer.join().expect("metadata writer");
     }
 
     fn append_pending_test_delta(

@@ -291,7 +291,7 @@ impl Engine {
             )
         })
         .await?;
-        self.spawn_actor(child_session_id);
+        self.spawn_actor(child_session_id)?;
         self.ensure_delegated_context_seed(child_session_id, invocation_id, seeded_context)
             .await?;
         self.ensure_delegated_title(child_session_id, invocation_id, child_title)
@@ -391,7 +391,7 @@ impl Engine {
             }
         }
         if !found {
-            self.append_blocking(
+            self.append_recovery_direct(
                 child_session_id,
                 None,
                 super::event_origin("engine:delegation"),
@@ -489,7 +489,7 @@ impl Engine {
             }
         }
         if !has_matching_title {
-            self.append_blocking(
+            self.append_recovery_direct(
                 child_session_id,
                 None,
                 super::event_origin("user"),

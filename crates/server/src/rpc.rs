@@ -207,6 +207,11 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             message: "provider store reload failed",
             data: Some(json!({ "code": "provider_store_reload_failed" })),
         },
+        EngineError::SessionOwnedByAnotherProcess(_) => RpcFault {
+            code: -32022,
+            message: "session is owned by another cookie process",
+            data: None,
+        },
         _ => RpcFault::engine(),
     }
 }
@@ -260,6 +265,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::MissingTool(_) => "missing_tool",
         EngineError::ToolPrompt(_) => "tool_prompt",
         EngineError::MissingActor(_) => "missing_actor",
+        EngineError::SessionOwnedByAnotherProcess(_) => "session_owned_by_another_process",
         EngineError::ActorStopped => "actor_stopped",
         EngineError::NoRunnableModel => "no_runnable_model",
         EngineError::UnknownAgentPreset(_) => "unknown_agent_preset",
@@ -282,6 +288,7 @@ fn session_debug_code(error: &SessionError) -> &'static str {
         SessionError::Io { .. } => "session_io",
         SessionError::Json { .. } => "session_json",
         SessionError::Missing(_) => "session_missing",
+        SessionError::SessionLocked(_) => "session_locked",
         SessionError::InvalidSequence { .. } => "session_invalid_sequence",
         SessionError::InvalidForkTitle(_) => "session_invalid_fork_title",
     }
@@ -296,6 +303,7 @@ fn event_log_debug_code(error: &cookie_agent_engine::events::EventLogError) -> &
             "event_log_missing_creation"
         }
         cookie_agent_engine::events::EventLogError::Corrupt { .. } => "event_log_corrupt",
+        cookie_agent_engine::events::EventLogError::ReadOnly(_) => "event_log_read_only",
     }
 }
 

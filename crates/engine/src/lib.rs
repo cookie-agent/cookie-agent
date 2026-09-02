@@ -12,6 +12,7 @@ mod model_bridge;
 mod model_history;
 mod model_policy;
 mod model_snapshots;
+mod ownership;
 pub mod permissions;
 mod plugin;
 mod policy;

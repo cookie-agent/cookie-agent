@@ -135,6 +135,7 @@ impl Engine {
         .await
     }
 
+    #[allow(dead_code)]
     pub(crate) fn ensure_parent_link_blocking(
         &self,
         parent_session_id: SessionId,
@@ -1325,6 +1326,45 @@ impl Engine {
         Ok(running >= limit)
     }
 
+    pub(super) fn interrupt_delegation_accounting(
+        &self,
+        parent_session_id: SessionId,
+        interrupted_runs: &[RunId],
+    ) -> Result<(), EngineError> {
+        let mut records = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        for record in records.values_mut() {
+            if record.parent_session_id == parent_session_id
+                && interrupted_runs.contains(&record.parent_run_id)
+                && record.state == DelegationState::Running
+            {
+                record.state = DelegationState::Finished(SessionStatus::Interrupted);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn running_background_delegations_for_test(
+        &self,
+        root_session_id: SessionId,
+    ) -> usize {
+        self.inner
+            .delegations_by_session
+            .lock()
+            .expect("delegation registry")
+            .values()
+            .filter(|record| {
+                record.root_session_id == root_session_id
+                    && record.counts_slot
+                    && record.state == DelegationState::Running
+            })
+            .count()
+    }
+
     fn background_queue_full(&self, root_session_id: SessionId) -> Result<bool, EngineError> {
         let Some(limit) = self.inner.config.runtime.delegation.max_concurrency else {
             return Ok(false);
@@ -1759,6 +1799,7 @@ impl Engine {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(super) fn void_runless_pending_inputs_blocking(
         &self,
         child_session_id: SessionId,
@@ -2359,6 +2400,7 @@ impl Engine {
     pub(super) fn rebuild_delegation_registry(
         &self,
         entries: &[delegation_events::DelegationEntry],
+        recover: bool,
     ) -> Result<(), EngineError> {
         let mut queued_roots = Vec::new();
         for entry in entries {
@@ -2403,7 +2445,12 @@ impl Engine {
                         ))
                     .then_some(child.status)
                 });
-            if background
+            if recover
+                && self
+                    .inner
+                    .store
+                    .is_owned(entry.reservation.parent_session_id)
+                && background
                 && !notification_sent
                 && let Some(status) = exact_status
                 && matches!(
@@ -2424,7 +2471,7 @@ impl Engine {
                 } else {
                     delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
                 };
-                self.append_blocking(
+                self.append_direct(
                     entry.reservation.parent_session_id,
                     Some(entry.reservation.parent_run_id),
                     super::event_origin("engine:delegation"),
@@ -2488,10 +2535,16 @@ impl Engine {
             let exact_run_status = entry
                 .child_run_id
                 .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status));
+            let parent_interrupted = parent
+                .runs
+                .get(&entry.reservation.parent_run_id)
+                .is_some_and(|run| run.status == SessionStatus::Interrupted);
             let state = if let Some(status) = entry.terminal_status {
                 DelegationState::Finished(status)
             } else if entry.child_run_id.is_none() && queued_event {
                 DelegationState::Queued
+            } else if parent_interrupted {
+                DelegationState::Finished(SessionStatus::Interrupted)
             } else if exact_run_status.is_some_and(|status| {
                 matches!(
                     status,
@@ -2532,8 +2585,15 @@ impl Engine {
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .push_back(child.meta.session_id);
-                queued_roots.push(root_session_id);
-            } else if background
+                if self.inner.store.is_owned(root_session_id) {
+                    queued_roots.push(root_session_id);
+                }
+            } else if recover
+                && self
+                    .inner
+                    .store
+                    .is_owned(entry.reservation.parent_session_id)
+                && background
                 && let DelegationState::Finished(status) = state
                 && !notification_sent
             {
@@ -2547,7 +2607,7 @@ impl Engine {
                 } else {
                     delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
                 };
-                self.append_blocking(
+                self.append_direct(
                     entry.reservation.parent_session_id,
                     Some(entry.reservation.parent_run_id),
                     super::event_origin("engine:delegation"),
@@ -2563,7 +2623,7 @@ impl Engine {
         }
         queued_roots.sort_unstable();
         queued_roots.dedup();
-        if let Some(runtime) = self.inner.runtime.clone() {
+        if recover && let Some(runtime) = self.inner.runtime.clone() {
             for root_session_id in queued_roots {
                 let engine = self.clone();
                 runtime.spawn(async move {

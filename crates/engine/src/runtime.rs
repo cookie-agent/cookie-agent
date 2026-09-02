@@ -25,9 +25,8 @@ use cookie_agent_protocol::{
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelResult,
     RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
     RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason, RuntimeChangedNotification,
-    RuntimeSnapshotResult, SafeCode, SessionForkResult, SessionId, SessionMeta,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, StoredEvent, ToolCallId,
-    ToolCallPresentation,
+    RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta, SessionRenameParams,
+    SessionRenameResult, SessionRevertResult, StoredEvent, ToolCallId, ToolCallPresentation,
 };
 use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
@@ -163,6 +162,8 @@ pub enum EngineError {
     ToolPrompt(String),
     #[error("session actor for {0} is unavailable")]
     MissingActor(SessionId),
+    #[error("session {0} is owned by another cookie process")]
+    SessionOwnedByAnotherProcess(SessionId),
     #[error("session actor stopped before replying")]
     ActorStopped,
     #[error("no_runnable_model")]
@@ -773,7 +774,7 @@ struct RuntimeRevisionIndex {
 impl RuntimeRevisionIndex {
     fn open(path: PathBuf) -> Result<Self, EngineError> {
         let mut mappings = HashMap::new();
-        for record in events::load_jsonl::<StoredRuntimeRevisionMapping>(&path)? {
+        for record in events::load_jsonl_shared::<StoredRuntimeRevisionMapping>(&path)? {
             match mappings.insert(
                 record.runtime_revision.clone(),
                 record.model_runtime_revision.clone(),
@@ -966,11 +967,6 @@ enum SessionCommand {
         origin: cookie_agent_protocol::EventOrigin,
         instructions_override: Option<String>,
         reply: oneshot::Sender<Result<SessionRevertResult, EngineError>>,
-    },
-    Fork {
-        through_seq: u64,
-        origin: cookie_agent_protocol::EventOrigin,
-        reply: oneshot::Sender<Result<SessionForkResult, EngineError>>,
     },
     CompactionFinished {
         reply: oneshot::Sender<Result<(), EngineError>>,
@@ -1202,6 +1198,8 @@ pub(crate) struct Inner {
     pub(crate) run_setup_append_failures: AtomicU64,
     #[cfg(test)]
     pub(crate) resume_monitor_failures: AtomicU64,
+    #[cfg(test)]
+    pub(crate) adoption_reconcile_failures: AtomicU64,
 }
 
 /// Cloneable in-process engine handle. It contains no transport concerns and
@@ -1370,6 +1368,8 @@ impl Engine {
                 run_setup_append_failures: AtomicU64::new(0),
                 #[cfg(test)]
                 resume_monitor_failures: AtomicU64::new(0),
+                #[cfg(test)]
+                adoption_reconcile_failures: AtomicU64::new(0),
             }),
         };
         let weak = Arc::downgrade(&engine.inner);
@@ -1401,21 +1401,8 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
         engine.validate_referenced_manifests()?;
-        for session in engine.inner.store.all() {
-            engine.spawn_actor(session.meta.session_id);
-        }
         engine.rebuild_approvals();
-        // Reconciliation uses the synchronous actor facade. When open is
-        // called by an async composition root, move that facade to a plain
-        // thread so `blocking_send` never runs on a Tokio worker.
-        if tokio::runtime::Handle::try_current().is_ok() {
-            let reconcile_engine = engine.clone();
-            std::thread::spawn(move || reconcile_engine.reconcile())
-                .join()
-                .map_err(|_| EngineError::ActorStopped)??;
-        } else {
-            engine.reconcile()?;
-        }
+        engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);
@@ -1726,7 +1713,7 @@ impl Engine {
 
     fn validate_referenced_manifests(&self) -> Result<(), EngineError> {
         let runtime = self.current_runtime();
-        for session in self.inner.store.all() {
+        for session in self.inner.store.all_snapshots() {
             for event in session.log.events() {
                 match event.payload {
                     Event::SessionCreated { creation_agent, .. } => {
@@ -1973,6 +1960,11 @@ impl Engine {
         }
         self.inner
             .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.inner
+            .tools
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();

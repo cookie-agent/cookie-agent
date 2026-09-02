@@ -8,9 +8,9 @@ use cookie_agent_protocol::{
     ApprovalStatus, EventOrigin, EventSubscriptionMessage, EventsSubscribeResult,
     ExtensionBusEventParams, ExtensionEmitStatus, PersistedToolResult as ToolResult,
     PluginDiagnosticKind, RunCancelResult, RunId, RunRecallSteerResult, RunSteerResult,
-    RunToolStdinResult, SafeToolError, SessionForkResult, SessionId, SessionRenameChange,
-    SessionRenameResult, SessionRevertResult, SessionStatus, SessionTitleChange, StoredEvent,
-    ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+    RunToolStdinResult, SafeToolError, SessionId, SessionRenameChange, SessionRenameResult,
+    SessionRevertResult, SessionStatus, SessionTitleChange, StoredEvent, ToolCallId,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,8 +39,29 @@ impl Engine {
         ),
         EngineError,
     > {
+        self.inner.store.get(session)?;
+        if !self.inner.store.is_owned(session) {
+            return Err(EngineError::SessionOwnedByAnotherProcess(session));
+        }
         self.request(session, |reply| SessionCommand::Subscribe { cursor, reply })
             .await
+    }
+
+    pub fn snapshot_events(
+        &self,
+        session: SessionId,
+        cursor: Option<u64>,
+    ) -> Result<EventsSubscribeResult, EngineError> {
+        let events = self
+            .inner
+            .store
+            .get(session)?
+            .log
+            .all_events()
+            .into_iter()
+            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
+            .collect();
+        Ok(EventsSubscribeResult { events })
     }
 
     /// Subscribes to a currently running call's retained output and live tail.
@@ -106,8 +127,8 @@ impl Engine {
     ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
         let (reply, receiver) = oneshot::channel();
         let _residency = self.inner.residency_mutation.lock().await;
-        self.inner.store.get(session)?;
-        self.spawn_actor(session);
+        self.ensure_session_owned(session)?;
+        self.spawn_actor(session)?;
         let actor = self
             .inner
             .actors
@@ -188,8 +209,35 @@ impl Engine {
         origin: EventOrigin,
         event: Event,
     ) -> Result<(), EngineError> {
+        self.append_direct_with_mode(session, run, origin, event, false)
+    }
+
+    pub(crate) fn append_recovery_direct(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        origin: EventOrigin,
+        event: Event,
+    ) -> Result<(), EngineError> {
+        self.append_direct_with_mode(session, run, origin, event, true)
+    }
+
+    fn append_direct_with_mode(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        origin: EventOrigin,
+        event: Event,
+        recovery: bool,
+    ) -> Result<(), EngineError> {
         let was_persisted = self.inner.store.is_persisted(session)?;
-        let envelope = self.inner.store.append(session, run, origin, event)?;
+        let envelope = if recovery {
+            self.inner
+                .store
+                .append_recovery(session, run, origin, event)?
+        } else {
+            self.inner.store.append(session, run, origin, event)?
+        };
         self.publish_stored_event(&envelope);
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.get(session)?.log.all_events() {
@@ -441,8 +489,8 @@ impl Engine {
         let (reply, receiver) = oneshot::channel();
         {
             let _residency = self.inner.residency_mutation.lock().await;
-            self.inner.store.get(session)?;
-            self.spawn_actor(session);
+            self.ensure_session_owned(session)?;
+            self.spawn_actor(session)?;
             let actor = self
                 .inner
                 .actors
@@ -572,8 +620,8 @@ impl Engine {
         let (reply, receiver) = oneshot::channel();
         {
             let _residency = self.inner.residency_mutation.blocking_lock();
-            self.inner.store.get(session)?;
-            self.spawn_actor(session);
+            self.ensure_session_owned(session)?;
+            self.spawn_actor(session)?;
             let actor = self
                 .inner
                 .actors
@@ -591,7 +639,10 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
     }
 
-    pub(crate) fn spawn_actor(&self, session: SessionId) {
+    pub(crate) fn spawn_actor(&self, session: SessionId) -> Result<(), EngineError> {
+        if !self.inner.store.is_owned(session) {
+            return Err(EngineError::SessionOwnedByAnotherProcess(session));
+        }
         if self
             .inner
             .actors
@@ -599,7 +650,7 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains_key(&session)
         {
-            return;
+            return Ok(());
         }
         self.inner
             .context_token_estimators
@@ -617,6 +668,40 @@ impl Engine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session, actor);
+        Ok(())
+    }
+
+    pub(super) fn ensure_session_owned(&self, session: SessionId) -> Result<(), EngineError> {
+        let adoption_lock = self.inner.store.adoption_lock(session);
+        let _adoption = adoption_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let write_open = self.inner.store.begin_write(session).map_err(|error| {
+            if matches!(error, SessionError::SessionLocked(_)) {
+                EngineError::SessionOwnedByAnotherProcess(session)
+            } else {
+                error.into()
+            }
+        })?;
+        if write_open == crate::session::WriteOpen::Adopting {
+            if let Err(error) = self.reconcile_session(session) {
+                self.inner.store.rollback_adoption(session);
+                return Err(error);
+            }
+            if let Err(error) = self.inner.store.commit_adoption(session) {
+                self.inner.store.rollback_adoption(session);
+                return Err(error.into());
+            }
+            if let Err(error) = self.recover_missing_delegation_children(session) {
+                eprintln!("session {session} missing-child recovery deferred: {error}");
+            }
+            if let Err(error) =
+                self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), true)
+            {
+                eprintln!("session {session} delegation recovery deferred: {error}");
+            }
+        }
+        Ok(())
     }
 
     fn reserve_compaction(&self, session: SessionId) -> bool {
@@ -1131,18 +1216,6 @@ impl Engine {
                     self.release_compaction_direct(session).await;
                     let _ = reply.send(result);
                 }
-            }
-            SessionCommand::Fork {
-                through_seq,
-                origin,
-                reply,
-            } => {
-                let result = self
-                    .inner
-                    .store
-                    .fork(session, through_seq, origin)
-                    .map(|session_id| SessionForkResult { session_id });
-                let _ = reply.send(result.map_err(EngineError::from));
             }
             SessionCommand::CompactionFinished { reply } => {
                 self.release_compaction_direct(session).await;

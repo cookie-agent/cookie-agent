@@ -28,6 +28,8 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use crate::ownership::{WriteAuthority, WriteCapability};
+
 #[derive(Debug, Error)]
 pub enum EventLogError {
     #[error("event log IO failure at {path}: {source}")]
@@ -46,6 +48,8 @@ pub enum EventLogError {
     MissingCreation(PathBuf),
     #[error("corrupt event log at {path}: {message}")]
     Corrupt { path: PathBuf, message: String },
+    #[error("event log {0} is read-only")]
+    ReadOnly(PathBuf),
 }
 
 #[derive(Debug)]
@@ -59,7 +63,19 @@ pub struct EventLog {
     validation: Mutex<ValidationState>,
     next_seq: AtomicU64,
     persisted: AtomicBool,
+    read_only: bool,
+    write_capability: Option<WriteCapability>,
+    #[cfg(test)]
+    _test_authority: Option<WriteAuthority>,
+    #[cfg(test)]
+    append_authorization_hook: Mutex<Option<AppendAuthorizationHook>>,
     writer: Mutex<Option<Arc<EventLogWriter>>>,
+}
+
+#[derive(Clone, Copy)]
+enum TornTail {
+    Truncate,
+    Ignore,
 }
 
 const EVENT_SYNC_WINDOW: Duration = Duration::from_millis(8);
@@ -101,6 +117,13 @@ struct WriterFailure {
 #[cfg(test)]
 #[derive(Debug)]
 struct SyncHook {
+    reached: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct AppendAuthorizationHook {
     reached: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
 }
@@ -471,36 +494,34 @@ pub struct EventLoadDiagnostic {
 }
 
 impl EventLog {
+    #[cfg(test)]
     pub fn create(
         path: PathBuf,
         session_id: SessionId,
         origin: EventOrigin,
         creation: EventPayload,
     ) -> Result<Arc<Self>, EventLogError> {
-        let log = Arc::new(Self {
+        let authority = WriteAuthority::new();
+        let capability = authority.capability();
+        Self::create_owned(
             path,
             session_id,
-            append: Mutex::new(()),
-            events: Mutex::new(EventStorage::new(Vec::new())),
-            diagnostics: Vec::new(),
-            initial_validation_taint: ValidationTaint::default(),
-            validation: Mutex::new(ValidationState::default()),
-            next_seq: AtomicU64::new(1),
-            persisted: AtomicBool::new(true),
-            writer: Mutex::new(None),
-        });
-        if !matches!(creation, EventPayload::SessionCreated { .. }) {
-            return Err(EventLogError::MissingCreation(log.path.clone()));
-        }
-        log.append_inner(None, origin, creation)?;
-        Ok(log)
+            origin,
+            creation,
+            capability,
+            true,
+            Some(authority),
+        )
     }
 
-    pub fn create_buffered(
+    fn create_owned(
         path: PathBuf,
         session_id: SessionId,
         origin: EventOrigin,
         creation: EventPayload,
+        capability: WriteCapability,
+        persisted: bool,
+        _test_authority: Option<WriteAuthority>,
     ) -> Result<Arc<Self>, EventLogError> {
         let log = Arc::new(Self {
             path,
@@ -511,18 +532,89 @@ impl EventLog {
             initial_validation_taint: ValidationTaint::default(),
             validation: Mutex::new(ValidationState::default()),
             next_seq: AtomicU64::new(1),
-            persisted: AtomicBool::new(false),
+            persisted: AtomicBool::new(persisted),
+            read_only: false,
+            write_capability: Some(capability),
+            #[cfg(test)]
+            _test_authority,
+            #[cfg(test)]
+            append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
         }
-        log.append_inner(None, origin, creation)?;
+        log.append_inner(None, None, origin, creation)?;
         Ok(log)
     }
 
+    #[cfg(test)]
+    pub fn create_buffered(
+        path: PathBuf,
+        session_id: SessionId,
+        origin: EventOrigin,
+        creation: EventPayload,
+    ) -> Result<Arc<Self>, EventLogError> {
+        let authority = WriteAuthority::new();
+        let capability = authority.capability();
+        Self::create_owned(
+            path,
+            session_id,
+            origin,
+            creation,
+            capability,
+            false,
+            Some(authority),
+        )
+    }
+
+    pub(crate) fn create_buffered_owned(
+        path: PathBuf,
+        session_id: SessionId,
+        origin: EventOrigin,
+        creation: EventPayload,
+        capability: WriteCapability,
+    ) -> Result<Arc<Self>, EventLogError> {
+        Self::create_owned(path, session_id, origin, creation, capability, false, None)
+    }
+
+    #[cfg(test)]
     pub fn open(path: PathBuf, session_id: SessionId) -> Result<Arc<Self>, EventLogError> {
-        let loaded = load_event_jsonl(&path)?;
+        let authority = WriteAuthority::new();
+        let capability = authority.capability();
+        Self::open_with_mode(path, session_id, false, Some(capability), Some(authority))
+    }
+
+    pub(crate) fn open_owned(
+        path: PathBuf,
+        session_id: SessionId,
+        capability: WriteCapability,
+    ) -> Result<Arc<Self>, EventLogError> {
+        Self::open_with_mode(path, session_id, false, Some(capability), None)
+    }
+
+    pub fn open_read_only(
+        path: PathBuf,
+        session_id: SessionId,
+    ) -> Result<Arc<Self>, EventLogError> {
+        Self::open_with_mode(path, session_id, true, None, None)
+    }
+
+    fn open_with_mode(
+        path: PathBuf,
+        session_id: SessionId,
+        read_only: bool,
+        write_capability: Option<WriteCapability>,
+        _test_authority: Option<WriteAuthority>,
+    ) -> Result<Arc<Self>, EventLogError> {
+        let loaded = load_event_jsonl(
+            &path,
+            if read_only {
+                TornTail::Ignore
+            } else {
+                TornTail::Truncate
+            },
+        )?;
         let records = loaded.records;
         if !matches!(
             records.first().map(|record| &record.payload),
@@ -542,29 +634,79 @@ impl EventLog {
             validation: Mutex::new(validation),
             next_seq: AtomicU64::new(loaded.next_seq),
             persisted: AtomicBool::new(true),
+            read_only,
+            write_capability,
+            #[cfg(test)]
+            _test_authority,
+            #[cfg(test)]
+            append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
         }))
     }
 
+    pub(crate) fn append_owned(
+        &self,
+        capability: &WriteCapability,
+        run_id: Option<RunId>,
+        origin: EventOrigin,
+        payload: EventPayload,
+    ) -> Result<StoredEvent, EventLogError> {
+        if !self
+            .write_capability
+            .as_ref()
+            .is_some_and(|expected| capability.authorizes(expected))
+        {
+            return Err(EventLogError::ReadOnly(self.path.clone()));
+        }
+        #[cfg(test)]
+        if let Some(hook) = self
+            .append_authorization_hook
+            .lock()
+            .expect("append authorization hook lock poisoned")
+            .take()
+        {
+            let _ = hook.reached.send(());
+            let _ = hook.release.recv();
+        }
+        self.append_inner(Some(capability), run_id, origin, payload)
+    }
+
+    #[cfg(test)]
     pub fn append(
         &self,
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
-        self.append_inner(run_id, origin, payload)
+        let capability = self
+            .write_capability
+            .as_ref()
+            .ok_or_else(|| EventLogError::ReadOnly(self.path.clone()))?;
+        self.append_owned(capability, run_id, origin, payload)
     }
 
     fn append_inner(
         &self,
+        capability: Option<&WriteCapability>,
         run_id: Option<RunId>,
         origin: EventOrigin,
         payload: EventPayload,
     ) -> Result<StoredEvent, EventLogError> {
+        if self.read_only {
+            return Err(EventLogError::ReadOnly(self.path.clone()));
+        }
         let _append = self
             .append
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if capability.is_some_and(|capability| {
+            !self
+                .write_capability
+                .as_ref()
+                .is_some_and(|expected| capability.authorizes(expected))
+        }) {
+            return Err(EventLogError::ReadOnly(self.path.clone()));
+        }
         let events = self
             .events
             .lock()
@@ -742,6 +884,9 @@ impl EventLog {
     }
 
     pub(crate) fn flush(&self) -> Result<(), EventLogError> {
+        if self.read_only {
+            return Ok(());
+        }
         let _append = self
             .append
             .lock()
@@ -758,6 +903,9 @@ impl EventLog {
     }
 
     pub(crate) fn suspend_writer(&self) -> Result<(), EventLogError> {
+        if self.read_only {
+            return Ok(());
+        }
         let _append = self
             .append
             .lock()
@@ -776,6 +924,9 @@ impl EventLog {
     }
 
     fn persistent_writer(&self) -> Result<Arc<EventLogWriter>, EventLogError> {
+        if self.read_only {
+            return Err(EventLogError::ReadOnly(self.path.clone()));
+        }
         let mut writer = self
             .writer
             .lock()
@@ -796,6 +947,22 @@ impl EventLog {
         self.persistent_writer()
             .expect("open event log writer")
             .install_sync_hook()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_append_authorization_hook_for_test(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached, reached_receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        *self
+            .append_authorization_hook
+            .lock()
+            .expect("append authorization hook lock poisoned") = Some(AppendAuthorizationHook {
+            reached,
+            release: release_receiver,
+        });
+        (reached_receiver, release)
     }
 
     #[cfg(test)]
@@ -2473,8 +2640,8 @@ struct LoadedEvents {
     next_seq: u64,
 }
 
-fn load_event_jsonl(path: &Path) -> Result<LoadedEvents, EventLogError> {
-    let bytes = read_complete_jsonl(path)?;
+fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, EventLogError> {
+    let bytes = read_complete_jsonl(path, torn_tail)?;
     let mut records = Vec::new();
     let mut diagnostics = Vec::new();
     let mut validation_taint = ValidationTaint::default();
@@ -2861,7 +3028,21 @@ pub fn load_jsonl<T>(path: &Path) -> Result<Vec<T>, EventLogError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let bytes = read_complete_jsonl(path)?;
+    load_jsonl_with_policy(path, TornTail::Truncate)
+}
+
+pub fn load_jsonl_shared<T>(path: &Path) -> Result<Vec<T>, EventLogError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    load_jsonl_with_policy(path, TornTail::Ignore)
+}
+
+fn load_jsonl_with_policy<T>(path: &Path, torn_tail: TornTail) -> Result<Vec<T>, EventLogError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let bytes = read_complete_jsonl(path, torn_tail)?;
     bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
@@ -2874,7 +3055,7 @@ where
         .collect()
 }
 
-fn read_complete_jsonl(path: &Path) -> Result<Vec<u8>, EventLogError> {
+fn read_complete_jsonl(path: &Path, torn_tail: TornTail) -> Result<Vec<u8>, EventLogError> {
     let mut bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2891,19 +3072,21 @@ fn read_complete_jsonl(path: &Path) -> Result<Vec<u8>, EventLogError> {
             .rposition(|byte| *byte == b'\n')
             .map_or(0, |at| at + 1);
         bytes.truncate(length);
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(|source| EventLogError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-        file.set_len(length as u64)
-            .and_then(|()| file.sync_all())
-            .map_err(|source| EventLogError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
+        if matches!(torn_tail, TornTail::Truncate) {
+            let file = OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|source| EventLogError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            file.set_len(length as u64)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| EventLogError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+        }
     }
     Ok(bytes)
 }
@@ -4924,6 +5107,46 @@ mod tests {
             fs::read(&path).expect("read recovered log"),
             b"{\"ok\":true}\n"
         );
+    }
+
+    #[test]
+    fn shared_jsonl_read_ignores_a_torn_tail_without_truncating() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let contents = b"{\"ok\":true}\n{\"partial\"";
+        fs::write(&path, contents).expect("write torn log");
+
+        let records = load_jsonl_shared::<Value>(&path).expect("read shared log");
+
+        assert_eq!(records, vec![serde_json::json!({"ok": true})]);
+        assert_eq!(fs::read(&path).expect("read unchanged log"), contents);
+    }
+
+    #[test]
+    fn read_only_event_log_rejects_appends() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("events.jsonl");
+        let records = current_delegation_records();
+        let bytes = records
+            .iter()
+            .flat_map(|record| {
+                let mut line = serde_json::to_vec(record).expect("serialize record");
+                line.push(b'\n');
+                line
+            })
+            .collect::<Vec<_>>();
+        fs::write(&path, bytes).expect("write event log");
+        let log = EventLog::open_read_only(path, records[0].session_id).expect("open snapshot");
+
+        let error = log
+            .append(
+                None,
+                EventOrigin::new("engine:test").expect("origin"),
+                EventPayload::SessionReverted { through_seq: 1 },
+            )
+            .expect_err("read-only append must fail");
+
+        assert!(matches!(error, EventLogError::ReadOnly(_)));
     }
 
     #[test]

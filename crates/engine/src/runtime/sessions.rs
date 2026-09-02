@@ -22,7 +22,7 @@ impl Engine {
         let grants = self
             .inner
             .store
-            .all()
+            .all_snapshots()
             .into_iter()
             .flat_map(|session| session.log.events())
             .filter_map(|event| match event.payload {
@@ -80,7 +80,7 @@ impl Engine {
             EventOrigin::new("user").expect("static event origin is valid"),
             creation,
         )?;
-        self.spawn_actor(id);
+        self.spawn_actor(id)?;
         Ok(self.inner.store.get(id)?.metadata())
     }
 
@@ -449,18 +449,15 @@ impl Engine {
                 Err(error) => self.record_interception_error(session_id, plugin, error),
             }
         }
-        self.request(session_id, |reply| SessionCommand::Fork {
-            through_seq,
-            origin,
-            reply,
-        })
-        .await
+        let forked = self.inner.store.fork(session_id, through_seq, origin)?;
+        Ok(SessionForkResult { session_id: forked })
     }
     pub fn set_permission_mode(
         &self,
         session_id: SessionId,
         mode: PermissionMode,
     ) -> Result<(), EngineError> {
+        self.ensure_session_owned(session_id)?;
         let session = self.inner.store.get(session_id)?;
         let root = root_id(&session.meta.origin, session_id);
         self.inner

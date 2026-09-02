@@ -106,7 +106,7 @@ pub struct DelegationEventStore {
 impl DelegationEventStore {
     pub fn open(sessions: Arc<SessionStore>) -> Result<Arc<Self>, DelegationEventError> {
         let mut state = DelegationState::default();
-        let mut parents = sessions.all();
+        let mut parents = sessions.all_snapshots();
         parents.sort_by_key(|session| session.meta.session_id);
         for parent in parents {
             for envelope in parent.log.events() {

@@ -337,7 +337,8 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     other.enabled = false;
     other.env.insert("FIXTURE_NAME".into(), "other".into());
     fixture.config.plugins.insert("other".into(), other);
-    let engine = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     engine.inner.plugins.await_eager_ready().await;
 
     let mut bus = engine.subscribe_engine_events();
@@ -498,7 +499,8 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
     engine.runtime_snapshot().expect("engine remains usable");
     engine.shutdown().await;
 
-    let reopened = reopen_engine(&fixture);
+    drop(engine);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     assert!(
         reopened
             .inner
@@ -561,7 +563,8 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             tool_timeout_ms: 30_000,
         },
     );
-    let engine = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     engine.inner.plugins.await_eager_ready().await;
     for (session_id, message) in [
         (session_a.session_id, "trigger A"),
@@ -2398,6 +2401,211 @@ struct Fixture {
     engine: Engine,
     config: LoadedConfiguration,
     manager: Arc<ModelManager>,
+}
+
+#[tokio::test]
+async fn two_engines_share_a_data_dir_without_sharing_session_writers() {
+    let (fixture, selection) = custom_fixture();
+    let session_a = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("engine A session");
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(session_a.session_id)
+        .expect("persist engine A session");
+
+    let engine_b = reopen_engine(&fixture);
+    assert_eq!(
+        engine_b
+            .get_session(session_a.session_id)
+            .expect("foreign snapshot")
+            .session_id,
+        session_a.session_id
+    );
+    assert!(matches!(
+        engine_b.subscribe(session_a.session_id, None).await,
+        Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_a.session_id
+    ));
+    assert!(matches!(
+        engine_b.resume(session_a.session_id).await,
+        Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_a.session_id
+    ));
+
+    let session_b = engine_b
+        .create_session(selection)
+        .expect("engine B session");
+    engine_b
+        .inner
+        .store
+        .persist_buffered_session(session_b.session_id)
+        .expect("persist engine B session");
+    assert!(matches!(
+        fixture.engine.resume(session_b.session_id).await,
+        Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_b.session_id
+    ));
+
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let writers = [
+        (fixture.engine.clone(), session_a.session_id, "engine-a"),
+        (engine_b.clone(), session_b.session_id, "engine-b"),
+    ]
+    .map(|(engine, session_id, message)| {
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            engine.inner.store.append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::PluginDiagnostic {
+                    plugin: "ownership-test".into(),
+                    kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                    message: message.into(),
+                    count: 1,
+                },
+            )
+        })
+    });
+    barrier.wait();
+    for writer in writers {
+        writer
+            .join()
+            .expect("ownership writer thread")
+            .expect("owned append");
+    }
+    for (engine, session_id) in [
+        (&fixture.engine, session_a.session_id),
+        (&engine_b, session_b.session_id),
+    ] {
+        let events = engine
+            .inner
+            .store
+            .get(session_id)
+            .expect("owned projection")
+            .log
+            .all_events();
+        assert!(events.iter().all(|event| event.session_id == session_id));
+        assert!(
+            events
+                .windows(2)
+                .all(|events| events[1].seq == events[0].seq + 1)
+        );
+    }
+
+    engine_b.shutdown().await;
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("created projection");
+    let run_id = cookie_agent_protocol::RunId::new_v7();
+    let selected_suffix = projection.creation_agent.fallback_chain.clone();
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::RunStarted {
+                client_run_id: ClientRunId::new("dead-owner-run").expect("client run ID"),
+                selection,
+                agent: Box::new(projection.creation_agent),
+                runtime_revision: projection.meta.runtime_revision.clone(),
+                catalog_revision: projection.meta.catalog_revision.clone(),
+                provider_state_revision: projection.meta.provider_state_revision.clone(),
+                model_revision: projection.meta.model_revision.clone(),
+                agent_revision: projection.meta.agent_revision.clone(),
+                recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+                manifest_revision: projection.meta.manifest_revision.clone(),
+                selected_suffix,
+                internal_agents: Vec::new(),
+                input_through_seq: 1,
+            },
+        )
+        .expect("start abandoned run");
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run_id),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::UserInputSubmitted {
+                input: "persist abandoned run".into(),
+            },
+        )
+        .expect("persist abandoned run");
+
+    fixture.engine.shutdown().await;
+    drop(fixture.engine);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .inner
+        .adoption_reconcile_failures
+        .store(1, Ordering::Release);
+    assert!(matches!(
+        reopened.resume(session.session_id).await,
+        Err(EngineError::ActorStopped)
+    ));
+    assert!(!reopened.inner.store.is_owned(session.session_id));
+    assert!(!reopened.actor_resident_for_test(session.session_id));
+    let partially_recovered = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("partial recovery snapshot")
+        .log
+        .events();
+    assert_eq!(
+        partially_recovered
+            .iter()
+            .filter(|event| {
+                event.run_id == Some(run_id)
+                    && matches!(event.payload, EventPayload::RunInterrupted { .. })
+            })
+            .count(),
+        1
+    );
+    reopened
+        .resume(session.session_id)
+        .await
+        .expect("adopt session");
+    let adopted = reopened
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("adopted projection");
+    assert_eq!(adopted.runs[&run_id].status, SessionStatus::Interrupted);
+    assert_eq!(
+        adopted
+            .log
+            .events()
+            .iter()
+            .filter(|event| {
+                event.run_id == Some(run_id)
+                    && matches!(event.payload, EventPayload::RunInterrupted { .. })
+            })
+            .count(),
+        1
+    );
+    reopened.shutdown().await;
 }
 
 fn fixture() -> Fixture {
@@ -8085,24 +8293,53 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
 }
 
 fn reopen_engine(fixture: &Fixture) -> Engine {
-    let current = fixture.manager.current();
+    reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager)
+}
+
+fn reopen_engine_parts(
+    directory: &PanicResistantTempDir,
+    config: &LoadedConfiguration,
+    source_manager: &Arc<ModelManager>,
+) -> Engine {
+    let current = source_manager.current();
     let manager = Arc::new(
         ModelManager::new(
             current.authored().clone(),
             Arc::clone(current.catalog()),
-            ProviderStore::open(fixture._directory.path().join("provider-store"))
+            ProviderStore::open(directory.path().join("provider-store"))
                 .expect("reopened provider store"),
         )
         .expect("reopened manager"),
     );
     Engine::open(EngineOptions {
-        data_dir: fixture._directory.path().join("data"),
-        cwd: fixture._directory.path().to_owned(),
-        config: fixture.config.clone(),
+        data_dir: directory.path().join("data"),
+        cwd: directory.path().to_owned(),
+        config: config.clone(),
         model_manager: manager,
         tools: Vec::new(),
     })
     .expect("reopened engine")
+}
+
+fn copy_test_tree(source: &std::path::Path, target: &std::path::Path) {
+    fs::create_dir_all(target).expect("create copied directory");
+    let Ok(entries) = fs::read_dir(source) else {
+        return;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let destination = target.join(entry.file_name());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            copy_test_tree(&entry.path(), &destination);
+        } else if let Err(error) = fs::copy(entry.path(), destination)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            panic!("copy test file: {error}");
+        }
+    }
 }
 
 #[test]
@@ -8801,7 +9038,8 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
 
     fixture.engine.shutdown().await;
     fixture.config.agent_presets.clear();
-    let reopened = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     let replayed = reopened
         .inner
         .store
@@ -12545,7 +12783,8 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
         )));
 
     fixture.engine.shutdown().await;
-    let reopened = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     reopened.register_tool_provider(Arc::new(TestWriteProvider {
         executed: Arc::new(TestFlag::default()),
     }));
@@ -13486,8 +13725,14 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
     assert_eq!(captured.await.expect("tree usage requests").len(), 6);
 
     fixture.engine.shutdown().await;
+    drop(fixture.engine);
 
-    let reopened = reopen_engine(&fixture);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .inner
+        .store
+        .open_for_write(child_id)
+        .expect("adopt child before eviction");
     assert!(reopened.inner.store.evict(child_id).expect("evict child"));
     assert!(!reopened.inner.store.is_resident(child_id));
 
@@ -14088,8 +14333,9 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         .expect("rename delegated child");
     let child_dir = fixture.engine.inner.store.session_dir(child_id);
     fixture.engine.shutdown().await;
+    drop(fixture.engine);
 
-    let reopened = reopen_engine(&fixture);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     assert_eq!(
         reopened
             .get_session(child_id)
@@ -14100,6 +14346,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         Some("User title")
     );
     reopened.shutdown().await;
+    drop(reopened);
 
     let event_path = child_dir.join("events.jsonl");
     let mut events = fs::read_to_string(&event_path)
@@ -14157,7 +14404,11 @@ async fn delegated_child_uses_description_title_without_title_agent() {
     fs::write(&event_path, rewritten).expect("remove delegated title crash window");
     fixture.config.runtime.session_title.max_chars = 4;
 
-    let reopened = reopen_engine(&fixture);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .resume(child_id)
+        .await
+        .expect("adopt recovered child");
     let recovered_child = reopened
         .inner
         .store
@@ -14797,15 +15048,15 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .config
         .agents
         .remove(&AgentId::new("worker").expect("worker agent ID"));
-    fixture.engine = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "second capped child task",
             scripted_text_body("second capped child result"),
         ))
         .expect("resumed capped child response");
-    fixture
-        .engine
+    engine
         .start_run(
             RunStartParams {
                 session_id: child,
@@ -14817,7 +15068,7 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         )
         .await
         .expect("resume capped child after restart");
-    wait_for_session_not_running(&fixture.engine, child).await;
+    wait_for_session_not_running(&engine, child).await;
 
     let requests = server.await.expect("capped restart server");
     let resumed = requests
@@ -14835,7 +15086,7 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
             .and_then(serde_json::Value::as_u64),
         Some(128)
     );
-    fixture.engine.shutdown().await;
+    engine.shutdown().await;
 }
 
 #[tokio::test]
@@ -17298,9 +17549,56 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
             )
     }));
 
+    let snapshot = private_tempdir();
+    let cwd = fixture._directory.path().to_owned();
+    let config = fixture.config.clone();
+    let manager = Arc::clone(&fixture.manager);
+    for session in fixture.engine.inner.store.all() {
+        session.log.flush().expect("flush crash snapshot");
+    }
+    copy_test_tree(
+        &fixture._directory.path().join("data"),
+        &snapshot.path().join("data"),
+    );
     fixture.engine.shutdown().await;
     release.send(()).expect("release stopped child sockets");
-    let reopened = reopen_engine(&fixture);
+    drop(fixture.engine);
+    let reopened = Engine::open(EngineOptions {
+        data_dir: snapshot.path().join("data"),
+        cwd,
+        config,
+        model_manager: manager,
+        tools: Vec::new(),
+    })
+    .expect("reopen queued child snapshot");
+    reopened
+        .resume(parent.session_id)
+        .await
+        .expect("adopt queued parent for recovery");
+    assert_eq!(
+        reopened.running_background_delegations_for_test(parent.session_id),
+        0,
+        "parent adoption releases interrupted child capacity"
+    );
+    for child_id in reopened
+        .inner
+        .delegation_events
+        .entries()
+        .into_iter()
+        .filter_map(|entry| {
+            (entry.reservation.child_session_id != queued_id)
+                .then_some(entry.reservation.child_session_id)
+        })
+    {
+        reopened
+            .resume(child_id)
+            .await
+            .expect("adopt running child for recovery");
+    }
+    reopened
+        .resume(queued_id)
+        .await
+        .expect("adopt queued child for recovery");
     await_projection(
         &reopened,
         queued_id,
@@ -17957,6 +18255,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .expect("second finish");
     let event_path = parent.log.path().to_owned();
     fixture.engine.shutdown().await;
+    drop(fixture.engine);
 
     let source = fs::read_to_string(&event_path).expect("parent events");
     let source = source
@@ -17980,7 +18279,11 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         + "\n";
     fs::write(event_path, source).expect("write corrupt event");
 
-    let reopened = reopen_engine(&fixture);
+    let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened
+        .resume(session.session_id)
+        .await
+        .expect("adopt parent for recovery");
     let parent = reopened
         .inner
         .store
@@ -18016,8 +18319,10 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         );
     }
     reopened.shutdown().await;
+    drop(reopened);
 
-    let reopened_again = reopen_engine(&fixture);
+    let reopened_again =
+        reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     for invocation_id in [first_id, second_id, intact_id] {
         assert_eq!(
             reopened_again

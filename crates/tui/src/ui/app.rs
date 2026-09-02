@@ -23,9 +23,10 @@ use cookie_agent_protocol::{
     SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE, SafeDisplayText, SessionCompactParams,
     SessionCreateParams, SessionForkParams, SessionId, SessionListParams, SessionMeta,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionSetParams, SessionRevertParams, SessionSetPermissionModeParams, SessionStatus,
-    SessionTitle, SessionTitleChange, SessionTree, SessionTreeParams, SessionTreeUsageResult,
-    SessionUsageParams, SessionUsageResult, StoredEvent, VariantId,
+    SessionPermissionSetParams, SessionResumeParams, SessionRevertParams,
+    SessionSetPermissionModeParams, SessionStatus, SessionTitle, SessionTitleChange, SessionTree,
+    SessionTreeParams, SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, StoredEvent,
+    VariantId,
 };
 use crossterm::{
     event::{
@@ -452,6 +453,14 @@ pub struct App {
     pub(super) tree_root: Option<SessionId>,
     pub(super) selection_generation: u64,
     pub(super) tree_subscription_sessions: HashSet<SessionId>,
+    pub(super) read_only_sessions: HashSet<SessionId>,
+    pub(super) owned_sessions: HashSet<SessionId>,
+    pub(super) ownership_classifications: HashMap<SessionId, u64>,
+    pub(super) next_ownership_classification: u64,
+    pub(super) pending_live_subscriptions: HashSet<SessionId>,
+    pub(super) live_subscription_attempts: HashMap<SessionId, u64>,
+    pub(super) next_live_subscription_attempt: u64,
+    pub(super) replay_ended_for_live_subscription: HashSet<SessionId>,
     pub(super) tree_refresh_in_flight: Option<(u64, u64)>,
     pub(super) tree_refresh_pending: bool,
     pub(super) next_tree_refresh_id: u64,
@@ -536,6 +545,16 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
 
 pub(super) enum RpcUpdate {
     Status(String),
+    SessionOwnershipClassified {
+        session_id: SessionId,
+        generation: u64,
+        outcome: SessionOwnershipOutcome,
+    },
+    SessionLiveSubscriptionFinished {
+        session_id: SessionId,
+        live_attempt: Option<u64>,
+        outcome: SessionLiveSubscriptionOutcome,
+    },
     /// A steer RPC failed at the transport level (admission itself never
     /// rejects anymore): the submitted text is owed back to the composer.
     SteerFailed {
@@ -629,6 +648,18 @@ pub(super) enum RpcUpdate {
         session_id: SessionId,
         generation: u64,
     },
+}
+
+pub(super) enum SessionOwnershipOutcome {
+    Owned(Box<SessionMeta>),
+    Foreign,
+    Failed(String),
+}
+
+pub(super) enum SessionLiveSubscriptionOutcome {
+    Established,
+    ReplayInProgress,
+    Failed(String),
 }
 
 /// An approval response captured at click time and currently in flight.
@@ -815,6 +846,14 @@ impl App {
             tree_root: None,
             selection_generation: 0,
             tree_subscription_sessions: HashSet::new(),
+            read_only_sessions: HashSet::new(),
+            owned_sessions: HashSet::new(),
+            ownership_classifications: HashMap::new(),
+            next_ownership_classification: 0,
+            pending_live_subscriptions: HashSet::new(),
+            live_subscription_attempts: HashMap::new(),
+            next_live_subscription_attempt: 0,
+            replay_ended_for_live_subscription: HashSet::new(),
             tree_refresh_in_flight: None,
             tree_refresh_pending: false,
             next_tree_refresh_id: 0,
@@ -885,9 +924,190 @@ impl App {
     }
 
     async fn open_session(&mut self, session_id: SessionId) {
+        let generation = self.begin_ownership_classification(session_id);
+        let outcome = match self
+            .client
+            .resume_session(SessionResumeParams { session_id })
+            .await
+        {
+            Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("owned by another cookie process") =>
+            {
+                SessionOwnershipOutcome::Foreign
+            }
+            Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
+        };
+        self.apply_ownership_classification(session_id, generation, outcome);
         self.select_session(session_id).await;
         self.drain_replay(session_id).await;
         self.refresh_tree().await;
+    }
+
+    fn begin_ownership_classification(&mut self, session_id: SessionId) -> u64 {
+        self.next_ownership_classification = self.next_ownership_classification.wrapping_add(1);
+        let generation = self.next_ownership_classification;
+        self.ownership_classifications
+            .insert(session_id, generation);
+        if !self.owned_sessions.contains(&session_id) {
+            self.read_only_sessions.insert(session_id);
+            if self.selected == Some(session_id) {
+                self.input_focused = false;
+            }
+        }
+        generation
+    }
+
+    fn classify_session_background(&mut self, session_id: SessionId) {
+        if self.owned_sessions.contains(&session_id) {
+            self.start_pending_live_subscription(session_id);
+            return;
+        }
+        if self.ownership_classifications.contains_key(&session_id) {
+            return;
+        }
+        let generation = self.begin_ownership_classification(session_id);
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let outcome = match client
+                .resume_session(SessionResumeParams { session_id })
+                .await
+            {
+                Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("owned by another cookie process") =>
+                {
+                    SessionOwnershipOutcome::Foreign
+                }
+                Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
+            };
+            let _ = updates.send(RpcUpdate::SessionOwnershipClassified {
+                session_id,
+                generation,
+                outcome,
+            });
+        });
+    }
+
+    fn apply_ownership_classification(
+        &mut self,
+        session_id: SessionId,
+        generation: u64,
+        outcome: SessionOwnershipOutcome,
+    ) {
+        if self.ownership_classifications.get(&session_id) != Some(&generation) {
+            return;
+        }
+        self.ownership_classifications.remove(&session_id);
+        match outcome {
+            SessionOwnershipOutcome::Owned(session) => {
+                self.owned_sessions.insert(session_id);
+                self.read_only_sessions.remove(&session_id);
+                let session = self.merge_session_meta(*session);
+                if let Some(existing) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|existing| existing.session_id == session_id)
+                {
+                    *existing = session;
+                } else {
+                    self.sessions.push(session);
+                }
+                self.pending_live_subscriptions.insert(session_id);
+                self.replay_ended_for_live_subscription.remove(&session_id);
+                if self.selected == Some(session_id) {
+                    self.input_focused = true;
+                    self.status = "Session is writable.".into();
+                }
+                self.start_pending_live_subscription(session_id);
+            }
+            SessionOwnershipOutcome::Foreign => {
+                self.owned_sessions.remove(&session_id);
+                self.read_only_sessions.insert(session_id);
+                self.pending_live_subscriptions.remove(&session_id);
+                self.live_subscription_attempts.remove(&session_id);
+                self.replay_ended_for_live_subscription.remove(&session_id);
+                if self.selected == Some(session_id) {
+                    self.input_focused = false;
+                    self.status =
+                        "Session is owned by another cookie process; read-only snapshot.".into();
+                }
+            }
+            SessionOwnershipOutcome::Failed(error) => {
+                self.owned_sessions.remove(&session_id);
+                self.read_only_sessions.insert(session_id);
+                self.pending_live_subscriptions.remove(&session_id);
+                self.live_subscription_attempts.remove(&session_id);
+                self.replay_ended_for_live_subscription.remove(&session_id);
+                if self.selected == Some(session_id) {
+                    self.input_focused = false;
+                    self.status = error;
+                }
+            }
+        }
+    }
+
+    fn start_pending_live_subscription(&mut self, session_id: SessionId) {
+        if !self.pending_live_subscriptions.contains(&session_id)
+            || self.live_subscription_attempts.contains_key(&session_id)
+        {
+            return;
+        }
+        self.replay_ended_for_live_subscription.remove(&session_id);
+        self.next_live_subscription_attempt = self.next_live_subscription_attempt.wrapping_add(1);
+        let live_attempt = self.next_live_subscription_attempt;
+        self.live_subscription_attempts
+            .insert(session_id, live_attempt);
+        let cursor = self
+            .store
+            .sessions
+            .get(&session_id)
+            .map(|state| state.last_seq);
+        self.subscribe_session_background(session_id, cursor, Some(live_attempt));
+    }
+
+    fn finish_live_subscription(
+        &mut self,
+        session_id: SessionId,
+        live_attempt: Option<u64>,
+        outcome: SessionLiveSubscriptionOutcome,
+    ) {
+        let Some(live_attempt) = live_attempt else {
+            if let SessionLiveSubscriptionOutcome::Failed(error) = outcome
+                && self.selected == Some(session_id)
+            {
+                self.status = error;
+            }
+            return;
+        };
+        if self.live_subscription_attempts.get(&session_id) != Some(&live_attempt) {
+            return;
+        }
+        self.live_subscription_attempts.remove(&session_id);
+        if !self.pending_live_subscriptions.contains(&session_id) {
+            return;
+        }
+        match outcome {
+            SessionLiveSubscriptionOutcome::Established => {
+                self.pending_live_subscriptions.remove(&session_id);
+                self.replay_ended_for_live_subscription.remove(&session_id);
+            }
+            SessionLiveSubscriptionOutcome::ReplayInProgress => {
+                if self.replay_ended_for_live_subscription.remove(&session_id) {
+                    self.start_pending_live_subscription(session_id);
+                }
+            }
+            SessionLiveSubscriptionOutcome::Failed(error) => {
+                if self.selected == Some(session_id) {
+                    self.status = error;
+                }
+            }
+        }
     }
 
     async fn create_startup_session(&mut self) {
@@ -1846,12 +2066,12 @@ impl App {
             .as_ref()
             .is_some_and(|tree| find_session(tree, session_id).is_some());
         if !in_tree {
-            // A session outside the current tree is the intentional reroot
-            // action (used by the session picker and startup).
             self.reroot_tree(session_id);
+            self.classify_session_background(session_id);
             return;
         }
         self.set_selected_session(session_id);
+        self.classify_session_background(session_id);
         self.tree_cursor = Some(session_id);
         let needs_subscription = self.tree_subscription_sessions.insert(session_id);
         let cursor = self
@@ -1860,7 +2080,7 @@ impl App {
             .get(&session_id)
             .map(|state| state.last_seq);
         if needs_subscription {
-            self.subscribe_session_background(session_id, cursor);
+            self.subscribe_session_background(session_id, cursor, None);
         }
     }
 
@@ -1882,11 +2102,16 @@ impl App {
             .sessions
             .get(&session_id)
             .map(|state| state.last_seq);
-        self.subscribe_session_background(session_id, cursor);
+        self.subscribe_session_background(session_id, cursor, None);
         self.refresh_tree_background();
     }
 
-    fn subscribe_session_background(&self, session_id: SessionId, cursor: Option<u64>) {
+    fn subscribe_session_background(
+        &self,
+        session_id: SessionId,
+        cursor: Option<u64>,
+        live_attempt: Option<u64>,
+    ) {
         // Re-subscribing is safe: the lane lock serializes it with any prior
         // subscription for the same session, and the client reconciles
         // cursors.
@@ -1902,23 +2127,26 @@ impl App {
                     .clone()
             };
             let _guard = lane.lock().await;
-            let error = match tokio::time::timeout(
+            let outcome = match tokio::time::timeout(
                 TREE_SUBSCRIPTION_TIMEOUT,
                 client.subscribe_events(session_id, cursor),
             )
             .await
             {
-                // A subscription replay already in flight for this session
-                // keeps delivering into the shared stream, so it satisfies
-                // this watch without another RPC.
-                Ok(Err(crate::client::ClientError::ReplayInProgress)) => None,
-                Ok(Ok(())) => None,
-                Ok(Err(error)) => Some(error.to_string()),
-                Err(_) => Some("session subscription timed out".into()),
+                Ok(Err(crate::client::ClientError::ReplayInProgress)) => {
+                    SessionLiveSubscriptionOutcome::ReplayInProgress
+                }
+                Ok(Ok(())) => SessionLiveSubscriptionOutcome::Established,
+                Ok(Err(error)) => SessionLiveSubscriptionOutcome::Failed(error.to_string()),
+                Err(_) => {
+                    SessionLiveSubscriptionOutcome::Failed("session subscription timed out".into())
+                }
             };
-            if let Some(error) = error {
-                let _ = updates.send(RpcUpdate::Status(error.to_string()));
-            }
+            let _ = updates.send(RpcUpdate::SessionLiveSubscriptionFinished {
+                session_id,
+                live_attempt,
+                outcome,
+            });
         });
     }
 
@@ -1977,6 +2205,16 @@ impl App {
     pub(super) fn handle_rpc_update(&mut self, update: RpcUpdate) {
         match update {
             RpcUpdate::Status(status) => self.status = status,
+            RpcUpdate::SessionOwnershipClassified {
+                session_id,
+                generation,
+                outcome,
+            } => self.apply_ownership_classification(session_id, generation, outcome),
+            RpcUpdate::SessionLiveSubscriptionFinished {
+                session_id,
+                live_attempt,
+                outcome,
+            } => self.finish_live_subscription(session_id, live_attempt, outcome),
             RpcUpdate::SteerFailed {
                 session_id,
                 input,
@@ -2019,8 +2257,14 @@ impl App {
             RpcUpdate::Forked { forked } => {
                 self.status = "forked the session; switching to it".into();
                 self.refresh_tree_background();
-                // Outside the current tree this intentionally reroots.
-                self.watch_session(forked);
+                // This update is emitted only after the fork RPC confirms success.
+                self.ownership_classifications.remove(&forked);
+                self.owned_sessions.insert(forked);
+                self.read_only_sessions.remove(&forked);
+                self.pending_live_subscriptions.remove(&forked);
+                self.live_subscription_attempts.remove(&forked);
+                self.replay_ended_for_live_subscription.remove(&forked);
+                self.reroot_tree(forked);
             }
             RpcUpdate::Tree {
                 session_id,
@@ -2347,7 +2591,7 @@ impl App {
                 .sessions
                 .get(&session_id)
                 .map(|state| state.last_seq);
-            self.subscribe_session_background(session_id, cursor);
+            self.subscribe_session_background(session_id, cursor, None);
         }
     }
 
@@ -2504,11 +2748,21 @@ impl App {
             &delivery,
             ClientDelivery::ReplayEnd { session_id, .. } if Some(*session_id) == self.selected
         );
+        let replay_ended_session = match &delivery {
+            ClientDelivery::ReplayEnd { session_id, .. } => Some(*session_id),
+            _ => None,
+        };
         let revert_rebuild = event.is_some_and(|event| {
             Some(event.session_id) == self.selected
                 && matches!(&event.payload, EventPayload::SessionReverted { .. })
         });
         let outcome = self.store.apply_delivery(delivery);
+        if let Some(session_id) = replay_ended_session
+            && self.pending_live_subscriptions.contains(&session_id)
+        {
+            self.replay_ended_for_live_subscription.insert(session_id);
+            self.start_pending_live_subscription(session_id);
+        }
         if (revert_rebuild || replay_finished)
             && matches!(self.selection, Some(TextSelection::Conversation { .. }))
         {
@@ -4427,6 +4681,14 @@ impl App {
     }
 
     pub(super) async fn handle_input_key(&mut self, key: KeyEvent) {
+        if self
+            .selected
+            .is_some_and(|session| self.read_only_sessions.contains(&session))
+        {
+            self.input_focused = false;
+            self.status = "Session is owned by another cookie process; input is disabled.".into();
+            return;
+        }
         if self.runtime.phase() == RuntimePhase::ErrorRetry
             && key.code == KeyCode::Enter
             && self.input.as_str().is_empty()
@@ -4595,6 +4857,14 @@ impl App {
             return;
         }
         if self.modal != Modal::None {
+            return;
+        }
+        if self
+            .selected
+            .is_some_and(|session| self.read_only_sessions.contains(&session))
+        {
+            self.input_focused = false;
+            self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
         self.input_focused = true;
@@ -5109,7 +5379,7 @@ impl App {
                 if let Some(session_id) = self.session_search_ids().get(index).copied() {
                     self.modal = Modal::None;
                     self.session_search.reset();
-                    self.reroot_tree(session_id);
+                    self.open_session(session_id).await;
                 }
             }
             Modal::Agents => {
@@ -5194,6 +5464,13 @@ impl App {
     }
 
     pub(super) async fn submit_input(&mut self) {
+        if self
+            .selected
+            .is_some_and(|session| self.read_only_sessions.contains(&session))
+        {
+            self.status = "Session is owned by another cookie process; input is disabled.".into();
+            return;
+        }
         if self.input.as_str().trim().is_empty() {
             return;
         }
@@ -6226,9 +6503,22 @@ impl App {
             frame,
             layout.input,
             &mut self.input,
-            self.input_focused && self.modal == Modal::None,
+            self.input_focused
+                && self.modal == Modal::None
+                && self
+                    .selected
+                    .is_none_or(|session| !self.read_only_sessions.contains(&session)),
             Line::from(title_spans.clone()),
-            Some("Type a message · / for commands"),
+            Some(
+                if self
+                    .selected
+                    .is_some_and(|session| self.read_only_sessions.contains(&session))
+                {
+                    "Read-only snapshot"
+                } else {
+                    "Type a message · / for commands"
+                },
+            ),
             &self.theme,
         );
         // Agent, Model, and the complete bracketed Variant suffix are separate

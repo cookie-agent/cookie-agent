@@ -23,6 +23,7 @@ pub(crate) struct ArtifactGcReport {
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
 const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
+const TEMPORARY_ARTIFACT_GRACE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
@@ -98,6 +99,139 @@ mod verified_bytes_cache_tests {
         let cached = cache.get(&"a".repeat(64)).expect("cached bytes");
         assert_eq!(cached, bytes);
         assert_eq!(cached.as_ptr(), bytes.as_ptr());
+    }
+}
+
+#[cfg(test)]
+mod temporary_cleanup_tests {
+    use std::time::{Duration, SystemTime};
+
+    use cookie_agent_protocol::{OutputStream, PersistedToolResult, SafeDisplayText};
+    use fs2::FileExt as _;
+
+    use super::{ArtifactStore, OutputCapture};
+
+    #[test]
+    fn startup_cleanup_preserves_fresh_temporary_artifacts_and_removes_old_ones() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        drop(store);
+        let name = format!(".{}.{}.tmp", "a".repeat(64), uuid::Uuid::now_v7());
+        let path = artifacts.join(name);
+        std::fs::write(&path, b"in flight").expect("write temporary artifact");
+
+        drop(ArtifactStore::open(artifacts.clone()).expect("reopen with fresh temporary"));
+        assert!(path.is_file());
+
+        let old = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        let active = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open temporary");
+        active.lock_exclusive().expect("lock active temporary");
+        active
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .expect("age temporary");
+        drop(ArtifactStore::open(artifacts.clone()).expect("reopen with active old temporary"));
+        assert!(path.is_file());
+
+        drop(active);
+        drop(ArtifactStore::open(artifacts).expect("reopen with abandoned temporary"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn capture_commit_unlocks_before_immediate_read_for_new_and_deduplicated_content() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        for _ in 0..2 {
+            let capture = OutputCapture::new(store.clone()).expect("output capture");
+            capture.write(OutputStream::Stdout, b"locked capture\n");
+            let result = capture
+                .finish(
+                    PersistedToolResult {
+                        title: SafeDisplayText::new("Capture").expect("title"),
+                        output: String::new(),
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                        additional_messages: Vec::new(),
+                    },
+                    100,
+                    4096,
+                )
+                .expect("commit and preview capture");
+            let digest = result.metadata["streams"]["stdout"]["sha256"]
+                .as_str()
+                .expect("stdout digest");
+            assert_eq!(
+                store
+                    .read_paged(digest, 0, 10)
+                    .expect("immediate final-path read")
+                    .content,
+                "locked capture\n"
+            );
+            let probe = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(artifacts.join(digest))
+                .expect("open committed capture through second handle");
+            probe
+                .try_lock_exclusive()
+                .expect("capture lock released after commit");
+            fs2::FileExt::unlock(&probe).expect("unlock probe");
+        }
+    }
+
+    #[test]
+    fn capture_commit_refreshes_old_mtime_before_unlock_and_gc() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir(&sessions).expect("sessions directory");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        let capture = OutputCapture::new(store.clone()).expect("output capture");
+        capture.write(OutputStream::Stdout, b"long running capture\n");
+        let old = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        capture
+            .set_modified_for_test(old)
+            .expect("age in-flight capture");
+
+        let result = capture
+            .finish(
+                PersistedToolResult {
+                    title: SafeDisplayText::new("Capture").expect("title"),
+                    output: String::new(),
+                    metadata: serde_json::Value::Null,
+                    truncation: None,
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
+                },
+                100,
+                4096,
+            )
+            .expect("commit aged capture");
+        let digest = result.metadata["streams"]["stdout"]["sha256"]
+            .as_str()
+            .expect("stdout digest");
+        let path = artifacts.join(digest);
+        let modified = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("committed mtime");
+        assert!(
+            SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::ZERO)
+                < Duration::from_secs(60)
+        );
+
+        store
+            .collect_garbage(&sessions, Duration::from_secs(60 * 60))
+            .expect("immediate garbage collection");
+        assert!(path.is_file(), "fresh capture must remain inside GC grace");
     }
 }
 
@@ -256,6 +390,7 @@ mod unix {
         ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
         ToolOutputTruncation,
     };
+    use fs2::FileExt as _;
     use rustix::fs::{AtFlags, Dir, Mode, OFlags, fsync, openat, renameat, unlinkat};
     use serde::Serialize;
     use serde_json::Value;
@@ -331,6 +466,7 @@ mod unix {
                         Mode::from_raw_mode(0o600),
                     )?;
                     let mut temporary = fs::File::from(temporary);
+                    temporary.lock_exclusive()?;
                     temporary.write_all(content)?;
                     temporary.sync_all()?;
                     drop(temporary);
@@ -410,8 +546,11 @@ mod unix {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .evict(&digest);
-                unlinkat(&*self.directory_handle, &digest, AtFlags::empty())?;
-                report.deleted += 1;
+                match unlinkat(&*self.directory_handle, &digest, AtFlags::empty()) {
+                    Ok(()) => report.deleted += 1,
+                    Err(error) if error == rustix::io::Errno::NOENT => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
             if report.deleted > 0 {
                 fsync(&*self.directory_handle)?;
@@ -433,13 +572,35 @@ mod unix {
         }
 
         fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
+            let now = std::time::SystemTime::now();
+            let mut deleted = false;
             for name in directory_names(&self.directory_handle)? {
                 if !valid_temporary_artifact_name(&name) {
                     continue;
                 }
-                unlinkat(&*self.directory_handle, &name, AtFlags::empty())?;
+                let Some(file) = self.open_existing(&name)? else {
+                    continue;
+                };
+                let age = now
+                    .duration_since(file.metadata()?.modified()?)
+                    .unwrap_or(std::time::Duration::ZERO);
+                if age < super::TEMPORARY_ARTIFACT_GRACE {
+                    continue;
+                }
+                match file.try_lock_exclusive() {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(_) => continue,
+                }
+                match unlinkat(&*self.directory_handle, &name, AtFlags::empty()) {
+                    Ok(()) => deleted = true,
+                    Err(error) if error == rustix::io::Errno::NOENT => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
-            fsync(&*self.directory_handle)?;
+            if deleted {
+                fsync(&*self.directory_handle)?;
+            }
             Ok(())
         }
 
@@ -514,20 +675,27 @@ mod unix {
                 OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             )?;
-            Ok(fs::File::from(file))
+            let file = fs::File::from(file);
+            file.lock_exclusive()?;
+            Ok(file)
         }
 
-        fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
+        fn commit_capture(
+            &self,
+            name: &str,
+            capture: &Mutex<fs::File>,
+        ) -> std::io::Result<(CapturedArtifact, u64)> {
             let _write = self
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut temporary = self.open_existing(name)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "capture missing")
-            })?;
+            let mut temporary = capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let (digest, byte_length, newlines) = hash_file(&mut temporary)?;
+            let published_at = std::time::SystemTime::now();
+            temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
             temporary.sync_all()?;
-            drop(temporary);
             if let Some(mut existing) = self.open_existing(&digest)? {
                 if hash_file(&mut existing)?.0 != digest {
                     return Err(std::io::Error::new(
@@ -535,10 +703,13 @@ mod unix {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
-                existing.set_times(
-                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
-                )?;
-                unlinkat(&*self.directory_handle, name, AtFlags::empty())?;
+                existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
+                existing.sync_all()?;
+                fs2::FileExt::unlock(&*temporary)?;
+                match unlinkat(&*self.directory_handle, name, AtFlags::empty()) {
+                    Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                    Err(error) => return Err(error.into()),
+                }
             } else {
                 renameat(
                     &*self.directory_handle,
@@ -546,6 +717,7 @@ mod unix {
                     &*self.directory_handle,
                     &digest,
                 )?;
+                fs2::FileExt::unlock(&*temporary)?;
                 self.open_existing(&digest)?
                     .ok_or_else(|| std::io::Error::other("capture artifact disappeared"))?;
             }
@@ -770,6 +942,21 @@ mod unix {
             }
         }
 
+        #[cfg(test)]
+        pub(super) fn set_modified_for_test(
+            &self,
+            modified: std::time::SystemTime,
+        ) -> std::io::Result<()> {
+            for stream in [&self.stdout, &self.stderr] {
+                stream
+                    .file
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+            }
+            Ok(())
+        }
+
         pub(crate) fn finish(
             &self,
             mut result: ToolResult,
@@ -794,14 +981,20 @@ mod unix {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .sync_all()?;
             }
-            let (stdout, stdout_newlines) = match self.store.commit_capture(&self.stdout.name) {
+            let (stdout, stdout_newlines) = match self
+                .store
+                .commit_capture(&self.stdout.name, &self.stdout.file)
+            {
                 Ok(stdout) => stdout,
                 Err(error) => {
                     self.discard();
                     return Err(error);
                 }
             };
-            let (stderr, stderr_newlines) = match self.store.commit_capture(&self.stderr.name) {
+            let (stderr, stderr_newlines) = match self
+                .store
+                .commit_capture(&self.stderr.name, &self.stderr.file)
+            {
                 Ok(stderr) => stderr,
                 Err(error) => {
                     self.store.discard_capture(&self.stderr.name);
@@ -1097,6 +1290,7 @@ mod windows {
         ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
         ToolOutputTruncation,
     };
+    use fs2::FileExt as _;
     use serde::Serialize;
     use serde_json::Value;
     use sha2::{Digest, Sha256};
@@ -1235,8 +1429,11 @@ mod windows {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .evict(&digest);
-                fs::remove_file(entry.path())?;
-                report.deleted += 1;
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => report.deleted += 1,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
             }
             Ok(report)
         }
@@ -1298,15 +1495,37 @@ mod windows {
 
         fn create_file(&self, name: &str) -> std::io::Result<fs::File> {
             let path = self.directory.join(name);
-            cookie_agent_models::secure_store::create_windows_private_file(&path)
+            let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
+            file.lock_exclusive()?;
+            Ok(file)
         }
 
         fn cleanup_temporary_artifacts(&self) -> std::io::Result<()> {
+            let now = std::time::SystemTime::now();
             for entry in fs::read_dir(&self.directory)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if valid_temporary_artifact_name(&name) {
-                    fs::remove_file(entry.path())?;
+                if !valid_temporary_artifact_name(&name) {
+                    continue;
+                }
+                let age = now
+                    .duration_since(entry.metadata()?.modified()?)
+                    .unwrap_or(std::time::Duration::ZERO);
+                if age < super::TEMPORARY_ARTIFACT_GRACE {
+                    continue;
+                }
+                let Some(file) = self.open_existing(&name)? else {
+                    continue;
+                };
+                match file.try_lock_exclusive() {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(_) => continue,
+                }
+                match fs::remove_file(entry.path()) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
             }
             Ok(())
@@ -1382,17 +1601,27 @@ mod windows {
             }
         }
 
-        fn commit_capture(&self, name: &str) -> std::io::Result<(CapturedArtifact, u64)> {
+        fn commit_capture(
+            &self,
+            name: &str,
+            capture: &Mutex<fs::File>,
+        ) -> std::io::Result<(CapturedArtifact, u64)> {
             let _write = self
                 .writes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut temporary = self.open_existing(name)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "capture missing")
-            })?;
+            // LockFileEx locks overlap by handle, including handles in this process.
+            // Hash through the original handle, refresh and sync its mtime while
+            // locked, then unlock only after a final digest exists. This permits
+            // immediate verification/preview through a second handle without an
+            // old-mtime GC window or a reopened temp-cleanup race.
+            let mut temporary = capture
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let (digest, byte_length, newlines) = hash_file(&mut temporary)?;
+            let published_at = std::time::SystemTime::now();
+            temporary.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
             temporary.sync_all()?;
-            drop(temporary);
             let temporary_path = self.directory.join(name);
             if let Some(mut existing) = self.open_existing(&digest)? {
                 if hash_file(&mut existing)?.0 != digest {
@@ -1400,15 +1629,20 @@ mod windows {
                         "artifact digest collision or corrupt retained artifact",
                     ));
                 }
-                existing.set_times(
-                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()),
-                )?;
-                fs::remove_file(temporary_path)?;
+                existing.set_times(std::fs::FileTimes::new().set_modified(published_at))?;
+                existing.sync_all()?;
+                fs2::FileExt::unlock(&*temporary)?;
+                match fs::remove_file(temporary_path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
             } else {
                 cookie_agent_models::secure_store::replace_windows_path(
                     &temporary_path,
                     &self.directory.join(&digest),
                 )?;
+                fs2::FileExt::unlock(&*temporary)?;
                 self.open_existing(&digest)?
                     .ok_or_else(|| invalid("capture artifact disappeared"))?;
             }
@@ -1539,6 +1773,21 @@ mod windows {
             }
         }
 
+        #[cfg(test)]
+        pub(super) fn set_modified_for_test(
+            &self,
+            modified: std::time::SystemTime,
+        ) -> std::io::Result<()> {
+            for stream in [&self.stdout, &self.stderr] {
+                stream
+                    .file
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+            }
+            Ok(())
+        }
+
         pub(crate) fn finish(
             &self,
             mut result: ToolResult,
@@ -1563,8 +1812,13 @@ mod windows {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .sync_all()?;
             }
-            let (stdout, stdout_newlines) = self.store.commit_capture(&self.stdout.name)?;
-            let (stderr, stderr_newlines) = match self.store.commit_capture(&self.stderr.name) {
+            let (stdout, stdout_newlines) = self
+                .store
+                .commit_capture(&self.stdout.name, &self.stdout.file)?;
+            let (stderr, stderr_newlines) = match self
+                .store
+                .commit_capture(&self.stderr.name, &self.stderr.file)
+            {
                 Ok(stderr) => stderr,
                 Err(error) => {
                     self.store.discard_capture(&self.stderr.name);

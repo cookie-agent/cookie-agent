@@ -249,11 +249,22 @@ impl ServerProtocol for Server {
         params: EventsSubscribeParams,
         context: &ServerContext,
     ) -> Result<EventsSubscribeResult> {
-        let (result, receiver) = self
+        let (result, receiver) = match self
             .engine
             .subscribe(params.session_id, params.cursor)
             .await
-            .map_err(protocol_fault)?;
+        {
+            Ok(subscription) => subscription,
+            Err(EngineError::SessionOwnedByAnotherProcess(_)) => {
+                // Protocol 16 has no separate snapshot RPC. Return only the replay
+                // half of this response and deliberately register no live tail.
+                return self
+                    .engine
+                    .snapshot_events(params.session_id, params.cursor)
+                    .map_err(protocol_fault);
+            }
+            Err(error) => return Err(protocol_fault(error)),
+        };
         context.register_session_subscription(params.session_id);
         self.start_event_tail(receiver, context.clone());
         for event in &result.events {

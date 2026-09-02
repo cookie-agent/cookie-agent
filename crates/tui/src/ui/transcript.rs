@@ -4933,6 +4933,7 @@ mod tests {
         forked_meta.creation_selection.agent = reviewer;
         app.sessions = vec![session_meta(current), forked_meta];
         app.selected = Some(current);
+        app.read_only_sessions.extend([current, forked]);
 
         app.run_command(SlashCommand::New).await;
         app.cycle_agent(false);
@@ -4945,11 +4946,15 @@ mod tests {
 
         app.handle_rpc_update(RpcUpdate::Forked { forked });
         assert_eq!(app.selected, Some(forked));
+        assert!(app.owned_sessions.contains(&forked));
+        assert!(!app.read_only_sessions.contains(&forked));
         assert_eq!(
             app.draft.as_ref().map(|draft| draft.agent.as_str()),
             Some("reviewer")
         );
         let switched = rendered_frame(&mut app, 100, 30);
+        assert!(switched.contains("Type a message · / for commands"));
+        assert!(!switched.contains("Read-only snapshot"));
         assert!(
             switched.contains("system prompt · reviewer (last run) (2 lines)"),
             "{switched}"
@@ -7439,15 +7444,221 @@ mod tests {
                 children: Vec::new(),
             }],
         });
+        app.owned_sessions.insert(root);
+        app.input_focused = true;
         app.watch_session(child);
         assert_eq!(app.tree_root, Some(root));
         assert_eq!(app.selected, Some(child));
         assert!(app.tree.is_some());
+        assert!(app.read_only_sessions.contains(&child));
+        assert!(!app.input_focused);
+        let child_generation = app.ownership_classifications[&child];
+        app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+            session_id: child,
+            generation: child_generation,
+            outcome: SessionOwnershipOutcome::Foreign,
+        });
+        assert!(app.read_only_sessions.contains(&child));
+        assert!(rendered_frame(&mut app, 100, 30).contains("Read-only snapshot"));
         // Watching a session outside the tree is the intentional reroot.
         let outside = SessionId::new_v7();
+        app.input_focused = true;
         app.watch_session(outside);
         assert_eq!(app.tree_root, Some(outside));
         assert!(app.tree.is_none());
+        assert!(app.read_only_sessions.contains(&outside));
+        assert!(!app.input_focused);
+        let outside_generation = app.ownership_classifications[&outside];
+        app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+            session_id: outside,
+            generation: outside_generation,
+            outcome: SessionOwnershipOutcome::Owned(Box::new(session_meta(outside))),
+        });
+        assert!(app.owned_sessions.contains(&outside));
+        assert!(!app.read_only_sessions.contains(&outside));
+        assert!(app.input_focused);
+    }
+
+    #[tokio::test]
+    async fn tree_children_use_their_own_ownership_classification() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let grandchild = SessionId::new_v7();
+        app.tree_root = Some(root);
+        app.selected = Some(root);
+        app.selection_generation = 7;
+        app.tree_refresh_in_flight = Some((7, 11));
+        app.read_only_sessions.insert(root);
+        app.handle_rpc_update(RpcUpdate::Tree {
+            session_id: root,
+            generation: 7,
+            request_id: 11,
+            tree: Box::new(SessionTree {
+                session: session_meta(root),
+                children: vec![SessionTree {
+                    session: session_meta(child),
+                    children: vec![SessionTree {
+                        session: session_meta(grandchild),
+                        children: Vec::new(),
+                    }],
+                }],
+            }),
+        });
+
+        assert!(!app.read_only_sessions.contains(&child));
+        assert!(!app.read_only_sessions.contains(&grandchild));
+        app.watch_session(child);
+        let child_generation = app.ownership_classifications[&child];
+        app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+            session_id: child,
+            generation: child_generation,
+            outcome: SessionOwnershipOutcome::Foreign,
+        });
+        assert!(app.read_only_sessions.contains(&child));
+
+        app.input_focused = true;
+        app.watch_session(grandchild);
+        let grandchild_generation = app.ownership_classifications[&grandchild];
+        app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+            session_id: grandchild,
+            generation: grandchild_generation,
+            outcome: SessionOwnershipOutcome::Owned(Box::new(session_meta(grandchild))),
+        });
+        assert_eq!(app.selected, Some(grandchild));
+        assert!(app.owned_sessions.contains(&grandchild));
+        assert!(!app.read_only_sessions.contains(&grandchild));
+        assert!(app.input_focused);
+        assert!(rendered_frame(&mut app, 100, 30).contains("Type a message · / for commands"));
+    }
+
+    #[tokio::test]
+    async fn session_picker_selection_always_runs_per_session_classification() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.sessions = vec![session_meta(session)];
+        app.modal = Modal::Sessions;
+        app.choose_picker_entry(0).await;
+
+        assert_eq!(app.selected, Some(session));
+        assert!(app.read_only_sessions.contains(&session));
+        assert!(!app.owned_sessions.contains(&session));
+        assert!(!app.ownership_classifications.contains_key(&session));
+    }
+
+    #[tokio::test]
+    async fn adopted_session_retries_live_subscription_after_snapshot_replay_ends() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.sessions = vec![session_meta(session)];
+        app.read_only_sessions.insert(session);
+        app.ownership_classifications.insert(session, 7);
+        app.handle_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 0,
+            final_seq: 1,
+            rebuild: true,
+        })
+        .await;
+        app.handle_delivery(ClientDelivery::ReplayEvent {
+            session_id: session,
+            generation: 0,
+            final_seq: 1,
+            event: Box::new(session_created(session, 1)),
+        })
+        .await;
+        app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
+            session_id: session,
+            generation: 7,
+            outcome: SessionOwnershipOutcome::Owned(Box::new(session_meta(session))),
+        });
+        assert!(app.owned_sessions.contains(&session));
+        assert!(app.pending_live_subscriptions.contains(&session));
+        let first_attempt = app.live_subscription_attempts[&session];
+        app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+            session_id: session,
+            live_attempt: None,
+            outcome: SessionLiveSubscriptionOutcome::Established,
+        });
+        assert!(app.pending_live_subscriptions.contains(&session));
+        assert_eq!(app.live_subscription_attempts[&session], first_attempt);
+        app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+            session_id: session,
+            live_attempt: Some(first_attempt),
+            outcome: SessionLiveSubscriptionOutcome::ReplayInProgress,
+        });
+        assert!(app.pending_live_subscriptions.contains(&session));
+        assert!(!app.live_subscription_attempts.contains_key(&session));
+
+        app.handle_delivery(ClientDelivery::ReplayStart {
+            session_id: session,
+            generation: 1,
+            final_seq: 1,
+            rebuild: false,
+        })
+        .await;
+        app.handle_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 0,
+            final_seq: 1,
+        })
+        .await;
+        assert_eq!(app.store.sessions[&session].last_seq, 1);
+        let second_attempt = app.live_subscription_attempts[&session];
+        assert!(!app.replay_ended_for_live_subscription.contains(&session));
+
+        app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+            session_id: session,
+            live_attempt: Some(second_attempt),
+            outcome: SessionLiveSubscriptionOutcome::ReplayInProgress,
+        });
+        assert!(app.pending_live_subscriptions.contains(&session));
+        assert!(!app.live_subscription_attempts.contains_key(&session));
+
+        app.handle_delivery(ClientDelivery::ReplayEnd {
+            session_id: session,
+            generation: 1,
+            final_seq: 1,
+        })
+        .await;
+        let third_attempt = app.live_subscription_attempts[&session];
+        assert_ne!(third_attempt, second_attempt);
+        assert!(!app.replay_ended_for_live_subscription.contains(&session));
+        app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+            session_id: session,
+            live_attempt: None,
+            outcome: SessionLiveSubscriptionOutcome::Established,
+        });
+        assert_eq!(app.live_subscription_attempts[&session], third_attempt);
+        assert!(app.pending_live_subscriptions.contains(&session));
+        app.handle_rpc_update(RpcUpdate::SessionLiveSubscriptionFinished {
+            session_id: session,
+            live_attempt: Some(third_attempt),
+            outcome: SessionLiveSubscriptionOutcome::Established,
+        });
+        assert!(!app.pending_live_subscriptions.contains(&session));
+        assert!(!app.live_subscription_attempts.contains_key(&session));
+
+        let live = runless_event(
+            session,
+            2,
+            EventPayload::PluginDiagnostic {
+                plugin: "ownership-test".into(),
+                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                message: "live after adoption".into(),
+                count: 1,
+            },
+        );
+        app.handle_delivery(live_event(live.clone())).await;
+        assert_eq!(app.store.sessions[&session].last_seq, 2);
+        let transcript_len = app.store.sessions[&session].transcript.len();
+        app.handle_delivery(live_event(live)).await;
+        assert_eq!(app.store.sessions[&session].last_seq, 2);
+        assert_eq!(
+            app.store.sessions[&session].transcript.len(),
+            transcript_len
+        );
     }
 
     #[tokio::test]
