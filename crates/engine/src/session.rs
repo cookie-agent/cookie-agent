@@ -28,7 +28,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
-use crate::ownership::{HeldLock, SessionOwnership, WriteAuthority, WriteCapability, try_acquire};
+use crate::ownership::{
+    HeldLock, SessionOwnership, WriteAuthority, WriteCapability, owner_lock_path, try_acquire,
+};
 
 const PROJECT_CWD_FILE: &str = "cwd";
 
@@ -759,8 +761,12 @@ impl SessionStore {
             log.suspend_writer()?;
             let fork_projection = projection(log)?;
             write_cache(&temporary.join("meta.json"), &fork_projection.meta)?;
-            let lock = match try_acquire(&temporary).map_err(|source| SessionError::Io {
-                path: temporary.join("owner.lock"),
+            #[cfg(unix)]
+            let lock_session_dir = &temporary;
+            #[cfg(windows)]
+            let lock_session_dir = &final_dir;
+            let lock = match try_acquire(lock_session_dir).map_err(|source| SessionError::Io {
+                path: owner_lock_path(lock_session_dir),
                 source,
             })? {
                 SessionOwnership::Owned(lock) => lock,
@@ -829,8 +835,12 @@ impl SessionStore {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
             write_cache(&temporary.join("meta.json"), &projection.meta)?;
-            let lock = match try_acquire(&temporary).map_err(|source| SessionError::Io {
-                path: temporary.join("owner.lock"),
+            #[cfg(unix)]
+            let lock_session_dir = &temporary;
+            #[cfg(windows)]
+            let lock_session_dir = &final_dir;
+            let lock = match try_acquire(lock_session_dir).map_err(|source| SessionError::Io {
+                path: owner_lock_path(lock_session_dir),
                 source,
             })? {
                 SessionOwnership::Owned(lock) => lock,
@@ -1732,6 +1742,8 @@ mod tests {
         SessionId, SessionOrigin, Sha256Digest, Usage,
     };
 
+    use crate::ownership::owner_lock_path;
+
     use super::{PROJECT_CWD_FILE, SessionError, SessionStore, projection};
 
     #[cfg(unix)]
@@ -1897,7 +1909,7 @@ mod tests {
         let data = temporary.path().join("data");
         let owner = SessionStore::open(&data, &cwd).expect("owner store");
         let session_id = persist_test_session(&owner);
-        assert!(owner.session_dir(session_id).join("owner.lock").is_file());
+        assert!(owner_lock_path(&owner.session_dir(session_id)).is_file());
         let stale_log = owner.get(session_id).expect("owned projection").log;
         let (authorized, release_append) = stale_log.install_append_authorization_hook_for_test();
         let appending = thread::spawn(move || {
@@ -2073,7 +2085,7 @@ mod tests {
             thread::spawn(move || creator.persist_buffered_session(session_id))
         };
         assert_eq!(
-            reached.recv().expect("publisher acquired temp lock"),
+            reached.recv().expect("publisher acquired ownership lock"),
             session_id
         );
 
@@ -2120,7 +2132,7 @@ mod tests {
                 )
             })
         };
-        let fork_id = reached.recv().expect("fork acquired temp lock");
+        let fork_id = reached.recv().expect("fork acquired ownership lock");
 
         let observer = SessionStore::open(&data, &cwd).expect("observer store");
         assert!(matches!(observer.get(fork_id), Err(SessionError::Missing(id)) if id == fork_id));
@@ -3078,6 +3090,8 @@ mod windows_tests {
         SessionId, SessionOrigin,
     };
 
+    use crate::ownership::owner_lock_path;
+
     use super::{PROJECT_CWD_FILE, SessionStore};
 
     fn revision(label: char) -> String {
@@ -3195,6 +3209,7 @@ mod windows_tests {
             session_dir.clone(),
             session_dir.join("events.jsonl"),
             session_dir.join("meta.json"),
+            owner_lock_path(&session_dir),
         ] {
             cookie_agent_models::secure_store::verify_windows_private_creation(&path)
                 .unwrap_or_else(|error| {

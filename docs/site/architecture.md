@@ -228,10 +228,10 @@ session and drive the run loop:
 ## Sessions and persistence
 
 Sessions are append-only event logs. A new session exists only in memory until
-its first user message, when its directory, `events.jsonl`, `meta.json` cache,
-and locked `owner.lock` are published atomically. Revert appends a
-`session_reverted` marker and fork copies a persisted prefix under a new session
-ID; neither truncates physical events.
+its first user message, when its directory, `events.jsonl`, and `meta.json`
+cache are published atomically while its ownership lock is held. Revert appends
+a `session_reverted` marker and fork copies a persisted prefix under a new
+session ID; neither truncates physical events.
 
 Session data lives under the user data directory keyed by a hash of the
 canonical working directory:
@@ -243,7 +243,8 @@ canonical working directory:
   catalog/                         # validated models.dev cache
   projects/<16-hex-cwd-hash>/
     cwd                            # canonical project path
-    sessions/<session-id>/         # events.jsonl + meta.json + owner.lock
+    sessions/<session-id>/         # events.jsonl + meta.json (+ owner.lock on Unix)
+    sessions/<session-id>.owner.lock # ownership sidecar on Windows
     artifacts/                     # content-addressed tool output
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
@@ -261,14 +262,20 @@ diagnostics, while other delegations continue to load.
 Multiple cookie processes may share this project data directory. Ownership is
 per session, not per project: the process that successfully locks `owner.lock`
 is the only writer and retains that lock until process exit, including while an
-idle session is evicted from memory. Session listing reads `meta.json` without
-locking. Opening an existing session for mutation attempts the lock; success
-enters a non-writable adoption state, reconciles only that session's interrupted
-work, and then publishes ownership. Reconciliation failure revokes the log's
-write capability and releases the lock so a later attempt can retry. A retained
-event-log projection cannot append after its store drops ownership. A
-live foreign owner produces `session is owned by another cookie process`.
-Classification failures fail closed as foreign-owned.
+idle session is evicted from memory. On Unix the lock is
+`sessions/<session-id>/owner.lock`; on Windows it is the adjacent
+`sessions/<session-id>.owner.lock` sidecar so its open handle does not prevent
+directory renames. New-session and fork publication acquire the Windows sidecar
+derived from the final directory path before renaming the temporary directory.
+Session discovery ignores the sidecar because it scans only directories.
+Session listing reads `meta.json` without locking. Opening an existing session
+for mutation attempts the lock; success enters a non-writable adoption state,
+reconciles only that session's interrupted work, and then publishes ownership.
+Reconciliation failure revokes the log's write capability and releases the lock
+so a later attempt can retry. A retained event-log projection cannot append
+after its store drops ownership. A live foreign owner produces `session is
+owned by another cookie process`. Classification failures fail closed as
+foreign-owned.
 
 Foreign sessions remain inspectable as read-only snapshots. The TUI disables
 input for them and refreshes the snapshot when reopened; there is no live event

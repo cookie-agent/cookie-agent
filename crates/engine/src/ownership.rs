@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -9,7 +9,10 @@ use std::{
 
 use fs2::FileExt as _;
 
+#[cfg(unix)]
 const OWNER_LOCK_FILE: &str = "owner.lock";
+#[cfg(windows)]
+const OWNER_LOCK_EXTENSION: &str = "owner.lock";
 
 #[derive(Debug)]
 pub(crate) struct HeldLock {
@@ -64,8 +67,19 @@ pub(crate) enum SessionOwnership {
     Foreign,
 }
 
+pub(crate) fn owner_lock_path(session_dir: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        session_dir.join(OWNER_LOCK_FILE)
+    }
+    #[cfg(windows)]
+    {
+        session_dir.with_extension(OWNER_LOCK_EXTENSION)
+    }
+}
+
 pub(crate) fn try_acquire(session_dir: &Path) -> std::io::Result<SessionOwnership> {
-    let path = session_dir.join(OWNER_LOCK_FILE);
+    let path = owner_lock_path(session_dir);
     let mut options = fs::OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]
@@ -85,7 +99,10 @@ pub(crate) fn try_acquire(session_dir: &Path) -> std::io::Result<SessionOwnershi
     let file = options.open(path)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(SessionOwnership::Owned(HeldLock { _file: file })),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+        {
             Ok(SessionOwnership::Foreign)
         }
         Err(error) => Err(error),
@@ -94,7 +111,29 @@ pub(crate) fn try_acquire(session_dir: &Path) -> std::io::Result<SessionOwnershi
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionOwnership, try_acquire};
+    use std::path::Path;
+
+    use super::{SessionOwnership, owner_lock_path, try_acquire};
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_lock_is_inside_the_session_directory_on_unix() {
+        let session_dir = Path::new("sessions").join("0198-session");
+        assert_eq!(
+            owner_lock_path(&session_dir),
+            session_dir.join("owner.lock")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn owner_lock_is_a_session_sidecar_on_windows() {
+        let session_dir = Path::new("sessions").join("0198-session");
+        assert_eq!(
+            owner_lock_path(&session_dir),
+            Path::new("sessions").join("0198-session.owner.lock")
+        );
+    }
 
     #[test]
     fn a_second_descriptor_in_the_same_process_cannot_acquire_ownership() {
