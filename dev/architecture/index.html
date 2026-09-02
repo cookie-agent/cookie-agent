@@ -1730,10 +1730,10 @@ session and drive the run loop:</p>
 </ul>
 <h2 id="sessions-and-persistence">Sessions and persistence<a class="headerlink" href="#sessions-and-persistence" title="Permanent link">&para;</a></h2>
 <p>Sessions are append-only event logs. A new session exists only in memory until
-its first user message, when its directory, <code>events.jsonl</code>, and <code>meta.json</code>
-cache are created atomically. Revert appends a <code>session_reverted</code> marker and
-fork copies a persisted prefix under a new session ID; neither truncates
-physical events.</p>
+its first user message, when its directory, <code>events.jsonl</code>, <code>meta.json</code> cache,
+and locked <code>owner.lock</code> are published atomically. Revert appends a
+<code>session_reverted</code> marker and fork copies a persisted prefix under a new session
+ID; neither truncates physical events.</p>
 <p>Session data lives under the user data directory keyed by a hash of the
 canonical working directory:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>~/.cookie-agent/
@@ -1742,7 +1742,7 @@ canonical working directory:</p>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  catalog/                         # validated models.dev cache
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  projects/&lt;16-hex-cwd-hash&gt;/
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    cwd                            # canonical project path
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    sessions/&lt;session-id&gt;/         # versionless events.jsonl + rebuildable meta.json cache
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    sessions/&lt;session-id&gt;/         # events.jsonl + meta.json + owner.lock
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    artifacts/                     # content-addressed tool output
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    grant-invalidations.jsonl      # tree-grant invalidation journal
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    runtime-revisions-v8.jsonl     # runtime revision index
@@ -1755,6 +1755,27 @@ agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
 rejects recovery. A delegation event skipped by best-effort reading is absent
 from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.</p>
+<p>Multiple cookie processes may share this project data directory. Ownership is
+per session, not per project: the process that successfully locks <code>owner.lock</code>
+is the only writer and retains that lock until process exit, including while an
+idle session is evicted from memory. Session listing reads <code>meta.json</code> without
+locking. Opening an existing session for mutation attempts the lock; success
+enters a non-writable adoption state, reconciles only that session's interrupted
+work, and then publishes ownership. Reconciliation failure revokes the log's
+write capability and releases the lock so a later attempt can retry. A retained
+event-log projection cannot append after its store drops ownership. A
+live foreign owner produces <code>session is owned by another cookie process</code>.
+Classification failures fail closed as foreign-owned.</p>
+<p>Foreign sessions remain inspectable as read-only snapshots. The TUI disables
+input for them and refreshes the snapshot when reopened; there is no live event
+tail. Forking a foreign snapshot is allowed because the new fork has its own
+lock. Grants and grant invalidations committed by another process become
+visible after restart. Concurrent MCP configuration edits remain last-writer
+wins. Protocol 16 is unchanged; ownership failures use an ordinary fault
+message rather than a new wire error.</p>
+<p>The data directory must be on a local filesystem with correct <code>flock</code> or
+<code>LockFileEx</code> semantics. NFS-class and other network filesystems are unsupported
+for this directory because they cannot guarantee single-writer ownership.</p>
 <p>Legacy project-level <code>delegations.jsonl</code> files are ignored. In-flight
 delegations that existed only in that pre-release journal are not recovered;
 their child directories remain ordinary sessions available for inspection.</p>

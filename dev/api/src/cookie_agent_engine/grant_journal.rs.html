@@ -13,7 +13,7 @@
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>serde::{Deserialize, Serialize};
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>thiserror::Error;
 <a href=#15 id=15 data-nosnippet>15</a>
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">crate</span>::events::{EventLogError, append_jsonl, load_jsonl};
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">crate</span>::events::{EventLogError, append_jsonl, load_jsonl_shared};
 <a href=#17 id=17 data-nosnippet>17</a>
 <a href=#18 id=18 data-nosnippet>18</a><span class="attr">#[derive(Clone, Debug, Deserialize, Serialize)]
 <a href=#19 id=19 data-nosnippet>19</a>#[serde(deny_unknown_fields)]
@@ -58,7 +58,7 @@
 <a href=#58 id=58 data-nosnippet>58</a>
 <a href=#59 id=59 data-nosnippet>59</a><span class="kw">impl </span>GrantInvalidationJournal {
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">pub fn </span>open(path: PathBuf) -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;<span class="self">Self</span>&gt;, GrantJournalError&gt; {
-<a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>records = load_jsonl::&lt;GrantInvalidationRecord&gt;(<span class="kw-2">&amp;</span>path)<span class="question-mark">?</span>;
+<a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>records = load_jsonl_shared::&lt;GrantInvalidationRecord&gt;(<span class="kw-2">&amp;</span>path)<span class="question-mark">?</span>;
 <a href=#62 id=62 data-nosnippet>62</a>        <span class="kw">for </span>(index, record) <span class="kw">in </span>records.iter().enumerate() {
 <a href=#63 id=63 data-nosnippet>63</a>            <span class="kw">let </span>expected = index <span class="kw">as </span>u64 + <span class="number">1</span>;
 <a href=#64 id=64 data-nosnippet>64</a>            <span class="kw">if </span>record.seq != expected {
@@ -296,44 +296,45 @@
 <a href=#296 id=296 data-nosnippet>296</a>        );
 <a href=#297 id=297 data-nosnippet>297</a>        drop(journal);
 <a href=#298 id=298 data-nosnippet>298</a>
-<a href=#299 id=299 data-nosnippet>299</a>        <span class="kw">let </span>reopened = GrantInvalidationJournal::open(path).expect(<span class="string">"recover torn tail"</span>);
-<a href=#300 id=300 data-nosnippet>300</a>        invalidate(<span class="kw-2">&amp;</span>reopened, second);
+<a href=#299 id=299 data-nosnippet>299</a>        <span class="kw">let </span>before = fs::read(<span class="kw-2">&amp;</span>path).expect(<span class="string">"read torn journal"</span>);
+<a href=#300 id=300 data-nosnippet>300</a>        <span class="kw">let </span>reopened = GrantInvalidationJournal::open(path.clone()).expect(<span class="string">"read torn tail"</span>);
 <a href=#301 id=301 data-nosnippet>301</a>        <span class="macro">assert!</span>(!reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>first));
-<a href=#302 id=302 data-nosnippet>302</a>        <span class="macro">assert!</span>(reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>second));
-<a href=#303 id=303 data-nosnippet>303</a>    }
-<a href=#304 id=304 data-nosnippet>304</a>
-<a href=#305 id=305 data-nosnippet>305</a>    <span class="attr">#[test]
-<a href=#306 id=306 data-nosnippet>306</a>    </span><span class="kw">fn </span>durable_but_error_poisons_and_reopen_recovers_committed_record() {
-<a href=#307 id=307 data-nosnippet>307</a>        <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"tempdir"</span>);
-<a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">let </span>path = directory.path().join(<span class="string">"grant-invalidations.jsonl"</span>);
-<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span>journal = GrantInvalidationJournal::open(path.clone()).expect(<span class="string">"open journal"</span>);
-<a href=#310 id=310 data-nosnippet>310</a>        journal.inject_failure(TestFailure::DurableButError);
-<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>first = TreeApprovalGrantId(Uuid::from_u128(<span class="number">20</span>));
-<a href=#312 id=312 data-nosnippet>312</a>        <span class="macro">assert!</span>(
-<a href=#313 id=313 data-nosnippet>313</a>            journal
-<a href=#314 id=314 data-nosnippet>314</a>                .invalidate(
-<a href=#315 id=315 data-nosnippet>315</a>                    SessionId(Uuid::from_u128(<span class="number">2</span>)),
-<a href=#316 id=316 data-nosnippet>316</a>                    <span class="macro">vec!</span>[first],
-<a href=#317 id=317 data-nosnippet>317</a>                    <span class="macro">vec!</span>[Sha256Digest::new(<span class="string">"66"</span>.repeat(<span class="number">32</span>)).expect(<span class="string">"digest"</span>)],
-<a href=#318 id=318 data-nosnippet>318</a>                )
-<a href=#319 id=319 data-nosnippet>319</a>                .is_err()
-<a href=#320 id=320 data-nosnippet>320</a>        );
-<a href=#321 id=321 data-nosnippet>321</a>        <span class="kw">let </span>second = TreeApprovalGrantId(Uuid::from_u128(<span class="number">21</span>));
-<a href=#322 id=322 data-nosnippet>322</a>        <span class="macro">assert!</span>(
-<a href=#323 id=323 data-nosnippet>323</a>            journal
-<a href=#324 id=324 data-nosnippet>324</a>                .invalidate(
-<a href=#325 id=325 data-nosnippet>325</a>                    SessionId(Uuid::from_u128(<span class="number">2</span>)),
-<a href=#326 id=326 data-nosnippet>326</a>                    <span class="macro">vec!</span>[second],
-<a href=#327 id=327 data-nosnippet>327</a>                    <span class="macro">vec!</span>[Sha256Digest::new(<span class="string">"77"</span>.repeat(<span class="number">32</span>)).expect(<span class="string">"digest"</span>)],
-<a href=#328 id=328 data-nosnippet>328</a>                )
-<a href=#329 id=329 data-nosnippet>329</a>                .is_err()
-<a href=#330 id=330 data-nosnippet>330</a>        );
-<a href=#331 id=331 data-nosnippet>331</a>        drop(journal);
-<a href=#332 id=332 data-nosnippet>332</a>
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="kw">let </span>reopened = GrantInvalidationJournal::open(path).expect(<span class="string">"reopen durable record"</span>);
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="macro">assert!</span>(reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>first));
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="macro">assert!</span>(!reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>second));
-<a href=#336 id=336 data-nosnippet>336</a>        invalidate(<span class="kw-2">&amp;</span>reopened, second);
-<a href=#337 id=337 data-nosnippet>337</a>    }
-<a href=#338 id=338 data-nosnippet>338</a>}
+<a href=#302 id=302 data-nosnippet>302</a>        <span class="macro">assert!</span>(!reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>second));
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="macro">assert_eq!</span>(fs::read(path).expect(<span class="string">"reread torn journal"</span>), before);
+<a href=#304 id=304 data-nosnippet>304</a>    }
+<a href=#305 id=305 data-nosnippet>305</a>
+<a href=#306 id=306 data-nosnippet>306</a>    <span class="attr">#[test]
+<a href=#307 id=307 data-nosnippet>307</a>    </span><span class="kw">fn </span>durable_but_error_poisons_and_reopen_recovers_committed_record() {
+<a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">let </span>directory = tempfile::tempdir().expect(<span class="string">"tempdir"</span>);
+<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span>path = directory.path().join(<span class="string">"grant-invalidations.jsonl"</span>);
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span>journal = GrantInvalidationJournal::open(path.clone()).expect(<span class="string">"open journal"</span>);
+<a href=#311 id=311 data-nosnippet>311</a>        journal.inject_failure(TestFailure::DurableButError);
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span>first = TreeApprovalGrantId(Uuid::from_u128(<span class="number">20</span>));
+<a href=#313 id=313 data-nosnippet>313</a>        <span class="macro">assert!</span>(
+<a href=#314 id=314 data-nosnippet>314</a>            journal
+<a href=#315 id=315 data-nosnippet>315</a>                .invalidate(
+<a href=#316 id=316 data-nosnippet>316</a>                    SessionId(Uuid::from_u128(<span class="number">2</span>)),
+<a href=#317 id=317 data-nosnippet>317</a>                    <span class="macro">vec!</span>[first],
+<a href=#318 id=318 data-nosnippet>318</a>                    <span class="macro">vec!</span>[Sha256Digest::new(<span class="string">"66"</span>.repeat(<span class="number">32</span>)).expect(<span class="string">"digest"</span>)],
+<a href=#319 id=319 data-nosnippet>319</a>                )
+<a href=#320 id=320 data-nosnippet>320</a>                .is_err()
+<a href=#321 id=321 data-nosnippet>321</a>        );
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span>second = TreeApprovalGrantId(Uuid::from_u128(<span class="number">21</span>));
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="macro">assert!</span>(
+<a href=#324 id=324 data-nosnippet>324</a>            journal
+<a href=#325 id=325 data-nosnippet>325</a>                .invalidate(
+<a href=#326 id=326 data-nosnippet>326</a>                    SessionId(Uuid::from_u128(<span class="number">2</span>)),
+<a href=#327 id=327 data-nosnippet>327</a>                    <span class="macro">vec!</span>[second],
+<a href=#328 id=328 data-nosnippet>328</a>                    <span class="macro">vec!</span>[Sha256Digest::new(<span class="string">"77"</span>.repeat(<span class="number">32</span>)).expect(<span class="string">"digest"</span>)],
+<a href=#329 id=329 data-nosnippet>329</a>                )
+<a href=#330 id=330 data-nosnippet>330</a>                .is_err()
+<a href=#331 id=331 data-nosnippet>331</a>        );
+<a href=#332 id=332 data-nosnippet>332</a>        drop(journal);
+<a href=#333 id=333 data-nosnippet>333</a>
+<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>reopened = GrantInvalidationJournal::open(path).expect(<span class="string">"reopen durable record"</span>);
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="macro">assert!</span>(reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>first));
+<a href=#336 id=336 data-nosnippet>336</a>        <span class="macro">assert!</span>(!reopened.invalidated_ids().contains(<span class="kw-2">&amp;</span>second));
+<a href=#337 id=337 data-nosnippet>337</a>        invalidate(<span class="kw-2">&amp;</span>reopened, second);
+<a href=#338 id=338 data-nosnippet>338</a>    }
+<a href=#339 id=339 data-nosnippet>339</a>}
 </code></pre></div></section></main></body></html>

@@ -291,7 +291,7 @@
 <a href=#291 id=291 data-nosnippet>291</a>            )
 <a href=#292 id=292 data-nosnippet>292</a>        })
 <a href=#293 id=293 data-nosnippet>293</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#294 id=294 data-nosnippet>294</a>        <span class="self">self</span>.spawn_actor(child_session_id);
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="self">self</span>.spawn_actor(child_session_id)<span class="question-mark">?</span>;
 <a href=#295 id=295 data-nosnippet>295</a>        <span class="self">self</span>.ensure_delegated_context_seed(child_session_id, invocation_id, seeded_context)
 <a href=#296 id=296 data-nosnippet>296</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#297 id=297 data-nosnippet>297</a>        <span class="self">self</span>.ensure_delegated_title(child_session_id, invocation_id, child_title)
@@ -391,7 +391,7 @@
 <a href=#391 id=391 data-nosnippet>391</a>            }
 <a href=#392 id=392 data-nosnippet>392</a>        }
 <a href=#393 id=393 data-nosnippet>393</a>        <span class="kw">if </span>!found {
-<a href=#394 id=394 data-nosnippet>394</a>            <span class="self">self</span>.append_blocking(
+<a href=#394 id=394 data-nosnippet>394</a>            <span class="self">self</span>.append_recovery_direct(
 <a href=#395 id=395 data-nosnippet>395</a>                child_session_id,
 <a href=#396 id=396 data-nosnippet>396</a>                <span class="prelude-val">None</span>,
 <a href=#397 id=397 data-nosnippet>397</a>                <span class="kw">super</span>::event_origin(<span class="string">"engine:delegation"</span>),
@@ -489,7 +489,7 @@
 <a href=#489 id=489 data-nosnippet>489</a>            }
 <a href=#490 id=490 data-nosnippet>490</a>        }
 <a href=#491 id=491 data-nosnippet>491</a>        <span class="kw">if </span>!has_matching_title {
-<a href=#492 id=492 data-nosnippet>492</a>            <span class="self">self</span>.append_blocking(
+<a href=#492 id=492 data-nosnippet>492</a>            <span class="self">self</span>.append_recovery_direct(
 <a href=#493 id=493 data-nosnippet>493</a>                child_session_id,
 <a href=#494 id=494 data-nosnippet>494</a>                <span class="prelude-val">None</span>,
 <a href=#495 id=495 data-nosnippet>495</a>                <span class="kw">super</span>::event_origin(<span class="string">"user"</span>),

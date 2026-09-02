@@ -1452,7 +1452,10 @@ torn event lines. Event appends may remain buffered for up to 8 ms, but a newly
 written digest is younger than the grace period; deduplicating an existing digest
 refreshes its modification time before the event append. Garbage collection and
 artifact retain/commit operations share the artifact write mutex, so a pending
-append cannot race deletion of its retained bytes.</p>
+append cannot race deletion of its retained bytes. Temporary artifact and capture
+files also hold an exclusive file lock while their writer is alive. Startup
+cleanup removes only files older than one hour whose lock is immediately
+available, so a silent long-running capture is not mistaken for abandoned work.</p>
 <p><code>read_tool_result</code> reads retained content from a prior visible tool call in the
 same session:</p>
 <table>

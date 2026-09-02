@@ -106,7 +106,7 @@
 <a href=#106 id=106 data-nosnippet>106</a><span class="kw">impl </span>DelegationEventStore {
 <a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">pub fn </span>open(sessions: Arc&lt;SessionStore&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;Arc&lt;<span class="self">Self</span>&gt;, DelegationEventError&gt; {
 <a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = DelegationState::default();
-<a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">let </span><span class="kw-2">mut </span>parents = sessions.all();
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">let </span><span class="kw-2">mut </span>parents = sessions.all_snapshots();
 <a href=#110 id=110 data-nosnippet>110</a>        parents.sort_by_key(|session| session.meta.session_id);
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="kw">for </span>parent <span class="kw">in </span>parents {
 <a href=#112 id=112 data-nosnippet>112</a>            <span class="kw">for </span>envelope <span class="kw">in </span>parent.log.events() {
