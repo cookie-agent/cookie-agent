@@ -64,6 +64,11 @@ max_bytes = 51200
 [approval]
 timeout_ms = 30000
 
+[model_retry]
+standard_retries = 3
+overload_retries = 5
+backoff_ceiling_ms = 60000
+
 [context_compaction]
 auto = true
 trigger = { percent = 70 }
@@ -85,9 +90,15 @@ max_concurrency = 4
 Validation rules that apply regardless of what you set:
 
 - The `cookie` binary requires `server.host` to be exactly `127.0.0.1`.
-- Positive limits are required everywhere; compaction trigger percentages must
-  be from 1 through 99, and `context_compaction.max_summary_bytes` may not exceed
-  2 MiB.
+- Positive size and timeout limits are required; compaction trigger percentages
+  must be from 1 through 99, and `context_compaction.max_summary_bytes` may not
+  exceed 2 MiB.
+- Model retry counts are signed: zero disables retries after the first attempt,
+  and a negative value retries that error class until success or cancellation.
+  The default standard budget is three retries, or four total attempts; the
+  default overload budget is five retries, or six total attempts.
+  `model_retry.backoff_ceiling_ms` must be positive. A longer provider
+  `Retry-After` may exceed this local ceiling without a cap.
 - `delegation.max_concurrency` defaults to `4`; `0` is rejected. Excess
   root-level background delegations queue up to four times the concurrency
   limit. Foreground and nested delegations bypass the queue.

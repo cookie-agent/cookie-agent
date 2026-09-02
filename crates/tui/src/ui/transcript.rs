@@ -2400,6 +2400,7 @@ mod tests {
                 tool_output: ToolOutputConfig::default(),
                 agent_md: cookie_agent_config::AgentMdConfig::default(),
                 approval: ApprovalConfig::default(),
+                model_retry: cookie_agent_config::ModelRetryConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
                 prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
                 session_title: SessionTitleConfig::default(),

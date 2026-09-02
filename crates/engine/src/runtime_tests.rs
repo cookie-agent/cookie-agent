@@ -15,11 +15,11 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
     ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
-    McpServerSource, ModelPricing, PicoUsdPerMillion, PluginConfig, RuntimeConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig, load_from_roots,
+    McpServerSource, ModelPricing, ModelRetryConfig, PicoUsdPerMillion, PluginConfig,
+    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig, load_from_roots,
 };
 use cookie_agent_models::{
-    ModelManager,
+    ModelManager, ProviderDefinition,
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelEntry,
         CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry, CatalogProviderRecord,
@@ -50,6 +50,7 @@ use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
     PreparedTool, PromptSection, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
     ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, TurnAgentContext,
+    runtime::ModelRetrySleepMode,
 };
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
@@ -2201,6 +2202,7 @@ fn fixture() -> Fixture {
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),
             approval: ApprovalConfig::default(),
+            model_retry: cookie_agent_config::ModelRetryConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
             prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
             session_title: SessionTitleConfig::default(),
@@ -2792,6 +2794,53 @@ fn custom_fixture_with_endpoint(endpoint: &str) -> (Fixture, RunSelection) {
     )
 }
 
+async fn retry_fixture_with_endpoint(
+    endpoint: &str,
+    model_retry: ModelRetryConfig,
+) -> (Fixture, RunSelection) {
+    let primary = "---\ndescription: Retry test agent\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.test/group/model\", variant: base }\n  - { model: \"custom.test/group/fallback\", variant: base }\npermissions: {}\n---\nTest retry policy.\n";
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_and_primary_agent(endpoint, primary);
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.model_retry = model_retry;
+
+    let provider_id = ProviderId::new("custom.test").expect("retry provider ID");
+    let ProviderDefinition::Custom(provider) = fixture
+        .config
+        .runtime
+        .providers
+        .get_mut(&provider_id)
+        .expect("retry provider")
+    else {
+        panic!("custom retry provider");
+    };
+    let source_id = ProviderModelId::new("group/model").expect("source model ID");
+    let fallback_id = ProviderModelId::new("group/fallback").expect("fallback model ID");
+    let fallback = provider.models[&source_id].clone();
+    provider.models.insert(fallback_id, fallback);
+
+    let current = fixture.manager.current();
+    let manager = Arc::new(
+        ModelManager::new(
+            fixture.config.runtime.providers.clone(),
+            Arc::clone(current.catalog()),
+            ProviderStore::open(fixture._directory.path().join("provider-store"))
+                .expect("retry provider store"),
+        )
+        .expect("retry model manager"),
+    );
+    fixture.engine = Engine::open(EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&manager),
+        tools: Vec::new(),
+    })
+    .expect("retry engine");
+    fixture.manager = manager;
+    (fixture, selection)
+}
+
 async fn reopen_fixture_with_residency(
     fixture: &mut Fixture,
     max_resident_subagents: usize,
@@ -3122,6 +3171,7 @@ fn try_frozen_root_policy(
             tool_output_max_lines: 2_000,
             tool_output_max_bytes: 50 * 1024,
         },
+        fixture.config.runtime.model_retry,
         fixture.config.runtime.prompt_caching.as_cache_config(),
     )
 }
@@ -3331,6 +3381,7 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         Arc::clone(&owner.runtime),
         owner.result_limits.tool_output_max_lines,
         owner.result_limits.tool_output_max_bytes,
+        owner.model_retry,
         owner.runtime_cache.clone(),
     )
     .expect("replayed owner policy");
@@ -4901,6 +4952,207 @@ async fn write_scripted_sse(socket: &mut tokio::net::TcpStream, body: &str) {
         .write_all(response.as_bytes())
         .await
         .expect("scripted SSE response");
+}
+
+#[derive(Clone, Copy)]
+enum RetryModelResponse {
+    Status(u16),
+    Success,
+}
+
+async fn retry_model_server(
+    responses: Vec<RetryModelResponse>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("retry listener");
+    let address = listener.local_addr().expect("retry listener address");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(responses.len());
+        for response in responses {
+            let (mut socket, _) = listener.accept().await.expect("retry accept");
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut socket).await)
+                    .expect("UTF-8 retry request"),
+            );
+            match response {
+                RetryModelResponse::Status(status) => {
+                    let body = "{}";
+                    let response = format!(
+                        "HTTP/1.1 {status} Retryable Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("retry error response");
+                }
+                RetryModelResponse::Success => {
+                    write_scripted_sse(&mut socket, &scripted_text_body("fallback success")).await;
+                }
+            }
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+async fn assert_retry_budget_and_fallback(status: u16, expected_attempts_on_first: usize) {
+    let retry = ModelRetryConfig {
+        backoff_ceiling_ms: 1,
+        ..ModelRetryConfig::default()
+    };
+    let mut responses = vec![RetryModelResponse::Status(status); expected_attempts_on_first];
+    responses.push(RetryModelResponse::Success);
+    let (endpoint, captured) = retry_model_server(responses).await;
+    let (fixture, selection) = retry_fixture_with_endpoint(&endpoint, retry).await;
+    fixture
+        .engine
+        .inner
+        .model_retry_sleep_hook
+        .set_mode(ModelRetrySleepMode::Immediate);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new(format!("retry-budget-{status}")).unwrap(),
+                selection,
+                input: "exercise retry budget".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "retry fallback completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    let delays = fixture.engine.inner.model_retry_sleep_hook.delays();
+    assert_eq!(delays.len(), expected_attempts_on_first - 1);
+    assert!(
+        delays
+            .iter()
+            .all(|delay| *delay == std::time::Duration::from_millis(1))
+    );
+
+    let requests = captured.await.expect("retry requests");
+    assert_eq!(requests.len(), expected_attempts_on_first + 1);
+    assert!(
+        requests[..expected_attempts_on_first]
+            .iter()
+            .all(|request| request_body(request)["model"] == "group/model")
+    );
+    assert_eq!(
+        request_body(requests.last().unwrap())["model"],
+        "group/fallback"
+    );
+    let events = projection.log.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+            .count(),
+        expected_attempts_on_first
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ModelAttemptStarted {
+                    fallback_index: 0,
+                    ..
+                }
+            ))
+            .count(),
+        expected_attempts_on_first
+    );
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelFallback {
+            attempts_on_from,
+            ..
+        } if attempts_on_from as usize == expected_attempts_on_first
+    )));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn retry_loop_uses_exact_standard_and_overload_budgets_then_falls_back() {
+    assert_retry_budget_and_fallback(500, 4).await;
+    assert_retry_budget_and_fallback(503, 6).await;
+}
+
+#[tokio::test]
+async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() {
+    let (endpoint, captured) = retry_model_server(vec![RetryModelResponse::Status(503)]).await;
+    let retry = ModelRetryConfig {
+        overload_retries: -1,
+        ..ModelRetryConfig::default()
+    };
+    let (fixture, selection) = retry_fixture_with_endpoint(&endpoint, retry).await;
+    fixture
+        .engine
+        .inner
+        .model_retry_sleep_hook
+        .set_mode(ModelRetrySleepMode::Blocked);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("infinite-overload-cancel").unwrap(),
+                selection,
+                input: "cancel overloaded model".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .engine
+        .inner
+        .model_retry_sleep_hook
+        .wait_until_reached(1)
+        .await;
+    fixture
+        .engine
+        .cancel_run(run.run_id)
+        .await
+        .expect("cancel run");
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "cancelled overload retry",
+        |projection| projection.status == SessionStatus::Cancelled,
+    )
+    .await;
+    assert_eq!(captured.await.expect("overload request").len(), 1);
+    assert_eq!(
+        projection
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        !projection
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ModelFallback { .. }))
+    );
+    fixture.engine.shutdown().await;
 }
 
 async fn scripted_channel_server(

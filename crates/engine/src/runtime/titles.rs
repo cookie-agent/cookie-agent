@@ -43,6 +43,7 @@ impl Engine {
             runtime,
             self.inner.config.runtime.tool_output.max_lines,
             self.inner.config.runtime.tool_output.max_bytes,
+            self.inner.config.runtime.model_retry,
             self.inner.config.runtime.prompt_caching.as_cache_config(),
         )?;
         policy.preset = preset;

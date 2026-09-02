@@ -2616,6 +2616,7 @@ pub(crate) fn freeze_delegated_child_policy(
         inherited_depth_ceiling,
         policy::FreezeOptions {
             result_limits,
+            model_retry: parent_policy.model_retry,
             runtime_cache: parent_policy.runtime_cache.clone(),
             inherited_cache_strategies: Some(
                 inherited_suffix

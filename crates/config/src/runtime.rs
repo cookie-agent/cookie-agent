@@ -293,6 +293,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub approval: ApprovalConfig,
     #[serde(default)]
+    pub model_retry: ModelRetryConfig,
+    #[serde(default)]
     pub context_compaction: ContextCompactionConfig,
     #[serde(default)]
     pub prompt_caching: PromptCachingConfig,
@@ -313,6 +315,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) tool_output: Option<ToolOutputConfig>,
     pub(crate) agent_md: Option<AgentMdConfig>,
     pub(crate) approval: Option<ApprovalConfig>,
+    pub(crate) model_retry: Option<ModelRetryConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) prompt_caching: Option<PromptCachingConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
@@ -322,6 +325,39 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) plugins: Option<PluginsConfig>,
     #[serde(default)]
     pub(crate) providers: SensitiveProviderValues,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRetryConfig {
+    #[serde(default = "default_standard_retries")]
+    pub standard_retries: i64,
+    #[serde(default = "default_overload_retries")]
+    pub overload_retries: i64,
+    #[serde(default = "default_backoff_ceiling_ms")]
+    pub backoff_ceiling_ms: u64,
+}
+
+impl Default for ModelRetryConfig {
+    fn default() -> Self {
+        Self {
+            standard_retries: default_standard_retries(),
+            overload_retries: default_overload_retries(),
+            backoff_ceiling_ms: default_backoff_ceiling_ms(),
+        }
+    }
+}
+
+const fn default_standard_retries() -> i64 {
+    3
+}
+
+const fn default_overload_retries() -> i64 {
+    5
+}
+
+const fn default_backoff_ceiling_ms() -> u64 {
+    60_000
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -679,6 +715,9 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.approval {
         runtime.approval = value.clone();
     }
+    if let Some(value) = layer.model_retry {
+        runtime.model_retry = value;
+    }
     if let Some(value) = &layer.context_compaction {
         runtime.context_compaction = value.clone();
     }
@@ -704,6 +743,7 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         || runtime.agent_md.max_bytes == 0
         || runtime.agent_md.max_bytes > 2 * 1024 * 1024
         || runtime.approval.timeout_ms == 0
+        || runtime.model_retry.backoff_ceiling_ms == 0
         || runtime.delegation.max_depth == 0
         || runtime.delegation.max_concurrency == Some(0)
     {

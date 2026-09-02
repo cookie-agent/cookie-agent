@@ -12,6 +12,8 @@ changes when no single component owns the work.
 Configuration is strict. Unknown keys, removed `schema` or `schema_version`
 fields, wrong types, and malformed values are hard errors. Do not silently
 ignore fields, migrate authored files, or upconvert old shapes.
+Every configuration-surface change must update the configuration reference and
+cover defaults, strict unknown-field handling, and boundary semantics in tests.
 
 The project does not preserve backward compatibility unless a governing
 specification explicitly requires it. Prefer removing obsolete aliases,

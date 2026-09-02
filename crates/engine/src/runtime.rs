@@ -500,6 +500,70 @@ struct ApprovalEvaluationHook {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(crate) enum ModelRetrySleepMode {
+    #[default]
+    Real,
+    Immediate,
+    Blocked,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ModelRetrySleepHook {
+    mode: Mutex<ModelRetrySleepMode>,
+    delays: Mutex<Vec<std::time::Duration>>,
+    reached: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+impl ModelRetrySleepHook {
+    pub(crate) fn set_mode(&self, mode: ModelRetrySleepMode) {
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
+    }
+
+    pub(crate) fn delays(&self) -> Vec<std::time::Duration> {
+        self.delays
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) async fn wait_until_reached(&self, count: usize) {
+        loop {
+            let reached = self.reached.notified();
+            if self.delays().len() >= count {
+                return;
+            }
+            reached.await;
+        }
+    }
+
+    pub(crate) async fn sleep(&self, delay: std::time::Duration) -> bool {
+        let mode = *self
+            .mode
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if mode == ModelRetrySleepMode::Real {
+            return false;
+        }
+        self.delays
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(delay);
+        self.reached.notify_waiters();
+        match mode {
+            ModelRetrySleepMode::Real => false,
+            ModelRetrySleepMode::Immediate => true,
+            ModelRetrySleepMode::Blocked => std::future::pending().await,
+        }
+    }
+}
+
+#[cfg(test)]
 struct GapSendHook {
     reached: std_mpsc::Sender<()>,
     release: std_mpsc::Receiver<()>,
@@ -1087,6 +1151,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     approval_evaluation_hook: Mutex<Option<Arc<ApprovalEvaluationHook>>>,
     #[cfg(test)]
+    pub(crate) model_retry_sleep_hook: ModelRetrySleepHook,
+    #[cfg(test)]
     pub(crate) pending_approval_ready: tokio::sync::Notify,
     #[cfg(test)]
     gap_send_hook: Mutex<Option<GapSendHook>>,
@@ -1252,6 +1318,8 @@ impl Engine {
                 read_only_reopen_hook: Mutex::new(None),
                 #[cfg(test)]
                 approval_evaluation_hook: Mutex::new(None),
+                #[cfg(test)]
+                model_retry_sleep_hook: ModelRetrySleepHook::default(),
                 #[cfg(test)]
                 pending_approval_ready: tokio::sync::Notify::new(),
                 #[cfg(test)]

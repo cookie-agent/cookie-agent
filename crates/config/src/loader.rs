@@ -13,8 +13,8 @@ use serde::Deserialize as _;
 
 use crate::{
     AgentDocument, AgentDocumentSource, AgentMdConfig, AgentRegistry, ApprovalConfig, ConfigError,
-    ContextCompactionConfig, DelegationConfig, PromptCachingConfig, RuntimeConfig, ServerConfig,
-    SessionTitleConfig, ToolOutputConfig,
+    ContextCompactionConfig, DelegationConfig, ModelRetryConfig, PromptCachingConfig,
+    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
     agent_document::parse_agent,
     runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
     secure_fs::{
@@ -104,6 +104,7 @@ pub fn load_from_roots(
         tool_output: ToolOutputConfig::default(),
         agent_md: AgentMdConfig::default(),
         approval: ApprovalConfig::default(),
+        model_retry: ModelRetryConfig::default(),
         context_compaction: ContextCompactionConfig::default(),
         prompt_caching: PromptCachingConfig::default(),
         session_title: SessionTitleConfig::default(),
@@ -356,6 +357,7 @@ fn decode_runtime_layer(
         "tool_output",
         "agent_md",
         "approval",
+        "model_retry",
         "context_compaction",
         "prompt_caching",
         "session_title",

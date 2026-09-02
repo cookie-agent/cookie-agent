@@ -173,6 +173,7 @@ impl Engine {
                     &params.selection.model,
                     self.inner.config.runtime.delegation.max_depth,
                     result_limits,
+                    self.inner.config.runtime.model_retry,
                     self.inner.config.runtime.prompt_caching.as_cache_config(),
                 )?
             }
@@ -194,6 +195,7 @@ impl Engine {
                     &params.selection,
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
+                    self.inner.config.runtime.model_retry,
                     self.inner.config.runtime.prompt_caching.as_cache_config(),
                     delegation
                         .as_ref()
@@ -1696,8 +1698,38 @@ impl Engine {
                         return Err(EngineError::Model(error));
                     }
                     Err(error)
-                        if classify_model_error(&error) == ErrorPolicy::RetryEntry
-                            && attempts <= 2
+                        if is_overload_retry(&error)
+                            && retry_budget_allows(
+                                policy.model_retry.overload_retries,
+                                attempts - 1,
+                            ) =>
+                    {
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
+                        tokio::select! {
+                            _ = self.sleep_before_model_retry(model_retry_delay(
+                                attempts - 1,
+                                error.diagnostics.retry_after,
+                                attempt_id.0.as_u128() as u64,
+                                std::time::Duration::from_millis(
+                                    policy.model_retry.backoff_ceiling_ms,
+                                ),
+                            )) => {}
+                            _ = cancellation.cancelled() => return Err(ModelError::abort("model retry was cancelled").into()),
+                        }
+                    }
+                    Err(error)
+                        if !is_overload_retry(&error)
+                            && classify_model_error(&error) == ErrorPolicy::RetryEntry
+                            && retry_budget_allows(
+                                policy.model_retry.standard_retries,
+                                attempts - 1,
+                            )
                             && !meaningful_output =>
                     {
                         self.append(
@@ -1708,7 +1740,14 @@ impl Engine {
                         )
                         .await?;
                         tokio::select! {
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(100_u64 << (attempts - 1))) => {}
+                            _ = self.sleep_before_model_retry(model_retry_delay(
+                                attempts - 1,
+                                error.diagnostics.retry_after,
+                                attempt_id.0.as_u128() as u64,
+                                std::time::Duration::from_millis(
+                                    policy.model_retry.backoff_ceiling_ms,
+                                ),
+                            )) => {}
                             _ = cancellation.cancelled() => return Err(ModelError::abort("model retry was cancelled").into()),
                         }
                     }
@@ -1813,6 +1852,52 @@ impl Engine {
         };
         self.record_plugin_diagnostic(session, plugin, kind, error);
     }
+
+    async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
+        #[cfg(test)]
+        if self.inner.model_retry_sleep_hook.sleep(delay).await {
+            return;
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn is_overload_retry(error: &ModelError) -> bool {
+    error.kind == oven_sdk::ModelErrorKind::Overload
+        || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
+}
+
+fn retry_budget_allows(configured_retries: i64, retries_completed: u32) -> bool {
+    configured_retries < 0 || u64::from(retries_completed) < configured_retries as u64
+}
+
+fn model_retry_delay(
+    retry_ordinal: u32,
+    retry_after: Option<std::time::Duration>,
+    jitter_basis: u64,
+    backoff_ceiling: std::time::Duration,
+) -> std::time::Duration {
+    let backoff = exponential_retry_delay(retry_ordinal, backoff_ceiling);
+    let jitter_per_mille = 750 + jitter_basis % 501;
+    let jittered_millis = backoff
+        .as_millis()
+        .saturating_mul(u128::from(jitter_per_mille))
+        / 1000;
+    let jittered_millis = jittered_millis.clamp(1, backoff_ceiling.as_millis());
+    let jittered =
+        std::time::Duration::from_millis(u64::try_from(jittered_millis).unwrap_or(u64::MAX));
+    jittered.max(retry_after.unwrap_or_default())
+}
+
+fn exponential_retry_delay(
+    retry_ordinal: u32,
+    ceiling: std::time::Duration,
+) -> std::time::Duration {
+    let multiplier = 1_u64.checked_shl(retry_ordinal).unwrap_or(u64::MAX);
+    let milliseconds = 1_000_u64
+        .saturating_mul(multiplier)
+        .min(u64::try_from(ceiling.as_millis()).unwrap_or(u64::MAX));
+    std::time::Duration::from_millis(milliseconds)
 }
 
 fn extension_messages(
@@ -1903,4 +1988,91 @@ pub(super) fn serialized_input_bytes(input: &str) -> Result<usize, EngineError> 
     serde_json::to_vec(input)
         .map(|bytes| bytes.len())
         .map_err(|error| ModelError::invalid_request(error.to_string()).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use oven_sdk::{ModelError, ModelErrorKind};
+
+    use super::{is_overload_retry, model_retry_delay, retry_budget_allows};
+
+    #[test]
+    fn retry_budget_counts_retries_after_the_first_attempt() {
+        assert!(!retry_budget_allows(0, 0));
+        assert!(retry_budget_allows(3, 0));
+        assert!(retry_budget_allows(3, 2));
+        assert!(!retry_budget_allows(3, 3));
+        assert!(retry_budget_allows(-1, u32::MAX));
+    }
+
+    #[test]
+    fn overload_retry_classification_is_limited_to_overload_and_retryable_429_503() {
+        assert!(is_overload_retry(&ModelError::new(
+            ModelErrorKind::Overload,
+            "overloaded",
+        )));
+        assert!(is_overload_retry(
+            &ModelError::rate_limited("rate limited").with_http_status(429)
+        ));
+        assert!(is_overload_retry(
+            &ModelError::provider("unavailable")
+                .with_retryable(true)
+                .with_http_status(503)
+        ));
+        assert!(!is_overload_retry(
+            &ModelError::new(ModelErrorKind::Quota, "quota").with_http_status(429)
+        ));
+        assert!(!is_overload_retry(
+            &ModelError::provider("server error")
+                .with_retryable(true)
+                .with_http_status(500)
+        ));
+    }
+
+    #[test]
+    fn model_retry_delay_has_jitter_bounds_and_uncapped_retry_after() {
+        let ceiling = Duration::from_secs(60);
+        assert_eq!(
+            model_retry_delay(0, None, 0, ceiling),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            model_retry_delay(0, None, 500, ceiling),
+            Duration::from_millis(1250)
+        );
+        assert_eq!(
+            model_retry_delay(1, None, 0, ceiling),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(
+            model_retry_delay(1, None, 500, ceiling),
+            Duration::from_millis(2500)
+        );
+        assert_eq!(
+            model_retry_delay(63, None, 500, ceiling),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            model_retry_delay(1, None, 500, Duration::from_millis(1200)),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            model_retry_delay(0, None, 0, Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            model_retry_delay(0, Some(Duration::from_secs(10)), 0, Duration::from_secs(2),),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            model_retry_delay(0, Some(Duration::from_millis(500)), 0, ceiling),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            model_retry_delay(0, Some(Duration::from_secs(600)), 0, ceiling),
+            Duration::from_secs(600)
+        );
+    }
 }

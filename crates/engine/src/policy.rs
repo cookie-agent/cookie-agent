@@ -24,6 +24,7 @@ pub(crate) struct ResultLimits {
 #[derive(Clone)]
 pub(crate) struct FreezeOptions {
     pub result_limits: ResultLimits,
+    pub model_retry: cookie_agent_config::ModelRetryConfig,
     pub runtime_cache: cookie_agent_config::CacheConfig,
     pub inherited_cache_strategies:
         Option<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>>,
@@ -39,6 +40,7 @@ pub(crate) struct FrozenRunPolicy {
     pub runtime: Arc<PublishedRuntime>,
     pub registry: Arc<AgentRegistry>,
     pub result_limits: ResultLimits,
+    pub model_retry: cookie_agent_config::ModelRetryConfig,
     pub cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
     pub runtime_cache: cookie_agent_config::CacheConfig,
 }
@@ -137,6 +139,7 @@ impl FrozenRunPolicy {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn freeze_root_agent_policy(
     agent: &ResolvedAgent,
     registry: Arc<AgentRegistry>,
@@ -144,6 +147,7 @@ pub(crate) fn freeze_root_agent_policy(
     selection: &protocol::ModelSelection,
     max_depth: u32,
     result_limits: ResultLimits,
+    model_retry: cookie_agent_config::ModelRetryConfig,
     runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if !agent.runnable_as_root {
@@ -192,6 +196,7 @@ pub(crate) fn freeze_root_agent_policy(
         Some(max_depth),
         FreezeOptions {
             result_limits,
+            model_retry,
             runtime_cache,
             inherited_cache_strategies: None,
         },
@@ -360,6 +365,7 @@ fn freeze_with_bindings(
         runtime,
         registry,
         result_limits: options.result_limits,
+        model_retry: options.model_retry,
         cache_strategies,
         runtime_cache: options.runtime_cache,
     })
@@ -373,6 +379,7 @@ pub(crate) fn policy_for_session_selection(
     selection: &protocol::RunSelection,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
+    model_retry: cookie_agent_config::ModelRetryConfig,
     runtime_cache: cookie_agent_config::CacheConfig,
     frozen_cache_strategies: Option<&[Option<protocol::FrozenCacheStrategy>]>,
 ) -> Result<FrozenRunPolicy, EngineError> {
@@ -404,6 +411,7 @@ pub(crate) fn policy_for_session_selection(
         runtime,
         tool_output_max_lines,
         tool_output_max_bytes,
+        model_retry,
         runtime_cache,
     )?;
     if let Some(strategies) = restored_cache_strategies {
@@ -412,6 +420,7 @@ pub(crate) fn policy_for_session_selection(
     Ok(policy)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn policy_from_snapshot(
     agent: protocol::AgentSnapshot,
     selected_suffix: Vec<protocol::FrozenModelBinding>,
@@ -419,6 +428,7 @@ pub(crate) fn policy_from_snapshot(
     runtime: Arc<PublishedRuntime>,
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
+    model_retry: cookie_agent_config::ModelRetryConfig,
     runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
@@ -441,6 +451,7 @@ pub(crate) fn policy_from_snapshot(
             tool_output_max_lines,
             tool_output_max_bytes,
         },
+        model_retry,
         cache_strategies,
         runtime_cache,
     })

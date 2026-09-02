@@ -188,9 +188,17 @@ changes cannot silently change an accepted run's model behavior.
 `crates/engine` runs one actor per session. Actors serialize all mutations to a
 session and drive the run loop:
 
-- **Run loop.** Each run walks the agent's model fallback chain. On a retryable
-  provider failure it advances to the next fallback and emits a `model_fallback`
-  event; the fallback position is sticky for the rest of the run. Before each
+- **Run loop.** Each run walks the agent's model fallback chain. The frozen
+  `model_retry` policy defaults to three retries (four total attempts) for
+  ordinary retryable failures and five retries (six total attempts) for overload
+  errors or retryable HTTP 429/503 responses. Zero disables retries for a class;
+  a negative count retries indefinitely. Both classes use
+  exponential backoff from one second and 25% jitter. The configurable local
+  ceiling defaults to 60 seconds; a longer provider `Retry-After` may exceed it
+  without a cap, while remaining promptly cancellable. Every failed attempt
+  emits `attempt_abandoned`, which is visible in the TUI. When its budget is
+  exhausted, the loop advances to the next fallback and emits
+  `model_fallback`; the fallback position is sticky. Before each
   request the loop runs predictive compaction and, after a completed turn,
   post-check compaction (see [Compaction](guide/compaction.md)).
 - **Permissions.** Every prepared tool call is matched against the agent's

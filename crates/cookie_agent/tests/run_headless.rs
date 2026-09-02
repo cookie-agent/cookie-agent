@@ -140,6 +140,10 @@ impl MockModelServer {
             .push_back(response);
     }
 
+    fn clear_responses(&self) {
+        self.responses.lock().expect("response queue").clear();
+    }
+
     fn requests(&self) -> Vec<String> {
         self.requests.lock().expect("requests").clone()
     }
@@ -1011,10 +1015,11 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
     let fixture = Fixture::new().await;
 
     for _ in 0..10 {
-        fixture.server.enqueue(MockResponse::Status(500));
+        fixture.server.enqueue(MockResponse::Status(400));
     }
     let failed = fixture.run(run_args("failure prompt"), "").await;
     assert_eq!(failed.code, 1, "{}", failed.stderr);
+    fixture.server.clear_responses();
 
     fixture
         .server
@@ -1326,7 +1331,7 @@ fn cookie_binary_composes_runs_and_emits_json() {
 fn cookie_binary_maps_run_and_environment_failures() {
     let fixture = ProcessFixture::new();
     for _ in 0..10 {
-        fixture.server.enqueue(MockResponse::Status(500));
+        fixture.server.enqueue(MockResponse::Status(400));
     }
     let failed = fixture.run(&["run", "binary failure", "--output", "none"]);
     assert_eq!(failed.status.code(), Some(1), "{}", process_report(&failed));
