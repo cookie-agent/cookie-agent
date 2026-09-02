@@ -101,6 +101,7 @@ impl ToolProvider for SkillTool {
             return Ok(Vec::new());
         }
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "skill".into(),
             permission_name: "skill".into(),

@@ -39,7 +39,7 @@ use crate::{
         self, FrozenRunPolicy, freeze_root_agent_policy, policy_for_session_selection,
         resolve_agent,
     },
-    tool_api::{ToolCall, TurnAgentContext},
+    tool_api::{ToolCall, ToolConcurrency, TurnAgentContext},
 };
 
 impl Engine {
@@ -970,7 +970,37 @@ impl Engine {
                     let Err(error) = prepared.prepared else {
                         unreachable!()
                     };
-                    tasks.push(PendingTool::ImmediateFailure(error));
+                    tasks.push((PendingTool::ImmediateFailure(error), approval));
+                    continue;
+                }
+                let task = match self.decide_tool_permission(&active, &prepared) {
+                    Ok(permission) => PendingTool::Prepared {
+                        prepared: Box::new(prepared),
+                        permission,
+                    },
+                    Err(error) => PendingTool::ImmediateFailure(error),
+                };
+                tasks.push((task, approval));
+            }
+
+            // Resolve every interactive decision before dispatching any call. This keeps
+            // approval prompts serialized in model order and prevents auto-approved siblings
+            // from starting while an Ask sibling is pending.
+            let mut approved_tasks = Vec::with_capacity(tasks.len());
+            for (task, approval) in tasks {
+                let PendingTool::Prepared {
+                    prepared,
+                    permission,
+                } = task
+                else {
+                    approved_tasks.push(task);
+                    continue;
+                };
+                if active.cancellation.is_cancelled() {
+                    approved_tasks.push(PendingTool::Prepared {
+                        prepared,
+                        permission,
+                    });
                     continue;
                 }
                 if let Some(message) = approval {
@@ -1006,120 +1036,105 @@ impl Engine {
                                 },
                             },
                         )
-                        .await?;
-                    if outcome.approved {
-                        tasks.push(PendingTool::Prepared(Box::new(prepared)));
-                    } else {
-                        tasks.push(PendingTool::ImmediateFailure(ToolFailure {
-                            code: ToolCallFailureCode::ExecutionFailed,
-                            message: denied_tool_failure(
-                                ApprovalDecisionSource::Model,
-                                "model approval refused by user",
-                                outcome.feedback,
-                            ),
-                        }));
+                        .await;
+                    match outcome {
+                        Ok(outcome) if outcome.approved => {}
+                        Ok(outcome) => {
+                            approved_tasks.push(PendingTool::ImmediateFailure(ToolFailure {
+                                code: ToolCallFailureCode::ExecutionFailed,
+                                message: denied_tool_failure(
+                                    ApprovalDecisionSource::Model,
+                                    "model approval refused by user",
+                                    outcome.feedback,
+                                ),
+                            }));
+                            continue;
+                        }
+                        Err(error) => {
+                            approved_tasks.push(PendingTool::ImmediateFailure(ToolFailure {
+                                code: ToolCallFailureCode::ExecutionFailed,
+                                message: error.to_string(),
+                            }));
+                            continue;
+                        }
                     }
-                } else {
-                    tasks.push(PendingTool::Prepared(Box::new(prepared)));
+                }
+                match self
+                    .resolve_tool_permission(&active, run_id, &prepared, &permission)
+                    .await
+                {
+                    Ok(()) => approved_tasks.push(PendingTool::Prepared {
+                        prepared,
+                        permission,
+                    }),
+                    Err(error) => approved_tasks.push(PendingTool::ImmediateFailure(error)),
                 }
             }
-            // Awaiting task handles is outside any session actor. Results are
-            // committed in provider tool-call order, regardless of completion order.
-            for (call, task) in calls.iter().zip(tasks) {
-                let id = call.0;
-                let (mut result, arguments) = if active.cancellation.is_cancelled() {
-                    (
-                        Err(ToolFailure {
-                            code: ToolCallFailureCode::ExecutionFailed,
-                            message: "tool call cancelled after it started".into(),
-                        }),
-                        call.5.clone(),
-                    )
+
+            let mut parallel = tokio::task::JoinSet::new();
+            let mut exclusive = Vec::new();
+            for (call, task) in calls.into_iter().zip(approved_tasks) {
+                let concurrency = match &task {
+                    PendingTool::Prepared { prepared, .. } => prepared.concurrency(),
+                    PendingTool::ImmediateFailure(_) => ToolConcurrency::Parallel,
+                };
+                let execution = (
+                    call.0,
+                    call.4,
+                    call.5,
+                    task,
+                    Arc::clone(&attempt.turn_context),
+                );
+                if concurrency == ToolConcurrency::Parallel {
+                    let engine = self.clone();
+                    let active = active.clone();
+                    parallel.spawn(async move {
+                        engine
+                            .execute_and_commit_tool(
+                                active,
+                                run_id,
+                                execution.0,
+                                execution.1,
+                                execution.2,
+                                execution.3,
+                                execution.4,
+                            )
+                            .await
+                    });
                 } else {
-                    match task {
-                        PendingTool::Prepared(prepared) => {
-                            let intercepted_arguments = prepared.intercepted_arguments.clone();
-                            let result = self
-                                .execute_tool(
-                                    active.clone(),
-                                    run_id,
-                                    *prepared,
-                                    Arc::clone(&attempt.turn_context),
-                                )
-                                .await;
-                            let arguments = intercepted_arguments
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .clone();
-                            (result, arguments)
-                        }
-                        PendingTool::ImmediateFailure(failure) => (Err(failure), call.5.clone()),
-                    }
-                };
-                let (mut result_content, is_error) = match &result {
-                    Ok(result) => (result.output.clone(), false),
-                    Err(failure) => (failure.message.clone(), true),
-                };
-                let context_id = crate::plugin::plugin_context_id();
-                for plugin in self.inner.plugins.interception_plugins(
-                    cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult,
-                ) {
-                    let intercepted = self
-                        .inner
-                        .plugins
-                        .intercept_named::<_, cookie_agent_protocol::ExtensionToolAfterResultResult>(
-                            &plugin,
-                            cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
-                            &ExtensionToolAfterResultParams {
-                                session_id: active.session,
-                                context_id: context_id.clone(),
-                                tool: call.4.to_string(),
-                                arguments: arguments.clone(),
-                                result_content: result_content.clone(),
-                                is_error,
-                            },
-                            Some(active.session),
-                            Some(&context_id),
-                        )
-                        .await;
-                    match intercepted {
-                        Ok(intercepted)
-                            if intercepted.action == ExtensionToolAfterResultAction::Replace =>
-                        {
-                            if let Some(replacement) = intercepted.replacement_content {
-                                if replacement.len()
-                                    > active.policy.result_limits.tool_output_max_bytes
-                                {
-                                    self.record_plugin_diagnostic(
-                                        active.session,
-                                        plugin,
-                                        PluginDiagnosticKind::InvalidModification,
-                                        "plugin replacement exceeds the tool output byte limit"
-                                            .into(),
-                                    );
-                                    continue;
-                                }
-                                result_content.clone_from(&replacement);
-                                match &mut result {
-                                    Ok(result) => result.output = replacement,
-                                    Err(failure) => failure.message = replacement,
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            let kind =
-                                if error.contains("crashed") || error.contains("not connected") {
-                                    PluginDiagnosticKind::InterceptionCrash
-                                } else {
-                                    PluginDiagnosticKind::InterceptionTimeout
-                                };
-                            self.record_plugin_diagnostic(active.session, plugin, kind, error);
-                        }
-                    }
+                    exclusive.push(execution);
                 }
-                self.submit_tool_result_status(active.session, run_id, id, result)
-                    .await?;
+            }
+
+            let mut dispatch_error = None;
+            while let Some(joined) = parallel.join_next().await {
+                let result = joined.unwrap_or(Err(EngineError::ActorStopped));
+                if let Err(error) = result
+                    && dispatch_error.is_none()
+                {
+                    dispatch_error = Some(error);
+                }
+            }
+            for (id, tool, arguments, task, turn_context) in exclusive {
+                let result = self
+                    .execute_and_commit_tool(
+                        active.clone(),
+                        run_id,
+                        id,
+                        tool,
+                        arguments,
+                        task,
+                        turn_context,
+                    )
+                    .await;
+                if let Err(error) = result
+                    && dispatch_error.is_none()
+                {
+                    dispatch_error = Some(error);
+                }
+            }
+            if let Some(error) = dispatch_error {
+                return Err(error);
             }
             if active.cancellation.is_cancelled() {
                 self.append_run_cancelled_once(&active, run_id, None)?;
@@ -1135,6 +1150,106 @@ impl Engine {
             })
             .await?;
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_and_commit_tool(
+        &self,
+        active: Arc<ActiveRun>,
+        run: RunId,
+        id: ToolCallId,
+        tool: cookie_agent_protocol::SafeCode,
+        original_arguments: serde_json::Value,
+        task: PendingTool,
+        turn_context: Arc<TurnAgentContext>,
+    ) -> Result<(), EngineError> {
+        let (mut result, arguments) = if active.cancellation.is_cancelled() {
+            (
+                Err(ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: "tool call cancelled after it started".into(),
+                }),
+                original_arguments,
+            )
+        } else {
+            match task {
+                PendingTool::Prepared { prepared, .. } => {
+                    let intercepted_arguments = prepared.intercepted_arguments.clone();
+                    let result = self
+                        .execute_approved_tool(active.clone(), run, *prepared, turn_context)
+                        .await;
+                    let arguments = intercepted_arguments
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    (result, arguments)
+                }
+                PendingTool::ImmediateFailure(failure) => (Err(failure), original_arguments),
+            }
+        };
+        let (mut result_content, is_error) = match &result {
+            Ok(result) => (result.output.clone(), false),
+            Err(failure) => (failure.message.clone(), true),
+        };
+        let context_id = crate::plugin::plugin_context_id();
+        for plugin in self
+            .inner
+            .plugins
+            .interception_plugins(cookie_agent_protocol::ExtensionInterceptionHook::ToolAfterResult)
+        {
+            let intercepted = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionToolAfterResultResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+                    &ExtensionToolAfterResultParams {
+                        session_id: active.session,
+                        context_id: context_id.clone(),
+                        tool: tool.to_string(),
+                        arguments: arguments.clone(),
+                        result_content: result_content.clone(),
+                        is_error,
+                    },
+                    Some(active.session),
+                    Some(&context_id),
+                )
+                .await;
+            match intercepted {
+                Ok(intercepted)
+                    if intercepted.action == ExtensionToolAfterResultAction::Replace =>
+                {
+                    if let Some(replacement) = intercepted.replacement_content {
+                        if replacement.len() > active.policy.result_limits.tool_output_max_bytes {
+                            self.record_plugin_diagnostic(
+                                active.session,
+                                plugin,
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin replacement exceeds the tool output byte limit".into(),
+                            );
+                            continue;
+                        }
+                        result_content.clone_from(&replacement);
+                        match &mut result {
+                            Ok(result) => result.output = replacement,
+                            Err(failure) => failure.message = replacement,
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let kind = if error.contains("crashed") || error.contains("not connected") {
+                        PluginDiagnosticKind::InterceptionCrash
+                    } else {
+                        PluginDiagnosticKind::InterceptionTimeout
+                    };
+                    self.record_plugin_diagnostic(active.session, plugin, kind, error);
+                }
+            }
+        }
+        self.submit_tool_result_status(active.session, run, id, result)
+            .await?;
+        Ok(())
     }
 
     /// Streams one Oven attempt directly into the session actor and commits a

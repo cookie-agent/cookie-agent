@@ -4,7 +4,7 @@ use std::{
     ops::Deref,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -48,8 +48,9 @@ use tempfile::TempDir;
 
 use crate::{
     DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
-    PreparedTool, PromptSection, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, TurnAgentContext,
+    PreparedSerializationKey, PreparedTool, PromptSection, SessionToolContext, ToolCall,
+    ToolConcurrency, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress,
+    ToolProvider, ToolSpec, TurnAgentContext,
 };
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
@@ -1127,6 +1128,7 @@ impl ToolProvider for TestStreamingBashProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "bash".into(),
             permission_name: "bash".into(),
@@ -1293,6 +1295,234 @@ impl PreparedExecutor for TestStreamingBashExecutor {
     }
 }
 
+#[derive(Default)]
+struct ParallelToolState {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    started: AtomicUsize,
+    started_names: std::sync::Mutex<Vec<String>>,
+}
+
+impl ParallelToolState {
+    fn enter(self: &Arc<Self>, name: String) -> ParallelToolGuard {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        self.started.fetch_add(1, Ordering::SeqCst);
+        self.started_names
+            .lock()
+            .expect("parallel started names lock")
+            .push(name);
+        ParallelToolGuard {
+            state: Arc::clone(self),
+        }
+    }
+}
+
+struct ParallelToolGuard {
+    state: Arc<ParallelToolState>,
+}
+
+impl Drop for ParallelToolGuard {
+    fn drop(&mut self) {
+        self.state.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone)]
+struct TestParallelToolProvider {
+    state: Arc<ParallelToolState>,
+    barrier: Option<Arc<tokio::sync::Barrier>>,
+}
+
+struct TestParallelToolExecutor {
+    name: String,
+    delay_ms: u64,
+    fail: bool,
+    wait_for_cancellation: bool,
+    state: Arc<ParallelToolState>,
+    barrier: Option<Arc<tokio::sync::Barrier>>,
+}
+
+fn parallel_tool_permission(name: &str) -> Result<(&'static str, PermissionAction), ToolError> {
+    match name {
+        "parallel_read" => Ok(("read", PermissionAction::Read)),
+        "parallel_bash" => Ok(("bash", PermissionAction::Bash)),
+        "parallel_write" | "parallel_edit" => Ok(("write", PermissionAction::Write)),
+        _ => Err(ToolError::execution(
+            "parallel test provider received another tool",
+        )),
+    }
+}
+
+#[async_trait]
+impl ToolProvider for TestParallelToolProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.parallel"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok([
+            ("parallel_read", "read"),
+            ("parallel_bash", "bash"),
+            ("parallel_write", "write"),
+            ("parallel_edit", "write"),
+        ]
+        .into_iter()
+        .map(|(name, permission_name)| ToolSpec {
+            concurrency: ToolConcurrency::Parallel,
+            result_truncation: Default::default(),
+            name: name.into(),
+            permission_name: permission_name.into(),
+            description: format!("Parallel test tool {name}"),
+            parameters: serde_json::json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":{
+                    "name":{"type":"string"},
+                    "delay_ms":{"type":"integer","minimum":0},
+                    "fail":{"type":"boolean"},
+                    "wait_for_cancellation":{"type":"boolean"},
+                    "serialization_key":{"type":"string"}
+                },
+                "required":["name"]
+            }),
+        })
+        .collect())
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        parallel_tool_permission(tool_name).map(|(permission, _)| permission)
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        let permission = Self::get_permission_name(name)?;
+        let resource = arguments
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("parallel test tool name is missing"))?;
+        Ok((permission, Some(resource.into())))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.get_permission_resource(name, arguments)?
+            .1
+            .ok_or_else(|| ToolError::execution("parallel test resource is missing"))
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let (_, action) = parallel_tool_permission(&call.name)?;
+        let name = call
+            .arguments
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError::execution("parallel test tool name is missing"))?
+            .to_owned();
+        let delay_ms = call
+            .arguments
+            .get("delay_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let fail = call
+            .arguments
+            .get("fail")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let wait_for_cancellation = call
+            .arguments
+            .get("wait_for_cancellation")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let serialization_key = call
+            .arguments
+            .get("serialization_key")
+            .and_then(serde_json::Value::as_str)
+            .map(|key| PreparedSerializationKey::new(key.as_bytes()));
+        let digest = Sha256Digest::of_bytes(name.as_bytes());
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(call.arguments.to_string().as_bytes()),
+            vec![ApprovalCapability {
+                action,
+                operation: PreparedCapabilityOperation::new(format!("{}:execute", call.name))
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![PreparedApprovalResource {
+                capability: action,
+                canonical: PreparedResourceIdentity::new(format!("test:{digest}"))
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    name.as_bytes(),
+                ),
+                binding_lifetime: PreparedBindingLifetime::RestartStable,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"parallel test execution context"),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            serialization_key,
+            Box::new(TestParallelToolExecutor {
+                name: name.clone(),
+                delay_ms,
+                fail,
+                wait_for_cancellation,
+                state: Arc::clone(&self.state),
+                barrier: self.barrier.clone(),
+            }),
+        )?
+        .with_policy_labels(vec![name])
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for TestParallelToolExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+        let _active = self.state.enter(self.name.clone());
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
+        if self.wait_for_cancellation {
+            context.cancellation.cancelled().await;
+        }
+        if self.delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        }
+        if self.fail {
+            return Err(ToolError::execution(format!("{} failed", self.name)));
+        }
+        Ok(cookie_agent_protocol::PersistedToolResult {
+            title: cookie_agent_protocol::SafeDisplayText::new("parallel test result")
+                .expect("result title"),
+            output: format!("{} completed", self.name),
+            metadata: serde_json::json!({"name":self.name}),
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct TestDelegateProvider {
     engine: Engine,
@@ -1369,6 +1599,7 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
+                concurrency: crate::ToolConcurrency::Parallel,
                 result_truncation: Default::default(),
                 name: "delegate_subagent".to_owned(),
                 permission_name: "delegate".to_owned(),
@@ -1560,6 +1791,7 @@ impl ToolProvider for TestWriteProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "write".to_owned(),
             permission_name: "write".to_owned(),
@@ -1675,6 +1907,7 @@ impl ToolProvider for TestMediaReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
             permission_name: "read".into(),
@@ -1816,6 +2049,7 @@ impl ToolProvider for TestRehydrationReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
             permission_name: "read".into(),
@@ -2039,6 +2273,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
             .tools
             .iter()
             .map(|(name, permission_name)| ToolSpec {
+                concurrency: Default::default(),
                 result_truncation: Default::default(),
                 name: (*name).into(),
                 permission_name: (*permission_name).into(),
@@ -2106,6 +2341,7 @@ impl ToolProvider for TestToolDefinitionProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: name.into(),
             permission_name: permission_name.into(),
@@ -4944,6 +5180,90 @@ async fn scripted_channel_server(
     (format!("http://{address}/v1"), responses, task)
 }
 
+async fn parallel_delegate_server() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    Arc<tokio::sync::Notify>,
+    tokio::task::JoinHandle<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("parallel delegate listener");
+    let address = listener.local_addr().expect("listener address");
+    let (children_reached_tx, children_reached_rx) = tokio::sync::oneshot::channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let task_release = Arc::clone(&release);
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let (mut parent, _) = listener.accept().await.expect("parent request");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut parent).await)
+                .expect("parent request UTF-8"),
+        );
+        write_scripted_sse(
+            &mut parent,
+            &scripted_tool_batch_body(&[
+                (
+                    "delegate-one",
+                    "delegate_subagent",
+                    serde_json::json!({
+                        "agent_type":"worker",
+                        "description":"First child",
+                        "prompt":"parallel child one"
+                    }),
+                ),
+                (
+                    "delegate-two",
+                    "delegate_subagent",
+                    serde_json::json!({
+                        "agent_type":"worker",
+                        "description":"Second child",
+                        "prompt":"parallel child two"
+                    }),
+                ),
+            ]),
+        )
+        .await;
+
+        let mut children = Vec::new();
+        for _ in 0..2 {
+            let (mut child, _) = listener.accept().await.expect("child request");
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut child).await)
+                    .expect("child request UTF-8"),
+            );
+            children.push(child);
+        }
+        let _ = children_reached_tx.send(());
+        task_release.notified().await;
+        for (index, child) in children.iter_mut().enumerate() {
+            write_scripted_sse(
+                child,
+                &scripted_text_body(&format!("child {index} complete")),
+            )
+            .await;
+        }
+
+        let (mut parent_followup, _) = listener.accept().await.expect("parent follow-up");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut parent_followup).await)
+                .expect("parent follow-up UTF-8"),
+        );
+        write_scripted_sse(
+            &mut parent_followup,
+            &scripted_text_body("parallel delegation complete"),
+        )
+        .await;
+        requests
+    });
+    (
+        format!("http://{address}/v1"),
+        children_reached_rx,
+        release,
+        task,
+    )
+}
+
 struct MatchedScriptedResponse {
     matcher: ScriptedRequestMatcher,
     body: String,
@@ -5017,6 +5337,638 @@ fn scripted_tool_body(id: &str, name: &str, arguments: serde_json::Value) -> Str
         "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
         serde_json::json!({"choices":[{"delta":{"tool_calls":[call]},"finish_reason":null}]})
     )
+}
+
+fn scripted_tool_batch_body(calls: &[(&str, &str, serde_json::Value)]) -> String {
+    let calls = calls
+        .iter()
+        .enumerate()
+        .map(|(index, (id, name, arguments))| {
+            serde_json::json!({
+                "index":index,
+                "id":id,
+                "type":"function",
+                "function":{"name":name,"arguments":arguments.to_string()}
+            })
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+        serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
+    )
+}
+
+#[tokio::test]
+async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "model-first",
+                    "parallel_read",
+                    serde_json::json!({"name":"first","delay_ms":80}),
+                ),
+                (
+                    "model-failure",
+                    "parallel_read",
+                    serde_json::json!({"name":"failure","fail":true}),
+                ),
+                (
+                    "model-third",
+                    "parallel_read",
+                    serde_json::json!({"name":"third","delay_ms":10}),
+                ),
+            ]),
+        ))
+        .expect("parallel batch response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parallel batch complete"),
+        ))
+        .expect("parallel completion response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Parallel tool test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRun parallel tools.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: Some(Arc::clone(&barrier)),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parallel session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("parallel-order").expect("client run ID"),
+                selection,
+                input: "run the batch".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parallel run")
+        .run_id;
+    tokio::time::timeout(test_timeout(2), barrier.wait())
+        .await
+        .expect("all parallel executors reached the barrier");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    assert_eq!(state.max_active.load(Ordering::SeqCst), 3);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("parallel projection")
+        .log
+        .events();
+    let starts = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start } if event.run_id == Some(run) => {
+                Some(start.owner.model_call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts, ["model-first", "model-failure", "model-third"]);
+    let terminations = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+                Some((
+                    termination.owner.model_call_id.as_str(),
+                    termination.outcome,
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 3);
+    assert_eq!(
+        terminations.last().expect("last termination").0,
+        "model-first"
+    );
+    assert!(terminations.iter().any(|(id, outcome)| {
+        *id == "model-failure" && *outcome == ToolTerminationOutcome::Failed
+    }));
+    assert!(terminations.iter().any(|(id, outcome)| {
+        *id == "model-third" && *outcome == ToolTerminationOutcome::Completed
+    }));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("completed projection")
+            .runs
+            .get(&run)
+            .expect("parallel run projection")
+            .pending_calls
+            .is_empty()
+    );
+    let requests = captured.await.expect("parallel server");
+    assert!(requests[1].contains("first completed"));
+    assert!(requests[1].contains("failure failed"));
+    assert!(requests[1].contains("third completed"));
+    let live_history = serde_json::to_vec(
+        &fixture
+            .engine
+            .get_history(session.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("live parallel history"),
+    )
+    .expect("serialize live parallel history");
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    let replayed_history = serde_json::to_vec(
+        &reopened
+            .get_history(session.session_id, EngineHistoryView::Assembled)
+            .await
+            .expect("replayed parallel history"),
+    )
+    .expect("serialize replayed parallel history");
+    assert_eq!(replayed_history, live_history);
+    assert!(
+        reopened
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("replayed parallel projection")
+            .runs
+            .get(&run)
+            .expect("replayed parallel run")
+            .pending_calls
+            .is_empty()
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_parallel_tools_terminates_every_started_call_once() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "cancel-one",
+                    "parallel_read",
+                    serde_json::json!({"name":"one","wait_for_cancellation":true}),
+                ),
+                (
+                    "cancel-two",
+                    "parallel_read",
+                    serde_json::json!({"name":"two","wait_for_cancellation":true}),
+                ),
+                (
+                    "cancel-three",
+                    "parallel_read",
+                    serde_json::json!({"name":"three","wait_for_cancellation":true}),
+                ),
+            ]),
+        ))
+        .expect("cancellation batch response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Parallel cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nCancel parallel tools.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    let barrier = Arc::new(tokio::sync::Barrier::new(4));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: Some(Arc::clone(&barrier)),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("cancellation session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("parallel-cancellation").expect("client run ID"),
+                selection,
+                input: "start cancellable tools".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("cancellable run")
+        .run_id;
+    tokio::time::timeout(test_timeout(2), barrier.wait())
+        .await
+        .expect("all cancellable executors started");
+    fixture.engine.cancel_run(run).await.expect("cancel run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("cancelled projection")
+        .log
+        .events();
+    let starts = events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run)
+                && matches!(event.payload, EventPayload::ToolCallStarted { .. })
+        })
+        .count();
+    let terminations = events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run)
+                && matches!(event.payload, EventPayload::ToolCallTerminated { .. })
+        })
+        .count();
+    let run_cancelled = events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run) && matches!(event.payload, EventPayload::RunCancelled { .. })
+        })
+        .count();
+    assert_eq!((starts, terminations, run_cancelled), (3, 3, 1));
+    assert!(!fixture.engine.run_active_for_test(run));
+    assert_eq!(captured.await.expect("cancellation server").len(), 1);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
+    for (suffix, keys, expected_max) in [
+        ("same", ["same.txt", "same.txt"], 1),
+        ("distinct", ["one.txt", "two.txt"], 2),
+    ] {
+        let (endpoint, responses, captured) = scripted_channel_server(2).await;
+        responses
+            .send(MatchedScriptedResponse::last_message_role(
+                "user",
+                scripted_tool_batch_body(&[
+                    (
+                        "write-call",
+                        "parallel_write",
+                        serde_json::json!({"name":"write-target","delay_ms":60,"serialization_key":keys[0]}),
+                    ),
+                    (
+                        "edit-call",
+                        "parallel_edit",
+                        serde_json::json!({"name":"edit-target","delay_ms":60,"serialization_key":keys[1]}),
+                    ),
+                ]),
+            ))
+            .expect("mutation batch response");
+        responses
+            .send(MatchedScriptedResponse::last_message_role(
+                "tool",
+                scripted_text_body("mutations complete"),
+            ))
+            .expect("mutation completion response");
+        let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+            &endpoint,
+            "---\ndescription: Mutation serialization test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nRun mutations.\n",
+        );
+        let state = Arc::new(ParallelToolState::default());
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestParallelToolProvider {
+                state: Arc::clone(&state),
+                barrier: None,
+            }));
+        let session = fixture
+            .engine
+            .create_session(selection.clone())
+            .expect("mutation session");
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("mutation-{suffix}"))
+                        .expect("client run ID"),
+                    selection,
+                    input: "mutate files".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("mutation run");
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        assert_eq!(state.max_active.load(Ordering::SeqCst), expected_max);
+        assert_eq!(captured.await.expect("mutation server").len(), 2);
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "allowed-read",
+                    "parallel_read",
+                    serde_json::json!({"name":"allowed-read"}),
+                ),
+                (
+                    "first-ask",
+                    "parallel_bash",
+                    serde_json::json!({"name":"ask-one"}),
+                ),
+                (
+                    "denied-write",
+                    "parallel_write",
+                    serde_json::json!({"name":"blocked"}),
+                ),
+                (
+                    "second-ask",
+                    "parallel_bash",
+                    serde_json::json!({"name":"ask-two"}),
+                ),
+            ]),
+        ))
+        .expect("approval batch response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("approval batch complete"),
+        ))
+        .expect("approval completion response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Approval batch test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n  write:\n    allowed: allow\n    \"*\": deny\n---\nResolve all asks before tools run.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: None,
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval batch session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .expect("ask mode");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("approval-batch").expect("client run ID"),
+                selection,
+                input: "run approval batch".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("approval batch run")
+        .run_id;
+
+    let first = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let first_json = serde_json::to_value(&first.request).expect("first approval JSON");
+    assert_eq!(
+        first_json["evaluations"][0]["trace"]["normalized_resource"],
+        "ask-one"
+    );
+    assert_eq!(state.started.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fixture
+            .engine
+            .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .approvals
+            .len(),
+        1
+    );
+    approve_once(&fixture.engine, &first, "approval-batch-first").await;
+    let second = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let second_json = serde_json::to_value(&second.request).expect("second approval JSON");
+    assert_eq!(
+        second_json["evaluations"][0]["trace"]["normalized_resource"],
+        "ask-two"
+    );
+    assert_eq!(state.started.load(Ordering::SeqCst), 0);
+    approve_once(&fixture.engine, &second, "approval-batch-second").await;
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    assert_eq!(state.started.load(Ordering::SeqCst), 3);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("approval batch projection")
+        .log
+        .events();
+    let terminations = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+                Some((
+                    termination.owner.model_call_id.as_str(),
+                    termination.outcome,
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 4);
+    assert!(terminations.iter().any(|(id, outcome)| {
+        *id == "denied-write" && *outcome == ToolTerminationOutcome::Failed
+    }));
+    assert_eq!(captured.await.expect("approval batch server").len(), 2);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancellation_during_approval_terminates_batch_without_execution() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "approval-cancel-read-one",
+                    "parallel_read",
+                    serde_json::json!({"name":"read-one"}),
+                ),
+                (
+                    "approval-cancel-ask",
+                    "parallel_bash",
+                    serde_json::json!({"name":"needs-approval"}),
+                ),
+                (
+                    "approval-cancel-read-two",
+                    "parallel_read",
+                    serde_json::json!({"name":"read-two"}),
+                ),
+            ]),
+        ))
+        .expect("approval cancellation response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Approval cancellation test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n---\nCancel while approval is pending.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: None,
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval cancellation session");
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::Ask)
+        .expect("ask mode");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("approval-cancellation").expect("client run ID"),
+                selection,
+                input: "start approval batch".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("approval cancellation run")
+        .run_id;
+    let _approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    assert_eq!(state.started.load(Ordering::SeqCst), 0);
+    fixture.engine.cancel_run(run).await.expect("cancel run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    assert_eq!(state.started.load(Ordering::SeqCst), 0);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("approval cancellation projection")
+        .log
+        .events();
+    let starts = events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run)
+                && matches!(event.payload, EventPayload::ToolCallStarted { .. })
+        })
+        .count();
+    let terminations = events
+        .iter()
+        .filter(|event| {
+            event.run_id == Some(run)
+                && matches!(event.payload, EventPayload::ToolCallTerminated { .. })
+        })
+        .count();
+    assert_eq!((starts, terminations), (3, 3));
+    assert_eq!(
+        captured.await.expect("approval cancellation server").len(),
+        1
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
+    let (endpoint, children_reached, release_children, server) = parallel_delegate_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parallel delegate parent");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("parallel-delegates").expect("client run ID"),
+                selection,
+                input: "start both children".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parallel delegation run")
+        .run_id;
+
+    tokio::time::timeout(test_timeout(5), children_reached)
+        .await
+        .expect("both child model requests started before either completed")
+        .expect("child request signal");
+    release_children.notify_one();
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+
+    let entries = fixture.engine.inner.delegation_events.entries();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| {
+        entry.reservation.parent_session_id == parent.session_id
+            && entry.reservation.parent_run_id == run
+            && entry.child_run_id.is_some()
+    }));
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(parent.session_id)
+        .expect("parallel delegate projection")
+        .log
+        .events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event.run_id == Some(run)
+                    && matches!(event.payload, EventPayload::ToolCallTerminated { .. })
+            })
+            .count(),
+        2
+    );
+    let requests = server.await.expect("parallel delegate server");
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("parallel child one"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("parallel child two"))
+    );
+    fixture.engine.shutdown().await;
 }
 
 fn scripted_text_usage_body(
@@ -16676,6 +17628,7 @@ impl ToolProvider for DivergentReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
             permission_name: "read".into(),

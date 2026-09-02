@@ -154,6 +154,14 @@ append command enters the session actor mailbox; actor FIFO then orders it befor
 the later terminal command even if persistence has not completed yet. Cleanup
 deadline diagnostics count only progress records that never entered that mailbox.
 
+For a batch of tool calls from one model turn, `tool_call_started` events are
+written in model content order before execution begins. Calls may then execute
+in parallel, so progress and `tool_call_terminated` events from different calls
+may interleave, and terminations commit in completion order. The ordering
+guarantee is per call: its start precedes all of its progress and stdin events,
+which precede its single termination. Consumers must correlate calls by
+`tool_call_id` rather than cross-call event position.
+
 `internal_agent_usage_recorded` attributes each completed
 internal model request to its internal run, internal agent ID, kind, and resolved
 model. It carries the same optional `estimated_cost_pico_usd` stamp. The same

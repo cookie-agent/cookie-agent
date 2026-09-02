@@ -55,6 +55,7 @@ impl ToolProvider for EditTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "edit".into(),
             permission_name: Self::get_permission_name("edit")?.into(),

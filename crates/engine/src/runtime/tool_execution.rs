@@ -23,7 +23,7 @@ use super::{
 use crate::{
     events::OutputHub,
     media::{approved_media_type, canonical_video_mime_type},
-    permissions::PermissionPipeline,
+    permissions::{PermissionDecision, PermissionPipeline},
     policy::FrozenRunPolicy,
     tool_api::{
         PreparedTool, ProgressSink, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
@@ -98,6 +98,116 @@ fn close_and_discard_progress(progress_rx: &mut mpsc::Receiver<ToolProgress>) ->
 }
 
 impl Engine {
+    pub(super) fn decide_tool_permission(
+        &self,
+        active: &ActiveRun,
+        prepared_call: &PreparedToolCall,
+    ) -> Result<PermissionDecision, ToolFailure> {
+        let prepared = prepared_call.prepared.as_ref().map_err(Clone::clone)?;
+        let permission_overlay = self
+            .inner
+            .store
+            .get(active.session)
+            .map_err(|error| ToolFailure {
+                code: ToolCallFailureCode::ExecutionFailed,
+                message: error.to_string(),
+            })?
+            .permission_overlay;
+        let grants = self.skill_grants_for_session(active.session);
+        Ok(self.inner.permissions.decide_operation_with_grants(
+            &active.policy.agent,
+            Some(&permission_overlay),
+            grants.as_ref(),
+            prepared.operation(),
+            prepared.policy_labels(),
+            self.inner.store.cwd(),
+        ))
+    }
+
+    pub(super) async fn resolve_tool_permission(
+        &self,
+        active: &ActiveRun,
+        run: RunId,
+        prepared_call: &PreparedToolCall,
+        permission: &PermissionDecision,
+    ) -> Result<(), ToolFailure> {
+        let prepared = prepared_call.prepared.as_ref().map_err(Clone::clone)?;
+        match permission.effect {
+            cookie_agent_protocol::PermissionEffect::Allow => Ok(()),
+            cookie_agent_protocol::PermissionEffect::Deny => Err(ToolFailure {
+                code: ToolCallFailureCode::ExecutionFailed,
+                message: denied_tool_failure(
+                    ApprovalDecisionSource::Policy,
+                    "permission denied",
+                    None,
+                ),
+            }),
+            cookie_agent_protocol::PermissionEffect::Ask => {
+                let allow_tree_grant = prepared.operation().resources().iter().all(|resource| {
+                    resource.binding_lifetime
+                        == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
+                        && !matches!(
+                            resource.capability,
+                            cookie_agent_protocol::PermissionAction::Read
+                                | cookie_agent_protocol::PermissionAction::Write
+                        )
+                });
+                let approval_policy = self
+                    .active_internal_policy(active, InternalAgentKind::Approval)
+                    .map_err(|error| ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: error.to_string(),
+                    })?;
+                let request = ApprovalRequest::new(
+                    ApprovalId::new_v7(),
+                    1,
+                    ApprovalTrigger::PermissionPolicy,
+                    prepared.operation().clone(),
+                    permission.evaluations.clone(),
+                    ApprovalConstraints {
+                        allow_once: true,
+                        allow_tree_grant,
+                        cancellable: true,
+                        expires_at: approval_expiry(approval_policy.limits.timeout_ms),
+                    },
+                )
+                .map_err(|error| ToolFailure {
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: error.to_string(),
+                })?;
+                let outcome = self
+                    .await_user_approval(
+                        active,
+                        run,
+                        request,
+                        prepared.executor.clone(),
+                        true,
+                        ApprovalToolInput {
+                            name: &prepared_call.call.name,
+                            normalized_parameters: prepared.normalized_arguments(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: error.to_string(),
+                    })?;
+                if outcome.approved {
+                    Ok(())
+                } else {
+                    Err(ToolFailure {
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: denied_tool_failure(
+                            ApprovalDecisionSource::Policy,
+                            "permission refused by user",
+                            outcome.feedback,
+                        ),
+                    })
+                }
+            }
+        }
+    }
+
     pub(super) async fn prepare_tool_call(
         &self,
         session_id: SessionId,
@@ -226,6 +336,7 @@ impl Engine {
                         (
                             candidate.clone(),
                             crate::ToolSpec {
+                                concurrency: Default::default(),
                                 name: call.name.clone(),
                                 permission_name: permission_name.to_owned(),
                                 description: String::new(),
@@ -317,6 +428,20 @@ impl Engine {
         prepared: PreparedToolCall,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> Result<ToolResult, ToolFailure> {
+        let permission = self.decide_tool_permission(&active, &prepared)?;
+        self.resolve_tool_permission(&active, run, &prepared, &permission)
+            .await?;
+        self.execute_approved_tool(active, run, prepared, turn_context)
+            .await
+    }
+
+    pub(super) async fn execute_approved_tool(
+        &self,
+        active: Arc<ActiveRun>,
+        run: RunId,
+        prepared: PreparedToolCall,
+        turn_context: Arc<crate::TurnAgentContext>,
+    ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
         {
             let PreparedToolCall {
@@ -333,96 +458,6 @@ impl Engine {
                 .unwrap_or_default();
             let operation = prepared.operation.clone();
             let policy_labels = prepared.policy_labels.clone();
-            let permission_overlay = engine
-                .inner
-                .store
-                .get(active.session)
-                .map_err(|error| ToolFailure {
-                    code: ToolCallFailureCode::ExecutionFailed,
-                    message: error.to_string(),
-                })?
-                .permission_overlay;
-            let grants = engine.skill_grants_for_session(active.session);
-            let permission = engine.inner.permissions.decide_operation_with_grants(
-                &active.policy.agent,
-                Some(&permission_overlay),
-                grants.as_ref(),
-                &operation,
-                &policy_labels,
-                engine.inner.store.cwd(),
-            );
-            if permission.effect != cookie_agent_protocol::PermissionEffect::Allow {
-                if permission.effect == cookie_agent_protocol::PermissionEffect::Ask {
-                    let allow_tree_grant = operation.resources().iter().all(|resource| {
-                        resource.binding_lifetime
-                            == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
-                            && !matches!(
-                                resource.capability,
-                                cookie_agent_protocol::PermissionAction::Read
-                                    | cookie_agent_protocol::PermissionAction::Write
-                            )
-                    });
-                    let approval_policy = engine
-                        .active_internal_policy(&active, InternalAgentKind::Approval)
-                        .map_err(|error| ToolFailure {
-                            code: ToolCallFailureCode::ExecutionFailed,
-                            message: error.to_string(),
-                        })?;
-                    let request = ApprovalRequest::new(
-                        ApprovalId::new_v7(),
-                        1,
-                        ApprovalTrigger::PermissionPolicy,
-                        operation.clone(),
-                        permission.evaluations.clone(),
-                        ApprovalConstraints {
-                            allow_once: true,
-                            allow_tree_grant,
-                            cancellable: true,
-                            expires_at: approval_expiry(approval_policy.limits.timeout_ms),
-                        },
-                    )
-                    .map_err(|error| ToolFailure {
-                        code: ToolCallFailureCode::ExecutionFailed,
-                        message: error.to_string(),
-                    })?;
-                    let outcome = engine
-                        .await_user_approval(
-                            &active,
-                            run,
-                            request,
-                            prepared.executor.clone(),
-                            true,
-                            ApprovalToolInput {
-                                name: &call.name,
-                                normalized_parameters: prepared.normalized_arguments(),
-                            },
-                        )
-                        .await
-                        .map_err(|error| ToolFailure {
-                            code: ToolCallFailureCode::ExecutionFailed,
-                            message: error.to_string(),
-                        })?;
-                    if !outcome.approved {
-                        return Err(ToolFailure {
-                            code: ToolCallFailureCode::ExecutionFailed,
-                            message: denied_tool_failure(
-                                ApprovalDecisionSource::Policy,
-                                "permission refused by user",
-                                outcome.feedback,
-                            ),
-                        });
-                    }
-                } else {
-                    return Err(ToolFailure {
-                        code: ToolCallFailureCode::ExecutionFailed,
-                        message: denied_tool_failure(
-                            ApprovalDecisionSource::Policy,
-                            "permission denied",
-                            None,
-                        ),
-                    });
-                }
-            }
             if let Some(interception) = interception {
                 let context_id = crate::plugin::plugin_context_id();
                 for plugin in engine.inner.plugins.interception_plugins(
@@ -1155,6 +1190,7 @@ mod tests {
         let artifact_path = directory.path().join("artifacts");
         let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
         let external_spec = crate::ToolSpec {
+            concurrency: Default::default(),
             name: "mcp_fixture".into(),
             permission_name: "mcp".into(),
             description: "External fixture".into(),

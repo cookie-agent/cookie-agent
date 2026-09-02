@@ -71,7 +71,18 @@ pub struct ToolSpec {
     pub description: String,
     pub parameters: Value,
     #[serde(default)]
+    pub concurrency: ToolConcurrency,
+    #[serde(default)]
     pub result_truncation: ToolResultTruncationPolicy,
+}
+
+/// Declares whether calls to a tool may overlap with sibling calls from one model turn.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolConcurrency {
+    #[default]
+    Exclusive,
+    Parallel,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -497,7 +508,10 @@ mod tests {
         PersistedToolResult as ToolResult, PreparedOperationIdentity, Sha256Digest,
     };
 
-    use super::{PreparedExecutor, PreparedTool, ToolError, ToolExecutionContext, async_trait};
+    use super::{
+        PreparedExecutor, PreparedTool, ToolConcurrency, ToolError, ToolExecutionContext, ToolSpec,
+        async_trait,
+    };
 
     struct NoopExecutor;
 
@@ -556,6 +570,18 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("must not be null"));
+    }
+
+    #[test]
+    fn tool_concurrency_defaults_to_exclusive_when_omitted() {
+        let spec: ToolSpec = serde_json::from_value(serde_json::json!({
+            "name":"external_tool",
+            "permission_name":"external",
+            "description":"External tool",
+            "parameters":{"type":"object"}
+        }))
+        .expect("tool spec without concurrency");
+        assert_eq!(spec.concurrency, ToolConcurrency::Exclusive);
     }
 
     #[test]

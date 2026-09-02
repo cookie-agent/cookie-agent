@@ -51,6 +51,7 @@ impl ToolProvider for WriteTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "write".into(),
             permission_name: Self::get_permission_name("write")?.into(),

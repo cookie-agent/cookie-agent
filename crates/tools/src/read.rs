@@ -62,6 +62,7 @@ impl ToolProvider for ReadTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "read".into(),
             permission_name: Self::get_permission_name("read")?.into(),
