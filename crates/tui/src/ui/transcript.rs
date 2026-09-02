@@ -4207,29 +4207,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bottom_bar_permission_mode_is_per_session_and_click_cycles_with_rpc() {
+    async fn bottom_bar_permission_mode_is_shared_by_tree_and_child_click_updates_root() {
         let (client, _startup_requests) = recording_client();
         let mut app = App::new(client).await.expect("test app");
         let (client, requests, _incoming) = live_recording_client();
         app.client = client;
-        let first = SessionId::new_v7();
-        let second = SessionId::new_v7();
-        app.sessions = vec![session_meta(first), session_meta(second)];
-        app.selected = Some(first);
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        app.sessions = vec![session_meta(root)];
+        app.tree_root = Some(root);
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: delegated_meta(child, root, "worker"),
+                children: Vec::new(),
+            }],
+        });
+        app.selected = Some(child);
         app.permission_modes
-            .insert(second, cookie_agent_protocol::PermissionMode::Yolo);
+            .insert(root, cookie_agent_protocol::PermissionMode::Ask);
         requests.lock().expect("requests lock").clear();
 
-        let first_row = rendered_row(&mut app, 80, 24, 23);
+        let child_row = rendered_row(&mut app, 80, 24, 23);
         // Without token data the bar shows no placeholder segment — just
         // the mode and the commands hint.
-        assert!(first_row.contains("auto-approve    `ctrl+p` commands"));
-        assert!(!first_row.contains("ctx"), "{first_row}");
+        assert!(child_row.contains("ask    `ctrl+p` commands"));
+        assert!(!child_row.contains("ctx"), "{child_row}");
         let hit = app.hit_map.permission_mode.expect("permission mode hit");
         app.handle_click(hit.x, hit.y).await;
         assert_eq!(
-            app.permission_modes[&first],
-            cookie_agent_protocol::PermissionMode::AutoApproveN
+            app.permission_modes[&root],
+            cookie_agent_protocol::PermissionMode::Yolo
         );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -4239,8 +4247,8 @@ mod tests {
                     .iter()
                     .any(|request| {
                         request["method"] == "session.set_permission_mode"
-                            && request["params"]["session_id"] == serde_json::json!(first)
-                            && request["params"]["mode"] == "auto_approve_n"
+                            && request["params"]["session_id"] == serde_json::json!(root)
+                            && request["params"]["mode"] == "yolo"
                     })
                 {
                     break;
@@ -4257,38 +4265,32 @@ mod tests {
                 .iter()
                 .any(|request| {
                     request["method"] == "session.set_permission_mode"
-                        && request["params"]["session_id"] == serde_json::json!(first)
-                        && request["params"]["mode"] == "auto_approve_n"
+                        && request["params"]["session_id"] == serde_json::json!(root)
+                        && request["params"]["mode"] == "yolo"
                 })
         );
 
-        app.selected = Some(second);
-        let second_row = rendered_row(&mut app, 80, 24, 23);
-        assert!(second_row.contains("yolo    `ctrl+p` commands"));
-        let hit = app.hit_map.permission_mode.expect("permission mode hit");
-        app.handle_click(hit.x, hit.y).await;
-        assert_eq!(
-            app.permission_modes[&second],
-            cookie_agent_protocol::PermissionMode::AutoApprove
-        );
-
-        app.selected = Some(first);
+        app.selected = Some(root);
+        assert!(rendered_row(&mut app, 80, 24, 23).contains("yolo"));
         for (expected_mode, expected_label) in [
+            (
+                cookie_agent_protocol::PermissionMode::AutoApprove,
+                "auto-approve",
+            ),
+            (
+                cookie_agent_protocol::PermissionMode::AutoApproveN,
+                "auto-n",
+            ),
             (
                 cookie_agent_protocol::PermissionMode::AutoApproveY,
                 "auto-y",
             ),
             (cookie_agent_protocol::PermissionMode::Ask, "ask"),
-            (cookie_agent_protocol::PermissionMode::Yolo, "yolo"),
-            (
-                cookie_agent_protocol::PermissionMode::AutoApprove,
-                "auto-approve",
-            ),
         ] {
             rendered_row(&mut app, 80, 24, 23);
             let hit = app.hit_map.permission_mode.expect("permission mode hit");
             app.handle_click(hit.x, hit.y).await;
-            assert_eq!(app.permission_modes[&first], expected_mode);
+            assert_eq!(app.permission_modes[&root], expected_mode);
             assert!(
                 rendered_row(&mut app, 80, 24, 23).contains(expected_label),
                 "missing permission mode label {expected_label}"
@@ -4297,17 +4299,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selecting_a_session_loads_its_permission_mode_for_the_bottom_bar() {
+    async fn selecting_a_child_loads_the_tree_permission_mode_from_the_root() {
         let (startup_client, _startup) = recording_client();
         let mut app = App::new(startup_client).await.expect("test app");
         let (client, recorded, incoming) = live_recording_client();
         app.client = client;
-        let session = SessionId::new_v7();
-        app.sessions = vec![session_meta(session)];
-        app.store.sessions.insert(session, SessionState::default());
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        app.sessions = vec![session_meta(root), delegated_meta(child, root, "worker")];
+        app.store.sessions.insert(child, SessionState::default());
 
-        app.set_selected_session(session);
+        app.set_selected_session(child);
         let id = wait_for_recorded_request(&recorded, "session.permission.get", 1).await;
+        assert!(
+            recorded
+                .lock()
+                .expect("requests lock")
+                .iter()
+                .any(|request| {
+                    request["method"] == "session.permission.get"
+                        && request["params"]["session_id"] == serde_json::json!(root)
+                })
+        );
         incoming
             .send(MessageFrame::Value(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -4325,9 +4338,10 @@ mod tests {
         app.handle_rpc_update(update);
 
         assert_eq!(
-            app.permission_modes[&session],
+            app.permission_modes[&root],
             cookie_agent_protocol::PermissionMode::AutoApproveY
         );
+        assert!(!app.permission_modes.contains_key(&child));
         assert!(rendered_row(&mut app, 80, 24, 23).contains("auto-y"));
     }
 

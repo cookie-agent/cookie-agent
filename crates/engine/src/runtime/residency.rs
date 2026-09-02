@@ -5,6 +5,7 @@ use jiff::Timestamp;
 
 #[cfg(test)]
 use super::PagingRaceHook;
+use super::helpers::root_id;
 use super::{Engine, EngineError, SessionCommand, delegation::DelegationState};
 
 const JANITOR_INTERVAL: Duration = Duration::from_secs(60);
@@ -248,7 +249,7 @@ impl Engine {
             if self.inner.store.evict(session_id)? {
                 self.notify_evicted_subscribers(session_id, last_event_seq)
                     .await;
-                self.clear_evicted_session_caches(session_id);
+                self.clear_evicted_session_caches(session_id, &session.meta.origin);
                 evicted.push(session_id);
             }
         }
@@ -348,12 +349,16 @@ impl Engine {
         }
     }
 
-    fn clear_evicted_session_caches(&self, session_id: SessionId) {
-        self.inner
-            .permission_modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&session_id);
+    fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
+        // Permission modes are tree-root keyed. Paging out a child must retain
+        // the shared mode; an evicted root no longer owns runtime-only state.
+        if root_id(origin, session_id) == session_id {
+            self.inner
+                .permission_modes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&session_id);
+        }
         self.inner
             .context_token_estimators
             .lock()

@@ -41,6 +41,8 @@ seconds. Reaching either guard cancels the run and waits for its terminal event.
 
 `--permission-mode` accepts `auto-approve` (`auto_approve`), `auto-approve-n`
 (`auto_approve_n`), `auto-approve-y` (`auto_approve_y`), `ask`, or `yolo`.
+The selected mode applies to the whole runtime session tree, including delegated
+descendants.
 Headless runs never wait for approval input. In `auto-approve-n`, a classifier
 escalation is rejected and cancels the root run with exit code `3`. In
 `auto-approve-y`, an escalation is approved once and the run continues

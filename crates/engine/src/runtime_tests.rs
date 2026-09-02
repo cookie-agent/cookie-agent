@@ -6073,6 +6073,44 @@ async fn wait_for_escalated_approval(
     approval
 }
 
+async fn wait_for_tree_escalated_approval(
+    engine: &Engine,
+    root_session_id: SessionId,
+    child_session_id: SessionId,
+) -> cookie_agent_protocol::ApprovalRecord {
+    await_event(
+        engine,
+        child_session_id,
+        "delegated child approval escalation",
+        |event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }),
+    )
+    .await;
+    let approval = engine
+        .list_approvals(root_session_id, Some(ApprovalStatus::Escalated))
+        .approvals
+        .into_iter()
+        .find(|approval| approval.session_id == child_session_id)
+        .expect("delegated child escalated approval");
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
+        loop {
+            let ready = engine.inner.pending_approval_ready.notified();
+            if engine
+                .inner
+                .pending_approvals
+                .lock()
+                .expect("pending approvals lock")
+                .contains_key(&(child_session_id, approval.request.approval_id()))
+            {
+                break;
+            }
+            ready.await;
+        }
+    })
+    .await
+    .expect("delegated child approval responder readiness");
+    approval
+}
+
 async fn approve_once(
     engine: &Engine,
     approval: &cookie_agent_protocol::ApprovalRecord,
@@ -14764,6 +14802,170 @@ async fn background_delegate_permission_approval_gates_child_admission() {
     )
     .await;
     assert_eq!(captured.await.expect("approval-gated server").len(), 3);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
+    let (endpoint, responses, captured) = scripted_channel_server(4).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "delegate under tree mode",
+            scripted_tool_body(
+                "tree-mode-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Exercise child permission mode",
+                    "prompt":"write under inherited mode"
+                }),
+            ),
+        ))
+        .expect("parent delegation response");
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "write under inherited mode",
+            scripted_tool_body(
+                "tree-mode-write",
+                "write",
+                serde_json::json!({"value":"blocked"}),
+            ),
+        ))
+        .expect("child write response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("child handled rejected write"),
+        ))
+        .expect("child completion response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent handled child result"),
+        ))
+        .expect("parent completion response");
+
+    let primary = "---\ndescription: Tree mode parent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n---\nDelegate work.\n";
+    let worker = "---\ndescription: Tree mode worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nWrite work.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            Some(worker),
+        );
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("tree-mode parent");
+    fixture
+        .engine
+        .set_permission_mode(parent.session_id, PermissionMode::Ask)
+        .expect("tree ask mode");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("tree-mode-delegation").expect("run ID"),
+                selection,
+                input: "delegate under tree mode".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("tree-mode run");
+
+    let child = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "tree-mode child",
+        |_| true,
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .engine
+            .get_session_permissions(child.session_id)
+            .expect("child permission query")
+            .current_mode,
+        Some(PermissionMode::Ask)
+    );
+    let approval =
+        wait_for_tree_escalated_approval(&fixture.engine, parent.session_id, child.session_id)
+            .await;
+    assert_eq!(approval.session_id, child.session_id);
+    let child_events = fixture
+        .engine
+        .inner
+        .store
+        .get(child.session_id)
+        .expect("child projection")
+        .log
+        .events();
+    assert!(!child_events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::InternalAgentStarted {
+            kind: InternalAgentKind::Approval,
+            ..
+        }
+    )));
+
+    fixture
+        .engine
+        .set_permission_mode(child.session_id, PermissionMode::Yolo)
+        .expect("child-addressed tree mode update");
+    for session_id in [parent.session_id, child.session_id] {
+        assert_eq!(
+            fixture
+                .engine
+                .get_session_permissions(session_id)
+                .expect("shared tree mode query")
+                .current_mode,
+            Some(PermissionMode::Yolo)
+        );
+    }
+    reject_approval(&fixture.engine, &approval, "tree-mode-child-rejection").await;
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "tree-mode delegation completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    assert!(!executed.is_set());
+    assert_eq!(captured.await.expect("tree-mode requests").len(), 4);
+
+    let evicted = fixture
+        .engine
+        .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
+        .await
+        .expect("evict tree-mode child");
+    assert!(evicted.contains(&child.session_id));
+    assert_eq!(
+        fixture
+            .engine
+            .get_session_permissions(child.session_id)
+            .expect("reopened child permission query")
+            .current_mode,
+        Some(PermissionMode::Yolo)
+    );
     fixture.engine.shutdown().await;
 }
 

@@ -12,7 +12,7 @@ use cookie_agent_protocol::{
 
 use super::{
     Engine, EngineError, Event, SessionCommand,
-    helpers::{cwd_identity, session_depth},
+    helpers::{cwd_identity, root_id, session_depth},
 };
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 
@@ -460,20 +460,27 @@ impl Engine {
         session_id: SessionId,
         mode: PermissionMode,
     ) -> Result<(), EngineError> {
-        self.inner.store.get(session_id)?;
+        let session = self.inner.store.get(session_id)?;
+        let root = root_id(&session.meta.origin, session_id);
         self.inner
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session_id, mode);
+            .insert(root, mode);
         Ok(())
     }
     pub(crate) fn permission_mode(&self, session_id: SessionId) -> PermissionMode {
+        let root = self
+            .inner
+            .store
+            .get(session_id)
+            .map(|session| root_id(&session.meta.origin, session_id))
+            .unwrap_or(session_id);
         self.inner
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session_id)
+            .get(&root)
             .copied()
             .unwrap_or_default()
     }

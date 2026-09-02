@@ -207,7 +207,7 @@ impl Engine {
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&active.session)
+            .get(&root)
             .copied()
             .unwrap_or_default();
         if permission_mode == PermissionMode::Yolo {
