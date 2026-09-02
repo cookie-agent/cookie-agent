@@ -1481,10 +1481,15 @@ to close, or the <code>c</code>, <code>r</code>, and <code>f</code> accelerators
 open the message menu.</p>
 <h2 id="transcript-details">Transcript details<a class="headerlink" href="#transcript-details" title="Permanent link">&para;</a></h2>
 <p>System prompts, context compaction checkpoints, plugin-injected messages, and
-committed media parts appear collapsed by default. Click one of these rows to
-show or hide its text or metadata. Expansion state is kept separately for
-each session. Expanded bodies are display-bounded; oversized content ends with
-a truncated-lines indicator while the complete data remains in session state.</p>
+committed media parts appear collapsed by default. A session's system-prompt
+row remains hidden until its first run starts, then identifies the agent from
+the latest run snapshot. If the next-run draft uses another agent, the row also
+shows <code>next: &lt;agent&gt;</code>. Click one of these rows to show or hide its text or
+metadata. Expansion state is kept separately for each session. Expanded system
+prompts are display-bounded to 256 lines or 32 KiB of sanitized text;
+compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
+Oversized content ends with a truncated-lines indicator while the complete data
+remains in session state.</p>
 <h2 id="live-tool-output">Live tool output<a class="headerlink" href="#live-tool-output" title="Permanent link">&para;</a></h2>
 <p>Expanded bash rows show sanitized stdout and stderr while the command runs.
 The live preview is capped at 1 MiB and reports when that limit is reached. On
