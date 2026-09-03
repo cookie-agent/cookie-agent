@@ -1,0 +1,25 @@
+---
+source: crates/tui/src/ui/transcript.rs
+expression: "snapshots.join(\"\\n\")"
+---
+== default ==
+  First Choice alpha/first-model[base]
+> Needle Model beta/second-model[fast]
+plain display: Style::new().fg(Color::Reset).bg(Color::Rgb(251, 244, 230)).underline_color(Color::Reset).bold()
+plain key: Style::new().fg(Color::Rgb(98, 94, 102)).bg(Color::Rgb(251, 244, 230)).underline_color(Color::Reset)
+selected display: Style::new().fg(Color::Rgb(70, 48, 31)).bg(Color::Rgb(230, 206, 158)).underline_color(Color::Reset).bold()
+selected key: Style::new().fg(Color::Rgb(98, 94, 102)).bg(Color::Rgb(230, 206, 158)).underline_color(Color::Reset)
+== mono ==
+  First Choice alpha/first-model[base]
+> Needle Model beta/second-model[fast]
+plain display: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold()
+plain key: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).dim()
+selected display: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold().reversed()
+selected key: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).dim().reversed()
+== high-contrast ==
+  First Choice alpha/first-model[base]
+> Needle Model beta/second-model[fast]
+plain display: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold()
+plain key: Style::new().gray().bg(Color::Reset).underline_color(Color::Reset).bold().dim()
+selected display: Style::new().black().on_light_yellow().underline_color(Color::Reset).bold()
+selected key: Style::new().gray().on_light_yellow().underline_color(Color::Reset).bold().dim()

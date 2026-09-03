@@ -2,11 +2,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cookie_agent_protocol::{ProviderDescriptor, SessionId, SessionMeta, SessionTree};
+use cookie_agent_protocol::{
+    AvailableModelDescriptor, ModelSelection, ProviderDescriptor, SessionId, SessionMeta,
+    SessionTree,
+};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
@@ -89,6 +93,28 @@ pub(crate) fn provider_matches(provider: &ProviderDescriptor, query: &str) -> bo
         .to_lowercase()
         .contains(&query)
         || provider.id.as_str().to_lowercase().contains(&query)
+}
+
+/// Case-insensitive substring matching over model display names and canonical keys.
+pub(crate) fn model_matches(
+    selection: &ModelSelection,
+    descriptor: Option<&AvailableModelDescriptor>,
+    query: &str,
+) -> bool {
+    if query.trim().is_empty() {
+        return true;
+    }
+    let query = query.trim().to_lowercase();
+    selection.model.to_string().to_lowercase().contains(&query)
+        || descriptor.is_some_and(|descriptor| {
+            descriptor.display_name.to_lowercase().contains(&query)
+                || selection.variant.as_ref().is_some_and(|selected| {
+                    descriptor.variants.iter().any(|variant| {
+                        variant.id == *selected
+                            && variant.display_name.to_lowercase().contains(&query)
+                    })
+                })
+        })
 }
 
 /// Session picker matching over title and the untitled placeholder.
@@ -216,6 +242,27 @@ pub(crate) fn render(
     state: &mut ListState,
     theme: &Theme,
 ) -> Vec<(Rect, usize)> {
+    let entries = ellipsized(entries, inner_rect(area).width);
+    render_lines(
+        frame,
+        chrome,
+        entries.into_iter().map(Line::from).collect(),
+        area,
+        state,
+        theme,
+        theme.selected(),
+    )
+}
+
+pub(crate) fn render_lines(
+    frame: &mut Frame,
+    chrome: PickerChrome<'_>,
+    entries: Vec<Line<'static>>,
+    area: Rect,
+    state: &mut ListState,
+    theme: &Theme,
+    highlight_style: Style,
+) -> Vec<(Rect, usize)> {
     super::app::paint_panel(frame, area, theme);
     let entry_count = entries.len();
     if entry_count == 0 {
@@ -239,7 +286,6 @@ pub(crate) fn render(
         return Vec::new();
     }
     let inner = inner_rect(area);
-    let entries = ellipsized(entries, inner.width);
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.panel_border())
@@ -250,7 +296,7 @@ pub(crate) fn render(
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
             .highlight_symbol("> ")
-            .highlight_style(theme.selected())
+            .highlight_style(highlight_style)
             .block(block),
         area,
         state,

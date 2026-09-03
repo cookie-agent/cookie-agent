@@ -342,6 +342,19 @@ impl Theme {
         }
     }
 
+    /// Selection surface without foreground or emphasis, for rows whose spans
+    /// retain their own visual hierarchy.
+    pub fn selected_overlay(&self) -> Style {
+        let selected = self.selected();
+        let mut overlay = selected
+            .bg
+            .map_or_else(Style::default, |background| Style::default().bg(background));
+        if selected.add_modifier.contains(Modifier::REVERSED) {
+            overlay = overlay.add_modifier(Modifier::REVERSED);
+        }
+        overlay
+    }
+
     /// Mouse-drag text selection: a deeper crust wash than the keyboard
     /// `selected` row and never bold, so the two selection kinds never read
     /// alike. Where subtle color exists (ANSI-256, true color) only the
