@@ -44,7 +44,14 @@ impl Engine {
         };
         if invalidation.is_none()
             && pending_epoch
-                != permission_overlay_epoch(&self.inner.store.get(params.session_id)?.log.events())
+                != permission_overlay_epoch(
+                    &self
+                        .inner
+                        .store
+                        .get(params.session_id)?
+                        .log
+                        .event_snapshot(),
+                )
         {
             invalidation = Some(PreparedApprovalInvalidation::OperationChanged);
         }
@@ -82,7 +89,8 @@ impl Engine {
                 root_id(&session.meta.origin, session.meta.session_id) == root_session_id
             })
             .flat_map(|session| {
-                approval_records(session.meta.session_id, &session.log.events()).into_values()
+                approval_records(session.meta.session_id, &session.log.event_snapshot())
+                    .into_values()
             })
             .filter(|record| status.is_none_or(|status| record.status == status))
             .collect();

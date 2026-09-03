@@ -294,7 +294,7 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .keys()
                 .any(|(session_id, _)| *session_id == session.meta.session_id)
-            || has_runless_pending_inputs(&session.log.events())
+            || has_runless_pending_inputs(&session.log.event_snapshot())
         {
             return None;
         }
@@ -312,8 +312,8 @@ impl Engine {
         }
         let ended_at = session
             .log
-            .events()
-            .into_iter()
+            .event_snapshot()
+            .iter()
             .filter(|event| {
                 event.run_id.is_some()
                     && matches!(

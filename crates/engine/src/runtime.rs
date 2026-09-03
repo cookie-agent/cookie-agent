@@ -1714,8 +1714,8 @@ impl Engine {
     fn validate_referenced_manifests(&self) -> Result<(), EngineError> {
         let runtime = self.current_runtime();
         for session in self.inner.store.all_snapshots() {
-            for event in session.log.events() {
-                match event.payload {
+            for event in session.log.event_snapshot().iter() {
+                match &event.payload {
                     Event::SessionCreated { creation_agent, .. } => {
                         for binding in &creation_agent.fallback_chain {
                             let validation = validate_referenced_binding(
@@ -1738,7 +1738,7 @@ impl Engine {
                     Event::RunStarted {
                         selected_suffix, ..
                     } => {
-                        for binding in &selected_suffix {
+                        for binding in selected_suffix {
                             let validation = validate_referenced_binding(
                                 &runtime.manifests,
                                 &runtime.models,

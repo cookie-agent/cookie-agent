@@ -20,6 +20,7 @@ use crate::delegation_api::DelegateHandle;
 impl Engine {
     pub(super) fn reconcile_session(&self, session_id: SessionId) -> Result<(), EngineError> {
         let session = self.inner.store.get(session_id)?;
+        let events = session.log.event_snapshot();
         let interrupted_runs = session
             .runs
             .values()
@@ -28,15 +29,15 @@ impl Engine {
             .collect::<Vec<_>>();
         {
             let mut internal = HashMap::new();
-            for event in session.log.events() {
-                match event.payload {
+            for event in events.iter() {
+                match &event.payload {
                     Event::InternalAgentStarted {
                         invocation_id,
                         internal_run_id,
                         kind,
                         ..
                     } => {
-                        internal.insert((invocation_id, internal_run_id), (kind, event.run_id));
+                        internal.insert((*invocation_id, *internal_run_id), (*kind, event.run_id));
                     }
                     Event::InternalAgentCompleted {
                         invocation_id,
@@ -58,7 +59,7 @@ impl Engine {
                         internal_run_id,
                         ..
                     } => {
-                        internal.remove(&(invocation_id, internal_run_id));
+                        internal.remove(&(*invocation_id, *internal_run_id));
                     }
                     _ => {}
                 }
@@ -132,7 +133,7 @@ impl Engine {
                     )?;
                 }
             }
-            for record in approval_records(session.meta.session_id, &session.log.events())
+            for record in approval_records(session.meta.session_id, &events)
                 .into_values()
                 .filter(|record| {
                     matches!(
@@ -141,9 +142,8 @@ impl Engine {
                     )
                 })
             {
-                let approval_run =
-                    approval_run_id(&session.log.events(), record.request.approval_id())
-                        .ok_or(EngineError::ApprovalConflict)?;
+                let approval_run = approval_run_id(&events, record.request.approval_id())
+                    .ok_or(EngineError::ApprovalConflict)?;
                 self.append_recovery_direct(
                     session.meta.session_id,
                     Some(approval_run),
@@ -245,15 +245,15 @@ impl Engine {
         session_id: SessionId,
     ) -> Result<(), EngineError> {
         let session = self.inner.store.get(session_id)?;
-        let approval_records = approval_records(session_id, &session.log.events());
+        let events = session.log.event_snapshot();
+        let approval_records = approval_records(session_id, &events);
         for record in approval_records.values().filter(|record| {
             matches!(
                 record.status,
                 ApprovalStatus::Pending | ApprovalStatus::Escalated
             )
         }) {
-            let Some(run_id) = approval_run_id(&session.log.events(), record.request.approval_id())
-            else {
+            let Some(run_id) = approval_run_id(&events, record.request.approval_id()) else {
                 continue;
             };
             let decision = restart_approval_decision();
@@ -485,15 +485,15 @@ impl Engine {
 
     pub(super) fn rebuild_approvals(&self) {
         for session in self.inner.store.all_snapshots() {
-            for envelope in session.log.events() {
-                if let Event::TreeApprovalGrantCommitted { grant } = envelope.payload
+            for envelope in session.log.event_snapshot().iter() {
+                if let Event::TreeApprovalGrantCommitted { grant } = &envelope.payload
                     && !grant.resources.is_empty()
                     && grant.resources.iter().all(|resource| {
                         resource.binding_lifetime
                             == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
                     })
                 {
-                    self.inner.approvals.grant(grant);
+                    self.inner.approvals.grant(grant.clone());
                 }
             }
         }

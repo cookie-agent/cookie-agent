@@ -34,7 +34,7 @@ impl Engine {
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
         let (permission_mode, decision) = mode_decision;
         let approval_id = request.approval_id();
-        let events = self.inner.store.get(session)?.log.events();
+        let events = self.inner.store.get(session)?.log.event_snapshot();
         let Some(record) = approval_records(session, &events).remove(&approval_id) else {
             return Err(EngineError::ApprovalNotPending {
                 session_id: session,
@@ -198,7 +198,7 @@ impl Engine {
         params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let projection = self.inner.store.get(params.session_id)?;
-        let events = projection.log.events();
+        let events = projection.log.event_snapshot();
         if let Some((recorded_approval_id, recorded_decision, recorded_feedback)) =
             events.iter().find_map(|event| match &event.payload {
                 Event::ApprovalUserDecisionRecorded {
@@ -268,7 +268,12 @@ impl Engine {
             )?;
             let current = approval_records(
                 params.session_id,
-                &self.inner.store.get(params.session_id)?.log.events(),
+                &self
+                    .inner
+                    .store
+                    .get(params.session_id)?
+                    .log
+                    .event_snapshot(),
             )
             .remove(&params.approval_id);
             return Err(approval_response_failure(
@@ -422,7 +427,12 @@ impl Engine {
                     .map(|feedback| feedback.message.to_string()),
             });
         }
-        let events = self.inner.store.get(params.session_id)?.log.events();
+        let events = self
+            .inner
+            .store
+            .get(params.session_id)?
+            .log
+            .event_snapshot();
         let approval = approval_records(params.session_id, &events)
             .remove(&params.approval_id)
             .ok_or(EngineError::ApprovalConflict)?;
@@ -438,7 +448,7 @@ impl Engine {
         invalidation: PreparedApprovalInvalidation,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let projection = self.inner.store.get(params.session_id)?;
-        let events = projection.log.events();
+        let events = projection.log.event_snapshot();
         if events.iter().any(|event| {
             matches!(
                 &event.payload,
@@ -530,7 +540,12 @@ impl Engine {
         }
         let current = approval_records(
             params.session_id,
-            &self.inner.store.get(params.session_id)?.log.events(),
+            &self
+                .inner
+                .store
+                .get(params.session_id)?
+                .log
+                .event_snapshot(),
         )
         .remove(&params.approval_id);
         Err(approval_response_failure(
@@ -547,7 +562,7 @@ impl Engine {
         approval_id: ApprovalId,
         terminal: ApprovalTerminal,
     ) -> Result<bool, EngineError> {
-        let events = self.inner.store.get(session)?.log.events();
+        let events = self.inner.store.get(session)?.log.event_snapshot();
         let Some(record) = approval_records(session, &events).remove(&approval_id) else {
             return Ok(false);
         };

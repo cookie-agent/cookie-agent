@@ -448,7 +448,11 @@ impl App {
     /// aggregated descendant warnings), exactly as [`Self::render_conversation`]
     /// appends them. Selection extraction consumes the same chain so copied
     /// text matches what is on screen.
-    pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {
+    pub(super) fn notice_lines(
+        &self,
+        width: u16,
+        descendant_warnings: &[String],
+    ) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
         for notice in &self.transient_notices {
             // Multiline notices (e.g. /help) keep their structure: the
@@ -472,11 +476,7 @@ impl App {
         // descendants are appended here, so a warning never appears twice in
         // one view.
         if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
-            let descendant_warnings = self
-                .selected
-                .map(|selected| self.descendant_warnings(selected))
-                .unwrap_or_default();
-            for warning in &descendant_warnings {
+            for warning in descendant_warnings {
                 notice_lines.extend(role_block(
                     Role::Warning,
                     vec![Line::from(warning.clone())],
@@ -505,7 +505,15 @@ impl App {
         } else {
             empty_conversation_lines(session_present, width, &self.theme)
         };
-        let mut notices = self.notice_lines(width);
+        let descendant_warnings =
+            if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
+                self.selected
+                    .map(|selected| self.descendant_warnings(selected))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        let mut notices = self.notice_lines(width, &descendant_warnings);
         if !lines.is_empty() && !notices.is_empty() {
             notices.insert(0, Line::default());
         }
@@ -543,16 +551,21 @@ impl App {
         // The rightmost inner column is reserved for the scrollbar whenever
         // the content can overflow; content layout and block hit regions never
         // extend into it, so the track can be grabbed without hitting blocks.
+        let descendant_warnings =
+            if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
+                self.selected
+                    .map(|selected| self.descendant_warnings(selected))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
         let scrollable = self.selected.is_some_and(|session_id| {
             self.store
                 .sessions
                 .get(&session_id)
                 .is_some_and(|state| !state.transcript.is_empty() || state.run_snapshot.is_some())
         }) || !self.transient_notices.is_empty()
-            || (self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning
-                && self
-                    .selected
-                    .is_some_and(|selected| !self.descendant_warnings(selected).is_empty()));
+            || !descendant_warnings.is_empty();
         let width = area
             .width
             .saturating_sub(2)
@@ -596,7 +609,7 @@ impl App {
         } else {
             &empty_layout
         };
-        let mut notice_lines = self.notice_lines(width);
+        let mut notice_lines = self.notice_lines(width, &descendant_warnings);
         // Notices follow the same rhythm as transcript items: one blank row
         // between real content and the first notice block.
         if !layout.lines.is_empty() && !notice_lines.is_empty() {
@@ -7502,6 +7515,23 @@ mod tests {
         assert!(app.owned_sessions.contains(&outside));
         assert!(!app.read_only_sessions.contains(&outside));
         assert!(app.input_focused);
+    }
+
+    #[test]
+    fn ownership_classification_uses_rpc_code_instead_of_message_text() {
+        let owned = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+            code: SESSION_OWNED_BY_ANOTHER_PROCESS_CODE,
+            message: "unrelated wording".into(),
+            data: None,
+        });
+        let same_message = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+            code: -32000,
+            message: "session is owned by another cookie process".into(),
+            data: None,
+        });
+
+        assert!(session_owned_by_another_process(&owned));
+        assert!(!session_owned_by_another_process(&same_message));
     }
 
     #[tokio::test]

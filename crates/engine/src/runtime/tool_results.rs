@@ -45,7 +45,7 @@ impl Engine {
             .store
             .get(session)
             .map_err(|error| ToolError::execution(error.to_string()))?;
-        let events = projection.log.events();
+        let events = projection.log.event_snapshot();
         let result = events
             .iter()
             .rev()

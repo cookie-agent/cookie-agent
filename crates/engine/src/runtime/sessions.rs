@@ -19,20 +19,16 @@ use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 impl Engine {
     pub(super) fn rebuild_visible_tree_grants(&self) {
         let invalidated = self.inner.grant_journal.invalidated_ids();
-        let grants = self
-            .inner
-            .store
-            .all_snapshots()
-            .into_iter()
-            .flat_map(|session| session.log.events())
-            .filter_map(|event| match event.payload {
-                Event::TreeApprovalGrantCommitted { grant }
-                    if !invalidated.contains(&grant.grant_id) =>
+        let mut grants = Vec::new();
+        for session in self.inner.store.all_snapshots() {
+            for event in session.log.event_snapshot().iter() {
+                if let Event::TreeApprovalGrantCommitted { grant } = &event.payload
+                    && !invalidated.contains(&grant.grant_id)
                 {
-                    Some(grant)
+                    grants.push(grant.clone());
                 }
-                _ => None,
-            });
+            }
+        }
         self.inner.approvals.replace(grants);
     }
 
@@ -328,7 +324,7 @@ impl Engine {
             .store
             .get(session_id)?
             .log
-            .events()
+            .event_snapshot()
             .iter()
             .find_map(|event| match &event.payload {
                 cookie_agent_protocol::EventPayload::UserInputSubmitted { input }

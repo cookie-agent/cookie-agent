@@ -860,7 +860,7 @@ impl Engine {
                         .store
                         .get(session)?
                         .log
-                        .events()
+                        .event_snapshot()
                         .iter()
                         .any(|event| {
                             matches!(event.payload, Event::ToolCallLinked { tool_call_id: linked_call, child_session_id: linked_child }
@@ -1047,7 +1047,7 @@ impl Engine {
                     if !projection.runs.contains_key(&run) {
                         return Err(EngineError::MissingRun(run));
                     }
-                    let recalled = pending_inputs(&projection.log.events(), run)
+                    let recalled = pending_inputs(&projection.log.event_snapshot(), run)
                         .into_iter()
                         .find(|pending| pending.admission_seq == admission_seq);
                     if let Some(pending) = recalled {
@@ -1085,7 +1085,7 @@ impl Engine {
                     {
                         return Ok(RunRecallSteerResult { recalled: None });
                     }
-                    let recalled = pending_inputs(&projection.log.events(), run)
+                    let recalled = pending_inputs(&projection.log.event_snapshot(), run)
                         .pop()
                         .map(|pending| pending.input);
                     if let Some(input) = &recalled {
@@ -1123,7 +1123,7 @@ impl Engine {
                             continue_run: false,
                         });
                     }
-                    let eligible = pending_inputs(&projection.log.events(), run)
+                    let eligible = pending_inputs(&projection.log.event_snapshot(), run)
                         .into_iter()
                         .take_while(|pending| pending.admission_seq <= through_admission_seq)
                         .collect::<Vec<_>>();
@@ -1138,7 +1138,8 @@ impl Engine {
                         )?;
                     }
                     let promoted = already_promoted || !eligible.is_empty();
-                    let pending = pending_inputs(&self.inner.store.get(session)?.log.events(), run);
+                    let pending =
+                        pending_inputs(&self.inner.store.get(session)?.log.event_snapshot(), run);
                     if pending.is_empty() && !promoted && complete_if_empty {
                         self.append_direct(
                             session,
@@ -1267,7 +1268,7 @@ impl Engine {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .clear();
-                    let events = self.inner.store.get(session)?.log.events();
+                    let events = self.inner.store.get(session)?.log.event_snapshot();
                     let pending = approval_records(session, &events)
                         .into_values()
                         .filter(|record| {
@@ -1565,7 +1566,7 @@ impl Engine {
                     }
                 };
                 let pending = match self.inner.store.get(session) {
-                    Ok(projection) => pending_inputs(&projection.log.events(), run),
+                    Ok(projection) => pending_inputs(&projection.log.event_snapshot(), run),
                     Err(error) => {
                         let _ = reply.send(Err(error.into()));
                         return;

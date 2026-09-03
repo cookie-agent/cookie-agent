@@ -135,36 +135,6 @@ impl Engine {
         .await
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn ensure_parent_link_blocking(
-        &self,
-        parent_session_id: SessionId,
-        parent_run_id: RunId,
-        parent_tool_call_id: ToolCallId,
-        child_session_id: SessionId,
-    ) -> Result<(), EngineError> {
-        let ensure = || {
-            self.request_blocking(parent_session_id, |reply| {
-                SessionCommand::EnsureToolCallLinked {
-                    run: parent_run_id,
-                    tool_call_id: parent_tool_call_id,
-                    child_session_id,
-                    reply,
-                }
-            })
-        };
-        if tokio::runtime::Handle::try_current().is_ok() {
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(ensure)
-                    .join()
-                    .expect("ensure-link helper thread panicked")
-            })
-        } else {
-            ensure()
-        }
-    }
-
     pub(super) async fn terminal_parent_delegate(
         &self,
         parent_session_id: SessionId,
@@ -1633,29 +1603,32 @@ impl Engine {
                 (false, false, false)
             }
         };
-        let background_return = parent.log.events().iter().any(|event| {
-            matches!(
-                &event.payload,
+        let parent_events = parent.log.event_snapshot();
+        let child_session_value = serde_json::json!(child_session_id);
+        let mut background_return = false;
+        let mut already_logged = false;
+        for event in parent_events.iter() {
+            match &event.payload {
                 Event::ToolCallTerminated { termination }
                     if termination.tool_call_id == entry.reservation.parent_tool_call_id
                         && termination.result.as_ref().is_some_and(|result| {
-                            result.metadata.get("session_id")
-                                == Some(&serde_json::json!(child_session_id))
-                        })
-            )
-        });
+                            result.metadata.get("session_id") == Some(&child_session_value)
+                        }) =>
+                {
+                    background_return = true;
+                }
+                Event::DelegateFinishedV2 {
+                    invocation_id: logged_invocation,
+                    session_id,
+                    ..
+                } if *logged_invocation == invocation_id && *session_id == child_session_id => {
+                    already_logged = true;
+                }
+                _ => {}
+            }
+        }
         let background = registry_background || background_return;
-        let already_logged = background
-            && parent.log.events().iter().any(|event| {
-                matches!(
-                    event.payload,
-                    Event::DelegateFinishedV2 {
-                        invocation_id: logged_invocation,
-                        session_id,
-                        ..
-                    } if logged_invocation == invocation_id && session_id == child_session_id
-                )
-            });
+        let already_logged = background && already_logged;
         if owns_registry
             && already_logged
             && let Some(record) = self
@@ -1760,7 +1733,7 @@ impl Engine {
         &self,
         child_session_id: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.get(child_session_id)?.log.events();
+        let events = self.inner.store.get(child_session_id)?.log.event_snapshot();
         let boundary = events
             .iter()
             .rev()
@@ -1795,49 +1768,6 @@ impl Engine {
                 Event::UserInputRecalled { input },
             )
             .await?;
-        }
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn void_runless_pending_inputs_blocking(
-        &self,
-        child_session_id: SessionId,
-    ) -> Result<(), EngineError> {
-        let events = self.inner.store.get(child_session_id)?.log.events();
-        let boundary = events
-            .iter()
-            .rev()
-            .find(|event| {
-                matches!(
-                    event.payload,
-                    Event::RunCompleted { .. }
-                        | Event::RunFailed { .. }
-                        | Event::RunCancelled { .. }
-                        | Event::RunInterrupted { .. }
-                )
-            })
-            .map_or(0, |event| event.seq);
-        let mut pending = std::collections::VecDeque::new();
-        for event in events
-            .iter()
-            .filter(|event| event.seq > boundary && event.run_id.is_none())
-        {
-            match &event.payload {
-                Event::UserInputAdmitted { input } => pending.push_back(input.clone()),
-                Event::UserInputRecalled { .. } => {
-                    pending.pop_back();
-                }
-                _ => {}
-            }
-        }
-        for input in pending.into_iter().rev() {
-            self.append_blocking(
-                child_session_id,
-                None,
-                super::event_origin("engine:delegation"),
-                Event::UserInputRecalled { input },
-            )?;
         }
         Ok(())
     }
@@ -2408,28 +2338,32 @@ impl Engine {
                 continue;
             };
             let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
-            let background = parent.log.events().iter().any(|event| {
-                matches!(
-                    &event.payload,
+            let parent_events = parent.log.event_snapshot();
+            let child_session_value = serde_json::json!(child.meta.session_id);
+            let mut background = false;
+            let mut notification_sent = false;
+            for event in parent_events.iter() {
+                match &event.payload {
                     Event::ToolCallTerminated { termination }
                         if termination.tool_call_id == entry.reservation.parent_tool_call_id
                             && termination.result.as_ref().is_some_and(|result| {
-                                result.metadata.get("session_id")
-                                    == Some(&serde_json::json!(child.meta.session_id))
-                            })
-                )
-            });
-            let notification_sent = parent.log.events().iter().any(|event| {
-                matches!(
-                    event.payload,
+                                result.metadata.get("session_id") == Some(&child_session_value)
+                            }) =>
+                    {
+                        background = true;
+                    }
                     Event::DelegateFinishedV2 {
                         invocation_id,
                         session_id,
                         ..
-                    } if invocation_id == entry.reservation.invocation_id
-                        && session_id == child.meta.session_id
-                )
-            });
+                    } if *invocation_id == entry.reservation.invocation_id
+                        && *session_id == child.meta.session_id =>
+                    {
+                        notification_sent = true;
+                    }
+                    _ => {}
+                }
+            }
             let exact_status = entry
                 .terminal_status
                 .or_else(|| {
@@ -2501,36 +2435,39 @@ impl Engine {
                 } => root_session_id,
                 _ => parent.meta.session_id,
             };
-            let queued_event = parent.log.events().iter().any(|event| {
-                matches!(
-                    event.payload,
+            let parent_events = parent.log.event_snapshot();
+            let child_session_value = serde_json::json!(child.meta.session_id);
+            let mut queued_event = false;
+            let mut notification_sent = false;
+            let mut background_return = false;
+            for event in parent_events.iter() {
+                match &event.payload {
                     Event::DelegateQueued { session_id, .. }
                         if event.run_id == Some(entry.reservation.parent_run_id)
-                            && session_id == child.meta.session_id
-                )
-            });
-            let notification_sent = parent.log.events().iter().any(|event| {
-                matches!(
-                    event.payload,
+                            && *session_id == child.meta.session_id =>
+                    {
+                        queued_event = true;
+                    }
                     Event::DelegateFinishedV2 {
                         invocation_id,
                         session_id,
                         ..
-                    } if invocation_id == entry.reservation.invocation_id
-                        && session_id == child.meta.session_id
-                )
-            });
-            let background_return = parent.log.events().iter().any(|event| {
-                matches!(
-                    &event.payload,
+                    } if *invocation_id == entry.reservation.invocation_id
+                        && *session_id == child.meta.session_id =>
+                    {
+                        notification_sent = true;
+                    }
                     Event::ToolCallTerminated { termination }
                         if termination.tool_call_id == entry.reservation.parent_tool_call_id
                             && termination.result.as_ref().is_some_and(|result| {
-                                result.metadata.get("session_id")
-                                    == Some(&serde_json::json!(child.meta.session_id))
-                            })
-                )
-            });
+                                result.metadata.get("session_id") == Some(&child_session_value)
+                            }) =>
+                    {
+                        background_return = true;
+                    }
+                    _ => {}
+                }
+            }
             let background = queued_event || background_return;
             let exact_run_status = entry
                 .child_run_id

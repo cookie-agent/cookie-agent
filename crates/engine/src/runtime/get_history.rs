@@ -30,7 +30,7 @@ impl Engine {
         session: SessionId,
         view: EngineHistoryView,
     ) -> Result<Vec<oven_sdk::HistoryTurn>, EngineError> {
-        let events = self.inner.store.get(session)?.log.events();
+        let events = self.inner.store.get(session)?.log.event_snapshot();
         let run = events
             .iter()
             .rev()

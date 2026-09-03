@@ -204,19 +204,7 @@ impl PermissionPipeline {
                 }
             })
             .collect::<Vec<_>>();
-        let effect = if evaluations
-            .iter()
-            .any(|evaluation| evaluation.effect == PermissionEffect::Deny)
-        {
-            PermissionEffect::Deny
-        } else if evaluations
-            .iter()
-            .any(|evaluation| evaluation.effect == PermissionEffect::Ask)
-        {
-            PermissionEffect::Ask
-        } else {
-            PermissionEffect::Allow
-        };
+        let effect = aggregate_effect(&evaluations);
         PermissionDecision {
             effect,
             evaluations,
@@ -270,21 +258,7 @@ impl PermissionPipeline {
                     "turn-scoped skill grant allows an otherwise ask operation".into();
             }
         }
-        decision.effect = if decision
-            .evaluations
-            .iter()
-            .any(|evaluation| evaluation.effect == PermissionEffect::Deny)
-        {
-            PermissionEffect::Deny
-        } else if decision
-            .evaluations
-            .iter()
-            .any(|evaluation| evaluation.effect == PermissionEffect::Ask)
-        {
-            PermissionEffect::Ask
-        } else {
-            PermissionEffect::Allow
-        };
+        decision.effect = aggregate_effect(&decision.evaluations);
         decision
     }
 
@@ -389,6 +363,22 @@ impl PermissionPipeline {
                     .0 != PermissionEffect::Deny
             })
         })
+    }
+}
+
+fn aggregate_effect(evaluations: &[ApprovalEvaluation]) -> PermissionEffect {
+    if evaluations
+        .iter()
+        .any(|evaluation| evaluation.effect == PermissionEffect::Deny)
+    {
+        PermissionEffect::Deny
+    } else if evaluations
+        .iter()
+        .any(|evaluation| evaluation.effect == PermissionEffect::Ask)
+    {
+        PermissionEffect::Ask
+    } else {
+        PermissionEffect::Allow
     }
 }
 
@@ -892,15 +882,16 @@ pub(crate) fn governing_agent_for_skills(
 }
 
 fn governing_agent(session: &crate::session::SessionProjection) -> AgentSnapshot {
-    let latest_run = session
-        .log
-        .events()
-        .into_iter()
-        .rev()
-        .find_map(|event| match event.payload {
-            EventPayload::RunStarted { agent, .. } => Some(*agent),
-            _ => None,
-        });
+    let latest_run =
+        session
+            .log
+            .event_snapshot()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted { agent, .. } => Some(agent.as_ref().clone()),
+                _ => None,
+            });
     select_governing_agent(&session.creation_agent, latest_run.as_ref())
 }
 

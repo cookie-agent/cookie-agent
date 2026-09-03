@@ -1287,7 +1287,7 @@ impl Engine {
                     .store
                     .get(session)?
                     .log
-                    .events()
+                    .event_snapshot()
                     .iter()
                     .filter(|event| {
                         event.run_id == Some(run)

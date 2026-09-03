@@ -69,10 +69,6 @@ impl Engine {
         receiver.await.map_err(|_| EngineError::ActorStopped)?
     }
 
-    /// Privileged child creation used exclusively by a delegate tool provider.
-    /// The origin fields are derived from the parent projection, never supplied
-    /// by a caller.
-    #[allow(dead_code)] // wired by the crate-internal delegation capability once tools exposes it
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_child(
         &self,
@@ -334,14 +330,14 @@ impl Engine {
         }
         let projection = self.inner.store.get(child_session_id)?;
         let mut found = false;
-        for event in projection.log.events() {
+        for event in projection.log.event_snapshot().iter() {
             if let Event::DelegatedContextSeeded {
                 invocation_id: existing_invocation,
                 turns: existing_turns,
-            } = event.payload
-                && existing_invocation == invocation_id
+            } = &event.payload
+                && *existing_invocation == invocation_id
             {
-                if existing_turns != turns {
+                if existing_turns != &turns {
                     return Err(EngineError::MissingTool(
                         "delegated child has conflicting inherited context".into(),
                     ));
@@ -375,14 +371,14 @@ impl Engine {
         }
         let projection = self.inner.store.get(child_session_id)?;
         let mut found = false;
-        for event in projection.log.events() {
+        for event in projection.log.event_snapshot().iter() {
             if let Event::DelegatedContextSeeded {
                 invocation_id: existing_invocation,
                 turns: existing_turns,
-            } = event.payload
-                && existing_invocation == invocation_id
+            } = &event.payload
+                && *existing_invocation == invocation_id
             {
-                if existing_turns != turns {
+                if existing_turns != &turns {
                     return Err(EngineError::MissingTool(
                         "delegated child has conflicting inherited context".into(),
                     ));
@@ -412,14 +408,14 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(child_session_id)?;
         let mut has_matching_title = false;
-        for event in projection.log.events() {
-            if let Event::SessionTitleCommitted { change, .. } = event.payload {
+        for event in projection.log.event_snapshot().iter() {
+            if let Event::SessionTitleCommitted { change, .. } = &event.payload {
                 match change {
                     SessionTitleChange::DelegatedSet {
                         title: existing,
                         invocation_id: existing_invocation,
-                    } if existing_invocation == invocation_id => {
-                        if existing != title {
+                    } if *existing_invocation == invocation_id => {
+                        if existing != &title {
                             return Err(EngineError::MissingTool(
                                 "delegated child has a conflicting origin title".into(),
                             ));
@@ -463,14 +459,14 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(child_session_id)?;
         let mut has_matching_title = false;
-        for event in projection.log.events() {
-            if let Event::SessionTitleCommitted { change, .. } = event.payload {
+        for event in projection.log.event_snapshot().iter() {
+            if let Event::SessionTitleCommitted { change, .. } = &event.payload {
                 match change {
                     SessionTitleChange::DelegatedSet {
                         title: existing,
                         invocation_id: existing_invocation,
-                    } if existing_invocation == invocation_id => {
-                        if existing != title {
+                    } if *existing_invocation == invocation_id => {
+                        if existing != &title {
                             return Err(EngineError::MissingTool(
                                 "delegated child has a conflicting origin title".into(),
                             ));

@@ -109,15 +109,15 @@ impl DelegationEventStore {
         let mut parents = sessions.all_snapshots();
         parents.sort_by_key(|session| session.meta.session_id);
         for parent in parents {
-            for envelope in parent.log.events() {
-                if parent.log.delegation_event_tainted(&envelope) {
+            for envelope in parent.log.event_snapshot().iter() {
+                if parent.log.delegation_event_tainted(envelope) {
                     continue;
                 }
                 apply_event(
                     &mut state,
                     parent.meta.session_id,
                     envelope.run_id,
-                    envelope.payload,
+                    envelope.payload.clone(),
                 )?;
             }
         }

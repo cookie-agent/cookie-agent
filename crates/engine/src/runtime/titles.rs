@@ -69,7 +69,7 @@ impl Engine {
         {
             return Ok(());
         }
-        let events = self.inner.store.get(session)?.log.events();
+        let events = self.inner.store.get(session)?.log.event_snapshot();
         if !automatic_title_eligible(&events) {
             return Ok(());
         }
@@ -149,7 +149,7 @@ impl Engine {
         if matches!(projection.meta.origin, SessionOrigin::Delegated { .. }) {
             return Ok(());
         }
-        let events = projection.log.events();
+        let events = projection.log.event_snapshot();
         if !automatic_title_eligible(&events) {
             return Ok(());
         }

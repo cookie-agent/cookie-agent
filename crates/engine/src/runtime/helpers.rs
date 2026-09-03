@@ -21,13 +21,13 @@ impl Engine {
             .store
             .get(session_id)?
             .log
-            .events()
-            .into_iter()
-            .find_map(|event| match event.payload {
+            .event_snapshot()
+            .iter()
+            .find_map(|event| match &event.payload {
                 Event::ToolCallStarted { start }
                     if event.run_id == Some(run_id) && start.tool_call_id == tool_call_id =>
                 {
-                    Some(start.owner)
+                    Some(start.owner.clone())
                 }
                 _ => None,
             })
@@ -81,11 +81,12 @@ impl Engine {
             .store
             .get(session_id)?
             .log
-            .events()
-            .into_iter()
-            .find_map(|event| match event.payload {
+            .event_snapshot()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
                 Event::RunStarted { agent, .. } if event.run_id == Some(run_id) => {
-                    Some(agent.composed_prompt)
+                    Some(agent.composed_prompt.clone())
                 }
                 _ => None,
             })

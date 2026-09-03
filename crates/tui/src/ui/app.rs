@@ -107,6 +107,12 @@ pub(super) enum Modal {
     Usage,
 }
 
+pub(super) const SESSION_OWNED_BY_ANOTHER_PROCESS_CODE: i32 = -32022;
+
+pub(super) fn session_owned_by_another_process(error: &ClientError) -> bool {
+    matches!(error, ClientError::Rpc(error) if error.code == SESSION_OWNED_BY_ANOTHER_PROCESS_CODE)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum PaletteEntry<'a> {
     Command(&'static CommandSpec),
@@ -412,6 +418,15 @@ fn is_newline_key(key: KeyEvent) -> bool {
 }
 
 /// UI state separated from the client and durable protocol projection.
+#[derive(Default)]
+struct SessionSearchRowsCache {
+    query: String,
+    sessions_revision: u64,
+    sessions_len: usize,
+    local_day: Option<jiff::civil::Date>,
+    rows: Vec<SessionSearchRow>,
+}
+
 pub struct App {
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
@@ -424,6 +439,8 @@ pub struct App {
     >,
     pub store: StateStore,
     pub(super) sessions: Vec<SessionMeta>,
+    sessions_revision: u64,
+    session_search_rows_cache: SessionSearchRowsCache,
     pub(super) runtime: RuntimeState,
     pub(super) agents: Vec<AgentDescriptor>,
     /// Client-local preset used only when creating a new root session.
@@ -827,6 +844,8 @@ impl App {
             stdin_lanes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             store: StateStore::default(),
             sessions: Vec::new(),
+            sessions_revision: 0,
+            session_search_rows_cache: SessionSearchRowsCache::default(),
             runtime: RuntimeState::default(),
             agents: Vec::new(),
             selected_preset: None,
@@ -936,11 +955,7 @@ impl App {
             .await
         {
             Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
-            Err(error)
-                if error
-                    .to_string()
-                    .contains("owned by another cookie process") =>
-            {
+            Err(error) if session_owned_by_another_process(&error) => {
                 SessionOwnershipOutcome::Foreign
             }
             Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
@@ -984,11 +999,7 @@ impl App {
                 .await
             {
                 Ok(result) => SessionOwnershipOutcome::Owned(Box::new(result.session)),
-                Err(error)
-                    if error
-                        .to_string()
-                        .contains("owned by another cookie process") =>
-                {
+                Err(error) if session_owned_by_another_process(&error) => {
                     SessionOwnershipOutcome::Foreign
                 }
                 Err(error) => SessionOwnershipOutcome::Failed(error.to_string()),
@@ -1025,6 +1036,7 @@ impl App {
                 } else {
                     self.sessions.push(session);
                 }
+                self.note_sessions_changed();
                 self.pending_live_subscriptions.insert(session_id);
                 self.replay_ended_for_live_subscription.remove(&session_id);
                 if self.selected == Some(session_id) {
@@ -1140,6 +1152,7 @@ impl App {
                 let session_id = result.session.session_id;
                 self.note_title_sequence(&result.session);
                 self.sessions.push(result.session);
+                self.note_sessions_changed();
                 self.open_session(session_id).await;
                 self.new_session_draft = None;
                 self.status =
@@ -1263,6 +1276,7 @@ impl App {
                     .into_iter()
                     .map(|session| self.merge_session_meta(session))
                     .collect();
+                self.note_sessions_changed();
             }
             Err(error) => self.status = error.to_string(),
         }
@@ -2826,6 +2840,7 @@ impl App {
             return;
         }
         *known = seq;
+        let mut session_changed = false;
         if let Some(session) = self
             .sessions
             .iter_mut()
@@ -2833,6 +2848,7 @@ impl App {
         {
             session.title = title.clone();
             session.title_updated_seq = seq;
+            session_changed = true;
         }
         if let Some(tree) = &mut self.tree
             && let Some(node) = find_node_mut(tree, session_id)
@@ -2840,6 +2856,9 @@ impl App {
         {
             node.session.title = title;
             node.session.title_updated_seq = seq;
+        }
+        if session_changed {
+            self.note_sessions_changed();
         }
     }
 
@@ -3587,16 +3606,37 @@ impl App {
             .collect()
     }
 
-    pub(super) fn current_session_search_rows(&self) -> Vec<SessionSearchRow> {
-        session_search_rows(
-            &self.sessions,
-            self.session_search.query(),
-            jiff::Timestamp::now(),
-            &jiff::tz::TimeZone::system(),
-        )
+    fn note_sessions_changed(&mut self) {
+        self.sessions_revision = self.sessions_revision.wrapping_add(1);
     }
 
-    fn session_search_ids(&self) -> Vec<SessionId> {
+    fn refresh_session_search_rows_cache(&mut self) {
+        let now = jiff::Timestamp::now();
+        let time_zone = jiff::tz::TimeZone::system();
+        let local_day = now.to_zoned(time_zone.clone()).date();
+        let query = self.session_search.query();
+        if self.session_search_rows_cache.query == query
+            && self.session_search_rows_cache.sessions_revision == self.sessions_revision
+            && self.session_search_rows_cache.sessions_len == self.sessions.len()
+            && self.session_search_rows_cache.local_day == Some(local_day)
+        {
+            return;
+        }
+        self.session_search_rows_cache = SessionSearchRowsCache {
+            query: query.to_owned(),
+            sessions_revision: self.sessions_revision,
+            sessions_len: self.sessions.len(),
+            local_day: Some(local_day),
+            rows: session_search_rows(&self.sessions, query, now, &time_zone),
+        };
+    }
+
+    pub(super) fn current_session_search_rows(&mut self) -> &[SessionSearchRow] {
+        self.refresh_session_search_rows_cache();
+        &self.session_search_rows_cache.rows
+    }
+
+    fn session_search_ids(&mut self) -> Vec<SessionId> {
         self.current_session_search_rows()
             .iter()
             .filter_map(SessionSearchRow::session_id)
@@ -3611,7 +3651,7 @@ impl App {
             .collect()
     }
 
-    pub(super) fn picker_entry_count(&self) -> usize {
+    pub(super) fn picker_entry_count(&mut self) -> usize {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
@@ -7587,7 +7627,8 @@ impl App {
         );
         self.hit_map.picker = Some(picker);
         self.clamp_picker_selection();
-        let rows = self.current_session_search_rows();
+        self.refresh_session_search_rows_cache();
+        let rows = &self.session_search_rows_cache.rows;
         let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
         let title = format!("Sessions ({session_count}/{})", self.sessions.len());
         frame.render_widget(

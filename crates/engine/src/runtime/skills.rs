@@ -278,7 +278,7 @@ impl Engine {
     ) -> Result<SkillInvocation, EngineError> {
         let projection = self.inner.store.get(session)?;
         let name = &plan.name;
-        let duplicate = projection.log.events().iter().any(|event| {
+        let duplicate = projection.log.event_snapshot().iter().any(|event| {
             matches!(
                 &event.payload,
                 EventPayload::SkillLoaded { name: prior_name, rendered_body, .. }

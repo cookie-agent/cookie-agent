@@ -81,7 +81,7 @@ impl Engine {
         .await?;
 
         let repetitions = doom_loop_repetitions(
-            &self.inner.store.get(active.session)?.log.events(),
+            &self.inner.store.get(active.session)?.log.event_snapshot(),
             run,
             request.operation_fingerprint(),
         );
@@ -347,7 +347,7 @@ impl Engine {
         policy: &FrozenInternalAgentPolicy,
         tool: ApprovalToolInput<'_>,
     ) -> ApprovalInternalDecisionKind {
-        let events = session.log.events();
+        let events = session.log.event_snapshot();
         let prompt = approval_stateless_input(tool, latest_user_message(&events, run));
         let history =
             approval_stateless_history(policy.agent.composed_prompt.clone(), prompt.clone());

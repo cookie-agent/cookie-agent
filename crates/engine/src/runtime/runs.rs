@@ -331,7 +331,7 @@ impl Engine {
             .store
             .get(session)?
             .log
-            .events()
+            .event_snapshot()
             .iter()
             .any(|event| {
                 event.run_id == Some(run_id) && matches!(event.payload, Event::RunCancelled { .. })

@@ -1012,15 +1012,18 @@ impl SessionStore {
             let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
                 continue;
             };
-            if self
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .resident
-                .contains_key(&id)
-            {
+            let known = {
+                let residency = self
+                    .residency
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                residency.resident.contains_key(&id) || residency.evicted.contains_key(&id)
+            };
+            if known {
                 continue;
             }
+            // Invalid entries stay uncached so later discovery retries them and repeats the
+            // diagnostic after callers have had a chance to repair the files.
             match read_cache(
                 &entry.path().join("meta.json"),
                 &entry.path().join("events.jsonl"),
@@ -1120,15 +1123,47 @@ impl SessionStore {
     }
 
     pub fn tree(&self, id: SessionId) -> Result<SessionTree, SessionError> {
-        let session = self.get(id)?.metadata();
-        Ok(SessionTree {
-            session,
-            children: self
-                .children(id)
-                .into_iter()
-                .map(|child| self.tree(child.session_id))
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+        let root = self.get(id)?;
+        let mut sessions = self.all();
+        if !sessions.iter().any(|session| session.meta.session_id == id) {
+            sessions.push(root);
+        }
+        let mut metadata = HashMap::with_capacity(sessions.len());
+        let mut children = HashMap::<SessionId, Vec<SessionId>>::new();
+        for session in sessions {
+            let meta = session.metadata();
+            if let SessionOrigin::Delegated {
+                parent_session_id, ..
+            } = meta.origin
+            {
+                children
+                    .entry(parent_session_id)
+                    .or_default()
+                    .push(meta.session_id);
+            }
+            metadata.insert(meta.session_id, meta);
+        }
+
+        fn build_tree(
+            id: SessionId,
+            metadata: &HashMap<SessionId, SessionMeta>,
+            children: &HashMap<SessionId, Vec<SessionId>>,
+        ) -> Result<SessionTree, SessionError> {
+            Ok(SessionTree {
+                session: metadata
+                    .get(&id)
+                    .cloned()
+                    .ok_or(SessionError::Missing(id))?,
+                children: children
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .map(|child| build_tree(*child, metadata, children))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        }
+
+        build_tree(id, &metadata, &children)
     }
 
     pub(crate) fn release_ownership(&self) {
@@ -1166,12 +1201,8 @@ impl Drop for SessionStore {
 }
 
 pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
-    let events = log.events();
-    let physical_tip = log
-        .all_events()
-        .last()
-        .cloned()
-        .expect("creation checked by EventLog");
+    let events = log.event_snapshot();
+    let physical_tip = log.last_event().expect("creation checked by EventLog");
     let (
         origin,
         cwd_identity,
@@ -1260,7 +1291,7 @@ pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, Sessio
             _ => None,
         })
         .collect::<HashSet<_>>();
-    for envelope in &events {
+    for envelope in events.iter() {
         if let EventPayload::SessionPermissionOverlaySet { overlay } = &envelope.payload {
             permission_overlay = overlay.clone();
         }
@@ -1502,7 +1533,7 @@ fn turns_tool_name(
     events: &[cookie_agent_protocol::StoredEvent],
     owner: &cookie_agent_protocol::AssistantToolCallRef,
 ) -> Option<String> {
-    events.iter().find_map(|event| match &event.payload {
+    events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ModelTurnCommitted {
             model_turn_seq,
             turn,
@@ -2318,6 +2349,37 @@ mod tests {
             assert_eq!(read.session_id, session_id);
         }
         writer.join().expect("metadata writer");
+    }
+
+    #[test]
+    fn discovery_does_not_reread_known_evicted_metadata() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let session_id = persist_test_session(&owner);
+        drop(owner);
+
+        let observer = SessionStore::open(&data, &cwd).expect("observer store");
+        let cached = observer.summary(session_id).expect("cached summary");
+        assert!(!observer.is_resident(session_id));
+        let mut replacement = cached.meta.clone();
+        replacement.title = Some(
+            cookie_agent_protocol::SessionTitle::new("changed on disk").expect("replacement title"),
+        );
+        super::write_cache(
+            &observer.session_dir(session_id).join("meta.json"),
+            &replacement,
+        )
+        .expect("replace metadata cache");
+
+        let rediscovered = observer
+            .all_summaries()
+            .into_iter()
+            .find(|summary| summary.meta.session_id == session_id)
+            .expect("rediscovered summary");
+        assert_eq!(rediscovered.meta.title, cached.meta.title);
     }
 
     fn append_pending_test_delta(
