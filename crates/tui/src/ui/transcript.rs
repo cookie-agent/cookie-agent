@@ -1,6 +1,7 @@
 //! Transcript layout, collapse state, wrapping, scrolling, and hit testing.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     time::Duration,
 };
@@ -239,6 +240,7 @@ pub(super) struct LayoutCacheKey {
     pub(super) session_generation: u64,
     pub(super) width: u16,
     pub(super) theme: ThemeKey,
+    pub(super) highlighter: usize,
     pub(super) minimum_event_level: crate::state::EventLevel,
 }
 
@@ -247,11 +249,32 @@ pub(super) struct LayoutCache {
     pub(super) key: Option<LayoutCacheKey>,
     pub(super) layout: TranscriptLayout,
     items: Vec<CachedItemLayout>,
+    item_offsets: Vec<ItemAssemblyOffset>,
     assistant_parts: HashMap<u64, CachedAssistantPartLayout>,
     system_prompt: Option<CachedSystemPromptLayout>,
     #[cfg(test)]
     pub(super) item_layout_passes: u64,
+    #[cfg(test)]
+    pub(super) item_assembly_passes: u64,
     pub(super) assistant_part_layout_passes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ItemAssemblyOffset {
+    /// Boundary before this item's optional separator and rendered lines.
+    lines: usize,
+    regions: usize,
+    user_regions: usize,
+}
+
+impl ItemAssemblyOffset {
+    fn at_end(layout: &TranscriptLayout) -> Self {
+        Self {
+            lines: layout.lines.len(),
+            regions: layout.regions.len(),
+            user_regions: layout.user_regions.len(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -262,10 +285,8 @@ struct SystemPromptLayoutKey {
     expanded: bool,
 }
 
-#[derive(Clone)]
 struct CachedSystemPromptLayout {
     key: SystemPromptLayoutKey,
-    layout: ItemLayout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -347,66 +368,91 @@ pub(super) fn ensure_cached_transcript_layout(
         session_generation: state.generation,
         width,
         theme: theme.key(),
+        highlighter: highlighter as *const dyn Highlighter as *const () as usize,
         minimum_event_level,
     };
-    if cache.key != Some(key) {
+    let full_rebuild = cache.key != Some(key);
+    if full_rebuild {
         cache.key = Some(key);
+        cache.layout = TranscriptLayout::default();
         cache.items.clear();
+        cache.item_offsets.clear();
         cache.assistant_parts.clear();
         cache.system_prompt = None;
     }
-    let mut all_cached = cache.items.len() >= state.transcript.len();
-    let mut assembled = TranscriptLayout::default();
-    if let Some(snapshot) = state.run_snapshot.as_deref() {
-        let prompt_key = SystemPromptLayoutKey {
+
+    let prompt_key = state
+        .run_snapshot
+        .as_deref()
+        .map(|snapshot| SystemPromptLayoutKey {
             fingerprint: snapshot.prompt_fingerprint.clone(),
             snapshot_agent: snapshot.agent.clone(),
             draft_agent: draft_agent.cloned(),
             expanded: expanded.is_some_and(|blocks| blocks.contains(&BlockId::SystemPrompt)),
-        };
-        let layout = if cache
-            .system_prompt
-            .as_ref()
-            .is_some_and(|cached| cached.key == prompt_key)
+        });
+    let system_prompt_changed =
+        cache.system_prompt.as_ref().map(|cached| &cached.key) != prompt_key.as_ref();
+    if system_prompt_changed {
+        cache.layout = TranscriptLayout::default();
+        cache.item_offsets.clear();
+        cache.system_prompt = if let (Some(snapshot), Some(prompt_key)) =
+            (state.run_snapshot.as_deref(), prompt_key)
         {
-            cache
-                .system_prompt
-                .as_ref()
-                .expect("checked above")
-                .layout
-                .clone()
-        } else {
-            all_cached = false;
             let layout = system_prompt_layout(snapshot, draft_agent, expanded, width, theme);
-            cache.system_prompt = Some(CachedSystemPromptLayout {
-                key: prompt_key,
-                layout: layout.clone(),
-            });
-            layout
+            append_item_layout(&mut cache.layout, layout);
+            Some(CachedSystemPromptLayout { key: prompt_key })
+        } else {
+            None
         };
-        append_item_layout(&mut assembled, layout);
-    } else {
-        cache.system_prompt = None;
     }
-    for (index, item) in state.transcript.iter().enumerate() {
-        let item_key = ItemLayoutKey {
-            id: item.id(),
-            version: item.version(),
-            interaction: item_interaction(item, expanded),
-            clock: if item_is_live(state, item) {
-                clock_bucket
-            } else {
-                0
-            },
-        };
-        let layout = if cache
+
+    let first_dirty = if full_rebuild || system_prompt_changed {
+        Some(0)
+    } else {
+        state
+            .transcript
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| {
+                let item_key = item_layout_key(state, item, expanded, clock_bucket);
+                (!cache
+                    .items
+                    .get(index)
+                    .is_some_and(|cached| cached.key == item_key))
+                .then_some(index)
+            })
+            .or_else(|| {
+                (cache.items.len() != state.transcript.len()).then_some(state.transcript.len())
+            })
+    };
+    let Some(first_dirty) = first_dirty else {
+        return true;
+    };
+
+    if !full_rebuild && !system_prompt_changed {
+        let offset = cache
+            .item_offsets
+            .get(first_dirty)
+            .copied()
+            .unwrap_or_else(|| ItemAssemblyOffset::at_end(&cache.layout));
+        cache.layout.lines.truncate(offset.lines);
+        cache.layout.regions.truncate(offset.regions);
+        cache.layout.user_regions.truncate(offset.user_regions);
+        cache.item_offsets.truncate(first_dirty);
+    }
+
+    for (index, item) in state.transcript.iter().enumerate().skip(first_dirty) {
+        let item_key = item_layout_key(state, item, expanded, clock_bucket);
+        cache
+            .item_offsets
+            .push(ItemAssemblyOffset::at_end(&cache.layout));
+        if cache
             .items
             .get(index)
             .is_some_and(|cached| cached.key == item_key)
         {
-            cache.items[index].layout.clone()
+            append_item_layout(&mut cache.layout, cache.items[index].layout.clone());
         } else {
-            all_cached = false;
             let layout = transcript_item_layout(
                 state,
                 item,
@@ -434,13 +480,34 @@ pub(super) fn ensure_cached_transcript_layout(
             {
                 cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
             }
-            layout
-        };
-        append_item_layout(&mut assembled, layout);
+            append_item_layout(&mut cache.layout, layout);
+        }
+        #[cfg(test)]
+        {
+            cache.item_assembly_passes = cache.item_assembly_passes.wrapping_add(1);
+        }
     }
     cache.items.truncate(state.transcript.len());
-    cache.layout = assembled;
-    all_cached
+    cache.item_offsets.truncate(state.transcript.len());
+    false
+}
+
+fn item_layout_key(
+    state: &SessionState,
+    item: &TranscriptItem,
+    expanded: Option<&HashSet<BlockId>>,
+    clock_bucket: u8,
+) -> ItemLayoutKey {
+    ItemLayoutKey {
+        id: item.id(),
+        version: item.version(),
+        interaction: item_interaction(item, expanded),
+        clock: if item_is_live(state, item) {
+            clock_bucket
+        } else {
+            0
+        },
+    }
 }
 
 impl App {
@@ -492,7 +559,7 @@ impl App {
     /// notice block — for selection extraction. The cached layout is exactly
     /// what the last frame rendered at this width, so logical-line
     /// coordinates from the mouse map one-to-one.
-    pub(super) fn conversation_chain(&self, width: u16) -> Vec<Line<'static>> {
+    pub(super) fn conversation_chain(&self, width: u16) -> Cow<'_, [Line<'static>]> {
         let session_present = self
             .selected
             .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
@@ -500,11 +567,6 @@ impl App {
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
             .is_none_or(|state| state.transcript.is_empty() && state.run_snapshot.is_none());
-        let mut lines = if session_present && !transcript_empty {
-            self.layout_cache.layout.lines.clone()
-        } else {
-            empty_conversation_lines(session_present, width, &self.theme)
-        };
         let descendant_warnings =
             if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
                 self.selected
@@ -514,11 +576,19 @@ impl App {
                 Vec::new()
             };
         let mut notices = self.notice_lines(width, &descendant_warnings);
+        if session_present && !transcript_empty && notices.is_empty() {
+            return Cow::Borrowed(&self.layout_cache.layout.lines);
+        }
+        let mut lines = if session_present && !transcript_empty {
+            self.layout_cache.layout.lines.clone()
+        } else {
+            empty_conversation_lines(session_present, width, &self.theme)
+        };
         if !lines.is_empty() && !notices.is_empty() {
             notices.insert(0, Line::default());
         }
         lines.extend(notices);
-        lines
+        Cow::Owned(lines)
     }
 
     /// The currently selected text, mapped from content coordinates back to
@@ -13073,6 +13143,8 @@ mod tests {
         ]);
         let mut cache = LayoutCache::default();
         let session = SessionId::new_v7();
+        let theme = Theme::default();
+        let highlighter = crate::markdown::SyntectHighlighter::default();
         ensure_cached_transcript_layout(
             &mut cache,
             session,
@@ -13080,14 +13152,17 @@ mod tests {
             None,
             None,
             60,
-            &Theme::default(),
-            &crate::markdown::SyntectHighlighter::default(),
+            &theme,
+            &highlighter,
             crate::state::EventLevel::Debug,
             0,
         );
         let passes = cache.assistant_part_layout_passes;
         assert_eq!(passes, 2);
         let item_passes = cache.item_layout_passes;
+        let assembly_passes = cache.item_assembly_passes;
+        let line_count = cache.layout.lines.len();
+        let lines_ptr = cache.layout.lines.as_ptr();
         // A cache hit for the identical projection recomputes nothing.
         ensure_cached_transcript_layout(
             &mut cache,
@@ -13096,13 +13171,16 @@ mod tests {
             None,
             None,
             60,
-            &Theme::default(),
-            &crate::markdown::SyntectHighlighter::default(),
+            &theme,
+            &highlighter,
             crate::state::EventLevel::Debug,
             0,
         );
         assert_eq!(cache.assistant_part_layout_passes, passes);
         assert_eq!(cache.item_layout_passes, item_passes);
+        assert_eq!(cache.item_assembly_passes, assembly_passes);
+        assert_eq!(cache.layout.lines.len(), line_count);
+        assert_eq!(cache.layout.lines.as_ptr(), lines_ptr);
         // A version bump on one child (and its owning item, exactly as the
         // reducer maintains) recomputes only that child.
         let mut changed = state;
@@ -13124,12 +13202,67 @@ mod tests {
             None,
             None,
             60,
-            &Theme::default(),
-            &crate::markdown::SyntectHighlighter::default(),
+            &theme,
+            &highlighter,
             crate::state::EventLevel::Debug,
             0,
         );
         assert_eq!(cache.assistant_part_layout_passes, passes + 1);
+    }
+
+    #[test]
+    fn streaming_delta_reassembles_only_the_tail_item() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            user_input(session, 1, run, "stable user message"),
+            attempt_started(session, 2, run, attempt, None),
+            text_delta(session, 3, run, attempt, "streaming"),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let mut cache = LayoutCache::default();
+        let theme = Theme::default();
+        let highlighter = crate::markdown::SyntectHighlighter::default();
+        ensure_cached_transcript_layout(
+            &mut cache,
+            session,
+            &store.sessions[&session],
+            None,
+            None,
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+        );
+        assert_eq!(cache.item_offsets.len(), 2);
+        let tail_offset = cache.item_offsets[1];
+        let clean_prefix = cache.layout.lines[..tail_offset.lines].to_vec();
+        let item_passes = cache.item_layout_passes;
+        let assembly_passes = cache.item_assembly_passes;
+
+        assert!(store.apply_event(text_delta(session, 4, run, attempt, " tail")));
+        ensure_cached_transcript_layout(
+            &mut cache,
+            session,
+            &store.sessions[&session],
+            None,
+            None,
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+        );
+
+        assert_eq!(cache.item_layout_passes, item_passes + 1);
+        assert_eq!(cache.item_assembly_passes, assembly_passes + 1);
+        assert_eq!(cache.item_offsets[1], tail_offset);
+        assert_eq!(cache.layout.lines[..tail_offset.lines], clean_prefix);
+        assert!(snapshot_lines(&cache.layout.lines).contains("streaming tail"));
     }
 
     // ------------------------------------------------------------------
