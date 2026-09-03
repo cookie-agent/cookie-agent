@@ -11,6 +11,20 @@ use uuid::Uuid;
 use super::{Engine, EngineError, Event};
 
 impl Engine {
+    pub(super) fn model_header_context(
+        &self,
+        session_id: SessionId,
+    ) -> Result<oven_sdk::HeaderContext, EngineError> {
+        let session = self.inner.store.get(session_id)?;
+        let context = oven_sdk::HeaderContext::new(session_id.to_string());
+        Ok(match session.meta.origin {
+            SessionOrigin::Root => context,
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => context.with_parent_session_id(parent_session_id.to_string()),
+        })
+    }
+
     pub(super) fn tool_call_owner(
         &self,
         session_id: SessionId,

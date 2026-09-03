@@ -156,7 +156,8 @@ impl Engine {
                 input.history.clone(),
                 input.tools.clone(),
                 max_output_tokens,
-            );
+            )
+            .with_header_context(self.model_header_context(session)?);
             let cache_strategy = policy.cache_strategy(binding, session);
             let request =
                 model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());

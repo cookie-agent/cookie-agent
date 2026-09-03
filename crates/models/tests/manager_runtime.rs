@@ -12,7 +12,7 @@ use cookie_agent_identity::{
     ProviderRecipeId, ProviderSetupRecipeId, RecipeCompilerVersion, SetupFieldId,
 };
 use cookie_agent_models::{
-    BoundedSetupString, ProviderDefinition, SafeSetupValue,
+    BoundedSetupString, HeaderName, ProviderDefinition, SafeSetupValue, SafeStaticHeaderValue,
     adapters::OvenAdapterFamily,
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelCost,
@@ -2288,6 +2288,17 @@ variants = { precise = { operation = "add", defaults = { temperature = 1.25, top
     )
     .unwrap();
     let manifest = store.write(payload).unwrap();
+    let mut old_shape = serde_json::to_value(&*manifest).unwrap();
+    old_shape["payload"]["blueprints"][0]["variants"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("static_headers");
+    let old_shape: ModelSnapshotManifestV1 = serde_json::from_value(old_shape).unwrap();
+    assert!(
+        old_shape.payload.blueprints[0].variants[0]
+            .static_headers
+            .is_empty()
+    );
     let index = store.scan().unwrap();
     let blueprint = &manifest.payload.blueprints[0];
     assert_eq!(blueprint.variants.len(), 1);
@@ -2388,4 +2399,165 @@ variants = { precise = { operation = "add", defaults = { temperature = 1.25, top
         store.scan(),
         Err(cookie_agent_models::manifests::ManifestError::InvalidModelSnapshotManifest)
     ));
+}
+
+fn header_map(values: &[(&str, &str)]) -> BTreeMap<HeaderName, SafeStaticHeaderValue> {
+    values
+        .iter()
+        .map(|(name, value)| {
+            (
+                HeaderName::new(*name).unwrap(),
+                SafeStaticHeaderValue::new(*value).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn variant_header_overrides_and_deletions_rehydrate_and_mismatches_fail() {
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("custom.headers").unwrap();
+    let definition = toml::from_str::<ProviderDefinition>(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+headers = { x-shared = "base", x-delete = "inherited" }
+
+[models.test]
+display_name = "Header Model"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+variants = { override = { operation = "add", headers = { x-shared = "variant" } }, deleted = { operation = "add", headers = { x-delete = "" } } }
+"#,
+    )
+    .unwrap();
+    let manager = ModelManager::new(
+        BTreeMap::from([(provider_id, definition)]),
+        empty_catalog(),
+        store(&temporary),
+    )
+    .unwrap();
+    let runtime = manager.current();
+    let manifest_store =
+        ModelSnapshotManifestStore::open_directory(temporary.path().join("header-model-snapshots"))
+            .unwrap();
+    let manifest = manifest_store
+        .write(runtime.manifest_payload().unwrap())
+        .unwrap();
+    let index = manifest_store.scan().unwrap();
+    let blueprint = &manifest.payload.blueprints[0];
+
+    let mut bindings = BTreeMap::new();
+    for variant in &blueprint.variants {
+        let selection = cookie_agent_identity::ModelSelection {
+            model: blueprint.selection.model.clone(),
+            variant: Some(variant.id.clone()),
+        };
+        let binding = frozen_binding(manifest.revision.clone(), blueprint, selection).unwrap();
+        let rehydrated = index
+            .rehydrate(
+                &binding,
+                runtime.authored(),
+                runtime.store(),
+                safe_definition_fingerprint,
+            )
+            .unwrap();
+        runtime
+            .resolve_frozen(&binding, &rehydrated.blueprint)
+            .unwrap();
+        bindings.insert(variant.id.as_str().to_owned(), binding);
+    }
+
+    assert_eq!(
+        bindings["override"].static_headers
+            [&cookie_agent_protocol::HeaderName::new("x-shared").unwrap()]
+            .as_str(),
+        "variant"
+    );
+    assert!(
+        !bindings["deleted"]
+            .static_headers
+            .contains_key(&cookie_agent_protocol::HeaderName::new("x-delete").unwrap())
+    );
+
+    let mut mismatched = bindings["override"].clone();
+    mismatched.static_headers.insert(
+        cookie_agent_protocol::HeaderName::new("x-shared").unwrap(),
+        cookie_agent_protocol::SafeStaticHeaderValue::new("forged").unwrap(),
+    );
+    assert_eq!(
+        index
+            .rehydrate(
+                &mismatched,
+                runtime.authored(),
+                runtime.store(),
+                safe_definition_fingerprint,
+            )
+            .unwrap_err(),
+        RehydrationError::SnapshotRehydrationMismatch
+    );
+}
+
+#[test]
+fn managed_shipped_headers_survive_snapshot_rehydration() {
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("openai").unwrap();
+    let definition =
+        toml::from_str::<ProviderDefinition>("source = \"models_dev\"\napi_key = \"test-key\"\n")
+            .unwrap();
+    let shipped = header_map(&[
+        (
+            "user-agent",
+            concat!("cookie-agent/", env!("CARGO_PKG_VERSION")),
+        ),
+        ("x-session-id", "${session_id}"),
+        ("x-session-affinity", "${session_id}"),
+        ("x-session-parent-id", "${parent_session_id}"),
+    ]);
+    let manager = ModelManager::new_with_headers(
+        BTreeMap::from([(provider_id, definition)]),
+        shipped.clone(),
+        catalog(),
+        store(&temporary),
+    )
+    .unwrap();
+    let runtime = manager.current();
+    let manifest_store = ModelSnapshotManifestStore::open_directory(
+        temporary.path().join("managed-header-snapshots"),
+    )
+    .unwrap();
+    let manifest = manifest_store
+        .write(runtime.manifest_payload().unwrap())
+        .unwrap();
+    let blueprint = &manifest.payload.blueprints[0];
+    assert_eq!(blueprint.static_headers.len(), shipped.len());
+    for (name, value) in &shipped {
+        assert_eq!(
+            blueprint
+                .static_headers
+                .iter()
+                .find(|(candidate, _)| candidate.as_str() == name.as_str())
+                .map(|(_, value)| value.as_str()),
+            Some(value.as_str())
+        );
+    }
+    let binding = frozen_binding(
+        manifest.revision.clone(),
+        blueprint,
+        blueprint.selection.clone(),
+    )
+    .unwrap();
+    let rehydrated = manifest_store
+        .scan()
+        .unwrap()
+        .rehydrate(
+            &binding,
+            runtime.authored(),
+            runtime.store(),
+            safe_definition_fingerprint,
+        )
+        .unwrap();
+    runtime
+        .resolve_frozen(&binding, &rehydrated.blueprint)
+        .unwrap();
 }

@@ -29,6 +29,7 @@ use crate::{
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_AGENT_BYTES: u64 = 256 * 1024;
+const BUILT_IN_CONFIG: &str = include_str!("defaults.toml");
 
 #[derive(Clone, Debug)]
 pub struct LoadedConfiguration {
@@ -109,6 +110,7 @@ pub fn load_from_roots(
         session_title: SessionTitleConfig::default(),
         delegation: DelegationConfig::default(),
         pricing: Default::default(),
+        headers: BTreeMap::new(),
         providers: BTreeMap::new(),
     };
     let mut agents = BTreeMap::new();
@@ -117,6 +119,19 @@ pub fn load_from_roots(
     let mut user_mcp_servers = BTreeMap::new();
     let mut workspace_mcp_servers = BTreeMap::new();
     let mut plugins = IndexMap::new();
+    let built_in_text =
+        BUILT_IN_CONFIG.replace("${cookie_agent_version}", env!("CARGO_PKG_VERSION"));
+    let built_in_path = Path::new("<built-in>/config.toml");
+    let mut built_in_value = built_in_text.parse::<toml::Value>().map_err(|error| {
+        ConfigError::Toml(format!(
+            "{}: {}",
+            built_in_path.display(),
+            safe_toml_error(&built_in_text, &error)
+        ))
+    })?;
+    interpolate_provider_values(&mut built_in_value, &mut Vec::new())?;
+    let built_in_layer = decode_runtime_layer(&mut built_in_value, &built_in_text, built_in_path)?;
+    apply_settings(&mut runtime, &built_in_layer);
     for root in [user.as_ref(), workspace.as_ref()].into_iter().flatten() {
         if let Some((mut layer, source_text)) = root.load_runtime()? {
             apply_settings(&mut runtime, &layer);
@@ -124,9 +139,7 @@ pub fn load_from_roots(
                 let source = match root.source {
                     AgentDocumentSource::User => McpServerSource::UserFile,
                     AgentDocumentSource::Workspace => McpServerSource::WorkspaceFile,
-                    AgentDocumentSource::BuiltIn => {
-                        unreachable!("configuration roots are authored")
-                    }
+                    AgentDocumentSource::BuiltIn => McpServerSource::Runtime,
                 };
                 for (name, config) in mcp.servers {
                     match source {
@@ -156,10 +169,6 @@ pub fn load_from_roots(
                 ));
             }
             for (id, mut value) in std::mem::take(&mut layer.providers) {
-                interpolate_provider_values(
-                    value.value_mut(),
-                    &mut vec!["providers".to_owned(), id.as_str().to_owned()],
-                )?;
                 let json = SensitiveJsonValue::from_toml(value.take());
                 let provider = ProviderDefinition::deserialize(json.value()).map_err(|error| {
                     config_decode_error(
@@ -264,6 +273,7 @@ impl LayerRoot {
                 path.display()
             ))
         })?;
+        interpolate_provider_values(value.value_mut(), &mut Vec::new())?;
         let layer = decode_runtime_layer(value.value_mut(), text, &path)?;
         Ok(Some((layer, Arc::from(text))))
     }
@@ -361,6 +371,7 @@ fn decode_runtime_layer(
         "session_title",
         "delegation",
         "pricing",
+        "headers",
         "mcp",
         "plugins",
         "providers",

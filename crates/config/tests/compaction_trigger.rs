@@ -546,18 +546,89 @@ fn invalid_shadowed_provider_is_still_a_hard_error() {
 }
 
 #[test]
-fn interpolation_is_limited_and_static_headers_never_interpolate() {
+fn header_interpolation_is_allowed_and_templates_remain_unresolved() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("headers");
     let text = custom("https://example.test/v1").replace(
         "auth = { method = \"no-auth-v1\", values = {} }",
-        "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { x-safe = \"${env:SECRET}\" }",
+        "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { x-safe = \"${env:COOKIE_AGENT_HEADER_TEST:-fallback}-${session_id}\" }",
     );
     write_config(&root, &text);
-    assert!(matches!(
-        load_from_roots(None, Some(&root)),
-        Err(ConfigError::Interpolation(_))
-    ));
+    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    let provider = loaded.runtime.providers.values().next().unwrap();
+    let cookie_agent_models::ProviderDefinition::Custom(provider) = provider else {
+        panic!("custom provider")
+    };
+    assert_eq!(
+        provider.headers.values().next().unwrap().as_str(),
+        "${env:COOKIE_AGENT_HEADER_TEST:-fallback}-${session_id}"
+    );
+}
+
+#[test]
+fn shipped_headers_are_present_and_authored_empty_values_delete_them() {
+    let loaded = load_from_roots(None, None).unwrap();
+    assert_eq!(
+        loaded.runtime.headers[&cookie_agent_models::HeaderName::new("user-agent").unwrap()]
+            .as_str(),
+        concat!("cookie-agent/", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(
+        loaded.runtime.headers[&cookie_agent_models::HeaderName::new("x-session-id").unwrap()]
+            .as_str(),
+        "${session_id}"
+    );
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("delete-default");
+    write_config(&root, "[headers]\nX-Session-ID = \"\"\n");
+    let loaded = load_from_roots(None, Some(&root)).unwrap();
+    assert!(
+        !loaded
+            .runtime
+            .headers
+            .contains_key(&cookie_agent_models::HeaderName::new("x-session-id").unwrap())
+    );
+}
+
+#[test]
+fn forbidden_header_errors_name_scope_header_and_owner() {
+    let temp = TempDir::new().unwrap();
+
+    let global = temp.path().join("global-owned-header");
+    write_config(&global, "[headers]\ncontent-type = \"text/plain\"\n");
+    let error = load_from_roots(None, Some(&global))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("global"), "{error}");
+    assert!(error.contains("content-type"), "{error}");
+    assert!(error.contains("protocol adapter"), "{error}");
+
+    let provider = temp.path().join("provider-owned-header");
+    let text = custom("https://example.test/v1").replace(
+        "auth = { method = \"no-auth-v1\", values = {} }",
+        "auth = { method = \"no-auth-v1\", values = {} }\nheaders = { host = \"example.test\" }",
+    );
+    write_config(&provider, &text);
+    let error = load_from_roots(None, Some(&provider))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("custom.test"), "{error}");
+    assert!(error.contains("provider"), "{error}");
+    assert!(error.contains("host"), "{error}");
+    assert!(error.contains("HTTP transport"), "{error}");
+
+    let model = temp.path().join("model-owned-header");
+    let text = custom("https://example.test/v1").replace(
+        "display_name = \"Model\"",
+        "display_name = \"Model\"\nheaders = { anthropic-beta = \"feature\" }",
+    );
+    write_config(&model, &text);
+    let error = load_from_roots(None, Some(&model)).unwrap_err().to_string();
+    assert!(error.contains("custom.test"), "{error}");
+    assert!(error.contains("model `group/model`"), "{error}");
+    assert!(error.contains("anthropic-beta"), "{error}");
+    assert!(error.contains("protocol adapter"), "{error}");
 }
 
 #[test]

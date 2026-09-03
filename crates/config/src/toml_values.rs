@@ -192,8 +192,12 @@ pub(crate) fn interpolate_provider_values(
     match value {
         toml::Value::String(text) if interpolation_allowed(path) => {
             let replacement = interpolate(text, path)?;
-            text.zeroize();
-            *text = replacement;
+            if header_interpolation_path(path) {
+                drop(replacement);
+            } else {
+                text.zeroize();
+                *text = replacement;
+            }
         }
         toml::Value::String(text) if text.contains("${env:") => {
             return Err(ConfigError::Interpolation(path.join(".")));
@@ -224,6 +228,16 @@ fn interpolation_allowed(path: &[String]) -> bool {
         || matches!(path, [providers, _, api_key] if providers == "providers" && api_key == "api_key")
         || matches!(path, [providers, _, auth_override, values, _] if providers == "providers" && auth_override == "auth_override" && values == "values")
         || matches!(path, [providers, _, auth, values, _] if providers == "providers" && auth == "auth" && values == "values")
+        || header_interpolation_path(path)
+}
+
+fn header_interpolation_path(path: &[String]) -> bool {
+    matches!(path, [headers, _] if headers == "headers")
+        || matches!(path, [providers, _, headers, _] if providers == "providers" && headers == "headers")
+        || matches!(path, [providers, _, models, _, headers, _]
+            if providers == "providers" && matches!(models.as_str(), "models" | "model_overrides") && headers == "headers")
+        || matches!(path, [providers, _, models, _, variants, _, headers, _]
+            if providers == "providers" && matches!(models.as_str(), "models" | "model_overrides") && variants == "variants" && headers == "headers")
 }
 
 fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {
@@ -245,6 +259,16 @@ fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {
             cursor += 2;
             continue;
         }
+        if header_interpolation_path(path) && value[cursor..].starts_with("${session_id}") {
+            output.push_str("${session_id}");
+            cursor += "${session_id}".len();
+            continue;
+        }
+        if header_interpolation_path(path) && value[cursor..].starts_with("${parent_session_id}") {
+            output.push_str("${parent_session_id}");
+            cursor += "${parent_session_id}".len();
+            continue;
+        }
         if !value[cursor..].starts_with("${env:") {
             return Err(ConfigError::Interpolation(path.join(".")));
         }
@@ -253,11 +277,14 @@ fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {
             .find('}')
             .map(|offset| start + offset)
             .ok_or_else(|| ConfigError::Interpolation(path.join(".")))?;
-        let name = &value[start..end];
+        let expression = &value[start..end];
+        let (name, default) = expression
+            .split_once(":-")
+            .map_or((expression, None), |(name, default)| (name, Some(default)));
         if !valid_env_name(name) {
             return Err(ConfigError::Interpolation(path.join(".")));
         }
-        let resolved = environment_utf8(name, path)?;
+        let resolved = environment_utf8(name, default, path)?;
         let resolved = Zeroizing::new(resolved);
         output.push_str(&resolved);
         cursor = end + 1;
@@ -265,11 +292,19 @@ fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {
     Ok(std::mem::take(&mut *output))
 }
 
-fn environment_utf8(name: &str, path: &[String]) -> Result<String, ConfigError> {
-    let value = env::var_os(name).ok_or_else(|| ConfigError::MissingEnvironment {
-        path: path.join("."),
-        variable: name.to_owned(),
-    })?;
+fn environment_utf8(
+    name: &str,
+    default: Option<&str>,
+    path: &[String],
+) -> Result<String, ConfigError> {
+    let Some(value) = env::var_os(name) else {
+        return default
+            .map(str::to_owned)
+            .ok_or_else(|| ConfigError::MissingEnvironment {
+                path: path.join("."),
+                variable: name.to_owned(),
+            });
+    };
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt as _;
@@ -344,5 +379,75 @@ mod tests {
         let error =
             interpolate(&format!("prefix-{SENTINEL}-${{env:INVALID-NAME}}"), &path).unwrap_err();
         assert!(!format!("{error:?}{error}").contains(SENTINEL));
+    }
+
+    #[test]
+    fn environment_defaults_and_escaping_follow_the_global_syntax() {
+        let path = vec!["providers".into(), "openai".into(), "api_key".into()];
+        let variable = "COOKIE_AGENT_TEST_INTERPOLATION_DEFAULT";
+        unsafe { env::remove_var(variable) };
+        assert_eq!(
+            interpolate(&format!("${{env:{variable}:-fallback}}"), &path).unwrap(),
+            "fallback"
+        );
+        assert_eq!(
+            interpolate(&format!("${{env:{variable}:-}}"), &path).unwrap(),
+            ""
+        );
+        assert_eq!(
+            interpolate(&format!("${{env:{variable}:-a:-b}}"), &path).unwrap(),
+            "a:-b"
+        );
+        assert!(matches!(
+            interpolate(&format!("${{env:{variable}}}"), &path),
+            Err(ConfigError::MissingEnvironment { variable: missing, .. }) if missing == variable
+        ));
+        assert_eq!(
+            interpolate("$$${env:COOKIE_AGENT_TEST_INTERPOLATION_DEFAULT:-x}", &path).unwrap(),
+            "$x"
+        );
+        unsafe { env::set_var(variable, "configured") };
+        assert_eq!(
+            interpolate(&format!("${{env:{variable}:-fallback}}"), &path).unwrap(),
+            "configured"
+        );
+        unsafe { env::remove_var(variable) };
+    }
+
+    #[test]
+    fn header_interpolation_is_validated_but_templates_remain_unresolved() {
+        for mut path in [
+            vec!["headers", "x-test"],
+            vec!["providers", "openai", "headers", "x-test"],
+            vec![
+                "providers",
+                "openai",
+                "model_overrides",
+                "gpt",
+                "headers",
+                "x-test",
+            ],
+            vec![
+                "providers",
+                "custom",
+                "models",
+                "gpt",
+                "variants",
+                "fast",
+                "headers",
+                "x-test",
+            ],
+        ]
+        .map(|path| path.into_iter().map(str::to_owned).collect::<Vec<_>>())
+        {
+            let mut value = toml::Value::String(
+                "token ${env:COOKIE_AGENT_TEST_HEADER:-fallback} ${session_id}".into(),
+            );
+            interpolate_provider_values(&mut value, &mut path).unwrap();
+            assert_eq!(
+                value.as_str(),
+                Some("token ${env:COOKIE_AGENT_TEST_HEADER:-fallback} ${session_id}")
+            );
+        }
     }
 }

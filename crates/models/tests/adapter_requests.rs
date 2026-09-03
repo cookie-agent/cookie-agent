@@ -3,10 +3,11 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt as _, sync::Arc};
 
 use cookie_agent_identity::{
-    CatalogRevision, ModelKey, ModelSelection, ProviderId, ProviderModelId,
+    CatalogRevision, ModelKey, ModelSelection, ProviderId, ProviderModelId, VariantId,
 };
 use cookie_agent_models::{
-    ModelManager, ProviderDefinition,
+    HeaderName, ModelManager, ProviderDefinition, ProviderOptions, RequestDefaults,
+    SafeStaticHeaderValue, VariantDirective,
     adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, CacheStrategyConfig},
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
@@ -312,11 +313,118 @@ async fn custom_openai_chat_no_auth_emits_no_credential_material() {
     )
     .await;
     assert!(request.starts_with("POST /v1/chat/completions? HTTP/1.1"));
-    assert!(request.to_ascii_lowercase().contains(
-        "\r\nuser-agent: opencode/1.18.2 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14\r\n"
-    ));
+    assert!(
+        !request
+            .to_ascii_lowercase()
+            .contains("\r\nuser-agent: opencode/")
+    );
     assert!(!request.to_ascii_lowercase().contains("authorization:"));
     assert!(!request.contains("no-auth"));
+}
+
+#[tokio::test]
+async fn configured_auth_and_session_headers_win_on_the_wire() {
+    let response = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, captured) = server(response).await;
+    let definition = definition(&endpoint, "openai-chat", false);
+    let ProviderDefinition::Custom(mut provider) = definition else {
+        unreachable!();
+    };
+    provider.auth =
+        toml::from_str("method = \"bearer-api-key-v1\"\nvalues = { api_key = \"typed-secret\" }")
+            .unwrap();
+    provider.headers.insert(
+        HeaderName::new("Authorization").unwrap(),
+        SafeStaticHeaderValue::new("Bearer configured").unwrap(),
+    );
+    provider
+        .models
+        .get_mut(&ProviderModelId::new("test").unwrap())
+        .unwrap()
+        .variants
+        .insert(
+            VariantId::new("parent-route").unwrap(),
+            VariantDirective::Add {
+                display_name: None,
+                defaults: RequestDefaults::default(),
+                options: ProviderOptions::default(),
+                reasoning: None,
+                headers: BTreeMap::from([(
+                    HeaderName::new("x-session-id").unwrap(),
+                    SafeStaticHeaderValue::new("${parent_session_id}").unwrap(),
+                )]),
+            },
+        );
+    let global_headers = [
+        ("user-agent", "cookie-agent/test"),
+        ("x-session-id", "${session_id}"),
+        ("x-session-parent-id", "${parent_session_id}"),
+    ]
+    .into_iter()
+    .map(|(name, value)| {
+        (
+            HeaderName::new(name).unwrap(),
+            SafeStaticHeaderValue::new(value).unwrap(),
+        )
+    })
+    .collect();
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("custom.headers").unwrap();
+    let manager = ModelManager::new_with_headers(
+        BTreeMap::from([(provider_id.clone(), ProviderDefinition::Custom(provider))]),
+        global_headers,
+        empty_catalog(),
+        store(&temporary),
+    )
+    .unwrap();
+    let key = ModelKey::new(provider_id, ProviderModelId::new("test").unwrap()).unwrap();
+    let runtime = manager.current();
+    let manifest = runtime.manifest_payload().unwrap();
+    let blueprint = manifest
+        .blueprints
+        .iter()
+        .find(|blueprint| blueprint.selection.model == key)
+        .unwrap();
+    assert_eq!(
+        blueprint.static_headers[&cookie_agent_protocol::HeaderName::new("x-session-id").unwrap()]
+            .as_str(),
+        "${session_id}"
+    );
+    assert_eq!(
+        blueprint.variants[0].static_headers
+            [&cookie_agent_protocol::HeaderName::new("x-session-id").unwrap()]
+            .as_str(),
+        "${parent_session_id}"
+    );
+    assert!(
+        !serde_json::to_string(&blueprint)
+            .unwrap()
+            .contains("root-session")
+    );
+    let resolved = runtime
+        .resolve(&ModelSelection {
+            model: key,
+            variant: None,
+        })
+        .unwrap();
+    let request = Request::new(vec![HistoryTurn::user(UserMessage::new(vec![
+        InputPart::Text(TextPart::new("hello")),
+    ]))])
+    .with_header_context(oven_sdk::HeaderContext::new("root-session"));
+    let mut stream = resolved
+        .model()
+        .stream(resolved.prepare_request(request), AbortSignal::default())
+        .await
+        .unwrap();
+    while let Some(part) = stream.stream.next().await {
+        part.unwrap();
+    }
+    let request = captured.await.unwrap().to_ascii_lowercase();
+    assert!(request.contains("\r\nauthorization: bearer configured\r\n"));
+    assert!(!request.contains("typed-secret"));
+    assert!(request.contains("\r\nuser-agent: cookie-agent/test\r\n"));
+    assert!(request.contains("\r\nx-session-id: root-session\r\n"));
+    assert!(!request.contains("x-session-parent-id:"));
 }
 
 #[tokio::test]

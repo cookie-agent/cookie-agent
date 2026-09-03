@@ -650,6 +650,7 @@ pub enum RuntimeProviderSource {
 #[derive(Clone)]
 pub struct CompiledModelRuntime {
     authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
+    global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
     catalog: Arc<CatalogSnapshot>,
     store: ProviderStoreSnapshot,
     recipe_registry_revision: cookie_agent_identity::RecipeRegistryRevision,
@@ -895,6 +896,18 @@ impl CompiledRuntimeModel {
                         selected.options = variant.options.clone();
                         protocol_options(&selected, &self.setup_values)?
                     },
+                    static_headers: variant
+                        .headers
+                        .iter()
+                        .map(|(name, value)| {
+                            Ok((
+                                HeaderName::new(name.as_str())
+                                    .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                                SafeStaticHeaderValue::new(value.as_str())
+                                    .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                            ))
+                        })
+                        .collect::<Result<_, ModelManagerError>>()?,
                     behavior_fingerprint: protocol::Sha256Digest::of_bytes(b"pending"),
                     selection_fingerprint: protocol::Sha256Digest::of_bytes(b"pending"),
                 })
@@ -1054,9 +1067,19 @@ impl ModelManager {
         catalog: Arc<CatalogSnapshot>,
         store: ProviderStore,
     ) -> Result<Self, ModelManagerError> {
+        Self::new_with_headers(authored, BTreeMap::new(), catalog, store)
+    }
+
+    pub fn new_with_headers(
+        authored: BTreeMap<ProviderId, ProviderDefinition>,
+        global_headers: BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+        catalog: Arc<CatalogSnapshot>,
+        store: ProviderStore,
+    ) -> Result<Self, ModelManagerError> {
         let store_snapshot = store.load()?;
         let initial = Arc::new(compile_runtime(
             Arc::new(authored),
+            Arc::new(global_headers),
             catalog,
             store_snapshot,
         )?);
@@ -1122,6 +1145,7 @@ impl ModelManager {
             ConnectProposal::Proposed(proposal) => {
                 let candidate = Arc::new(compile_runtime(
                     Arc::clone(&current.authored),
+                    Arc::clone(&current.global_headers),
                     Arc::clone(&current.catalog),
                     proposal.snapshot(),
                 )?);
@@ -1184,6 +1208,7 @@ impl ModelManager {
             DisconnectProposal::Proposed(proposal) => {
                 let candidate = Arc::new(compile_runtime(
                     Arc::clone(&current.authored),
+                    Arc::clone(&current.global_headers),
                     Arc::clone(&current.catalog),
                     proposal.snapshot(),
                 )?);
@@ -1217,6 +1242,7 @@ impl ModelManager {
         };
         let candidate = Arc::new(compile_runtime(
             Arc::clone(&current.authored),
+            Arc::clone(&current.global_headers),
             Arc::clone(&current.catalog),
             store,
         )?);
@@ -1235,8 +1261,14 @@ impl ModelManager {
         prepare_publication: impl FnOnce(&Arc<CompiledModelRuntime>) -> Result<P, ModelManagerError>,
     ) -> Result<(Arc<CompiledModelRuntime>, P), ModelManagerError> {
         let _guard = lock(&self.mutation);
+        let current = self.current();
         let store = self.store.load()?;
-        let candidate = Arc::new(compile_runtime(Arc::new(authored), catalog, store)?);
+        let candidate = Arc::new(compile_runtime(
+            Arc::new(authored),
+            Arc::clone(&current.global_headers),
+            catalog,
+            store,
+        )?);
         let publication = prepare_publication(&candidate)?;
         let retained = prepared_retained(&self.retained.load_full(), &candidate);
         self.retained.store(retained);
@@ -1310,6 +1342,7 @@ fn validate_frozen_provider_cache(
 
 fn compile_runtime(
     authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
+    global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
     catalog: Arc<CatalogSnapshot>,
     store: ProviderStoreSnapshot,
 ) -> Result<CompiledModelRuntime, ModelManagerError> {
@@ -1400,8 +1433,12 @@ fn compile_runtime(
         };
         let effective = effective_managed(&provider_id, record, family, authored_managed, stored)?;
         state.effective_auth = effective.credential_source;
-        let compiled =
-            compiler.compile_managed(catalog.revision.as_str(), record, Some(&effective.provider));
+        let compiled = compiler.compile_managed_with_headers(
+            catalog.revision.as_str(),
+            record,
+            Some(&effective.provider),
+            &global_headers,
+        );
         let compiled = match compiled {
             Ok(compiled) => compiled,
             Err(DynamicCompileError::UnsupportedProvider) => {
@@ -1429,7 +1466,7 @@ fn compile_runtime(
                 }
             };
             let (executable, variant_executables) =
-                compile_behaviors(&provider_id, &model, &BTreeMap::new(), &model_credentials)?;
+                compile_behaviors(&provider_id, &model, &model.headers, &model_credentials)?;
             let model_recipe = family_registry()
                 .by_npm(&model.effective_npm)
                 .ok_or(ModelManagerError::RuntimeCompileFailed)?;
@@ -1451,7 +1488,7 @@ fn compile_runtime(
                 setup_recipe: ProviderSetupRecipeId::new("family-derived-setup-v1")
                     .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
                 credential_source: effective.credential_source,
-                static_headers: BTreeMap::new(),
+                static_headers: model.headers.clone(),
                 model,
                 executable,
                 variant_executables,
@@ -1467,7 +1504,8 @@ fn compile_runtime(
         let ProviderDefinition::Custom(custom) = definition else {
             continue;
         };
-        let compiled = compiler.compile_custom(provider_id, custom)?;
+        let compiled =
+            compiler.compile_custom_with_headers(provider_id, custom, &global_headers)?;
         let fingerprint = safe_definition_fingerprint(provider_id, definition);
         let setup_recipe = crate::adapters::custom_setup_recipe(
             OvenAdapterFamily::parse(custom.adaptor.as_str())
@@ -1493,7 +1531,8 @@ fn compile_runtime(
             let key = ModelKey::new(provider_id.clone(), model_id)
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
             let (executable, variant_executables) =
-                compile_behaviors(provider_id, &model, &custom.headers, &credentials)?;
+                compile_behaviors(provider_id, &model, &model.headers, &credentials)?;
+            let static_headers = model.headers.clone();
             let runtime_model = CompiledRuntimeModel {
                 key: key.clone(),
                 model,
@@ -1506,7 +1545,7 @@ fn compile_runtime(
                 setup_recipe: ProviderSetupRecipeId::new(setup_recipe.id)
                     .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
                 credential_source,
-                static_headers: custom.headers.clone(),
+                static_headers,
                 executable,
                 variant_executables,
             };
@@ -1545,6 +1584,7 @@ fn compile_runtime(
     )?;
     Ok(CompiledModelRuntime {
         authored,
+        global_headers,
         catalog,
         store,
         recipe_registry_revision: registry.revision(),
@@ -1625,6 +1665,7 @@ fn effective_managed(
         auth_override: None,
         shape: None,
         cache: None,
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     });
     provider.setup = setup_values.clone();
@@ -1766,7 +1807,11 @@ fn compile_behaviors(
                 provider_id.as_str(),
                 model,
                 capabilities.clone(),
-                headers.clone(),
+                variant
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
+                    .collect(),
                 credentials,
                 ExecutableBehaviorInput {
                     defaults: &variant.defaults,
@@ -1938,6 +1983,18 @@ fn compile_frozen_managed(
         capabilities,
         defaults: defaults.request.clone(),
         options: options.clone(),
+        headers: binding
+            .static_headers
+            .iter()
+            .map(|(name, value)| {
+                Ok((
+                    crate::HeaderName::new(name.as_str())
+                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                    crate::SafeStaticHeaderValue::new(value.as_str())
+                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+                ))
+            })
+            .collect::<Result<_, ModelManagerError>>()?,
         cost: None,
         variants: BTreeMap::new(),
         variant_order: Vec::new(),
@@ -1953,7 +2010,7 @@ fn compile_frozen_managed(
         .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
     };
     let credentials = frozen_credentials(runtime, blueprint)?;
-    let headers = blueprint
+    let headers = binding
         .static_headers
         .iter()
         .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
@@ -2513,8 +2570,10 @@ pub fn safe_definition_fingerprint(
                 "variants": value.variants,
                 "default_variant": value.default_variant,
                 "shape": value.shape,
+                "headers": value.headers,
             }))).collect::<BTreeMap<_, _>>(),
             "shape": provider.shape,
+            "headers": provider.headers,
         }),
         ProviderDefinition::Custom(provider) => json!({
             "provider_id": provider_id,
@@ -2534,6 +2593,7 @@ pub fn safe_definition_fingerprint(
                 "capabilities": value.capabilities,
                 "defaults": value.defaults,
                 "options": value.options,
+                "headers": value.headers,
                 "variants": value.variants,
                 "default_variant": value.default_variant,
             }))).collect::<BTreeMap<_, _>>(),
@@ -3269,6 +3329,7 @@ mod cache_strategy_tests {
                 serde_json::from_value(json!({"mode":"implicit"}))
                     .expect("provider cache envelope"),
             ),
+            headers: BTreeMap::new(),
             model_overrides: BTreeMap::new(),
         };
         let error = validate_unresolved_managed_cache(&provider_id, &provider, None)

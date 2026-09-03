@@ -25,6 +25,8 @@ pub enum ConfigError {
         #[source]
         source: cookie_agent_models::authoring::AuthoringError,
     },
+    #[error("{0}")]
+    HeaderOwnership(#[source] cookie_agent_models::authoring::AuthoringError),
     #[error("runtime settings are invalid")]
     InvalidRuntime,
     #[error("MCP server `{server}` is invalid: {reason}")]

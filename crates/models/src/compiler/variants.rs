@@ -4,7 +4,7 @@ use cookie_agent_identity::{ConfiguredModelDefault, VariantId};
 use serde::Serialize;
 
 use crate::{
-    ProviderOptions,
+    HeaderName, ProviderOptions, SafeStaticHeaderValue,
     adapters::OvenAdapterFamily,
     authoring::{ManagedModelOverride, ReasoningBehavior, RequestDefaults, VariantDirective},
     catalog::CatalogReasoningOption,
@@ -26,6 +26,7 @@ pub struct CompiledVariant {
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub reasoning: Option<ReasoningBehavior>,
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     pub origin: CompiledVariantOrigin,
 }
 
@@ -194,6 +195,7 @@ fn insert_generated(
         defaults: RequestDefaults::default(),
         options: ProviderOptions::default(),
         reasoning: Some(reasoning),
+        headers: BTreeMap::new(),
         origin,
     };
     if let Some(existing) = variants.get(&id) {
@@ -221,13 +223,14 @@ fn apply_directives(
                 defaults,
                 options,
                 reasoning,
+                headers,
             } => {
                 if variants.contains_key(id) {
                     return Err(VariantCompileError::Collision);
                 }
                 variants.insert(
                     id.clone(),
-                    authored(id, display_name, defaults, options, reasoning),
+                    authored(id, display_name, defaults, options, reasoning, headers),
                 );
                 order.push(id.clone());
             }
@@ -236,13 +239,14 @@ fn apply_directives(
                 defaults,
                 options,
                 reasoning,
+                headers,
             } => {
                 if !variants.contains_key(id) {
                     return Err(VariantCompileError::Invalid);
                 }
                 variants.insert(
                     id.clone(),
-                    authored(id, display_name, defaults, options, reasoning),
+                    authored(id, display_name, defaults, options, reasoning, headers),
                 );
             }
             VariantDirective::Disable => {
@@ -262,6 +266,7 @@ fn authored(
     defaults: &RequestDefaults,
     options: &ProviderOptions,
     reasoning: &Option<ReasoningBehavior>,
+    headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
 ) -> CompiledVariant {
     CompiledVariant {
         id: id.clone(),
@@ -271,6 +276,7 @@ fn authored(
         defaults: defaults.clone(),
         options: options.clone(),
         reasoning: reasoning.clone(),
+        headers: headers.clone(),
         origin: CompiledVariantOrigin::Authored,
     }
 }
@@ -349,6 +355,7 @@ mod tests {
             default_variant,
             shape: None,
             compaction: crate::NativeCompactionConfig::Unsupported,
+            headers: BTreeMap::new(),
         }
     }
 
@@ -448,6 +455,7 @@ mod tests {
                     defaults: RequestDefaults::default(),
                     options: ProviderOptions::default(),
                     reasoning: Some(ReasoningBehavior::Toggle { enabled: true }),
+                    headers: BTreeMap::new(),
                 },
             )]),
             Some(ConfiguredModelDefault::Named(id("on"))),

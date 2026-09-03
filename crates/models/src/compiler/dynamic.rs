@@ -4,15 +4,14 @@ use cookie_agent_identity::{ProviderId, ProviderModelId, VariantId};
 use serde::Serialize;
 
 use crate::{
-    ModelCapabilities, ProviderOptions, Sha256Digest,
+    HeaderName, ModelCapabilities, ProviderOptions, SafeStaticHeaderValue, Sha256Digest,
     adapters::{
         OvenAdapterFamily, custom_setup_recipe, validate_capability_ceiling,
-        validate_custom_endpoint, validate_managed_base_url, validate_static_headers,
-        wire_adapter_for_custom,
+        validate_custom_endpoint, validate_managed_base_url, wire_adapter_for_custom,
     },
     authoring::{
         AuthDefinition, CustomProvider, ManagedModelOverride, ModelsDevProvider,
-        PartialRequestDefaults, RequestDefaults,
+        PartialRequestDefaults, RequestDefaults, validate_header_limits, validate_header_ownership,
     },
     catalog::{CatalogModelRecord, CatalogProviderRecord},
     compiler::{
@@ -76,6 +75,7 @@ pub struct CompiledDynamicModel {
     pub capabilities: ModelCapabilities,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     #[serde(skip)]
     pub cost: Option<crate::catalog::CatalogModelCost>,
     pub variants: BTreeMap<VariantId, CompiledVariant>,
@@ -115,8 +115,8 @@ pub enum DynamicCompileError {
     BaseUrlWithoutAuth,
     #[error("unsupported_adaptor")]
     UnsupportedAdapter,
-    #[error("invalid_static_headers")]
-    StaticHeaders,
+    #[error("{0}")]
+    StaticHeaders(#[source] crate::authoring::AuthoringError),
     #[error("invalid_custom_model")]
     CustomModel,
     #[error("invalid_variant")]
@@ -149,6 +149,16 @@ impl DynamicCompiler {
         catalog_revision: &str,
         record: &CatalogProviderRecord,
         authored: Option<&ModelsDevProvider>,
+    ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
+        self.compile_managed_with_headers(catalog_revision, record, authored, &BTreeMap::new())
+    }
+
+    pub fn compile_managed_with_headers(
+        &self,
+        catalog_revision: &str,
+        record: &CatalogProviderRecord,
+        authored: Option<&ModelsDevProvider>,
+        global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
         let family = self
             .registry
@@ -216,6 +226,7 @@ impl DynamicCompiler {
                 &resolved,
                 authored,
                 override_,
+                global_headers,
             ) {
                 Ok(compiled) => {
                     models.insert(table_id.clone(), compiled);
@@ -262,6 +273,7 @@ impl DynamicCompiler {
         resolved: &crate::recipes::ResolvedFamilyModel,
         authored: Option<&ModelsDevProvider>,
         override_: Option<&ManagedModelOverride>,
+        global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
     ) -> Result<CompiledDynamicModel, ModelLocalError> {
         let adapter = resolved.adapter;
         let adapter_id = match adapter {
@@ -328,7 +340,7 @@ impl DynamicCompiler {
                 "unsupported_model_capabilities".to_owned(),
             ));
         }
-        let (variants, variant_order, default_variant) =
+        let (mut variants, variant_order, default_variant) =
             managed_variants(&model.reasoning_options, override_, adapter).map_err(|_| {
                 ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
             })?;
@@ -337,6 +349,34 @@ impl DynamicCompiler {
             .any(|variant| !validate_defaults(&variant.defaults, &capabilities))
         {
             return Err(ModelLocalError::Provider(DynamicCompileError::Variant));
+        }
+        let headers = merge_headers([
+            (global_headers, "global".to_owned()),
+            (
+                authored.map_or(&EMPTY_HEADERS, |value| &value.headers),
+                format!("provider `{provider_id}`"),
+            ),
+            (
+                override_.map_or(&EMPTY_HEADERS, |value| &value.headers),
+                format!("provider `{provider_id}` model `{}`", model.id),
+            ),
+        ])
+        .map_err(ModelLocalError::Provider)?;
+        for variant in variants.values_mut() {
+            variant.headers = merge_headers([
+                (
+                    &headers,
+                    format!("provider `{provider_id}` model `{}`", model.id),
+                ),
+                (
+                    &variant.headers,
+                    format!(
+                        "provider `{provider_id}` model `{}` variant `{}`",
+                        model.id, variant.id
+                    ),
+                ),
+            ])
+            .map_err(ModelLocalError::Provider)?;
         }
         let display_name = override_
             .and_then(|value| value.display_name.clone())
@@ -368,6 +408,7 @@ impl DynamicCompiler {
                 &capabilities,
                 &defaults,
                 &options,
+                &headers,
                 &variants,
                 &variant_order,
                 &default_variant,
@@ -400,6 +441,7 @@ impl DynamicCompiler {
             capabilities,
             defaults,
             options,
+            headers,
             cost: model.cost.clone(),
             variants,
             variant_order,
@@ -414,6 +456,15 @@ impl DynamicCompiler {
         provider_id: &ProviderId,
         provider: &CustomProvider,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
+        self.compile_custom_with_headers(provider_id, provider, &BTreeMap::new())
+    }
+
+    pub fn compile_custom_with_headers(
+        &self,
+        provider_id: &ProviderId,
+        provider: &CustomProvider,
+        global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
         let adapter = OvenAdapterFamily::parse(provider.adaptor.as_str())
             .ok_or(DynamicCompileError::UnsupportedAdapter)?;
         crate::authoring::validate_provider_cache(provider.cache.as_ref(), adapter.id())
@@ -426,8 +477,6 @@ impl DynamicCompiler {
             .map_err(|_| DynamicCompileError::Setup)?;
         let auth_method = validate_auth_definition(&provider.auth, adapter.allowed_auth_methods())
             .map_err(|_| DynamicCompileError::Auth)?;
-        validate_static_headers(adapter, &provider.auth, &provider.headers)
-            .map_err(|_| DynamicCompileError::StaticHeaders)?;
         let auth = custom_auth_shape(&provider.auth, auth_method);
         let mut models = BTreeMap::new();
         for (id, model) in &provider.models {
@@ -440,7 +489,7 @@ impl DynamicCompiler {
             {
                 return Err(DynamicCompileError::CustomModel);
             }
-            let (variants, variant_order, default_variant) =
+            let (mut variants, variant_order, default_variant) =
                 custom_variants(&model.variants, model.default_variant.as_ref())
                     .map_err(|_| DynamicCompileError::Variant)?;
             if variants.values().any(|variant| {
@@ -451,13 +500,32 @@ impl DynamicCompiler {
             }) {
                 return Err(DynamicCompileError::Variant);
             }
+            let headers = merge_headers([
+                (global_headers, "global".to_owned()),
+                (&provider.headers, format!("provider `{provider_id}`")),
+                (
+                    &model.headers,
+                    format!("provider `{provider_id}` model `{id}`"),
+                ),
+            ])?;
+            for variant in variants.values_mut() {
+                variant.headers = merge_headers([
+                    (&headers, format!("provider `{provider_id}` model `{id}`")),
+                    (
+                        &variant.headers,
+                        format!(
+                            "provider `{provider_id}` model `{id}` variant `{}`",
+                            variant.id
+                        ),
+                    ),
+                ])?;
+            }
             if !model.enabled {
                 continue;
             }
             let endpoint = provider.endpoint.as_str().trim_end_matches('/').to_owned();
             let options = model.options.clone();
-            let safe_headers = provider
-                .headers
+            let safe_headers = headers
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str()))
                 .collect::<Vec<_>>();
@@ -506,6 +574,7 @@ impl DynamicCompiler {
                     capabilities,
                     defaults: model.defaults.clone(),
                     options,
+                    headers,
                     cost: None,
                     variants,
                     variant_order,
@@ -544,6 +613,26 @@ impl DynamicCompiler {
             fingerprint: provider_fingerprint,
         })
     }
+}
+
+static EMPTY_HEADERS: BTreeMap<HeaderName, SafeStaticHeaderValue> = BTreeMap::new();
+
+fn merge_headers<'a>(
+    layers: impl IntoIterator<Item = (&'a BTreeMap<HeaderName, SafeStaticHeaderValue>, String)>,
+) -> Result<BTreeMap<HeaderName, SafeStaticHeaderValue>, DynamicCompileError> {
+    let mut merged = BTreeMap::new();
+    for (layer, scope) in layers {
+        validate_header_ownership(layer, scope).map_err(DynamicCompileError::StaticHeaders)?;
+        for (name, value) in layer {
+            if value.as_str().is_empty() {
+                merged.remove(name);
+            } else {
+                merged.insert(name.clone(), value.clone());
+            }
+        }
+    }
+    validate_header_limits(&merged).map_err(DynamicCompileError::StaticHeaders)?;
+    Ok(merged)
 }
 
 pub(crate) fn validate_managed_cache(

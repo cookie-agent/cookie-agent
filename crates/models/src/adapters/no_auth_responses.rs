@@ -1,17 +1,16 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use futures_util::stream;
-use http::{HeaderMap, HeaderName, HeaderValue};
 use oven_sdk::{
-    AbortSignal, AssistantPart, BoxFuture, Finish, FinishReason, HistoryTurn, InputPart,
-    LanguageModel, LanguageModelDescriptor, ModelError, ModelId, ModelIdentity, PartMetadata,
-    ProviderId, Request, StreamPart, StreamResponse, SystemPart, Usage,
+    AbortSignal, AssistantPart, BoxFuture, Finish, FinishReason, HeaderProvider, HistoryTurn,
+    InputPart, LanguageModel, LanguageModelDescriptor, ModelError, ModelId, ModelIdentity,
+    PartMetadata, ProviderId, Request, StreamPart, StreamResponse, SystemPart, Usage,
 };
 use serde_json::{Value, json};
 
 use crate::{
     ConstructedAdapter,
-    adapters::oven::{CLIENT_USER_AGENT, ModelBuildError},
+    adapters::oven::{ModelBuildError, TemplateHeaderProvider},
 };
 
 const ADAPTER_RECIPE_ID: &str = "oven.openai.responses";
@@ -33,16 +32,15 @@ pub(crate) fn build(
     )?;
     let endpoint = url::Url::parse(&endpoint)
         .map_err(|_| ModelError::invalid_request("invalid no-auth Responses endpoint"))?;
-    let headers = header_map(headers)?;
+    let headers = TemplateHeaderProvider::new(&headers)?;
     let client = reqwest_oven::Client::builder()
-        .user_agent(CLIENT_USER_AGENT)
         .build()
         .map_err(|_| ModelError::transport("could not construct no-auth Responses client"))?;
     Ok(ConstructedAdapter {
         model: Arc::new(NoAuthResponsesModel {
             descriptor,
             endpoint,
-            headers,
+            headers: Arc::new(headers),
             client,
         }),
         provider_options: BTreeMap::new(),
@@ -53,7 +51,7 @@ pub(crate) fn build(
 struct NoAuthResponsesModel {
     descriptor: LanguageModelDescriptor,
     endpoint: url::Url,
-    headers: HeaderMap,
+    headers: Arc<TemplateHeaderProvider>,
     client: reqwest_oven::Client,
 }
 
@@ -84,13 +82,18 @@ impl LanguageModel for NoAuthResponsesModel {
             }
             let body = encode_request(&request, self.descriptor.identity.model_id.as_str())
                 .map_err(|error| *error)?;
+            let headers = self
+                .headers
+                .headers(&request.header_context)?
+                .as_map()
+                .clone();
             let send = self
                 .client
                 .post(format!(
                     "{}/responses",
                     self.endpoint.as_str().trim_end_matches('/')
                 ))
-                .headers(self.headers.clone())
+                .headers(headers)
                 .json(&body)
                 .send();
             let response = tokio::select! {
@@ -278,16 +281,4 @@ fn decode_sse(body: &str) -> Result<Vec<StreamPart>, Box<ModelError>> {
             "no-auth OpenAI Responses ended without response.completed",
         )))
     }
-}
-
-fn header_map(values: BTreeMap<String, String>) -> Result<HeaderMap, ModelBuildError> {
-    let mut headers = HeaderMap::new();
-    for (name, value) in values {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| ModelBuildError::HeaderName(name.clone()))?;
-        let value = HeaderValue::from_str(&value)
-            .map_err(|_| ModelBuildError::HeaderValue(name.to_string()))?;
-        headers.insert(name, value);
-    }
-    Ok(headers)
 }

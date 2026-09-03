@@ -363,8 +363,9 @@ impl Engine {
             == CompactionCapability::Native
         {
             if let Ok(model) = policy::resolve_model(input.binding, &input.owner_policy.runtime) {
-                let mut request =
-                    ModelRequest::new(context.history.clone()).with_tools(input.tools.to_vec());
+                let mut request = ModelRequest::new(context.history.clone())
+                    .with_tools(input.tools.to_vec())
+                    .with_header_context(self.model_header_context(input.session)?);
                 crate::media::validate_media_part_counts(
                     &request.history,
                     &input

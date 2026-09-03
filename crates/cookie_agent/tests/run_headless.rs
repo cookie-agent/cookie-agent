@@ -251,8 +251,9 @@ impl Fixture {
         make_private(&provider_store_path);
         let configuration = load(&workspace).expect("test configuration");
         let model_manager = Arc::new(
-            ModelManager::new(
+            ModelManager::new_with_headers(
                 configuration.runtime.providers.clone(),
+                configuration.runtime.headers.clone(),
                 catalog,
                 ProviderStore::open(&provider_store_path).expect("provider store"),
             )

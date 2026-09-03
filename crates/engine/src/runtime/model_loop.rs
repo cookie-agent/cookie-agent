@@ -1358,7 +1358,9 @@ impl Engine {
                         .model_capabilities(binding)
                         .ok_or(EngineError::NoRunnableModel)?,
                 });
-                let mut request = ModelRequest::new(context.history).with_tools(tools.clone());
+                let mut request = ModelRequest::new(context.history)
+                    .with_tools(tools.clone())
+                    .with_header_context(self.model_header_context(session)?);
                 request.inference.max_output_tokens = match (
                     binding.descriptor.capabilities.limits.output,
                     policy.agent.max_output_tokens,
@@ -1499,6 +1501,7 @@ impl Engine {
                         Err(error) => self.record_interception_error(session, plugin, error),
                     }
                 }
+                request.header_context = self.model_header_context(session)?;
                 let unsigned_replay_rejections =
                     unsigned_anthropic_replay_decisions(&request.history);
                 crate::media::validate_media_part_counts(

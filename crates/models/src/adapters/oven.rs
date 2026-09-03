@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
     sync::Arc,
     time::Duration,
 };
@@ -52,14 +53,11 @@ use oven_sdk_openai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use zeroize::Zeroize as _;
 
 use crate::ConstructedAdapter;
-
-// Compatibility identity used by opencode 1.18.2 for provider-facing requests.
-pub(crate) const CLIENT_USER_AGENT: &str =
-    "opencode/1.18.2 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14";
 
 /// Internal fully concrete declaration consumed by one reviewed Oven constructor.
 #[derive(Clone, Serialize)]
@@ -106,6 +104,8 @@ impl ConcreteModel {
     /// Constructs one exact concrete Oven model and immutable request defaults.
     pub fn build(&self) -> Result<ConstructedAdapter, ModelBuildError> {
         let provider = self.provider()?;
+        let header_routing_discriminator =
+            (!self.headers.is_empty()).then(|| header_routing_discriminator(&self.headers));
         let mut capabilities = self.capabilities.clone();
         capabilities.compaction = match &self.adapter {
             AdapterConfig::OpenaiResponses { settings, .. }
@@ -149,7 +149,7 @@ impl ConcreteModel {
                     Arc::new(OpenAiChatModel::new(ModelConfig::new(
                         provider.with_auth(self.openai_auth()?),
                         declaration,
-                        settings.to_openai_chat(),
+                        settings.to_openai_chat(header_routing_discriminator.as_deref()),
                     ))?),
                     namespace("openai", json!({ "chat": options }))?,
                 ),
@@ -157,7 +157,7 @@ impl ConcreteModel {
                     Arc::new(OpenAiResponsesModel::new(ModelConfig::new(
                         provider.with_auth(self.openai_auth()?),
                         declaration,
-                        settings.to_openai_responses(),
+                        settings.to_openai_responses(header_routing_discriminator.as_deref()),
                     ))?),
                     namespace("openai", json!({ "responses": options }))?,
                 ),
@@ -165,7 +165,7 @@ impl ConcreteModel {
                     Arc::new(OpenAiCompatibleChatModel::new(ModelConfig::new(
                         provider.with_auth(self.compatible_auth()?),
                         declaration,
-                        settings.to_oven(),
+                        settings.to_oven(header_routing_discriminator.as_deref()),
                     ))?),
                     namespace(
                         "openai_compatible",
@@ -422,14 +422,106 @@ struct SecretHeaderProvider {
 
 impl HeaderProvider for SecretHeaderProvider {
     fn headers(&self, _context: &HeaderContext) -> Result<HeaderOverrides, ModelError> {
-        // TODO(header-context): requests currently use HeaderContext::default(); wire session IDs
-        // when request-scoped authentication is implemented.
         let name = HeaderName::from_bytes(self.name.as_bytes())
             .map_err(|_| ModelError::invalid_request("invalid API-key header name"))?;
         let value = HeaderValue::from_str(self.value.expose_secret())
             .map_err(|_| ModelError::invalid_request("invalid API-key header value"))?;
         Ok(HeaderOverrides::new(HeaderMap::from_iter([(name, value)])))
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct TemplateHeaderProvider {
+    templates: Vec<(HeaderName, String)>,
+}
+
+impl TemplateHeaderProvider {
+    pub(crate) fn new(values: &BTreeMap<String, String>) -> Result<Self, ModelBuildError> {
+        let templates = values
+            .iter()
+            .map(|(name, value)| {
+                Ok((
+                    HeaderName::from_bytes(name.as_bytes())
+                        .map_err(|_| ModelBuildError::HeaderName(name.clone()))?,
+                    value.clone(),
+                ))
+            })
+            .collect::<Result<_, ModelBuildError>>()?;
+        Ok(Self { templates })
+    }
+}
+
+impl HeaderProvider for TemplateHeaderProvider {
+    fn headers(&self, context: &HeaderContext) -> Result<HeaderOverrides, ModelError> {
+        let mut headers = HeaderMap::new();
+        for (name, template) in &self.templates {
+            let value =
+                resolve_header_template(template, context).map_err(ModelError::invalid_request)?;
+            if value.is_empty() {
+                continue;
+            }
+            let value = HeaderValue::from_str(&value)
+                .map_err(|_| ModelError::invalid_request("invalid configured header value"))?;
+            headers.insert(name.clone(), value);
+        }
+        Ok(HeaderOverrides::new(headers))
+    }
+}
+
+fn resolve_header_template(
+    template: &str,
+    context: &HeaderContext,
+) -> Result<String, &'static str> {
+    let mut output = String::new();
+    let mut cursor = 0;
+    while cursor < template.len() {
+        let remaining = &template[cursor..];
+        if let Some(text) = remaining.strip_prefix("$$") {
+            output.push('$');
+            cursor = template.len() - text.len();
+        } else if let Some(text) = remaining.strip_prefix("${session_id}") {
+            output.push_str(&context.session_id);
+            cursor = template.len() - text.len();
+        } else if let Some(text) = remaining.strip_prefix("${parent_session_id}") {
+            output.push_str(context.parent_session_id.as_deref().unwrap_or_default());
+            cursor = template.len() - text.len();
+        } else if let Some(expression) = remaining.strip_prefix("${env:") {
+            let end = expression.find('}').ok_or("invalid header template")?;
+            let expression_body = &expression[..end];
+            let (name, default) = expression_body
+                .split_once(":-")
+                .map_or((expression_body, None), |(name, default)| {
+                    (name, Some(default))
+                });
+            if !valid_env_name(name) {
+                return Err("invalid header template");
+            }
+            match env::var(name) {
+                Ok(value) => output.push_str(&value),
+                Err(env::VarError::NotPresent) => {
+                    output.push_str(default.ok_or("missing header environment variable")?);
+                }
+                Err(env::VarError::NotUnicode(_)) => {
+                    return Err("header environment variable is not UTF-8");
+                }
+            }
+            cursor += 6 + end + 1;
+        } else {
+            let character = remaining.chars().next().expect("nonempty remainder");
+            output.push(character);
+            cursor += character.len_utf8();
+        }
+    }
+    Ok(output)
+}
+
+fn valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && (name.as_bytes()[0].is_ascii_uppercase() || name.as_bytes()[0] == b'_')
+        && name
+            .bytes()
+            .skip(1)
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 /// Common normalized request defaults.
@@ -551,22 +643,26 @@ fn secret(value: &str) -> SecretString {
 }
 
 fn header_config(values: &BTreeMap<String, String>) -> Result<HeaderConfig, ModelBuildError> {
-    let mut headers = HeaderMap::new();
-    for (name, value) in values {
-        let parsed_name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| ModelBuildError::HeaderName(name.clone()))?;
-        let parsed_value =
-            HeaderValue::from_str(value).map_err(|_| ModelBuildError::HeaderValue(name.clone()))?;
-        headers.insert(parsed_name, parsed_value);
-    }
-    headers.insert(
-        http::header::USER_AGENT,
-        HeaderValue::from_static(CLIENT_USER_AGENT),
-    );
     Ok(HeaderConfig {
-        static_headers: HeaderOverrides::new(headers),
-        dynamic_headers: None,
+        static_headers: HeaderOverrides::new(HeaderMap::new()),
+        dynamic_headers: if values.is_empty() {
+            None
+        } else {
+            Some(Arc::new(TemplateHeaderProvider::new(values)?))
+        },
     })
+}
+
+fn header_routing_discriminator(values: &BTreeMap<String, String>) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"cookie-agent/header-templates/v1\0");
+    for (name, value) in values {
+        digest.update(name.as_bytes());
+        digest.update(b"\0");
+        digest.update(value.as_bytes());
+        digest.update(b"\0");
+    }
+    format!("{:x}", digest.finalize())
 }
 
 fn namespace(
@@ -709,7 +805,6 @@ impl AnthropicSettingsConfig {
     fn to_oven(&self) -> Result<AnthropicSettings, ModelBuildError> {
         Ok(AnthropicSettings {
             client: reqwest_oven::Client::builder()
-                .user_agent(CLIENT_USER_AGENT)
                 .connect_timeout(Duration::from_secs(self.timeouts.connect_seconds))
                 .build()
                 .map_err(|_| ModelError::transport("could not construct Anthropic HTTP client"))?,
@@ -965,14 +1060,17 @@ pub struct OpenAiChatSettingsConfig {
 }
 
 impl OpenAiChatSettingsConfig {
-    fn to_openai_chat(&self) -> OpenAiChatSettings {
+    fn to_openai_chat(&self, header_discriminator: Option<&str>) -> OpenAiChatSettings {
         OpenAiChatSettings {
             system_message_role: self.system_message_role.into(),
             max_tokens_field: self.max_tokens_field.into(),
             stream_usage: self.stream_usage,
             structured_output: self.structured_output.into(),
             reasoning_field: self.reasoning_field.into(),
-            routing_discriminator: self.routing_discriminator.clone(),
+            routing_discriminator: self
+                .routing_discriminator
+                .clone()
+                .or_else(|| header_discriminator.map(str::to_owned)),
             client: None,
             timeouts: self.timeouts.openai(),
         }
@@ -990,9 +1088,12 @@ pub struct OpenAiResponsesSettingsConfig {
 }
 
 impl OpenAiResponsesSettingsConfig {
-    fn to_openai_responses(&self) -> OpenAiResponsesSettings {
+    fn to_openai_responses(&self, header_discriminator: Option<&str>) -> OpenAiResponsesSettings {
         OpenAiResponsesSettings {
-            routing_discriminator: self.routing_discriminator.clone(),
+            routing_discriminator: self
+                .routing_discriminator
+                .clone()
+                .or_else(|| header_discriminator.map(str::to_owned)),
             compaction: self.compaction.into(),
             client: None,
             timeouts: self.timeouts.openai(),
@@ -1118,7 +1219,7 @@ fn default_request_id_headers() -> Vec<String> {
 }
 
 impl CompatibleSettingsConfig {
-    fn to_oven(&self) -> OpenAiCompatibleChatSettings {
+    fn to_oven(&self, header_discriminator: Option<&str>) -> OpenAiCompatibleChatSettings {
         OpenAiCompatibleChatSettings {
             adapter_id: AdapterId::new(self.adapter_id.clone()),
             system_message_role: self.system_message_role.into(),
@@ -1133,7 +1234,10 @@ impl CompatibleSettingsConfig {
                 .collect(),
             request_id_headers: self.request_id_headers.clone(),
             strict_sse_content_type: self.strict_sse_content_type,
-            routing_discriminator: self.routing_discriminator.clone(),
+            routing_discriminator: self
+                .routing_discriminator
+                .clone()
+                .or_else(|| header_discriminator.map(str::to_owned)),
             client: None,
             timeouts: self.timeouts.openai(),
         }
@@ -1898,15 +2002,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn managed_provider_headers_include_client_identity() {
-        let headers = header_config(&BTreeMap::new()).unwrap();
+    fn session_header_templates_resolve_from_request_context() {
+        let headers = TemplateHeaderProvider::new(&BTreeMap::from([
+            ("x-session-id".into(), "${session_id}".into()),
+            ("x-session-parent-id".into(), "${parent_session_id}".into()),
+        ]))
+        .unwrap();
+        let root = headers.headers(&HeaderContext::new("root")).unwrap();
         assert_eq!(
-            headers
-                .static_headers
-                .as_map()
-                .get(http::header::USER_AGENT),
-            Some(&HeaderValue::from_static(CLIENT_USER_AGENT))
+            root.as_map().get("x-session-id").unwrap(),
+            &HeaderValue::from_static("root")
         );
+        assert!(!root.as_map().contains_key("x-session-parent-id"));
+        let child = headers
+            .headers(&HeaderContext::new("child").with_parent_session_id("root"))
+            .unwrap();
+        assert_eq!(child.as_map()["x-session-parent-id"], "root");
     }
 
     #[test]

@@ -114,7 +114,7 @@ pub struct SafeStaticHeaderValue(String);
 impl SafeStaticHeaderValue {
     pub fn new(value: impl Into<String>) -> Result<Self, ManifestSchemaError> {
         let value = value.into();
-        if value.len() > 8192 || value.chars().any(char::is_control) || value.contains("${env:") {
+        if value.len() > 8192 || value.chars().any(char::is_control) {
             Err(ManifestSchemaError::InvalidHeader)
         } else {
             Ok(Self(value))
@@ -423,6 +423,8 @@ pub struct FrozenVariantBlueprint {
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
+    #[serde(default)]
+    pub static_headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     pub behavior_fingerprint: Sha256Digest,
     pub selection_fingerprint: Sha256Digest,
 }

@@ -1,8 +1,11 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use cookie_agent_identity::{ModelKey, ProviderId};
-use cookie_agent_models::ProviderDefinition;
 pub use cookie_agent_models::catalog::PicoUsdPerMillion;
+use cookie_agent_models::{
+    HeaderName, ProviderDefinition, SafeStaticHeaderValue, deserialize_headers,
+    validate_header_limits, validate_header_ownership,
+};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -296,6 +299,8 @@ pub struct RuntimeConfig {
     pub delegation: DelegationConfig,
     #[serde(default)]
     pub pricing: PricingConfig,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     #[serde(default)]
     pub providers: BTreeMap<ProviderId, ProviderDefinition>,
 }
@@ -312,6 +317,9 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) pricing: Option<PricingConfig>,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_optional_headers")]
+    pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
     pub(crate) mcp: Option<McpConfig>,
     pub(crate) plugins: Option<PluginsConfig>,
     #[serde(default)]
@@ -650,9 +658,20 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.pricing {
         runtime.pricing = value.clone();
     }
+    if let Some(values) = &layer.headers {
+        for (name, value) in values {
+            if value.as_str().is_empty() {
+                runtime.headers.remove(name);
+            } else {
+                runtime.headers.insert(name.clone(), value.clone());
+            }
+        }
+    }
 }
 
 pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigError> {
+    validate_header_ownership(&runtime.headers, "global").map_err(ConfigError::HeaderOwnership)?;
+    validate_header_limits(&runtime.headers).map_err(|_| ConfigError::InvalidRuntime)?;
     if runtime.server.host.is_empty()
         || runtime.server.host.len() > 255
         || runtime.tool_output.max_lines == 0
@@ -689,4 +708,13 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
             })?;
     }
     Ok(())
+}
+
+fn deserialize_optional_headers<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_headers(deserializer).map(Some)
 }

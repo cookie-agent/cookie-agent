@@ -73,6 +73,7 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
 | `pricing` | table | empty | Optional model-rate overrides for cost estimates |
+| `headers` | map of strings | shipped defaults below | Request headers applied to every provider model |
 | `providers` | table | empty | Provider definitions |
 | `mcp` | table | empty | MCP tool server definitions |
 | `plugins` | table | empty | Executable plugin definitions |
@@ -97,6 +98,38 @@ permissions:
 `skill` resources are skill names. A deny hides the skill from model discovery;
 an allow or ask can publish it and the conditional `skill` tool. Skill
 `allowed-tools` grants never override a governing deny.
+
+## `[headers]`
+
+Global request headers are merged with provider, model, and variant `headers`
+tables. Names are case-insensitive and later values win:
+
+`shipped defaults -> global -> provider -> model or variant`
+
+An empty value deletes an inherited header. Each authored table and each merged
+result is limited to 64 entries, 128 bytes per name, 8192 bytes per value, and
+64 KiB in aggregate. The shipped lowest-priority layer is:
+
+| Header | Value |
+|---|---|
+| `user-agent` | `cookie-agent/<build version>` |
+| `x-session-id` | `${session_id}` |
+| `x-session-affinity` | `${session_id}` |
+| `x-session-parent-id` | `${parent_session_id}`; omitted for root sessions |
+
+`${session_id}` and `${parent_session_id}` are expanded for each request.
+Templates, rather than resolved session IDs or environment values, are stored in
+model manifests and fingerprints. Header values are public behavior metadata:
+environment interpolation is supported, but the configured template and its
+resolved plaintext value may be exposed in process memory and on the wire.
+
+Transport-owned headers (`host`, `content-length`, `transfer-encoding`,
+`connection`, `proxy-authorization`) and protocol-owned headers (`content-type`,
+`accept`, `anthropic-version`, `anthropic-beta`, and every `x-amz-*` name) are
+forbidden at every level. Auth-owned headers (`authorization`, `x-api-key`,
+`api-key`, `cookie`, `set-cookie`, `x-goog-api-key`) and `user-agent` are allowed.
+If any auth-owned header is configured, caller headers take precedence and the
+adapter does not inject its typed authentication header.
 
 ## `[server]`
 
@@ -396,7 +429,8 @@ api_key = "${env:OPENAI_API_KEY}"
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `shape` | string | catalog shape | `"chat"` or `"responses"` model shape override. |
 | `cache` | table | family default | Prompt-cache policy matching the resolved adaptor family. See [`[providers.<id>.cache]`](#providersidcache). |
-| `model_overrides` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `defaults`, `variants`, `default_variant`, `shape`, `compaction`. Cannot invent a model absent from the catalog or directly change capabilities. |
+| `headers` | map of strings | empty | Provider request-header overrides. |
+| `model_overrides` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `defaults`, `variants`, `default_variant`, `shape`, `compaction`, `headers`. Cannot invent a model absent from the catalog or directly change capabilities. |
 
 Within a model override, `compaction` defaults to `"unsupported"`. Set it to
 `"openai-responses-compact"` for the OpenAI Responses recipe or
@@ -437,7 +471,7 @@ headers = {}
 | `adaptor` | string | *(required)* | Protocol adaptor ID (see below). |
 | `setup` | map of string values | empty | Adaptor-required setup fields (Vertex `location`/`project`/`resource`, Bedrock `region`, Azure `api_version`/`deployment`). Interpolates `${env:NAME}`. |
 | `auth` | table | *(required)* | Typed auth definition (see below). |
-| `headers` | map of strings | empty | Public static headers. No interpolation; may not collide with transport/protocol/auth-owned headers. |
+| `headers` | map of strings | empty | Public provider request-header overrides. Supports environment and session templates. |
 | `cache` | table | adaptor default | Prompt-cache policy matching `adaptor`. See [`[providers.<id>.cache]`](#providersidcache). |
 | `models` | map | *(required)* | At least one custom model definition. |
 
@@ -455,6 +489,7 @@ Custom model definition under `[providers."custom.x".models."<model-id>"]`:
 | `capabilities` | table | *(required)* | Explicit capability declarations (see below). |
 | `defaults` | table | empty | Request defaults (see below). |
 | `options` | table | empty | Adaptor-specific options (see below). |
+| `headers` | map of strings | empty | Model request-header overrides. Variant `add` and `replace` directives also accept `headers`, merged over the parent model. |
 | `variants` | map | empty | Named variant directives. |
 | `default_variant` | string | *(none)* | `"base"` or a named variant that must exist in `variants`. |
 
@@ -502,8 +537,10 @@ Custom model definition under `[providers."custom.x".models."<model-id>"]`:
 
 ## Environment interpolation
 
-`${env:NAME}` is a single-pass, `$$`-escaped interpolation performed on provider
-values during config load. It is allowed only in these paths:
+`${env:NAME}` is single-pass interpolation. `${env:NAME:-fallback}` uses the
+fallback when the variable is unset; the fallback may be empty and is split on
+the first `:-`. `$$` emits a literal `$`. Interpolation is allowed only in these
+paths:
 
 - `providers.<id>.endpoint`
 - `providers.<id>.base_url`
@@ -511,11 +548,18 @@ values during config load. It is allowed only in these paths:
 - `providers.<id>.api_key`
 - `providers.<id>.auth_override.values.<field>`
 - `providers.<id>.auth.values.<field>`
+- `headers.<name>`
+- `providers.<id>.headers.<name>`
+- `providers.<id>.models.<model>.headers.<name>`
+- `providers.<id>.model_overrides.<model>.headers.<name>`
+- model and model-override `variants.<variant>.headers.<name>`
 
 `NAME` must be `[A-Z_][A-Z0-9_]*` (uppercase letters, digits, underscore, starting
 with a letter or underscore). A missing variable, a non-UTF-8 value, or an
-interpolation used anywhere else is a load error. Interpolation is not available
-in permission patterns, agent documents, or custom static headers.
+interpolation used anywhere else is a load error. A missing variable without a
+default remains an error. Header templates are validated at load time but kept
+unresolved for request-time expansion and stable manifests. Interpolation is not
+available in permission patterns or agent documents.
 
 ## Agent documents
 

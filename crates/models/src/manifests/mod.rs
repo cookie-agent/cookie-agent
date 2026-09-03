@@ -245,7 +245,9 @@ impl ModelSnapshotManifestIndex {
                     FrozenProviderSource::Managed { package_claim, .. } => package_claim,
                     FrozenProviderSource::Custom { .. } => unreachable!(),
                 })
-                .filter(|recipe| managed_recipe_matches_blueprint(recipe, &provider_id, &blueprint))
+                .filter(|recipe| {
+                    managed_recipe_matches_blueprint(recipe, &provider_id, &blueprint, binding)
+                })
                 .ok_or(RehydrationError::UnsupportedSnapshotRecipe)?;
             if recipe.family.id() != provider_recipe.as_str()
                 || recipe.family.id() != blueprint.provider_recipe.as_str()
@@ -342,6 +344,7 @@ fn managed_recipe_matches_blueprint(
     recipe: &crate::recipes::FamilyRecipe,
     _provider_id: &ProviderId,
     blueprint: &CompiledSafeModelBlueprint,
+    binding: &FrozenModelBinding,
 ) -> bool {
     let FrozenProviderSource::Managed {
         provider_recipe,
@@ -368,7 +371,46 @@ fn managed_recipe_matches_blueprint(
         && package_claim == expected_package
         && current_recipe_fingerprint
             .is_some_and(|fingerprint| fingerprint.as_str() == recipe_fingerprint.as_str())
-        && blueprint.static_headers.is_empty()
+        && selected_behavior(blueprint, &binding.selection)
+            .is_some_and(|behavior| behavior.static_headers == &binding.static_headers)
+        && managed_header_sets_are_supported(blueprint)
+}
+
+fn managed_header_sets_are_supported(blueprint: &CompiledSafeModelBlueprint) -> bool {
+    std::iter::once(&blueprint.static_headers)
+        .chain(
+            blueprint
+                .variants
+                .iter()
+                .map(|variant| &variant.static_headers),
+        )
+        .all(|headers| {
+            headers.len() <= 64
+                && headers
+                    .iter()
+                    .try_fold(0usize, |total, (name, value)| {
+                        let name = name.as_str();
+                        if matches!(
+                            name,
+                            "host"
+                                | "content-length"
+                                | "transfer-encoding"
+                                | "connection"
+                                | "proxy-authorization"
+                                | "accept"
+                                | "content-type"
+                                | "anthropic-version"
+                                | "anthropic-beta"
+                        ) || name.starts_with("x-amz-")
+                        {
+                            return None;
+                        }
+                        total
+                            .checked_add(name.len() + value.as_str().len())
+                            .filter(|total| *total <= 64 * 1024)
+                    })
+                    .is_some()
+        })
 }
 
 fn credential_shape_is_supported(blueprint: &CompiledSafeModelBlueprint) -> bool {
@@ -535,6 +577,7 @@ pub struct FrozenBehaviorRef<'a> {
     pub descriptor: &'a oven_sdk::LanguageModelDescriptor,
     pub defaults: &'a FrozenResolvedRequestDefaults,
     pub options: &'a FrozenProviderOptions,
+    pub static_headers: &'a BTreeMap<HeaderName, SafeStaticHeaderValue>,
     pub behavior_fingerprint: &'a Sha256Digest,
     pub selection_fingerprint: &'a Sha256Digest,
 }
@@ -552,6 +595,7 @@ pub fn selected_behavior<'a>(
             descriptor: &blueprint.descriptor,
             defaults: &blueprint.defaults,
             options: &blueprint.options,
+            static_headers: &blueprint.static_headers,
             behavior_fingerprint: &blueprint.behavior_fingerprint,
             selection_fingerprint: &blueprint.selection_fingerprint,
         }),
@@ -563,6 +607,7 @@ pub fn selected_behavior<'a>(
                 descriptor: &variant.descriptor,
                 defaults: &variant.defaults,
                 options: &variant.options,
+                static_headers: &variant.static_headers,
                 behavior_fingerprint: &variant.behavior_fingerprint,
                 selection_fingerprint: &variant.selection_fingerprint,
             }),
@@ -592,7 +637,7 @@ pub fn behavior_fingerprint(
             "descriptor": behavior.descriptor,
             "defaults": behavior.defaults,
             "options": behavior.options,
-            "static_headers": blueprint.static_headers,
+            "static_headers": behavior.static_headers,
         }),
     )
 }
@@ -638,7 +683,7 @@ pub fn frozen_binding(
         descriptor: behavior.descriptor.clone(),
         defaults: behavior.defaults.clone(),
         options: behavior.options.clone(),
-        static_headers: blueprint.static_headers.clone(),
+        static_headers: behavior.static_headers.clone(),
         behavior_fingerprint: behavior.behavior_fingerprint.clone(),
         selection_fingerprint: behavior.selection_fingerprint.clone(),
     };

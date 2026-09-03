@@ -2708,6 +2708,7 @@ fn fixture() -> Fixture {
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
+            headers: BTreeMap::new(),
             providers: BTreeMap::new(),
         },
         agents: BTreeMap::new(),

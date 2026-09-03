@@ -4,8 +4,8 @@ use cookie_agent_identity::{
     AuthFieldName, AuthMethodId, ProviderId, ProviderModelId, SetupFieldId,
 };
 use cookie_agent_models::{
-    AuthOverride, BoundedSetupString, ManagedModelShape, ModelsDevProvider, ProviderDefinition,
-    SafeSetupValue, SecretString,
+    AuthOverride, BoundedSetupString, HeaderName, ManagedModelShape, ModelsDevProvider,
+    ProviderDefinition, SafeSetupValue, SafeStaticHeaderValue, SecretString,
     adapters::OvenAdapterFamily,
     catalog::{
         CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
@@ -255,7 +255,7 @@ fn non_video_model_behavior_fingerprint_is_stable() {
             .unwrap()
             .behavior_fingerprint
             .as_str(),
-        "66ad8e15721c12aa5eb8db47c7b40afee8f25b043641df0de6377e44602b3cd2"
+        "3a320f167eb773e1b67c5c8177623733b955e2971de564faf0122edee29842ae"
     );
 }
 
@@ -268,6 +268,7 @@ fn authored_shape_selects_chat() {
         auth_override: None,
         shape: Some(ManagedModelShape::Chat),
         cache: None,
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
     let compiled = DynamicCompiler::family_registry()
@@ -294,6 +295,7 @@ fn managed_provider_cache_must_match_resolved_adaptor() {
         cache: Some(
             serde_json::from_value(serde_json::json!({"system":"1h"})).expect("provider cache"),
         ),
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
     assert!(matches!(
@@ -318,6 +320,7 @@ fn managed_cache_validation_precedes_model_availability_and_resolution_skips() {
             serde_json::from_value(serde_json::json!({"mode":"implicit"}))
                 .expect("provider cache envelope"),
         ),
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
 
@@ -476,6 +479,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         auth_override: Some(auth("azure-api-key-v1", &[("api_key", "secret")])),
         shape: None,
         cache: None,
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
     let azure_model = DynamicCompiler::family_registry()
@@ -508,6 +512,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         auth_override: Some(auth("oauth-access-token-v1", &[("access_token", "token")])),
         shape: None,
         cache: None,
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
     let vertex_model = DynamicCompiler::family_registry()
@@ -541,6 +546,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         auth_override: Some(auth("bearer-api-key-v1", &[("api_key", "bedrock-key")])),
         shape: None,
         cache: None,
+        headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
     };
     let bedrock_model = DynamicCompiler::family_registry()
@@ -711,5 +717,213 @@ variants = { zeta = { operation = "add" }, alpha = { operation = "add" } }
             .map(|id| id.as_str())
             .collect::<Vec<_>>(),
         ["alpha", "zeta"]
+    );
+}
+
+fn header_map(values: &[(&str, &str)]) -> BTreeMap<HeaderName, SafeStaticHeaderValue> {
+    values
+        .iter()
+        .map(|(name, value)| {
+            (
+                HeaderName::new(*name).unwrap(),
+                SafeStaticHeaderValue::new(*value).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn headers_merge_case_insensitively_with_variant_precedence_and_deletion() {
+    let definition: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+headers = { X-Level = "provider", X-Delete = "" }
+
+[models.test]
+display_name = "Test"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+headers = { x-LEVEL = "model", x-provider-only = "model" }
+variants = { fast = { operation = "add", headers = { X-Level = "variant", X-Keep = "" } } }
+"#,
+    )
+    .unwrap();
+    let ProviderDefinition::Custom(provider) = definition else {
+        unreachable!();
+    };
+    let global = header_map(&[
+        ("x-level", "global"),
+        ("x-delete", "global"),
+        ("x-keep", "global"),
+    ]);
+    let compiled = DynamicCompiler::family_registry()
+        .compile_custom_with_headers(&ProviderId::new("custom.test").unwrap(), &provider, &global)
+        .unwrap();
+    let model = &compiled.models[&ProviderModelId::new("test").unwrap()];
+    assert_eq!(
+        model.headers[&HeaderName::new("X-Level").unwrap()].as_str(),
+        "model"
+    );
+    assert!(
+        !model
+            .headers
+            .contains_key(&HeaderName::new("x-delete").unwrap())
+    );
+    assert_eq!(
+        model.variants[&cookie_agent_identity::VariantId::new("fast").unwrap()].headers
+            [&HeaderName::new("x-level").unwrap()]
+            .as_str(),
+        "variant"
+    );
+    assert!(
+        !model.variants[&cookie_agent_identity::VariantId::new("fast").unwrap()]
+            .headers
+            .contains_key(&HeaderName::new("x-keep").unwrap())
+    );
+}
+
+#[test]
+fn auth_headers_are_allowed_while_transport_and_protocol_headers_are_rejected() {
+    let definition: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "bearer-api-key-v1", values = { api_key = "typed" } }
+headers = { Authorization = "Bearer configured", Cookie = "route=one", user-agent = "custom" }
+[models.test]
+display_name = "Test"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+"#,
+    )
+    .unwrap();
+    assert!(
+        definition
+            .validate_for(&ProviderId::new("custom.test").unwrap())
+            .is_ok()
+    );
+
+    for forbidden in ["host", "content-type", "anthropic-beta", "x-amz-date"] {
+        let global = header_map(&[(forbidden, "value")]);
+        let ProviderDefinition::Custom(provider) = &definition else {
+            unreachable!();
+        };
+        assert!(matches!(
+            DynamicCompiler::family_registry().compile_custom_with_headers(
+                &ProviderId::new("custom.test").unwrap(),
+                provider,
+                &global,
+            ),
+            Err(DynamicCompileError::StaticHeaders(_))
+        ));
+    }
+}
+
+#[test]
+fn managed_provider_accepts_auth_owned_and_user_agent_headers() {
+    let authored = ModelsDevProvider {
+        base_url: None,
+        setup: BTreeMap::new(),
+        api_key: Some(SecretString::new("typed-secret").unwrap()),
+        auth_override: None,
+        shape: None,
+        cache: None,
+        headers: header_map(&[
+            ("authorization", "Bearer configured"),
+            ("user-agent", "managed-client"),
+        ]),
+        model_overrides: BTreeMap::new(),
+    };
+    assert!(
+        ProviderDefinition::ModelsDev(authored.clone())
+            .validate_for(&ProviderId::new("openai").unwrap())
+            .is_ok()
+    );
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed(
+            "sha256:test",
+            &record("@ai-sdk/openai", None),
+            Some(&authored),
+        )
+        .unwrap();
+    let model = compiled.models.values().next().unwrap();
+    assert_eq!(
+        model.headers[&HeaderName::new("authorization").unwrap()].as_str(),
+        "Bearer configured"
+    );
+}
+
+#[test]
+fn merged_header_count_is_bounded() {
+    let definition: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+[models.test]
+display_name = "Test"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+"#,
+    )
+    .unwrap();
+    let ProviderDefinition::Custom(mut provider) = definition else {
+        unreachable!();
+    };
+    let global = (0..40)
+        .map(|index| {
+            (
+                HeaderName::new(format!("x-global-{index}")).unwrap(),
+                SafeStaticHeaderValue::new("value").unwrap(),
+            )
+        })
+        .collect();
+    provider.headers = (0..30)
+        .map(|index| {
+            (
+                HeaderName::new(format!("x-provider-{index}")).unwrap(),
+                SafeStaticHeaderValue::new("value").unwrap(),
+            )
+        })
+        .collect();
+    assert!(matches!(
+        DynamicCompiler::family_registry().compile_custom_with_headers(
+            &ProviderId::new("custom.test").unwrap(),
+            &provider,
+            &global,
+        ),
+        Err(DynamicCompileError::StaticHeaders(_))
+    ));
+}
+
+#[test]
+fn header_fingerprints_use_templates_not_environment_values() {
+    let definition: ProviderDefinition = toml::from_str(
+        r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-compatible"
+auth = { method = "no-auth-v1", values = {} }
+headers = { x-env = "${env:COOKIE_AGENT_FINGERPRINT_TEST:-fallback}" }
+[models.test]
+display_name = "Test"
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+"#,
+    )
+    .unwrap();
+    let ProviderDefinition::Custom(provider) = definition else {
+        unreachable!();
+    };
+    unsafe { std::env::set_var("COOKIE_AGENT_FINGERPRINT_TEST", "first") };
+    let first = DynamicCompiler::family_registry()
+        .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+        .unwrap();
+    unsafe { std::env::set_var("COOKIE_AGENT_FINGERPRINT_TEST", "second") };
+    let second = DynamicCompiler::family_registry()
+        .compile_custom(&ProviderId::new("custom.test").unwrap(), &provider)
+        .unwrap();
+    unsafe { std::env::remove_var("COOKIE_AGENT_FINGERPRINT_TEST") };
+    assert_eq!(first.fingerprint, second.fingerprint);
+    assert_eq!(
+        first.models[&ProviderModelId::new("test").unwrap()].behavior_fingerprint,
+        second.models[&ProviderModelId::new("test").unwrap()].behavior_fingerprint
     );
 }

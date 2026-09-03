@@ -211,6 +211,11 @@ pub enum VariantDirective {
         #[serde(default)]
         options: ProviderOptions,
         reasoning: Option<ReasoningBehavior>,
+        #[serde(default, deserialize_with = "crate::authoring::deserialize_headers")]
+        headers: std::collections::BTreeMap<
+            crate::authoring::HeaderName,
+            crate::authoring::SafeStaticHeaderValue,
+        >,
     },
     Replace {
         display_name: Option<String>,
@@ -219,8 +224,34 @@ pub enum VariantDirective {
         #[serde(default)]
         options: ProviderOptions,
         reasoning: Option<ReasoningBehavior>,
+        #[serde(default, deserialize_with = "crate::authoring::deserialize_headers")]
+        headers: std::collections::BTreeMap<
+            crate::authoring::HeaderName,
+            crate::authoring::SafeStaticHeaderValue,
+        >,
     },
     Disable,
+}
+
+impl VariantDirective {
+    #[must_use]
+    pub fn headers(
+        &self,
+    ) -> &std::collections::BTreeMap<
+        crate::authoring::HeaderName,
+        crate::authoring::SafeStaticHeaderValue,
+    > {
+        match self {
+            Self::Add { headers, .. } | Self::Replace { headers, .. } => headers,
+            Self::Disable => {
+                static EMPTY: std::collections::BTreeMap<
+                    crate::authoring::HeaderName,
+                    crate::authoring::SafeStaticHeaderValue,
+                > = std::collections::BTreeMap::new();
+                &EMPTY
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

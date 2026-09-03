@@ -357,8 +357,9 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
     );
     let provider_store = open_provider_store().context("open provider store 3")?;
     let model_manager = Arc::new(
-        ModelManager::new(
+        ModelManager::new_with_headers(
             configuration.runtime.providers.clone(),
+            configuration.runtime.headers.clone(),
             catalog,
             provider_store,
         )
@@ -1650,6 +1651,7 @@ mod tests {
                 auth_override: None,
                 shape: None,
                 cache: None,
+                headers: BTreeMap::new(),
                 model_overrides: BTreeMap::new(),
             },
         );

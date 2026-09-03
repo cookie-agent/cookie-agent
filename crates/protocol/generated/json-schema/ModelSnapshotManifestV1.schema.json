@@ -899,6 +899,17 @@
           "maxLength": 64,
           "minLength": 64,
           "pattern": "^[0-9a-f]{64}$"
+        },
+        "static_headers": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "patternProperties": {
+            "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$": {
+              "type": "string",
+              "maxLength": 8192
+            }
+          }
         }
       },
       "additionalProperties": false,

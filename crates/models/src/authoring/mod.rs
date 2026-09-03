@@ -230,7 +230,6 @@ impl SafeStaticHeaderValue {
     pub fn new(value: impl Into<String>) -> Result<Self, AuthoringError> {
         let value = value.into();
         if value.len() <= MAX_HEADER_VALUE_BYTES
-            && !value.contains("${env:")
             && !value
                 .chars()
                 .any(|c| c.is_control() || ('\u{7f}'..='\u{9f}').contains(&c))
@@ -295,6 +294,8 @@ pub struct ManagedModelOverride {
     pub shape: Option<ManagedModelShape>,
     #[serde(default)]
     pub compaction: NativeCompactionConfig,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -314,6 +315,8 @@ pub struct ModelsDevProvider {
     pub auth_override: Option<AuthOverride>,
     pub shape: Option<ManagedModelShape>,
     pub cache: Option<ProviderCacheConfig>,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
     #[serde(default)]
     pub model_overrides: BTreeMap<ProviderModelId, ManagedModelOverride>,
 }
@@ -332,6 +335,8 @@ pub struct CustomModelDefinition {
     #[serde(default)]
     pub variants: BTreeMap<VariantId, VariantDirective>,
     pub default_variant: Option<ConfiguredModelDefault>,
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -382,6 +387,16 @@ impl ProviderDefinition {
 }
 
 fn validate_display_overrides(provider: &ModelsDevProvider) -> Result<(), AuthoringError> {
+    validate_header_ownership(&provider.headers, "provider")?;
+    for (model_id, model) in &provider.model_overrides {
+        validate_header_ownership(&model.headers, format!("model `{model_id}`"))?;
+        for (variant_id, directive) in &model.variants {
+            validate_header_ownership(
+                directive.headers(),
+                format!("model `{model_id}` variant `{variant_id}`"),
+            )?;
+        }
+    }
     for value in provider
         .model_overrides
         .values()
@@ -399,8 +414,15 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
     validate_auth_shape(&provider.auth, provider.adaptor.as_str())?;
     validate_provider_cache(provider.cache.as_ref(), provider.adaptor.as_str())
         .map_err(AuthoringError::Cache)?;
-    validate_header_ownership(&provider.headers, &provider.auth)?;
-    for model in provider.models.values() {
+    validate_header_ownership(&provider.headers, "provider")?;
+    for (model_id, model) in &provider.models {
+        validate_header_ownership(&model.headers, format!("model `{model_id}`"))?;
+        for (variant_id, directive) in &model.variants {
+            validate_header_ownership(
+                directive.headers(),
+                format!("model `{model_id}` variant `{variant_id}`"),
+            )?;
+        }
         validate_display_name(&model.display_name)?;
         validate_capabilities(&model.capabilities)?;
         validate_defaults(&model.defaults, &model.capabilities)?;
@@ -594,47 +616,44 @@ fn validate_auth_shape(auth: &AuthDefinition, adaptor: &str) -> Result<(), Autho
     }
 }
 
-fn validate_header_ownership(
+pub fn validate_header_ownership(
     headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
-    auth: &AuthDefinition,
+    scope: impl Into<String>,
 ) -> Result<(), AuthoringError> {
-    const FORBIDDEN: &[&str] = &[
-        "authorization",
+    const TRANSPORT_OWNED: &[&str] = &[
         "host",
         "content-length",
         "transfer-encoding",
         "connection",
         "proxy-authorization",
-        "cookie",
-        "set-cookie",
+    ];
+    const PROTOCOL_OWNED: &[&str] = &[
         "accept",
         "content-type",
-        "user-agent",
-        "x-api-key",
-        "x-goog-api-key",
-        "api-key",
         "anthropic-version",
+        "anthropic-beta",
     ];
-    if headers
-        .keys()
-        .any(|name| FORBIDDEN.contains(&name.as_str()))
-    {
-        return Err(AuthoringError::HeaderOwned);
-    }
-    if auth.method.as_str() == "api-key-header-v1"
-        && let Some(name) = auth
-            .parameters
-            .get(&AuthParameterId::new("header_name").expect("static id"))
-        && headers
-            .keys()
-            .any(|header| header.as_str() == name.as_str())
-    {
-        return Err(AuthoringError::HeaderOwned);
+    let scope = scope.into();
+    for name in headers.keys() {
+        let owner = if TRANSPORT_OWNED.contains(&name.as_str()) {
+            Some("HTTP transport")
+        } else if PROTOCOL_OWNED.contains(&name.as_str()) || name.as_str().starts_with("x-amz-") {
+            Some("protocol adapter")
+        } else {
+            None
+        };
+        if let Some(owner) = owner {
+            return Err(AuthoringError::HeaderOwned {
+                scope,
+                header: name.as_str().to_owned(),
+                owner,
+            });
+        }
     }
     Ok(())
 }
 
-fn deserialize_headers<'de, D>(
+pub fn deserialize_headers<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<HeaderName, SafeStaticHeaderValue>, D::Error>
 where
@@ -665,6 +684,19 @@ where
         }
     }
     deserializer.deserialize_map(Visitor)
+}
+
+pub fn validate_header_limits(
+    headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
+) -> Result<(), AuthoringError> {
+    let aggregate = headers.iter().fold(0usize, |total, (name, value)| {
+        total.saturating_add(name.as_str().len() + value.as_str().len())
+    });
+    if headers.len() > MAX_HEADER_ENTRIES || aggregate > MAX_HEADER_AGGREGATE_BYTES {
+        Err(AuthoringError::HeaderLimits)
+    } else {
+        Ok(())
+    }
 }
 
 const fn yes() -> bool {
@@ -713,8 +745,14 @@ pub enum AuthoringError {
     AuthMethod,
     #[error("invalid auth parameter or credential fields")]
     AuthShape,
-    #[error("static header is transport, protocol, or auth owned")]
-    HeaderOwned,
+    #[error("{scope} header `{header}` is owned by the {owner}")]
+    HeaderOwned {
+        scope: String,
+        header: String,
+        owner: &'static str,
+    },
+    #[error("static header limits exceeded")]
+    HeaderLimits,
     #[error("{0}")]
     Cache(String),
 }

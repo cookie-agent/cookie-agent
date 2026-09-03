@@ -1317,6 +1317,7 @@ impl FrozenModelBinding {
                     &blueprint.descriptor,
                     &blueprint.defaults,
                     &blueprint.options,
+                    &blueprint.static_headers,
                     &blueprint.behavior_fingerprint,
                     &blueprint.selection_fingerprint,
                 ))
@@ -1331,14 +1332,21 @@ impl FrozenModelBinding {
                             &candidate.descriptor,
                             &candidate.defaults,
                             &candidate.options,
+                            &candidate.static_headers,
                             &candidate.behavior_fingerprint,
                             &candidate.selection_fingerprint,
                         )
                     })
             },
         );
-        let Some((descriptor, defaults, options, behavior_fingerprint, selection_fingerprint)) =
-            behavior
+        let Some((
+            descriptor,
+            defaults,
+            options,
+            static_headers,
+            behavior_fingerprint,
+            selection_fingerprint,
+        )) = behavior
         else {
             return false;
         };
@@ -1356,7 +1364,7 @@ impl FrozenModelBinding {
             && &self.descriptor == descriptor
             && &self.defaults == defaults
             && &self.options == options
-            && self.static_headers == blueprint.static_headers
+            && &self.static_headers == static_headers
             && &self.behavior_fingerprint == behavior_fingerprint
             && &self.selection_fingerprint == selection_fingerprint
     }

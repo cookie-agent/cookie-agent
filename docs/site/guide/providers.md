@@ -312,11 +312,15 @@ auth = {
 }
 ```
 
-Custom static headers are public behavior metadata: they cannot interpolate,
-carry credentials, or collide with transport/protocol/auth-owned headers
-(`authorization`, `host`, `content-length`, `user-agent`, `content-type`,
-`x-api-key`, `x-goog-api-key`, `anthropic-version`, and others). Use a typed auth
-method such as `api-key-header-v1` for secret header values.
+Configured headers are public behavior metadata. They may interpolate
+environment variables, including `${env:NAME:-fallback}`, and may use
+`${session_id}` or `${parent_session_id}` request templates. Values are plain
+text, not secret-typed storage, and can be exposed in process memory and on the
+wire. Transport/protocol-owned names (`host`, `content-length`, `content-type`,
+`accept`, `anthropic-version`, `anthropic-beta`, `x-amz-*`, and related framing
+headers) remain forbidden. Auth-owned names such as `authorization`, `x-api-key`,
+and `cookie` are allowed; when configured, they suppress the adaptor's typed auth
+injection. `user-agent` is also configurable.
 
 ### Local OpenAI-compatible endpoint
 

@@ -321,6 +321,7 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::Toml(_) => "config_toml",
         ConfigError::TomlLimit => "config_toml_limit",
         ConfigError::Provider { .. } => "config_provider",
+        ConfigError::HeaderOwnership(_) => "config_header_ownership",
         ConfigError::InvalidRuntime => "config_invalid_runtime",
         ConfigError::McpServer { .. } => "config_mcp_server",
         ConfigError::Plugin { .. } => "config_plugin",
