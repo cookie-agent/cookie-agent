@@ -947,7 +947,9 @@ impl App {
         };
         self.apply_ownership_classification(session_id, generation, outcome);
         self.select_session(session_id).await;
-        self.drain_replay(session_id).await;
+        if self.deliveries.is_some() {
+            self.drain_replay(session_id).await;
+        }
         self.refresh_tree().await;
     }
 

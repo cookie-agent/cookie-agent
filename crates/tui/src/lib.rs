@@ -159,7 +159,7 @@ mod tests {
         }
     }
 
-    fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
+    pub(crate) fn in_process_server() -> (tempfile::TempDir, Arc<Server>) {
         in_process_server_with_skills(false)
     }
 

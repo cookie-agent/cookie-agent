@@ -3591,6 +3591,31 @@ mod tests {
             .count()
     }
 
+    async fn handle_detached_replay(
+        app: &mut App,
+        deliveries: &mut tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>,
+        session_id: SessionId,
+    ) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let delivery = deliveries.recv().await.expect("event-loop delivery");
+                let finished = matches!(
+                    &delivery,
+                    ClientDelivery::ReplayEnd {
+                        session_id: replay_session,
+                        ..
+                    } if *replay_session == session_id
+                );
+                app.handle_delivery(delivery).await;
+                if finished {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("detached replay timeout");
+    }
+
     fn assistant_state(children: Vec<AssistantChild>) -> SessionState {
         SessionState {
             transcript: vec![TranscriptItem::Assistant {
@@ -7544,6 +7569,66 @@ mod tests {
         assert!(app.read_only_sessions.contains(&session));
         assert!(!app.owned_sessions.contains(&session));
         assert!(!app.ownership_classifications.contains_key(&session));
+    }
+
+    #[tokio::test]
+    async fn successful_new_after_delivery_handoff_uses_event_loop_receiver() {
+        let (_directory, server) = crate::tests::in_process_server();
+        let client = Client::connect_in_process(server);
+        client.handshake().await.expect("handshake");
+        let mut app = App::new(client).await.expect("app");
+        let mut deliveries = app.take_deliveries();
+
+        app.run_command(SlashCommand::New).await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        let session_id = app.selected.expect("new session selected");
+        assert!(app.owned_sessions.contains(&session_id));
+        assert!(app.new_session_draft.is_none());
+        assert!(!app.store.sessions.contains_key(&session_id));
+
+        handle_detached_replay(&mut app, &mut deliveries, session_id).await;
+        assert_eq!(app.store.sessions[&session_id].last_seq, 1);
+        assert!(app.store.sessions[&session_id].creation_agent.is_some());
+    }
+
+    #[tokio::test]
+    async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_loop_receiver()
+    {
+        let (_directory, server) = crate::tests::in_process_server();
+        let client = Client::connect_in_process(server);
+        client.handshake().await.expect("handshake");
+        let mut app = App::new(client.clone()).await.expect("app");
+        let mut deliveries = app.take_deliveries();
+        let session = client
+            .create_session(cookie_agent_protocol::SessionCreateParams {
+                selection: crate::tests::test_run_selection(),
+            })
+            .await
+            .expect("create session")
+            .session;
+        app.refresh_lists().await;
+
+        app.run_command(SlashCommand::Sessions).await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert_eq!(app.selected, Some(session.session_id));
+        assert!(app.owned_sessions.contains(&session.session_id));
+        assert!(!app.store.sessions.contains_key(&session.session_id));
+
+        handle_detached_replay(&mut app, &mut deliveries, session.session_id).await;
+        assert_eq!(app.store.sessions[&session.session_id].last_seq, 1);
+        assert!(
+            app.store.sessions[&session.session_id]
+                .creation_agent
+                .is_some()
+        );
     }
 
     #[tokio::test]
