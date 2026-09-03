@@ -2086,11 +2086,15 @@ although MCP's <code>CallToolResult</code> cannot author arbitrary emitted messa
 <a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="n">values</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">api_key</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"${env:ACME_API_KEY}"</span><span class="w"> </span><span class="p">},</span>
 <a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">}</span>
 </code></pre></div>
-<p>Custom static headers are public behavior metadata: they cannot interpolate,
-carry credentials, or collide with transport/protocol/auth-owned headers
-(<code>authorization</code>, <code>host</code>, <code>content-length</code>, <code>user-agent</code>, <code>content-type</code>,
-<code>x-api-key</code>, <code>x-goog-api-key</code>, <code>anthropic-version</code>, and others). Use a typed auth
-method such as <code>api-key-header-v1</code> for secret header values.</p>
+<p>Configured headers are public behavior metadata. They may interpolate
+environment variables, including <code>${env:NAME:-fallback}</code>, and may use
+<code>${session_id}</code> or <code>${parent_session_id}</code> request templates. Values are plain
+text, not secret-typed storage, and can be exposed in process memory and on the
+wire. Transport/protocol-owned names (<code>host</code>, <code>content-length</code>, <code>content-type</code>,
+<code>accept</code>, <code>anthropic-version</code>, <code>anthropic-beta</code>, <code>x-amz-*</code>, and related framing
+headers) remain forbidden. Auth-owned names such as <code>authorization</code>, <code>x-api-key</code>,
+and <code>cookie</code> are allowed; when configured, they suppress the adaptor's typed auth
+injection. <code>user-agent</code> is also configurable.</p>
 <h3 id="local-openai-compatible-endpoint">Local OpenAI-compatible endpoint<a class="headerlink" href="#local-openai-compatible-endpoint" title="Permanent link">&para;</a></h3>
 <p>Loopback <code>http</code> endpoints are allowed for local servers (for example LM Studio or
 a local vLLM). The URL must be <code>http://localhost:&lt;port&gt;/v1</code> or

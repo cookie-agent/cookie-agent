@@ -1018,6 +1018,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      [headers]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#server" class="md-nav__link">
     <span class="md-ellipsis">
       [server]
@@ -1398,6 +1407,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      [headers]
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#server" class="md-nav__link">
     <span class="md-ellipsis">
       [server]
@@ -1736,6 +1754,12 @@ resumes on restart.</p>
 <td>Optional model-rate overrides for cost estimates</td>
 </tr>
 <tr>
+<td><code>headers</code></td>
+<td>map of strings</td>
+<td>shipped defaults below</td>
+<td>Request headers applied to every provider model</td>
+</tr>
+<tr>
 <td><code>providers</code></td>
 <td>table</td>
 <td>empty</td>
@@ -1768,6 +1792,51 @@ capabilities:</p>
 <p><code>skill</code> resources are skill names. A deny hides the skill from model discovery;
 an allow or ask can publish it and the conditional <code>skill</code> tool. Skill
 <code>allowed-tools</code> grants never override a governing deny.</p>
+<h2 id="headers"><code>[headers]</code><a class="headerlink" href="#headers" title="Permanent link">&para;</a></h2>
+<p>Global request headers are merged with provider, model, and variant <code>headers</code>
+tables. Names are case-insensitive and later values win:</p>
+<p><code>shipped defaults -&gt; global -&gt; provider -&gt; model or variant</code></p>
+<p>An empty value deletes an inherited header. Each authored table and each merged
+result is limited to 64 entries, 128 bytes per name, 8192 bytes per value, and
+64 KiB in aggregate. The shipped lowest-priority layer is:</p>
+<table>
+<thead>
+<tr>
+<th>Header</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user-agent</code></td>
+<td><code>cookie-agent/&lt;build version&gt;</code></td>
+</tr>
+<tr>
+<td><code>x-session-id</code></td>
+<td><code>${session_id}</code></td>
+</tr>
+<tr>
+<td><code>x-session-affinity</code></td>
+<td><code>${session_id}</code></td>
+</tr>
+<tr>
+<td><code>x-session-parent-id</code></td>
+<td><code>${parent_session_id}</code>; omitted for root sessions</td>
+</tr>
+</tbody>
+</table>
+<p><code>${session_id}</code> and <code>${parent_session_id}</code> are expanded for each request.
+Templates, rather than resolved session IDs or environment values, are stored in
+model manifests and fingerprints. Header values are public behavior metadata:
+environment interpolation is supported, but the configured template and its
+resolved plaintext value may be exposed in process memory and on the wire.</p>
+<p>Transport-owned headers (<code>host</code>, <code>content-length</code>, <code>transfer-encoding</code>,
+<code>connection</code>, <code>proxy-authorization</code>) and protocol-owned headers (<code>content-type</code>,
+<code>accept</code>, <code>anthropic-version</code>, <code>anthropic-beta</code>, and every <code>x-amz-*</code> name) are
+forbidden at every level. Auth-owned headers (<code>authorization</code>, <code>x-api-key</code>,
+<code>api-key</code>, <code>cookie</code>, <code>set-cookie</code>, <code>x-goog-api-key</code>) and <code>user-agent</code> are allowed.
+If any auth-owned header is configured, caller headers take precedence and the
+adapter does not inject its typed authentication header.</p>
 <h2 id="server"><code>[server]</code><a class="headerlink" href="#server" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2381,10 +2450,16 @@ for complete examples.</p>
 <td>Prompt-cache policy matching the resolved adaptor family. See <a href="#providersidcache"><code>[providers.&lt;id&gt;.cache]</code></a>.</td>
 </tr>
 <tr>
+<td><code>headers</code></td>
+<td>map of strings</td>
+<td>empty</td>
+<td>Provider request-header overrides.</td>
+</tr>
+<tr>
 <td><code>model_overrides</code></td>
 <td>map</td>
 <td>empty</td>
-<td>Sparse per-model overrides: <code>enabled</code>, <code>display_name</code>, <code>defaults</code>, <code>variants</code>, <code>default_variant</code>, <code>shape</code>, <code>compaction</code>. Cannot invent a model absent from the catalog or directly change capabilities.</td>
+<td>Sparse per-model overrides: <code>enabled</code>, <code>display_name</code>, <code>defaults</code>, <code>variants</code>, <code>default_variant</code>, <code>shape</code>, <code>compaction</code>, <code>headers</code>. Cannot invent a model absent from the catalog or directly change capabilities.</td>
 </tr>
 </tbody>
 </table>
@@ -2474,7 +2549,7 @@ catalog provider ID the custom definition takes precedence.</p>
 <td><code>headers</code></td>
 <td>map of strings</td>
 <td>empty</td>
-<td>Public static headers. No interpolation; may not collide with transport/protocol/auth-owned headers.</td>
+<td>Public provider request-header overrides. Supports environment and session templates.</td>
 </tr>
 <tr>
 <td><code>cache</code></td>
@@ -2534,6 +2609,12 @@ catalog provider ID the custom definition takes precedence.</p>
 <td>table</td>
 <td>empty</td>
 <td>Adaptor-specific options (see below).</td>
+</tr>
+<tr>
+<td><code>headers</code></td>
+<td>map of strings</td>
+<td>empty</td>
+<td>Model request-header overrides. Variant <code>add</code> and <code>replace</code> directives also accept <code>headers</code>, merged over the parent model.</td>
 </tr>
 <tr>
 <td><code>variants</code></td>
@@ -2721,8 +2802,10 @@ catalog provider ID the custom definition takes precedence.</p>
 </tbody>
 </table>
 <h2 id="environment-interpolation">Environment interpolation<a class="headerlink" href="#environment-interpolation" title="Permanent link">&para;</a></h2>
-<p><code>${env:NAME}</code> is a single-pass, <code>$$</code>-escaped interpolation performed on provider
-values during config load. It is allowed only in these paths:</p>
+<p><code>${env:NAME}</code> is single-pass interpolation. <code>${env:NAME:-fallback}</code> uses the
+fallback when the variable is unset; the fallback may be empty and is split on
+the first <code>:-</code>. <code>$$</code> emits a literal <code>$</code>. Interpolation is allowed only in these
+paths:</p>
 <ul>
 <li><code>providers.&lt;id&gt;.endpoint</code></li>
 <li><code>providers.&lt;id&gt;.base_url</code></li>
@@ -2730,11 +2813,18 @@ values during config load. It is allowed only in these paths:</p>
 <li><code>providers.&lt;id&gt;.api_key</code></li>
 <li><code>providers.&lt;id&gt;.auth_override.values.&lt;field&gt;</code></li>
 <li><code>providers.&lt;id&gt;.auth.values.&lt;field&gt;</code></li>
+<li><code>headers.&lt;name&gt;</code></li>
+<li><code>providers.&lt;id&gt;.headers.&lt;name&gt;</code></li>
+<li><code>providers.&lt;id&gt;.models.&lt;model&gt;.headers.&lt;name&gt;</code></li>
+<li><code>providers.&lt;id&gt;.model_overrides.&lt;model&gt;.headers.&lt;name&gt;</code></li>
+<li>model and model-override <code>variants.&lt;variant&gt;.headers.&lt;name&gt;</code></li>
 </ul>
 <p><code>NAME</code> must be <code>[A-Z_][A-Z0-9_]*</code> (uppercase letters, digits, underscore, starting
 with a letter or underscore). A missing variable, a non-UTF-8 value, or an
-interpolation used anywhere else is a load error. Interpolation is not available
-in permission patterns, agent documents, or custom static headers.</p>
+interpolation used anywhere else is a load error. A missing variable without a
+default remains an error. Header templates are validated at load time but kept
+unresolved for request-time expansion and stable manifests. Interpolation is not
+available in permission patterns or agent documents.</p>
 <h2 id="agent-documents">Agent documents<a class="headerlink" href="#agent-documents" title="Permanent link">&para;</a></h2>
 <p>Agent files are named <code>&lt;agent-id&gt;.md</code>; the filename is the agent ID
 (<code>^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$</code>, at most 64 characters). Each file has
