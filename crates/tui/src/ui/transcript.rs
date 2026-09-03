@@ -2427,7 +2427,7 @@ mod tests {
     };
     use crate::theme::{ColorLevel, ThemeKind};
     use crate::ui::app::*;
-    use crate::ui::events::{RenderScheduler, TerminalCleanup, TerminalRestore};
+    use crate::ui::events::RenderScheduler;
     use crate::ui::input::credential_wipe_count;
     use crate::ui::pickers::SearchPickerFocus;
     use crate::ui::provider::{ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation};
@@ -2485,7 +2485,6 @@ mod tests {
                 approval: ApprovalConfig::default(),
                 model_retry: cookie_agent_config::ModelRetryConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
-                prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
                 pricing: cookie_agent_config::PricingConfig::default(),
@@ -12850,18 +12849,6 @@ mod tests {
     // ------------------------------------------------------------------
     // Terminal restore / scheduler
     // ------------------------------------------------------------------
-
-    #[test]
-    fn terminal_restore_disables_mouse_capture_during_cleanup() {
-        let restore = TerminalRestore {
-            mouse_capture: true,
-            bracketed_paste: true,
-            ..TerminalRestore::default()
-        };
-        let steps = restore.cleanup_steps();
-        assert!(steps.contains(&TerminalCleanup::DisableMouseCapture));
-        assert!(steps.contains(&TerminalCleanup::DisableBracketedPaste));
-    }
 
     #[test]
     fn render_scheduler_coalesces_streams_and_prioritizes_input() {

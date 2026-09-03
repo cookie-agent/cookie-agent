@@ -62,7 +62,7 @@ use crate::{
     theme::Theme,
 };
 
-use super::events::{RenderScheduler, TerminalRestore};
+use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
 use super::input::{self, InputState};
 use super::management::{
     McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, SkillPanel,
@@ -532,6 +532,7 @@ pub struct App {
     pub(super) input_focused: bool,
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
+    session_errors: SessionErrorSummary,
     pub(super) should_quit: bool,
     /// Active mouse text selection (conversation or composer); cleared by
     /// Esc, a plain click anywhere, or a copy.
@@ -551,6 +552,39 @@ pub struct App {
 /// Maximum queue entries shown by the strip between the conversation pane
 /// and the composer; a "+N more" row folds the remainder into that budget.
 const MAX_VISIBLE_QUEUE_ROWS: usize = 3;
+const MAX_REPORTED_SESSION_ERROR_LINES: usize = 20;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SessionErrorSummary {
+    error_count: usize,
+    lines: VecDeque<String>,
+}
+
+impl SessionErrorSummary {
+    fn record(&mut self, error: &str) {
+        self.error_count = self.error_count.saturating_add(1);
+        for line in error.lines().filter(|line| !line.trim().is_empty()) {
+            if self.lines.len() == MAX_REPORTED_SESSION_ERROR_LINES {
+                self.lines.pop_front();
+            }
+            self.lines.push_back(line.to_owned());
+        }
+    }
+
+    fn format(&self) -> Option<String> {
+        if self.error_count == 0 {
+            return None;
+        }
+        let mut output = format!(
+            "cookie-agent: session ended with {} error(s):",
+            self.error_count
+        );
+        for line in &self.lines {
+            let _ = write!(output, "\n  - {line}");
+        }
+        Some(output)
+    }
+}
 
 /// The user-message action menu rows, in display/keyboard order:
 /// copy, revert (confirm-guarded), fork.
@@ -565,6 +599,7 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
 
 pub(super) enum RpcUpdate {
     Status(String),
+    Notice(String),
     SessionOwnershipClassified {
         session_id: SessionId,
         generation: u64,
@@ -924,6 +959,7 @@ impl App {
             input_focused: true,
             stdin_target: None,
             status: "Connected. Type /help for commands.".into(),
+            session_errors: SessionErrorSummary::default(),
             should_quit: false,
             selection: None,
             pending_press: None,
@@ -1063,6 +1099,7 @@ impl App {
                 self.pending_live_subscriptions.remove(&session_id);
                 self.live_subscription_attempts.remove(&session_id);
                 self.replay_ended_for_live_subscription.remove(&session_id);
+                self.session_errors.record(&error);
                 if self.selected == Some(session_id) {
                     self.input_focused = false;
                     self.status = error;
@@ -1097,10 +1134,11 @@ impl App {
         outcome: SessionLiveSubscriptionOutcome,
     ) {
         let Some(live_attempt) = live_attempt else {
-            if let SessionLiveSubscriptionOutcome::Failed(error) = outcome
-                && self.selected == Some(session_id)
-            {
-                self.status = error;
+            if let SessionLiveSubscriptionOutcome::Failed(error) = outcome {
+                self.session_errors.record(&error);
+                if self.selected == Some(session_id) {
+                    self.status = error;
+                }
             }
             return;
         };
@@ -1122,6 +1160,7 @@ impl App {
                 }
             }
             SessionLiveSubscriptionOutcome::Failed(error) => {
+                self.session_errors.record(&error);
                 if self.selected == Some(session_id) {
                     self.status = error;
                 }
@@ -2225,7 +2264,11 @@ impl App {
 
     pub(super) fn handle_rpc_update(&mut self, update: RpcUpdate) {
         match update {
-            RpcUpdate::Status(status) => self.status = status,
+            RpcUpdate::Status(status) => {
+                self.session_errors.record(&status);
+                self.status = status;
+            }
+            RpcUpdate::Notice(status) => self.status = status,
             RpcUpdate::SessionOwnershipClassified {
                 session_id,
                 generation,
@@ -5787,7 +5830,7 @@ impl App {
                     .await
                 {
                     Ok(result) if result.handled_reason.is_some() => {
-                        let _ = updates.send(RpcUpdate::Status(
+                        let _ = updates.send(RpcUpdate::Notice(
                             result.handled_reason.expect("reason is present"),
                         ));
                     }
@@ -5979,7 +6022,7 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let message = match client.recall_steer(RunRecallSteerParams { run_id }).await {
+            let update = match client.recall_steer(RunRecallSteerParams { run_id }).await {
                 Ok(result) => match result.recalled {
                     Some(text) => {
                         let _ = updates.send(RpcUpdate::SteerRecalled { session_id, text });
@@ -5987,11 +6030,11 @@ impl App {
                     }
                     // The lane raced ahead (a promotion landed first):
                     // nothing is owed; the strip is already catching up.
-                    None => "nothing pending to recall".to_owned(),
+                    None => RpcUpdate::Notice("nothing pending to recall".to_owned()),
                 },
-                Err(error) => error.to_string(),
+                Err(error) => RpcUpdate::Status(error.to_string()),
             };
-            let _ = updates.send(RpcUpdate::Status(message));
+            let _ = updates.send(update);
         });
     }
 
@@ -6194,7 +6237,7 @@ impl App {
         };
         self.spawn_rpc(async move {
             let _guard = lane.lock().await;
-            let message = match tokio::time::timeout(
+            let update = match tokio::time::timeout(
                 STDIN_RPC_TIMEOUT,
                 client.tool_stdin(RunToolStdinParams {
                     run_id,
@@ -6205,18 +6248,20 @@ impl App {
             )
             .await
             {
-                Err(_) => "stdin request timed out".into(),
-                Ok(Ok(result)) if !result.accepted => "stdin was rejected by the tool".into(),
+                Err(_) => RpcUpdate::Status("stdin request timed out".into()),
+                Ok(Ok(result)) if !result.accepted => {
+                    RpcUpdate::Status("stdin was rejected by the tool".into())
+                }
                 Ok(Ok(_)) => {
                     if eof {
-                        "tool stdin closed".into()
+                        RpcUpdate::Notice("tool stdin closed".into())
                     } else {
-                        "stdin sent".into()
+                        RpcUpdate::Notice("stdin sent".into())
                     }
                 }
-                Ok(Err(error)) => error.to_string(),
+                Ok(Err(error)) => RpcUpdate::Status(error.to_string()),
             };
-            let _ = updates.send(RpcUpdate::Status(message));
+            let _ = updates.send(update);
         });
     }
 
@@ -6650,12 +6695,14 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let message = match client.cancel_run(RunCancelParams { run_id }).await {
-                Ok(result) if result.cancelled => "run cancellation requested".into(),
-                Ok(_) => "run was already complete".into(),
-                Err(error) => error.to_string(),
+            let update = match client.cancel_run(RunCancelParams { run_id }).await {
+                Ok(result) if result.cancelled => {
+                    RpcUpdate::Notice("run cancellation requested".into())
+                }
+                Ok(_) => RpcUpdate::Notice("run was already complete".into()),
+                Err(error) => RpcUpdate::Status(error.to_string()),
             };
-            let _ = updates.send(RpcUpdate::Status(message));
+            let _ = updates.send(update);
         });
     }
 
@@ -8159,6 +8206,7 @@ pub async fn run_with_new_session(client: Client) -> anyhow::Result<()> {
 }
 
 async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Result<()> {
+    install_terminal_panic_hook();
     let tui_config = crate::config::load(None).context("load TUI configuration")?;
     let detection = crate::terminal_detect::detect_startup_theme(tui_config.theme);
     let theme = Theme::with_kind_from_env(detection.kind);
@@ -8171,36 +8219,53 @@ async fn run_terminal(client: Client, create_new_session: bool) -> anyhow::Resul
     let mut app = App::new_with_config(client, create_new_session, tui_config, theme)
         .await
         .context("initialize TUI")?;
-    let mut restore = TerminalRestore::default();
+    let mut restore = TerminalRestore;
     enable_raw_mode().context("enable terminal raw mode")?;
-    restore.raw_mode = true;
+    restore.raw_mode_enabled();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).context("enter alternate screen")?;
-    restore.alternate_screen = true;
+    restore.alternate_screen_entered();
     execute!(stdout, EnableMouseCapture).context("enable mouse capture")?;
-    restore.mouse_capture = true;
+    restore.mouse_capture_enabled();
     execute!(stdout, EnableBracketedPaste).context("enable bracketed paste")?;
-    restore.bracketed_paste = true;
+    restore.bracketed_paste_enabled();
     execute!(
         stdout,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )
     .context("enable keyboard enhancement")?;
-    restore.keyboard_enhancement = true;
+    restore.keyboard_enhancement_enabled();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
     let deliveries = app.take_deliveries();
-    let result = event_loop(&mut terminal, app, deliveries).await;
+    let (result, session_errors) = event_loop(&mut terminal, app, deliveries).await;
     drop(terminal);
     drop(restore);
+    for message in post_teardown_messages(&result, &session_errors) {
+        eprintln!("{message}");
+    }
     result
+}
+
+fn post_teardown_messages(
+    result: &anyhow::Result<()>,
+    session_errors: &SessionErrorSummary,
+) -> Vec<String> {
+    let mut messages = Vec::new();
+    if let Err(error) = result {
+        messages.push(format!("cookie-agent: {error:#}"));
+    }
+    if let Some(summary) = session_errors.format() {
+        messages.push(summary);
+    }
+    messages
 }
 
 async fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
     mut deliveries: tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>,
-) -> anyhow::Result<()> {
+) -> (anyhow::Result<()>, SessionErrorSummary) {
     let mut events = EventStream::new();
     let mut replay_watchdog = tokio::time::interval(std::time::Duration::from_millis(250));
     let mut mcp_poll = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -8208,13 +8273,16 @@ async fn event_loop(
     let mut render = RenderScheduler::default();
     loop {
         if render.should_draw(Instant::now()) {
-            terminal
+            if let Err(error) = terminal
                 .draw(|frame| app.draw(frame))
-                .context("draw terminal")?;
+                .context("draw terminal")
+            {
+                return (Err(error), app.session_errors.clone());
+            }
             render.drew(Instant::now());
         }
         if app.should_quit {
-            return Ok(());
+            return (Ok(()), app.session_errors.clone());
         }
         tokio::select! {
             Some(event) = events.next() => match event {
@@ -8233,7 +8301,11 @@ async fn event_loop(
                     render.mark_immediate();
                 }
                 Ok(CrosstermEvent::Resize(_, _)) => {
-                    handle_terminal_resize(terminal, &mut render).context("resize terminal")?;
+                    if let Err(error) = handle_terminal_resize(terminal, &mut render)
+                        .context("resize terminal")
+                    {
+                        return (Err(error), app.session_errors.clone());
+                    }
                 }
                 Ok(_) => {},
                 Err(error) => {
@@ -8253,7 +8325,8 @@ async fn event_loop(
                     app.clear_connect_secrets();
                     app.abort_connect_work();
                     app.status = "daemon disconnected".into();
-                    return Ok(());
+                    app.session_errors.record(&app.status);
+                    return (Ok(()), app.session_errors.clone());
                 }
             },
             Some(update) = app.rpc_updates_rx.recv() => {
@@ -9025,4 +9098,45 @@ fn find_node_mut(tree: &mut SessionTree, session_id: SessionId) -> Option<&mut S
     tree.children
         .iter_mut()
         .find_map(|child| find_node_mut(child, session_id))
+}
+
+#[cfg(test)]
+mod post_teardown_tests {
+    use super::*;
+
+    #[test]
+    fn clean_exit_without_session_errors_prints_nothing() {
+        let messages = post_teardown_messages(&Ok(()), &SessionErrorSummary::default());
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn session_error_summary_keeps_only_the_last_twenty_lines() {
+        let mut summary = SessionErrorSummary::default();
+        for index in 0..25 {
+            summary.record(&format!("error {index}"));
+        }
+
+        let output = summary.format().expect("summary");
+        assert!(output.starts_with("cookie-agent: session ended with 25 error(s):"));
+        assert!(!output.contains("error 4\n"));
+        assert!(output.contains("error 5\n"));
+        assert!(output.ends_with("error 24"));
+    }
+
+    #[test]
+    fn terminal_error_and_session_summary_are_both_reported() {
+        let mut summary = SessionErrorSummary::default();
+        summary.record("daemon disconnected");
+        let result = Err(anyhow::anyhow!("server task failed").context("event loop failed"));
+
+        let messages = post_teardown_messages(&result, &summary);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0],
+            "cookie-agent: event loop failed: server task failed"
+        );
+        assert!(messages[1].contains("daemon disconnected"));
+    }
 }
