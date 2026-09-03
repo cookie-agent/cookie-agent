@@ -1572,9 +1572,11 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
                 source,
             })?;
             drop(file);
-            replace_windows_cache_path(&temporary, path).map_err(|source| SessionError::Io {
-                path: path.to_owned(),
-                source,
+            replace_windows_path_with_retry(&temporary, path).map_err(|source| {
+                SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                }
             })?;
         }
         Ok(())
@@ -1586,7 +1588,7 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
 }
 
 #[cfg(windows)]
-fn replace_windows_cache_path(source: &Path, target: &Path) -> std::io::Result<()> {
+fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
     const ATTEMPTS: usize = 50;
     const BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -1599,7 +1601,7 @@ fn replace_windows_cache_path(source: &Path, target: &Path) -> std::io::Result<(
             Err(error) => return Err(error),
         }
     }
-    unreachable!("cache replacement attempts are nonzero")
+    unreachable!("path replacement attempts are nonzero")
 }
 
 #[cfg(windows)]
@@ -1705,12 +1707,10 @@ fn write_project_cwd(project_dir: &Path, cwd: &Path) -> Result<(), SessionError>
             source,
         })?;
         drop(file);
-        cookie_agent_models::secure_store::replace_windows_path(&temporary, &path).map_err(
-            |source| SessionError::Io {
-                path: path.clone(),
-                source,
-            },
-        )?;
+        replace_windows_path_with_retry(&temporary, &path).map_err(|source| SessionError::Io {
+            path: path.clone(),
+            source,
+        })?;
         Ok(())
     })();
     if result.is_err() {
