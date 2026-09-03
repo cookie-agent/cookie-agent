@@ -41,7 +41,7 @@ use cookie_agent_protocol::{
     ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection, RunStartParams,
     RunToolStdinParams, RuntimeChangeReason, SessionId, SessionPermissionOverlay, SessionStatus,
     SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
-    ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, WildcardPattern,
+    ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, VariantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
@@ -3501,6 +3501,39 @@ fn custom_fixture_with_capabilities(
         worker_agent,
         adaptor,
         capabilities_override,
+        None,
+        "worker",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_fixture_with_capabilities_and_variants(
+    endpoint: &str,
+    primary_agent: &str,
+    internal: Option<(&str, &str)>,
+    compaction_buffer_tokens: Option<u64>,
+    generate_titles: bool,
+    max_concurrency: Option<u32>,
+    mcp_server: Option<LoadedMcpServer>,
+    context_tokens: u64,
+    worker_agent: Option<&str>,
+    adaptor: &str,
+    capabilities_override: Option<&str>,
+    model_variants: Option<&str>,
+) -> (Fixture, RunSelection) {
+    custom_fixture_with_capabilities_and_worker_name(
+        endpoint,
+        primary_agent,
+        internal,
+        compaction_buffer_tokens,
+        generate_titles,
+        max_concurrency,
+        mcp_server,
+        context_tokens,
+        worker_agent,
+        adaptor,
+        capabilities_override,
+        model_variants,
         "worker",
     )
 }
@@ -3518,6 +3551,7 @@ fn custom_fixture_with_capabilities_and_worker_name(
     worker_agent: Option<&str>,
     adaptor: &str,
     capabilities_override: Option<&str>,
+    model_variants: Option<&str>,
     worker_name: &str,
 ) -> (Fixture, RunSelection) {
     let directory = private_tempdir();
@@ -3535,6 +3569,7 @@ auth = { method = "no-auth-v1", values = {} }
 
 [providers."custom.test".models."group/model"]
 display_name = "Model"
+__MODEL_VARIANTS__
 
 [providers."custom.test".models."group/model".capabilities]
 __MODEL_CAPABILITIES__
@@ -3555,7 +3590,8 @@ __MODEL_CAPABILITIES__
             str::to_owned,
         )
         .as_str(),
-    );
+    )
+    .replace("__MODEL_VARIANTS__", model_variants.unwrap_or_default());
     let config_text = if adaptor.starts_with("anthropic") {
         config_text.replace("seed = true", "seed = false").replace(
             "auth = { method = \"no-auth-v1\", values = {} }",
@@ -4132,6 +4168,7 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
         4_096,
         Some(worker),
         "openai-chat",
+        None,
         None,
         "sub-worker",
     );
@@ -6093,6 +6130,7 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
         .expect("all cancellable executors started");
     fixture.engine.cancel_run(run).await.expect("cancel run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    wait_for_run_inactive(&fixture.engine, run).await;
 
     let events = fixture
         .engine
@@ -6123,7 +6161,6 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
         })
         .count();
     assert_eq!((starts, terminations, run_cancelled), (3, 3, 1));
-    assert!(!fixture.engine.run_active_for_test(run));
     assert_eq!(captured.await.expect("cancellation server").len(), 1);
     fixture.engine.shutdown().await;
 }
@@ -7625,6 +7662,16 @@ async fn wait_for_session_not_running(engine: &Engine, session_id: SessionId) {
         projection.status != SessionStatus::Running
     })
     .await;
+}
+
+async fn wait_for_run_inactive(engine: &Engine, run_id: cookie_agent_protocol::RunId) {
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
+        while engine.run_active_for_test(run_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("run task termination");
 }
 
 fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig {
@@ -12373,6 +12420,335 @@ fn anthropic_tool_body(id: &str, name: &str, arguments: serde_json::Value) -> St
         "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into(),
     ]
     .concat()
+}
+
+fn anthropic_thinking_body(signature: Option<&str>) -> String {
+    let signature = signature.map_or_else(String::new, |signature| {
+        format!(
+            "event: content_block_delta\ndata: {}\n\n",
+            serde_json::json!({
+                "type":"content_block_delta",
+                "index":0,
+                "delta":{"type":"signature_delta","signature":signature}
+            })
+        )
+    });
+    [
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{}}\n\n".into(),
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n".into(),
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"reason\"}}\n\n".into(),
+        signature,
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n".into(),
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\"}}\n\n".into(),
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n".into(),
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n".into(),
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n".into(),
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".into(),
+    ]
+    .concat()
+}
+
+#[derive(Clone, Copy)]
+enum AnthropicReplayResponse {
+    Thinking(Option<&'static str>),
+    Status400,
+    Text(&'static str),
+}
+
+async fn anthropic_replay_server(
+    responses: Vec<AnthropicReplayResponse>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Anthropic replay listener");
+    let address = listener.local_addr().expect("Anthropic replay address");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut socket, _) = listener.accept().await.expect("Anthropic replay accept");
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut socket).await)
+                    .expect("UTF-8 Anthropic replay request"),
+            );
+            if matches!(response, AnthropicReplayResponse::Status400) {
+                let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid signature"}}"#;
+                let wire = format!(
+                    "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(wire.as_bytes())
+                    .await
+                    .expect("Anthropic replay rejection");
+            } else {
+                let body = match response {
+                    AnthropicReplayResponse::Thinking(signature) => {
+                        anthropic_thinking_body(signature)
+                    }
+                    AnthropicReplayResponse::Text(text) => anthropic_usage_body(text, 1, 0, 0),
+                    AnthropicReplayResponse::Status400 => unreachable!(),
+                };
+                write_scripted_sse(&mut socket, &body).await;
+            }
+        }
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+const ANTHROPIC_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = true\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"required\"\ncancellation = \"local_only\"\nmedia = {}";
+
+async fn run_replay_test_turn(
+    fixture: &Fixture,
+    session_id: SessionId,
+    selection: &RunSelection,
+    id: &str,
+) {
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id,
+                client_run_id: ClientRunId::new(id).unwrap(),
+                selection: selection.clone(),
+                input: id.into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session_id).await;
+}
+
+async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixture, RunSelection) {
+    let primary = "---\ndescription: Replay fallback test\nmode: primary\nenabled: true\nmodels:\n  - { model: \"custom.test/group/model\", variant: base }\n  - { model: \"custom.test/group/fallback\", variant: base }\npermissions: {}\n---\nReplay fallback.\n";
+    let (mut fixture, selection) = custom_fixture_with_capabilities(
+        endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(ANTHROPIC_REPLAY_CAPABILITIES),
+    );
+    fixture.engine.shutdown().await;
+    let provider_id = ProviderId::new("custom.test").expect("replay provider ID");
+    let ProviderDefinition::Custom(provider) = fixture
+        .config
+        .runtime
+        .providers
+        .get_mut(&provider_id)
+        .expect("replay provider")
+    else {
+        panic!("custom replay provider");
+    };
+    let source_id = ProviderModelId::new("group/model").expect("replay source model ID");
+    let fallback_id = ProviderModelId::new("group/fallback").expect("replay fallback model ID");
+    provider
+        .models
+        .insert(fallback_id, provider.models[&source_id].clone());
+    let current = fixture.manager.current();
+    let manager = Arc::new(
+        ModelManager::new(
+            fixture.config.runtime.providers.clone(),
+            Arc::clone(current.catalog()),
+            ProviderStore::open(fixture._directory.path().join("provider-store"))
+                .expect("replay provider store"),
+        )
+        .expect("replay model manager"),
+    );
+    fixture.engine = Engine::open(EngineOptions {
+        data_dir: fixture._directory.path().join("data"),
+        cwd: fixture._directory.path().to_owned(),
+        config: fixture.config.clone(),
+        model_manager: Arc::clone(&manager),
+        tools: Vec::new(),
+    })
+    .expect("replay engine");
+    fixture.manager = manager;
+    (fixture, selection)
+}
+
+fn assert_reconstructed_without_reasoning(request: &str) {
+    assert_eq!(
+        request_body(request)["messages"][1]["content"],
+        serde_json::json!([{"type":"text","text":"answer"}])
+    );
+}
+
+fn rejected_unsigned_replay_recovery_count(events: &[cookie_agent_protocol::StoredEvent]) -> usize {
+    let marked_attempts = events
+        .iter()
+        .filter_map(|event| {
+            match &event.payload {
+            EventPayload::ModelReplayEvaluated {
+                attempt_id,
+                ordered_decisions,
+                ..
+            } if ordered_decisions.iter().any(|decision| matches!(
+                &decision.disposition,
+                cookie_agent_protocol::ReplayDisposition::DiscardedInvalidPayload { reason }
+                    if reason.as_str().starts_with("rejected unsigned Anthropic replay artifact ")
+            )) => Some(*attempt_id),
+            _ => None,
+        }
+        })
+        .collect::<Vec<_>>();
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::AttemptAbandoned { attempt_id }
+                    if marked_attempts.contains(&attempt_id)
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn rejected_unsigned_replay_stays_degraded_after_restart_and_same_model_variant_switch() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(None),
+        AnthropicReplayResponse::Status400,
+        AnthropicReplayResponse::Text("recovered"),
+        AnthropicReplayResponse::Text("later run"),
+    ])
+    .await;
+    let primary = "---\ndescription: Replay recovery test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nReplay recovery.\n";
+    let (mut fixture, selection) = custom_fixture_with_capabilities_and_variants(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(ANTHROPIC_REPLAY_CAPABILITIES),
+        Some("variants = { recovery = { operation = \"add\" } }"),
+    );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for id in ["unsigned-seed", "unsigned-recover"] {
+        run_replay_test_turn(&fixture, session.session_id, &selection, id).await;
+    }
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    let mut variant_selection = selection.clone();
+    variant_selection.model.variant = Some(VariantId::new("recovery").unwrap());
+    run_replay_test_turn(
+        &fixture,
+        session.session_id,
+        &variant_selection,
+        "unsigned-later-run",
+    )
+    .await;
+
+    let requests = captured.await.expect("unsigned replay requests");
+    assert_eq!(
+        request_body(&requests[1])["messages"][1]["content"][0],
+        serde_json::json!({"type":"thinking","thinking":"reason","signature":""})
+    );
+    assert_reconstructed_without_reasoning(&requests[2]);
+    assert_reconstructed_without_reasoning(&requests[3]);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 1);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn signed_anthropic_replay_never_triggers_degradation() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(Some("signed")),
+        AnthropicReplayResponse::Status400,
+    ])
+    .await;
+    let primary = "---\ndescription: Signed replay test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nSigned replay.\n";
+    let (fixture, selection) = custom_fixture_with_capabilities(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(ANTHROPIC_REPLAY_CAPABILITIES),
+    );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "signed-seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "signed-reject").await;
+
+    let requests = captured.await.expect("signed replay requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        request_body(&requests[1])["messages"][1]["content"][0]["signature"],
+        "signed"
+    );
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 0);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_400() {
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(None),
+        AnthropicReplayResponse::Status400,
+        AnthropicReplayResponse::Status400,
+        AnthropicReplayResponse::Text("variant fallback"),
+    ])
+    .await;
+    let (fixture, selection) = anthropic_replay_fallback_fixture(&endpoint).await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "variant-seed").await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, "variant-reject").await;
+
+    let requests = captured.await.expect("variant replay requests");
+    assert_eq!(requests.len(), 4);
+    assert_reconstructed_without_reasoning(&requests[2]);
+    assert_reconstructed_without_reasoning(&requests[3]);
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 1);
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelFallback {
+            attempts_on_from: 2,
+            ..
+        }
+    )));
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

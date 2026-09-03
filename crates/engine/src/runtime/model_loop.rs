@@ -32,7 +32,8 @@ use crate::{
     events::OutputHub,
     model_bridge::{AbortBridge, TurnAccumulator},
     model_history::{
-        assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
+        assemble_model_context, persist_turn, replay_decisions_with_preflight,
+        unsigned_anthropic_replay_decisions, wire_model,
     },
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
     policy::{
@@ -1500,6 +1501,8 @@ impl Engine {
                         Err(error) => self.record_interception_error(session, plugin, error),
                     }
                 }
+                let unsigned_replay_rejections =
+                    unsigned_anthropic_replay_decisions(&request.history);
                 crate::media::validate_media_part_counts(
                     &request.history,
                     &turn_context.capabilities,
@@ -1754,6 +1757,32 @@ impl Engine {
                             model_turn_seq,
                             turn_context,
                         });
+                    }
+                    Err(error)
+                        if !unsigned_replay_rejections.is_empty()
+                            && error.diagnostics.http_status == Some(400)
+                            && !meaningful_output =>
+                    {
+                        // Anthropic errors omit provider messages, so the status and the
+                        // known unsigned artifact are the reliable rejection signal.
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::ModelReplayEvaluated {
+                                attempt_id,
+                                resolved_model: wire_model(binding),
+                                ordered_decisions: unsigned_replay_rejections,
+                            },
+                        )
+                        .await?;
+                        self.append(
+                            session,
+                            Some(run),
+                            event_origin("engine:model-loop"),
+                            Event::AttemptAbandoned { attempt_id },
+                        )
+                        .await?;
                     }
                     Err(error)
                         if error.kind == oven_sdk::ModelErrorKind::ContextLength

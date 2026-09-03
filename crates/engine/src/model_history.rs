@@ -28,6 +28,7 @@ pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being contin
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
 pub(crate) const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =
     "[tool-emitted system message; materialized as user history]";
+const REJECTED_UNSIGNED_REPLAY_PREFIX: &str = "rejected unsigned Anthropic replay artifact ";
 
 pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
@@ -247,6 +248,142 @@ pub(crate) fn replay_decisions_with_preflight(
     merged
 }
 
+pub(crate) fn unsigned_anthropic_replay_decisions(history: &[HistoryTurn]) -> Vec<ReplayDecision> {
+    history
+        .iter()
+        .enumerate()
+        .filter_map(|(history_index, turn)| {
+            let HistoryTurn::Assistant(turn) = turn else {
+                return None;
+            };
+            if !turn
+                .finish
+                .native_replay
+                .as_ref()
+                .is_some_and(unsigned_anthropic_replay)
+            {
+                return None;
+            }
+            let artifact = turn
+                .finish
+                .native_replay
+                .as_ref()
+                .expect("checked artifact");
+            Some(ReplayDecision {
+                history_index: history_index as u64,
+                disposition: ReplayDisposition::DiscardedInvalidPayload {
+                    reason: rejected_unsigned_replay_reason(artifact),
+                },
+            })
+        })
+        .collect()
+}
+
+fn rejected_unsigned_replay_reason(artifact: &OvenReplayArtifact) -> SafeErrorMessage {
+    safe_replay_reason(&format!(
+        "{REJECTED_UNSIGNED_REPLAY_PREFIX}{}; replaying normalized history",
+        oven_native_replay_fingerprint(artifact).as_str()
+    ))
+}
+
+fn native_replay_fingerprint(
+    adapter_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    resource_id: &str,
+    payload: &serde_json::Value,
+) -> Sha256Digest {
+    let mut bytes = Vec::with_capacity(
+        adapter_id.len() + provider_id.len() + model_id.len() + resource_id.len() + 4,
+    );
+    for component in [adapter_id, provider_id, model_id, resource_id] {
+        bytes.extend_from_slice(component.as_bytes());
+        bytes.push(0);
+    }
+    serde_json::to_writer(&mut bytes, payload).expect("JSON value serializes");
+    Sha256Digest::of_bytes(&bytes)
+}
+
+fn oven_native_replay_fingerprint(artifact: &OvenReplayArtifact) -> Sha256Digest {
+    let scope = artifact.scope();
+    native_replay_fingerprint(
+        artifact.adapter_id().as_str(),
+        scope.provider_id.as_str(),
+        scope.model_id.as_str(),
+        scope.resource_id.as_str(),
+        artifact.payload(),
+    )
+}
+
+fn persisted_native_replay_fingerprint(artifact: &NativeReplayArtifact) -> Sha256Digest {
+    let scope = artifact.scope();
+    native_replay_fingerprint(
+        artifact.adapter_id().as_str(),
+        scope.provider_id.as_str(),
+        scope.model_id.as_str(),
+        scope.resource_id.as_str(),
+        artifact.payload(),
+    )
+}
+
+fn rejected_persisted_replay_reason(artifact: &NativeReplayArtifact) -> SafeErrorMessage {
+    safe_replay_reason(&format!(
+        "{REJECTED_UNSIGNED_REPLAY_PREFIX}{}; replaying normalized history",
+        persisted_native_replay_fingerprint(artifact).as_str()
+    ))
+}
+
+fn rejected_unsigned_replay_fingerprints(events: &[StoredEvent]) -> HashSet<String> {
+    let abandoned = events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::AttemptAbandoned { attempt_id } => Some(attempt_id),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelReplayEvaluated {
+                attempt_id,
+                ordered_decisions,
+                ..
+            } if abandoned.contains(attempt_id) => Some(ordered_decisions),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|decision| match &decision.disposition {
+            ReplayDisposition::DiscardedInvalidPayload { reason } => reason
+                .as_str()
+                .strip_prefix(REJECTED_UNSIGNED_REPLAY_PREFIX)
+                .and_then(|value| value.split_once(';'))
+                .map(|(fingerprint, _)| fingerprint.to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn unsigned_anthropic_replay(artifact: &OvenReplayArtifact) -> bool {
+    if crate::policy::wire_adapter(artifact.adapter_id().as_str())
+        != cookie_agent_protocol::AdaptorId::Anthropic
+    {
+        return false;
+    }
+    artifact
+        .payload()
+        .pointer("/message/content")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|content| {
+            content.iter().any(|block| {
+                block.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
+                    && match block.get("signature") {
+                        None => true,
+                        Some(signature) => signature.as_str() == Some(""),
+                    }
+            })
+        })
+}
+
 #[derive(Clone)]
 enum LogicalTurn {
     System(String),
@@ -369,6 +506,7 @@ fn assemble_history_with_replay(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
+    let rejected_unsigned_replays = rejected_unsigned_replay_fingerprints(events);
     let loaded_skills = events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -679,6 +817,23 @@ fn assemble_history_with_replay(
                         reason: safe_replay_reason(
                             "native replay was discarded because normalized tool-call history changed",
                         ),
+                    })
+                } else if assistant
+                    .turn
+                    .native_replay
+                    .as_ref()
+                    .is_some_and(|artifact| {
+                        rejected_unsigned_replays
+                            .contains(persisted_native_replay_fingerprint(artifact).as_str())
+                    })
+                {
+                    let artifact = assistant
+                        .turn
+                        .native_replay
+                        .take()
+                        .expect("checked artifact");
+                    Some(ReplayDisposition::DiscardedInvalidPayload {
+                        reason: rejected_persisted_replay_reason(&artifact),
                     })
                 } else {
                     None
@@ -1558,9 +1713,59 @@ mod tests {
     use super::{
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
         assemble_full_history, assemble_model_context, checkpoint_retained_history,
-        framed_compaction_summary, replay_decisions, replay_decisions_with_preflight,
+        framed_compaction_summary, oven_native_replay_fingerprint,
+        persisted_native_replay_fingerprint, replay_decisions, replay_decisions_with_preflight,
         restore_replay, tool_output_elision_marker, tool_result_part, wire_model,
     };
+
+    #[test]
+    fn replay_rejection_fingerprint_includes_native_context_scope() {
+        let payload = serde_json::json!({
+            "format": "oven.anthropic.messages.assistant.v3",
+            "message": {"role":"assistant","content":[
+                {"type":"thinking","thinking":"same","signature":""}
+            ]},
+            "stop_reason": "end_turn",
+            "stop_sequence": null
+        });
+        let oven_artifact = |resource: &str| {
+            oven_sdk::NativeReplayArtifact::new(
+                AdapterId::new("oven.anthropic.messages"),
+                OvenNativeContextScope::new(
+                    oven_sdk::ProviderId::new("provider"),
+                    oven_sdk::ModelId::new("model"),
+                    ResourceId::new(resource).unwrap(),
+                )
+                .unwrap(),
+                payload.clone(),
+            )
+            .unwrap()
+        };
+        let persisted_artifact = |resource: &str| {
+            NativeReplayArtifact::new(
+                SafeCode::new("oven.anthropic.messages").unwrap(),
+                Sha256Digest::of_bytes(b"selection"),
+                NativeContextScope {
+                    provider_id: ProviderId::new("provider").unwrap(),
+                    model_id: cookie_agent_protocol::ProviderModelId::new("model").unwrap(),
+                    resource_id: SafeDisplayText::new(resource).unwrap(),
+                },
+                payload.clone(),
+            )
+            .unwrap()
+        };
+
+        let oven_a = oven_artifact("endpoint-a");
+        let oven_b = oven_artifact("endpoint-b");
+        assert_ne!(
+            oven_native_replay_fingerprint(&oven_a),
+            oven_native_replay_fingerprint(&oven_b)
+        );
+        assert_eq!(
+            oven_native_replay_fingerprint(&oven_a),
+            persisted_native_replay_fingerprint(&persisted_artifact("endpoint-a"))
+        );
+    }
 
     #[test]
     fn truncated_tool_result_names_the_readback_tool() {
