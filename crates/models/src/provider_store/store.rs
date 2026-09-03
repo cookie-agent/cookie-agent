@@ -32,25 +32,61 @@ const LEGACY_STORE_FILE: &str = "store-v1.json";
 const PREVIOUS_STORE_FILE: &str = "store-v2.json";
 const UNVERSIONED_STORE_FILE: &str = "store.json";
 
+/// Content stamp of the store file, used by `reload_if_changed` to skip the
+/// lock+decode when the file provably has not changed since the last fully
+/// validated read. `Unknown` (stat or mtime failure) is never cached and
+/// never matches, falling back to the locked read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoreFileStamp {
+    Missing,
+    Present {
+        modified: std::time::SystemTime,
+        len: u64,
+    },
+    Unknown,
+}
+
+impl StoreFileStamp {
+    fn current(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(metadata) => match metadata.modified() {
+                Ok(modified) => Self::Present {
+                    modified,
+                    len: metadata.len(),
+                },
+                Err(_) => Self::Unknown,
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Missing,
+            Err(_) => Self::Unknown,
+        }
+    }
+}
+
+/// Last fully validated read: file stamp plus the generation it decodes to.
+#[derive(Clone, Copy, Debug)]
+struct ReloadStamp {
+    file: StoreFileStamp,
+    generation: ProviderStoreGeneration,
+}
+
 /// Secure provider-store handle rooted at one private directory.
 #[derive(Debug)]
 pub struct ProviderStore {
     directory: SecureDirectory,
+    reload_stamp: std::sync::Mutex<Option<ReloadStamp>>,
+    #[cfg(test)]
+    transaction_opens: std::sync::atomic::AtomicU64,
 }
 
 impl ProviderStore {
     /// Opens the approved fixed per-user path.
     pub fn standard() -> Result<Self, ProviderStoreError> {
-        Ok(Self {
-            directory: SecureDirectory::user_data("providers")?,
-        })
+        Self::from_directory(SecureDirectory::user_data("providers")?)
     }
 
     /// Opens or creates an absolute private provider-store directory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ProviderStoreError> {
-        Ok(Self {
-            directory: SecureDirectory::open(path)?,
-        })
+        Self::from_directory(SecureDirectory::open(path)?)
     }
 
     /// Opens a private provider-store directory below a trusted anchor.
@@ -58,8 +94,15 @@ impl ProviderStore {
         anchor: impl AsRef<Path>,
         relative: impl AsRef<Path>,
     ) -> Result<Self, ProviderStoreError> {
+        Self::from_directory(SecureDirectory::open_in(anchor, relative)?)
+    }
+
+    fn from_directory(directory: SecureDirectory) -> Result<Self, ProviderStoreError> {
         Ok(Self {
-            directory: SecureDirectory::open_in(anchor, relative)?,
+            directory,
+            reload_stamp: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            transaction_opens: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -74,11 +117,43 @@ impl ProviderStore {
     }
 
     /// Locks and rereads, returning state only when another process changed generation.
+    ///
+    /// A matching cached content stamp proves the file is byte-identical to
+    /// the last fully validated read, so the per-run-start reconcile skips the
+    /// lock+decode entirely. The stamp is refreshed under the lock after every
+    /// real read; a cross-process commit between the stat and the comparison
+    /// is picked up by the next reconcile.
     pub fn reload_if_changed(
         &self,
         known: ProviderStoreGeneration,
     ) -> Result<Option<ProviderStoreSnapshot>, ProviderStoreError> {
+        let file_path = self.directory.path().join(PROVIDER_STORE_FILE);
+        let current_stamp = StoreFileStamp::current(&file_path);
+        if !matches!(current_stamp, StoreFileStamp::Unknown) {
+            let stamp = self
+                .reload_stamp
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = *stamp
+                && cached.generation == known
+                && cached.file == current_stamp
+            {
+                return Ok(None);
+            }
+        }
         let transaction = self.begin_transaction()?;
+        // Refresh the stamp while the lock is still held so it always
+        // describes the state that was actually read.
+        let post_read_stamp = StoreFileStamp::current(&file_path);
+        if !matches!(post_read_stamp, StoreFileStamp::Unknown) {
+            *self
+                .reload_stamp
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ReloadStamp {
+                file: post_read_stamp,
+                generation: transaction.state.generation,
+            });
+        }
         if transaction.state.generation == known {
             Ok(None)
         } else {
@@ -88,6 +163,9 @@ impl ProviderStore {
 
     /// Starts a lock+reread transaction. The lock remains held through proposal compilation.
     pub fn begin_transaction(&self) -> Result<ProviderStoreTransaction<'_>, ProviderStoreError> {
+        #[cfg(test)]
+        self.transaction_opens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let lock = self.directory.lock(PROVIDER_STORE_LOCK_FILE)?;
         reject_obsolete_files(&lock)?;
         let state = match lock.read(PROVIDER_STORE_FILE, MAX_STORE_BYTES)? {
@@ -1356,5 +1434,62 @@ impl From<DiskConnectionDescriptor> for super::types::DurableConnectionDescripto
             connection_generation: connection.connection_generation,
             connected_at: connection.connected_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    #[test]
+    fn reload_if_changed_fast_path_skips_the_transaction_when_unchanged() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let store = ProviderStore::open(temporary.path().join("providers")).expect("store");
+        let unknown = ProviderStoreGeneration::new(999_999).expect("generation");
+        // First read opens a transaction and caches the content stamp.
+        let snapshot = store
+            .reload_if_changed(unknown)
+            .expect("first reload")
+            .expect("fresh generation differs from the known one");
+        assert_eq!(store.transaction_opens.load(Ordering::Relaxed), 1);
+        // Unchanged file plus known generation: no lock, no decode.
+        assert!(
+            store
+                .reload_if_changed(snapshot.generation())
+                .expect("second reload")
+                .is_none()
+        );
+        assert_eq!(
+            store.transaction_opens.load(Ordering::Relaxed),
+            1,
+            "unchanged store must skip the transaction"
+        );
+    }
+
+    #[test]
+    fn reload_if_changed_reopens_after_external_modification() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let store = ProviderStore::open(temporary.path().join("providers")).expect("store");
+        let unknown = ProviderStoreGeneration::new(999_999).expect("generation");
+        let snapshot = store
+            .reload_if_changed(unknown)
+            .expect("first reload")
+            .expect("fresh generation differs from the known one");
+        assert_eq!(store.transaction_opens.load(Ordering::Relaxed), 1);
+        // An external write defeats the cached stamp, forcing the locked path
+        // (which then rejects the garbage content).
+        std::fs::write(
+            temporary.path().join("providers").join(PROVIDER_STORE_FILE),
+            b"external write",
+        )
+        .expect("external write");
+        assert!(store.reload_if_changed(snapshot.generation()).is_err());
+        assert_eq!(
+            store.transaction_opens.load(Ordering::Relaxed),
+            2,
+            "modified store must reopen the transaction"
+        );
     }
 }
