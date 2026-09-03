@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use cookie_agent_protocol::{
-    AvailableModelDescriptor, ModelSelection, ProviderDescriptor, SessionId, SessionMeta,
-    SessionTree,
+    AgentDescriptor, AvailableModelDescriptor, ModelSelection, ProviderDescriptor, SessionId,
+    SessionMeta, SessionTree,
 };
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 use ratatui::{
@@ -93,6 +93,16 @@ pub(crate) fn provider_matches(provider: &ProviderDescriptor, query: &str) -> bo
         .to_lowercase()
         .contains(&query)
         || provider.id.as_str().to_lowercase().contains(&query)
+}
+
+/// Case-insensitive substring matching over agent IDs and descriptions.
+pub(crate) fn agent_matches(agent: &AgentDescriptor, query: &str) -> bool {
+    if query.trim().is_empty() {
+        return true;
+    }
+    let query = query.trim().to_lowercase();
+    agent.id.as_str().to_lowercase().contains(&query)
+        || agent.description.to_lowercase().contains(&query)
 }
 
 /// Case-insensitive substring matching over model display names and canonical keys.

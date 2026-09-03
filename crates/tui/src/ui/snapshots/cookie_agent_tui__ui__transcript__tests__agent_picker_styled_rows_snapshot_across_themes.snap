@@ -1,0 +1,25 @@
+---
+source: crates/tui/src/ui/transcript.rs
+expression: "snapshots.join(\"\\n\")"
+---
+== default ==
+  alpha First Choice
+> bravo Needle Agent
+plain id: Style::new().fg(Color::Reset).bg(Color::Rgb(251, 244, 230)).underline_color(Color::Reset).bold()
+plain description: Style::new().fg(Color::Rgb(98, 94, 102)).bg(Color::Rgb(251, 244, 230)).underline_color(Color::Reset)
+selected id: Style::new().fg(Color::Rgb(70, 48, 31)).bg(Color::Rgb(230, 206, 158)).underline_color(Color::Reset).bold()
+selected description: Style::new().fg(Color::Rgb(98, 94, 102)).bg(Color::Rgb(230, 206, 158)).underline_color(Color::Reset)
+== mono ==
+  alpha First Choice
+> bravo Needle Agent
+plain id: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold()
+plain description: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).dim()
+selected id: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold().reversed()
+selected description: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).dim().reversed()
+== high-contrast ==
+  alpha First Choice
+> bravo Needle Agent
+plain id: Style::new().fg(Color::Reset).bg(Color::Reset).underline_color(Color::Reset).bold()
+plain description: Style::new().gray().bg(Color::Reset).underline_color(Color::Reset).bold().dim()
+selected id: Style::new().black().on_light_yellow().underline_color(Color::Reset).bold()
+selected description: Style::new().gray().on_light_yellow().underline_color(Color::Reset).bold().dim()

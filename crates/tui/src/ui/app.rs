@@ -69,9 +69,9 @@ use super::management::{
     UsagePanel, cycle_effect,
 };
 use super::pickers::{
-    SearchPickerFocus, SearchPickerState, SessionSearchRow, cycle_selection, flatten_tree,
-    model_matches, move_selection as move_picker_selection, provider_matches, session_search_rows,
-    short_id,
+    SearchPickerFocus, SearchPickerState, SessionSearchRow, agent_matches, cycle_selection,
+    flatten_tree, model_matches, move_selection as move_picker_selection, provider_matches,
+    session_search_rows, short_id,
 };
 use super::provider::{
     DURABLE_PROVIDER_COPY, ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation,
@@ -504,6 +504,7 @@ pub struct App {
     pub(super) transient_notices: Vec<String>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
+    pub(super) agent_search: SearchPickerState,
     pub(super) model_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
     pub(super) palette_state: ListState,
@@ -893,6 +894,7 @@ impl App {
             transient_notices: Vec::new(),
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
+            agent_search: SearchPickerState::default(),
             model_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),
             palette_state: ListState::default().with_selected(Some(0)),
@@ -1361,6 +1363,13 @@ impl App {
         }
     }
 
+    pub(super) fn filtered_agent_picker_candidates(&self) -> Vec<&AgentDescriptor> {
+        self.agent_picker_candidates()
+            .into_iter()
+            .filter(|agent| agent_matches(agent, self.agent_search.query()))
+            .collect()
+    }
+
     fn root_agents_for_preset(&self, preset: Option<&str>) -> Vec<&AgentDescriptor> {
         self.agents
             .iter()
@@ -1521,8 +1530,10 @@ impl App {
                 };
             }
             _ => {
-                if modal == Modal::Models {
-                    self.model_search.reset();
+                match modal {
+                    Modal::Agents => self.agent_search.reset(),
+                    Modal::Models => self.model_search.reset(),
+                    _ => {}
                 }
                 self.picker_state.select(Some(0));
                 self.modal = modal;
@@ -3403,7 +3414,8 @@ impl App {
         }
         match self.modal {
             Modal::Sessions => self.handle_session_picker(key).await,
-            Modal::Presets | Modal::Agents => self.handle_selection_picker(key).await,
+            Modal::Presets => self.handle_selection_picker(key).await,
+            Modal::Agents => self.handle_agent_picker_key(key).await,
             Modal::Models => self.handle_model_picker_key(key).await,
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectDetails => self.handle_connect_details_key(key),
@@ -3601,7 +3613,7 @@ impl App {
         match self.modal {
             Modal::Sessions => self.session_search_ids().len(),
             Modal::Presets => self.preset_names().len() + 1,
-            Modal::Agents => self.agent_picker_candidates().len(),
+            Modal::Agents => self.filtered_agent_picker_candidates().len(),
             Modal::Models => self.filtered_draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
@@ -3639,6 +3651,17 @@ impl App {
     fn model_search_changed(&mut self) {
         self.picker_state.select(Some(0));
         self.clamp_picker_selection();
+    }
+
+    fn agent_search_changed(&mut self) {
+        self.picker_state.select(Some(0));
+        self.clamp_picker_selection();
+    }
+
+    fn close_agent_picker(&mut self) {
+        self.agent_search.reset();
+        self.modal = Modal::None;
+        self.new_session_draft = None;
     }
 
     fn close_model_picker(&mut self) {
@@ -4232,6 +4255,7 @@ impl App {
             {
                 let search = match self.modal {
                     Modal::Sessions => &mut self.session_search,
+                    Modal::Agents => &mut self.agent_search,
                     Modal::Models => &mut self.model_search,
                     Modal::ConnectProviders => &mut self.provider_search,
                     _ => return,
@@ -4526,7 +4550,11 @@ impl App {
                         self.model_search.focus_list();
                         self.picker_entry_count()
                     }
-                    Modal::Presets | Modal::Agents => self.picker_entry_count(),
+                    Modal::Agents => {
+                        self.agent_search.focus_list();
+                        self.picker_entry_count()
+                    }
+                    Modal::Presets => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails
@@ -4830,6 +4858,13 @@ impl App {
             self.model_search_changed();
             return;
         }
+        if self.modal == Modal::Agents {
+            let sanitized = text.replace(['\r', '\n'], "");
+            self.agent_search.focus_input();
+            self.agent_search.input_mut().insert_text(&sanitized);
+            self.agent_search_changed();
+            return;
+        }
         if self.modal == Modal::ConnectSetup {
             let mut sanitized = Zeroizing::new(text.replace(['\r', '\n'], ""));
             if let Some(form) = &mut self.provider_form {
@@ -4980,6 +5015,73 @@ impl App {
             KeyCode::Enter => {
                 self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
                     .await
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_agent_picker_key(&mut self, key: KeyEvent) {
+        let count = self.filtered_agent_picker_candidates().len();
+        if self.agent_search.focus() == SearchPickerFocus::Input {
+            match key.code {
+                KeyCode::Esc => self.close_agent_picker(),
+                KeyCode::Down | KeyCode::Tab | KeyCode::Enter if count > 0 => {
+                    self.agent_search.focus_list();
+                    self.clamp_picker_selection();
+                }
+                KeyCode::Backspace => {
+                    self.agent_search.input_mut().backspace();
+                    self.agent_search_changed();
+                }
+                KeyCode::Delete => {
+                    self.agent_search.input_mut().delete();
+                    self.agent_search_changed();
+                }
+                KeyCode::Left => self.agent_search.input_mut().move_left(),
+                KeyCode::Right => self.agent_search.input_mut().move_right(),
+                KeyCode::Home | KeyCode::Char('a')
+                    if key.code == KeyCode::Home || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.agent_search.input_mut().move_buffer_home();
+                }
+                KeyCode::End | KeyCode::Char('e')
+                    if key.code == KeyCode::End || key.modifiers == KeyModifiers::CONTROL =>
+                {
+                    self.agent_search.input_mut().move_buffer_end();
+                }
+                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.agent_search.input_mut().set_buffer(String::new());
+                    self.agent_search_changed();
+                }
+                KeyCode::Char(character) if is_printable_key(key) => {
+                    self.agent_search.input_mut().insert(character);
+                    self.agent_search_changed();
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::BackTab => self.agent_search.focus_input(),
+            KeyCode::Up if self.picker_state.selected().unwrap_or(0) == 0 => {
+                self.agent_search.focus_input();
+            }
+            KeyCode::Up => move_picker_selection(&mut self.picker_state, count, true),
+            KeyCode::Down | KeyCode::Tab => {
+                move_picker_selection(&mut self.picker_state, count, false)
+            }
+            KeyCode::Enter => {
+                self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
+                    .await
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.agent_search.reset();
+                self.agent_search_changed();
+            }
+            KeyCode::Char(character) if is_printable_key(key) => {
+                self.agent_search.focus_input();
+                self.agent_search.input_mut().insert(character);
+                self.agent_search_changed();
             }
             _ => {}
         }
@@ -5473,11 +5575,12 @@ impl App {
                     return;
                 }
                 let agent = self
-                    .agent_picker_candidates()
+                    .filtered_agent_picker_candidates()
                     .get(index)
                     .map(|agent| agent.id.clone());
                 if let Some(agent) = agent {
                     self.set_draft_agent(agent);
+                    self.agent_search.reset();
                     self.modal = Modal::None;
                     if let Some(selection) = self.new_session_draft.clone() {
                         self.create_root_session(selection).await;
@@ -5501,11 +5604,11 @@ impl App {
                             preferred_model.as_ref(),
                         );
                     }
-                    self.modal = if self.draft.is_none() && self.watching_root_session() {
-                        Modal::Agents
+                    if self.draft.is_none() && self.watching_root_session() {
+                        self.open_selection_modal(Modal::Agents);
                     } else {
-                        Modal::None
-                    };
+                        self.modal = Modal::None;
+                    }
                     self.status = if self.watching_root_session() {
                         self.draft_status("Draft run preset")
                     } else {
@@ -6698,7 +6801,7 @@ impl App {
             Modal::Agents => {
                 // Normal delegated-session selection is pinned to its frozen
                 // child agent. `/new` always owns an independent root draft.
-                let (entries, title) = if self.new_session_draft.is_none()
+                if self.new_session_draft.is_none()
                     && let Some(pin) = self.delegated_pin_reason()
                 {
                     let agent = self
@@ -6717,38 +6820,17 @@ impl App {
                         })
                         .map(|candidate| candidate.description.clone())
                         .unwrap_or_else(|| "frozen child agent".into());
-                    (
-                        vec![format!("{agent} — {description}"), pin.clone()],
-                        "Agent — fixed (delegated session)".to_owned(),
-                    )
+                    self.render_picker(
+                        frame,
+                        "Agent — fixed (delegated session)",
+                        vec![format!("{agent} — {description}"), pin],
+                        None,
+                        centered(frame.area(), 56, 44),
+                        Some("esc: close"),
+                    );
                 } else {
-                    (
-                        self.agent_picker_candidates()
-                            .iter()
-                            .map(|agent| format!("{} — {}", agent.id, agent.description))
-                            .collect(),
-                        if self.new_session_draft.is_some() {
-                            format!(
-                                "Agent — preset: {} · {}",
-                                self.selected_preset_label(),
-                                self.descriptor_revisions_label()
-                            )
-                        } else {
-                            format!("Agent — {}", self.descriptor_revisions_label())
-                        },
-                    )
-                };
-                let empty_message = entries
-                    .is_empty()
-                    .then_some("No root-runnable agents are available.");
-                self.render_picker(
-                    frame,
-                    &title,
-                    entries,
-                    empty_message,
-                    centered(frame.area(), 56, 44),
-                    Some("↑↓ move · enter: select · esc: close"),
-                );
+                    self.render_agent_picker(frame, centered(frame.area(), 56, 44));
+                }
             }
             Modal::Presets => {
                 let mut entries = vec!["None (shared)".to_owned()];
@@ -7330,6 +7412,78 @@ impl App {
             area,
             &mut self.picker_state,
             &self.theme,
+        )
+        .into_iter()
+        .map(|(rect, index)| PickerRowHit { rect, index })
+        .collect();
+    }
+
+    fn render_agent_picker(&mut self, frame: &mut ratatui::Frame, area: Rect) {
+        paint_panel(frame, area, &self.theme);
+        let input_height = 3.min(area.height);
+        let input_area = Rect::new(area.x, area.y, area.width, input_height);
+        let rendered_input = super::pickers::render_search_input(
+            frame,
+            input_area,
+            &mut self.agent_search,
+            &self.theme,
+        );
+        self.hit_map.picker_input = Some(InputHit {
+            rect: input_area,
+            text_rect: rendered_input.text_rect,
+            scrollbar: None,
+        });
+
+        let picker = Rect::new(
+            area.x,
+            area.y.saturating_add(input_height),
+            area.width,
+            area.height.saturating_sub(input_height),
+        );
+        self.clamp_picker_selection();
+        let selected = self.picker_state.selected();
+        let total = self.agent_picker_candidates().len();
+        let agents = self.filtered_agent_picker_candidates();
+        let match_count = agents.len();
+        let row_width = usize::from(inner_rect(picker).width.saturating_sub(2));
+        let entries = agents
+            .iter()
+            .enumerate()
+            .map(|(index, agent)| {
+                agent_picker_row(agent, row_width, selected == Some(index), &self.theme)
+            })
+            .collect();
+        let context = if self.new_session_draft.is_some() {
+            format!(
+                "preset: {} · {}",
+                self.selected_preset_label(),
+                self.descriptor_revisions_label()
+            )
+        } else {
+            self.descriptor_revisions_label()
+        };
+        let title = format!("Agent ({match_count}/{total}) — {context}");
+        let empty_message = if total == 0 {
+            Some("No root-runnable agents are available.")
+        } else if match_count == 0 {
+            Some("No agents match the filter.")
+        } else {
+            None
+        };
+
+        self.hit_map.picker = Some(picker);
+        self.hit_map.picker_rows = super::pickers::render_lines(
+            frame,
+            super::pickers::PickerChrome {
+                title: &title,
+                empty_message,
+                hint: Some("↑↓ move · enter: select · esc: search"),
+            },
+            entries,
+            picker,
+            &mut self.picker_state,
+            &self.theme,
+            self.theme.selected_overlay(),
         )
         .into_iter()
         .map(|(rect, index)| PickerRowHit { rect, index })
@@ -8125,6 +8279,38 @@ fn draft_title(draft: &RunSelection) -> String {
         .as_ref()
         .map_or_else(|| "base".to_owned(), |variant| variant.to_string());
     format!("{} • {}[{}]", draft.agent, draft.model.model, variant)
+}
+
+fn agent_picker_row(
+    agent: &AgentDescriptor,
+    width: usize,
+    selected: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let id = truncate_with_ellipsis(agent.id.as_str(), width);
+    let id_width = UnicodeWidthStr::width(id.as_str());
+    let id_style = theme.body().add_modifier(Modifier::BOLD);
+    let id_style = if selected {
+        id_style.patch(theme.selected())
+    } else {
+        id_style
+    };
+    let mut spans = vec![Span::styled(id, id_style)];
+    if !agent.description.trim().is_empty() && id_width < width {
+        let description_style = if selected {
+            theme.internal().patch(theme.selected_overlay())
+        } else {
+            theme.internal()
+        };
+        spans.push(Span::styled(
+            truncate_with_ellipsis(
+                &format!(" {}", agent.description),
+                width.saturating_sub(id_width),
+            ),
+            description_style,
+        ));
+    }
+    Line::from(spans)
 }
 
 fn model_picker_row(

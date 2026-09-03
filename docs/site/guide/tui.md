@@ -44,9 +44,10 @@ Ctrl-P opens the command palette. The available commands are:
 A multiline paste beginning with `/` is sent as a normal prompt. Prefix a
 single-line prompt with `//` to send one leading `/` literally.
 
-The model panel includes a search field. It filters case-insensitively by model
-display name or `provider/model_id`; use Down, Tab, or Enter to move from the
-search field into the matching models.
+The agent and model panels include search fields. Agent search matches agent IDs
+and descriptions; model search matches display names and `provider/model_id`.
+Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
+into the matching rows.
 
 ## Steering and the pending strip
 

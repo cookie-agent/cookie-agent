@@ -8220,6 +8220,205 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_search_filters_resets_transitions_focus_and_selects_filtered_indices() {
+        let mut app = test_app().await;
+        let mut first = descriptor("alpha", true);
+        first.description = "First Choice".into();
+        let mut second = descriptor("bravo", true);
+        second.description = "Needle Agent".into();
+        let mut third = descriptor("charlie", true);
+        third.description = "Third Choice with a deliberately long explanation".into();
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        app.agents = vec![first, second, third];
+        app.models = vec![model_descriptor()];
+        app.draft = app.default_draft_selection();
+
+        app.open_selection_modal(Modal::Agents);
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::Input);
+        assert_eq!(
+            app.filtered_agent_picker_candidates().len(),
+            3,
+            "empty query matches all"
+        );
+        type_input(&mut app, "nEeDlE").await;
+        assert_eq!(
+            app.filtered_agent_picker_candidates()
+                .iter()
+                .map(|agent| &agent.id)
+                .collect::<Vec<_>>(),
+            [&second_id]
+        );
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("Agent (1/3)"));
+        assert!(rendered.contains("bravo Needle Agent"));
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await;
+        type_input(&mut app, "BRAVO").await;
+        assert_eq!(
+            app.filtered_agent_picker_candidates().len(),
+            1,
+            "ID match ignores case"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::List);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::Input);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::List);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(
+            app.draft.as_ref().map(|draft| &draft.agent),
+            Some(&second_id),
+            "filtered keyboard index maps to the underlying agent"
+        );
+
+        app.open_selection_modal(Modal::Agents);
+        assert!(app.agent_search.query().is_empty(), "opening resets search");
+        type_input(&mut app, "CHARLIE").await;
+        let narrow = rendered_frame(&mut app, 48, 24);
+        assert!(
+            narrow.contains("charlie ") && narrow.contains('…'),
+            "{narrow}"
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .await;
+        rendered_frame(&mut app, 100, 30);
+        let input = app.hit_map.picker_input.expect("agent search input");
+        app.handle_click(input.text_rect.x, input.text_rect.y).await;
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::Input);
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .await;
+        type_input(&mut app, "ALPHA").await;
+        rendered_frame(&mut app, 100, 30);
+        let row = app.hit_map.picker_rows[0].rect;
+        app.handle_click(row.x, row.y).await;
+        assert_eq!(
+            app.draft.as_ref().map(|draft| &draft.agent),
+            Some(&first_id),
+            "filtered mouse index maps to the underlying agent"
+        );
+
+        app.agents[0].description.clear();
+        app.open_selection_modal(Modal::Agents);
+        assert!(app.agent_search.query().is_empty());
+        type_input(&mut app, "ALPHA").await;
+        let rendered = rendered_frame(&mut app, 100, 30);
+        assert!(rendered.contains("> alpha"), "{rendered}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert!(app.agent_search.query().is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_picker_styled_rows_snapshot_across_themes() {
+        let mut snapshots = Vec::new();
+        for (label, theme) in [
+            (
+                "default",
+                Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
+            ),
+            ("mono", Theme::new(ThemeKind::Mono, ColorLevel::None)),
+            (
+                "high-contrast",
+                Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+            ),
+        ] {
+            let mut app = test_app().await;
+            app.theme = theme;
+            let mut first = descriptor("alpha", true);
+            first.description = "First Choice".into();
+            let mut second = descriptor("bravo", true);
+            second.description = "Needle Agent".into();
+            app.agents = vec![first, second];
+            app.models = vec![model_descriptor()];
+            app.draft = app.default_draft_selection();
+            app.open_selection_modal(Modal::Agents);
+            app.agent_search.focus_list();
+            app.picker_state.select(Some(1));
+
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+            terminal
+                .draw(|frame| app.draw_for_test(frame))
+                .expect("agent picker render");
+            let buffer = terminal.backend().buffer();
+            let rows = app.hit_map.picker_rows.clone();
+            let row_text = |row: Rect| {
+                (row.x..row.right())
+                    .map(|x| buffer[(x, row.y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            };
+            let first_id_style = buffer[(rows[0].rect.x + 2, rows[0].rect.y)].style();
+            let first_description_style = buffer[(rows[0].rect.x + 2 + 5, rows[0].rect.y)].style();
+            let selected_id_style = buffer[(rows[1].rect.x + 2, rows[1].rect.y)].style();
+            let selected_description_style =
+                buffer[(rows[1].rect.x + 2 + 5, rows[1].rect.y)].style();
+            assert_ne!(
+                selected_id_style, selected_description_style,
+                "{label} keeps span hierarchy"
+            );
+            assert_eq!(
+                selected_id_style.bg, selected_description_style.bg,
+                "{label} shares the selection background"
+            );
+            assert_eq!(
+                selected_id_style.add_modifier.contains(Modifier::REVERSED),
+                selected_description_style
+                    .add_modifier
+                    .contains(Modifier::REVERSED),
+                "{label} shares reverse-video selection"
+            );
+            assert!(selected_id_style.add_modifier.contains(Modifier::BOLD));
+            match label {
+                "default" => {
+                    assert_ne!(selected_id_style.fg, selected_description_style.fg);
+                    assert!(
+                        !selected_description_style
+                            .add_modifier
+                            .contains(Modifier::BOLD)
+                    );
+                }
+                "mono" => {
+                    assert!(
+                        selected_description_style
+                            .add_modifier
+                            .contains(Modifier::DIM)
+                    );
+                    assert!(
+                        !selected_description_style
+                            .add_modifier
+                            .contains(Modifier::BOLD)
+                    );
+                }
+                "high-contrast" => {
+                    assert_ne!(selected_id_style.fg, selected_description_style.fg);
+                    assert!(
+                        selected_description_style
+                            .add_modifier
+                            .contains(Modifier::DIM)
+                    );
+                }
+                _ => unreachable!("covered theme"),
+            }
+            snapshots.push(format!(
+                "== {label} ==\n{}\n{}\nplain id: {first_id_style:?}\nplain description: {first_description_style:?}\nselected id: {selected_id_style:?}\nselected description: {selected_description_style:?}",
+                row_text(rows[0].rect),
+                row_text(rows[1].rect),
+            ));
+        }
+        insta::assert_snapshot!(snapshots.join("\n"));
+    }
+
+    #[tokio::test]
     async fn model_search_filters_resets_transitions_focus_and_selects_filtered_indices() {
         let mut app = test_app().await;
         app.agents = vec![descriptor("primary", true)];
@@ -8804,22 +9003,24 @@ mod tests {
         assert_eq!(app.modal, Modal::Agents);
         let rendered = rendered_frame(&mut app, 140, 30);
         assert!(
-            rendered.contains("primary — Test primary agent"),
+            rendered.contains("primary Test primary agent"),
             "{rendered}"
         );
         assert!(
-            rendered.contains("reviewer — Test reviewer agent"),
+            rendered.contains("reviewer Test reviewer agent"),
             "{rendered}"
         );
         assert!(
             !rendered.contains("fixed (delegated session)"),
             "{rendered}"
         );
-        assert!(!rendered.contains("worker —"), "{rendered}");
+        assert!(!rendered.contains("worker Test worker agent"), "{rendered}");
 
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        type_input(&mut app, "REVIEWER").await;
+        assert_eq!(app.filtered_agent_picker_candidates().len(), 1);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
-        assert_eq!(app.picker_state.selected(), Some(1));
+        assert_eq!(app.agent_search.focus(), SearchPickerFocus::List);
         let recorded_for_response = recorded.clone();
         let response = tokio::spawn(async move {
             let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
