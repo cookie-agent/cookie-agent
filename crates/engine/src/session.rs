@@ -68,7 +68,7 @@ pub enum SessionError {
     InvalidForkTitle(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunProjection {
     pub id: RunId,
     pub client_run_id: ClientRunId,
@@ -285,6 +285,30 @@ impl SessionStore {
             .resident
             .get(&id)
             .cloned()
+    }
+
+    /// Arc clone of the resident log plus its persistence flag, without
+    /// cloning the whole projection. Used by the append hot path, which only
+    /// needs the log and the `first_user_message` gate.
+    fn resident_log(&self, id: SessionId) -> Result<(Arc<EventLog>, bool), SessionError> {
+        let log = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .get(&id)
+            .map(|session| session.log.clone());
+        match log {
+            Some(log) => {
+                let persisted = log.is_persisted();
+                Ok((log, persisted))
+            }
+            None => {
+                let session = self.get(id)?;
+                let persisted = session.log.is_persisted();
+                Ok((session.log, persisted))
+            }
+        }
     }
 
     fn reopen_owned(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
@@ -643,8 +667,8 @@ impl SessionStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.ensure_open()?;
         let capability = self.write_capability(id, recovery)?;
-        let current = self.get(id)?;
-        let first_user_message = !current.log.is_persisted()
+        let (log, was_persisted) = self.resident_log(id)?;
+        let first_user_message = !was_persisted
             && matches!(
                 event,
                 EventPayload::UserInputAdmitted { .. }
@@ -654,22 +678,64 @@ impl SessionStore {
                     | EventPayload::SkillLoaded { .. }
                     | EventPayload::AgentMdLoaded { .. }
             );
-        let envelope = current.log.append_owned(&capability, run, origin, event)?;
-        let rebuilt = projection(current.log.clone())?;
-        if first_user_message {
-            self.persist_buffered(id, &rebuilt)?;
-        } else if current.log.is_persisted() {
-            write_cache(
-                &self.sessions_dir.join(id.to_string()).join("meta.json"),
-                &rebuilt.meta,
-            )?;
+        let envelope = log.append_owned(&capability, run, origin, event)?;
+        // Fold-ignored payloads (the per-token TextDelta/ReasoningDelta and
+        // per-chunk ToolCallProgress hot path) only advance the metadata tip;
+        // update the resident projection in place instead of re-folding the
+        // whole log. The resident is updated before write_cache — on a cache
+        // write failure the resident stays consistent with the log while the
+        // on-disk discovery cache lags, which is strictly better than the
+        // previous resident-behind-log window.
+        let incremental_meta = if fold_consumed(&envelope.payload) {
+            None
+        } else {
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if residency.resident.contains_key(&id) {
+                residency.evicted.remove(&id);
+                let resident = residency.resident.get_mut(&id).expect("checked above");
+                resident.meta.last_event_seq = envelope.seq;
+                resident.meta.last_activity = envelope.timestamp;
+                Some(resident.meta.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(meta) = incremental_meta {
+            if first_user_message {
+                let projection = self.get(id)?;
+                self.persist_buffered(id, &projection)?;
+            } else if log.is_persisted() {
+                write_cache(
+                    &self.sessions_dir.join(id.to_string()).join("meta.json"),
+                    &meta,
+                )?;
+            }
+        } else {
+            let rebuilt = projection(log.clone())?;
+            if first_user_message {
+                self.persist_buffered(id, &rebuilt)?;
+            } else if log.is_persisted() {
+                write_cache(
+                    &self.sessions_dir.join(id.to_string()).join("meta.json"),
+                    &rebuilt.meta,
+                )?;
+            }
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(id, rebuilt);
+            residency.evicted.remove(&id);
         }
-        let mut residency = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        residency.resident.insert(id, rebuilt);
-        residency.evicted.remove(&id);
+        #[cfg(test)]
+        {
+            let reference = projection_fold(log).expect("reference fold");
+            let resident = self.get_resident(id).expect("resident after append");
+            assert_projection_equivalent(&resident, &reference);
+        }
         Ok(envelope)
     }
 
@@ -1200,7 +1266,82 @@ impl Drop for SessionStore {
     }
 }
 
+/// Whether the projection fold consumes this payload. Fold-ignored payloads
+/// (the streaming hot path: TextDelta/ReasoningDelta per token,
+/// ToolCallProgress per output chunk) only advance the metadata tip and are
+/// applied incrementally by `append_with_mode`; consumed payloads trigger a
+/// full rebuild.
+///
+/// Direction is deliberate: consumed variants are an explicit whitelist so a
+/// future `EventPayload` variant defaults to rebuild (safe-slow), never to
+/// incremental (wrong). Keep this in sync with the fold body below.
+fn fold_consumed(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::SessionCreated { .. }
+            | EventPayload::SessionReverted { .. }
+            | EventPayload::SessionPermissionOverlaySet { .. }
+            | EventPayload::SessionTitleCommitted { .. }
+            | EventPayload::DelegateChildTerminated { .. }
+            | EventPayload::RunStarted { .. }
+            | EventPayload::UserInputSubmitted { .. }
+            | EventPayload::RunCompleted { .. }
+            | EventPayload::RunFailed { .. }
+            | EventPayload::RunCancelled { .. }
+            | EventPayload::RunInterrupted { .. }
+            | EventPayload::ToolCallStarted { .. }
+            | EventPayload::ToolCallTerminated { .. }
+            | EventPayload::ModelTurnCommitted { .. }
+            | EventPayload::ModelUsageRecorded { .. }
+            | EventPayload::InternalAgentUsageRecorded { .. }
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROJECTION_FOLDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn projection_fold_count() -> u64 {
+    PROJECTION_FOLDS.with(std::cell::Cell::get)
+}
+
+/// Asserts that two projections of the same log are field-identical. The log
+/// itself is compared by identity/tip rather than by folding the events.
+#[cfg(test)]
+fn assert_projection_equivalent(actual: &SessionProjection, expected: &SessionProjection) {
+    assert_eq!(actual.meta, expected.meta, "meta");
+    assert_eq!(
+        actual.creation_agent, expected.creation_agent,
+        "creation_agent"
+    );
+    assert_eq!(actual.status, expected.status, "status");
+    assert_eq!(actual.usage, expected.usage, "usage");
+    assert_eq!(actual.usage_rollup, expected.usage_rollup, "usage_rollup");
+    assert_eq!(actual.agent_usage, expected.agent_usage, "agent_usage");
+    assert_eq!(actual.runs, expected.runs, "runs");
+    assert_eq!(
+        actual.rename_records, expected.rename_records,
+        "rename_records"
+    );
+    assert_eq!(
+        actual.permission_overlay, expected.permission_overlay,
+        "permission_overlay"
+    );
+    let logs_match = Arc::ptr_eq(&actual.log, &expected.log)
+        || (actual.log.physical_tip_seq() == expected.log.physical_tip_seq()
+            && actual.log.event_snapshot().len() == expected.log.event_snapshot().len());
+    assert!(logs_match, "log tip/length");
+}
+
 pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
+    #[cfg(test)]
+    PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
+    projection_fold(log)
+}
+
+fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
     let events = log.event_snapshot();
     let physical_tip = log.last_event().expect("creation checked by EventLog");
     let (
@@ -1824,7 +1965,8 @@ mod tests {
         InternalAgentRunId, ModelFinishReason, ModelRevision, PersistedModelTurn,
         ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision, SafeCode,
         SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
-        SessionId, SessionOrigin, Sha256Digest, Usage,
+        SessionId, SessionOrigin, SessionPermissionOverlay, SessionTitle, SessionTitleChange,
+        Sha256Digest, ToolCallId, Usage,
     };
 
     use crate::ownership::owner_lock_path;
@@ -3282,6 +3424,491 @@ mod tests {
             crate::usage::with_pricing(rebuilt.usage_rollup, &pricing, &BTreeMap::new())
                 .estimated_cost_usd,
             None
+        );
+    }
+
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            let mut value = self.0;
+            value ^= value << 13;
+            value ^= value >> 7;
+            value ^= value << 17;
+            self.0 = value;
+            value
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    fn fuzz_origin() -> cookie_agent_protocol::EventOrigin {
+        cookie_agent_protocol::EventOrigin::new("engine:fuzz").expect("fuzz origin")
+    }
+
+    /// Extracts the run id, resolved model, agent id, prompt fingerprint, and a
+    /// reusable RunStarted payload from a session created by
+    /// `persist_test_session`.
+    fn fuzz_scaffolding(
+        store: &SessionStore,
+        session_id: SessionId,
+    ) -> (
+        RunId,
+        cookie_agent_protocol::ResolvedModelRef,
+        AgentId,
+        Sha256Digest,
+        EventPayload,
+    ) {
+        let projection = store.get(session_id).expect("session projection");
+        projection
+            .log
+            .event_snapshot()
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted {
+                    agent,
+                    selected_suffix,
+                    ..
+                } => Some((
+                    event.run_id.expect("run id"),
+                    crate::model_history::wire_model(selected_suffix.first().expect("model")),
+                    agent.agent.clone(),
+                    agent.prompt_fingerprint.clone(),
+                    event.payload.clone(),
+                )),
+                _ => None,
+            })
+            .expect("run started event")
+    }
+
+    fn fuzz_tool_owner(turn_seq: u64, label: &str) -> cookie_agent_protocol::AssistantToolCallRef {
+        cookie_agent_protocol::AssistantToolCallRef {
+            model_turn_seq: turn_seq,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new(label).expect("model call id"),
+            provider_item_id: None,
+        }
+    }
+
+    #[test]
+    fn fold_ignored_appends_do_not_rebuild_projection() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+        let session_id = persist_test_session(&store);
+        let (run_id, resolved_model, _, prompt_fingerprint, _) =
+            fuzz_scaffolding(&store, session_id);
+        let attempt_id = AttemptId::new_v7();
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                fuzz_origin(),
+                EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal: 1,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model,
+                    prompt_fingerprint,
+                },
+            )
+            .expect("start attempt");
+        let before = super::projection_fold_count();
+        for text in ["delta one", "delta two"] {
+            store
+                .append(
+                    session_id,
+                    Some(run_id),
+                    fuzz_origin(),
+                    EventPayload::TextDelta {
+                        attempt_id,
+                        text: text.into(),
+                    },
+                )
+                .expect("text delta");
+        }
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                fuzz_origin(),
+                EventPayload::ReasoningDelta {
+                    attempt_id,
+                    text: "thinking".into(),
+                },
+            )
+            .expect("reasoning delta");
+        assert_eq!(
+            super::projection_fold_count(),
+            before,
+            "fold-ignored appends must not rebuild the projection"
+        );
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                fuzz_origin(),
+                EventPayload::RunCompleted { final_text: None },
+            )
+            .expect("complete run");
+        assert_eq!(
+            super::projection_fold_count(),
+            before + 1,
+            "fold-consumed payloads rebuild exactly once"
+        );
+    }
+
+    #[test]
+    fn incremental_projection_matches_full_fold_across_random_event_streams() {
+        for seed in [7_u64, 42, 0x5EED_5EED, 999_331] {
+            run_projection_fuzz(seed, 400);
+        }
+    }
+
+    /// Drives a pseudo-random event stream through a real SessionStore. The
+    /// `append_with_mode` test assertion re-folds the log after every append
+    /// and compares it against the resident projection, so each step is a
+    /// differential check; this test additionally pins that full folds happen
+    /// exactly on fold-consumed payloads.
+    fn run_projection_fuzz(seed: u64, steps: usize) {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+        let session_id = persist_test_session(&store);
+        let (mut run_id, resolved_model, agent_id, prompt_fingerprint, run_started) =
+            fuzz_scaffolding(&store, session_id);
+        let mut attempt_id = AttemptId::new_v7();
+        store
+            .append(
+                session_id,
+                Some(run_id),
+                fuzz_origin(),
+                EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal: 1,
+                    fallback_index: 0,
+                    retry_ordinal: 0,
+                    resolved_model: resolved_model.clone(),
+                    prompt_fingerprint: prompt_fingerprint.clone(),
+                },
+            )
+            .expect("start attempt");
+
+        let mut rng = XorShift(seed | 1);
+        let mut next_turn_seq = 1_u64;
+        let mut next_attempt_ordinal = 2_u32;
+        let mut callable_owners: Vec<cookie_agent_protocol::AssistantToolCallRef> = Vec::new();
+        let mut open_tools: Vec<(ToolCallId, cookie_agent_protocol::AssistantToolCallRef)> =
+            Vec::new();
+        let mut consumed_appends = 0_u64;
+        let folds_before = super::projection_fold_count();
+        let append = |store: &SessionStore,
+                      run: Option<RunId>,
+                      payload: EventPayload,
+                      consumed: &mut u64| {
+            if super::fold_consumed(&payload) {
+                *consumed += 1;
+            }
+            store
+                .append(session_id, run, fuzz_origin(), payload)
+                .expect("fuzz append");
+        };
+
+        for step in 0..steps {
+            let roll = rng.below(100);
+            match roll {
+                // ~45%: streaming text deltas (fold-ignored).
+                0..=44 => append(
+                    &store,
+                    Some(run_id),
+                    EventPayload::TextDelta {
+                        attempt_id,
+                        text: format!("delta-{seed}-{step}"),
+                    },
+                    &mut consumed_appends,
+                ),
+                // ~15%: reasoning deltas (fold-ignored).
+                45..=59 => append(
+                    &store,
+                    Some(run_id),
+                    EventPayload::ReasoningDelta {
+                        attempt_id,
+                        text: format!("reasoning-{seed}-{step}"),
+                    },
+                    &mut consumed_appends,
+                ),
+                // ~15%: tool progress on an open call (fold-ignored).
+                60..=74 => {
+                    if let Some((tool_call_id, _)) = open_tools.first() {
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::ToolCallProgress {
+                                tool_call_id: *tool_call_id,
+                                message: SafeDisplayText::new("progress").expect("progress"),
+                                output_chunk: None,
+                            },
+                            &mut consumed_appends,
+                        );
+                    } else {
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::TextDelta {
+                                attempt_id,
+                                text: format!("fallback-{seed}-{step}"),
+                            },
+                            &mut consumed_appends,
+                        );
+                    }
+                }
+                // ~5%: committed model turn carrying one tool-call part, plus
+                // its usage record (consumed). The part gives later tool starts
+                // a valid owner.
+                75..=79 => {
+                    let turn_seq = next_turn_seq;
+                    next_turn_seq += 1;
+                    let owner = fuzz_tool_owner(turn_seq, &format!("fuzz-mc-{turn_seq}"));
+                    append(
+                        &store,
+                        Some(run_id),
+                        EventPayload::ModelTurnCommitted {
+                            attempt_id,
+                            model_turn_seq: turn_seq,
+                            resolved_model: resolved_model.clone(),
+                            input_through_seq: 1,
+                            turn: PersistedModelTurn {
+                                content: vec![
+                                    cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                                        id: owner.model_call_id.clone(),
+                                        provider_item_id: None,
+                                        name: SafeCode::new("fuzz_tool").expect("tool name"),
+                                        input: serde_json::json!({}),
+                                        raw_input: None,
+                                        metadata: None,
+                                    },
+                                ],
+                                provider_options: BTreeMap::new(),
+                                finish_reason: ModelFinishReason::ToolCalls,
+                                usage: Usage::default(),
+                                response_metadata: BTreeMap::new(),
+                                provider_metadata: BTreeMap::new(),
+                                native_replay: None,
+                            },
+                            warnings: Vec::new(),
+                        },
+                        &mut consumed_appends,
+                    );
+                    callable_owners.push(owner);
+                    append(
+                        &store,
+                        Some(run_id),
+                        EventPayload::ModelUsageRecorded {
+                            model_turn_seq: turn_seq,
+                            agent_id: agent_id.clone(),
+                            resolved_model: resolved_model.clone(),
+                            usage: Usage::default(),
+                            estimated_cost_pico_usd: None,
+                        },
+                        &mut consumed_appends,
+                    );
+                    // A committed turn is terminal for its attempt; stream the
+                    // next deltas under a fresh attempt.
+                    attempt_id = AttemptId::new_v7();
+                    store
+                        .append(
+                            session_id,
+                            Some(run_id),
+                            fuzz_origin(),
+                            EventPayload::ModelAttemptStarted {
+                                attempt_id,
+                                attempt_ordinal: next_attempt_ordinal,
+                                fallback_index: 0,
+                                retry_ordinal: 0,
+                                resolved_model: resolved_model.clone(),
+                                prompt_fingerprint: prompt_fingerprint.clone(),
+                            },
+                        )
+                        .expect("start attempt");
+                    next_attempt_ordinal += 1;
+                }
+                // ~5%: tool call start against a committed tool-call owner
+                // (consumed).
+                80..=84 => {
+                    if let Some(owner) = callable_owners.pop() {
+                        let tool_call_id = ToolCallId::new_v7();
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::ToolCallStarted {
+                                start: cookie_agent_protocol::ToolCallStart {
+                                    tool_call_id,
+                                    owner: owner.clone(),
+                                    presentation: cookie_agent_protocol::ToolCallPresentation {
+                                        title: SafeDisplayText::new("fuzz tool").expect("title"),
+                                        primary_argument: None,
+                                    },
+                                    operation_fingerprint: serde_json::from_value(
+                                        serde_json::json!({
+                                            "digest": Sha256Digest::of_bytes(b"fuzz operation")
+                                        }),
+                                    )
+                                    .expect("operation fingerprint"),
+                                },
+                            },
+                            &mut consumed_appends,
+                        );
+                        open_tools.push((tool_call_id, owner));
+                    } else {
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::TextDelta {
+                                attempt_id,
+                                text: format!("pre-tool-{seed}-{step}"),
+                            },
+                            &mut consumed_appends,
+                        );
+                    }
+                }
+                // ~5%: tool call termination (consumed).
+                85..=89 => {
+                    if let Some((tool_call_id, owner)) = open_tools.pop() {
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::ToolCallTerminated {
+                                termination: cookie_agent_protocol::ToolCallTermination {
+                                    tool_call_id,
+                                    owner,
+                                    outcome: cookie_agent_protocol::ToolTerminationOutcome::Failed,
+                                    result: None,
+                                    error: Some(cookie_agent_protocol::SafeToolError {
+                                        code: SafeCode::new("fuzz_failed").expect("code"),
+                                        message: SafeErrorMessage::new("fuzz failed")
+                                            .expect("message"),
+                                    }),
+                                },
+                            },
+                            &mut consumed_appends,
+                        );
+                    } else {
+                        append(
+                            &store,
+                            Some(run_id),
+                            EventPayload::ReasoningDelta {
+                                attempt_id,
+                                text: format!("no-tool-{seed}-{step}"),
+                            },
+                            &mut consumed_appends,
+                        );
+                    }
+                }
+                // ~3%: titles, overlays, user input (all consumed).
+                90..=92 => match rng.below(3) {
+                    0 => append(
+                        &store,
+                        None,
+                        EventPayload::SessionTitleCommitted {
+                            change: SessionTitleChange::UserSet {
+                                title: SessionTitle::new(format!("fuzz title {step}"))
+                                    .expect("title"),
+                                client_rename_id: cookie_agent_protocol::ClientRenameId::new(
+                                    format!("fuzz-rename-{seed}-{step}"),
+                                )
+                                .expect("rename id"),
+                            },
+                            input_through_seq: 1,
+                        },
+                        &mut consumed_appends,
+                    ),
+                    1 => append(
+                        &store,
+                        None,
+                        EventPayload::SessionPermissionOverlaySet {
+                            overlay: SessionPermissionOverlay::default(),
+                        },
+                        &mut consumed_appends,
+                    ),
+                    _ => append(
+                        &store,
+                        Some(run_id),
+                        EventPayload::UserInputSubmitted {
+                            input: format!("follow-up {step}"),
+                        },
+                        &mut consumed_appends,
+                    ),
+                },
+                // ~2%: complete the run and start a fresh one (consumed).
+                // Tool owners are per-run state; model turn sequences are
+                // session-global and stay contiguous across runs and reverts.
+                93..=94 => {
+                    append(
+                        &store,
+                        Some(run_id),
+                        EventPayload::RunCompleted { final_text: None },
+                        &mut consumed_appends,
+                    );
+                    run_id = RunId::new_v7();
+                    attempt_id = AttemptId::new_v7();
+                    next_attempt_ordinal = 2;
+                    callable_owners.clear();
+                    open_tools.clear();
+                    append(
+                        &store,
+                        Some(run_id),
+                        run_started.clone(),
+                        &mut consumed_appends,
+                    );
+                    store
+                        .append(
+                            session_id,
+                            Some(run_id),
+                            fuzz_origin(),
+                            EventPayload::ModelAttemptStarted {
+                                attempt_id,
+                                attempt_ordinal: 1,
+                                fallback_index: 0,
+                                retry_ordinal: 0,
+                                resolved_model: resolved_model.clone(),
+                                prompt_fingerprint: prompt_fingerprint.clone(),
+                            },
+                        )
+                        .expect("start attempt");
+                }
+                // ~2%: revert to the creation event (consumed). Hidden turns
+                // invalidate any owners committed before the revert.
+                95..=96 => {
+                    callable_owners.clear();
+                    open_tools.clear();
+                    append(
+                        &store,
+                        None,
+                        EventPayload::SessionReverted { through_seq: 1 },
+                        &mut consumed_appends,
+                    );
+                }
+                // ~3%: user input on the current run (consumed).
+                _ => append(
+                    &store,
+                    Some(run_id),
+                    EventPayload::UserInputSubmitted {
+                        input: format!("input {seed}-{step}"),
+                    },
+                    &mut consumed_appends,
+                ),
+            }
+        }
+
+        assert_eq!(
+            super::projection_fold_count() - folds_before,
+            consumed_appends,
+            "seed {seed}: full folds happen exactly on fold-consumed payloads"
         );
     }
 }
