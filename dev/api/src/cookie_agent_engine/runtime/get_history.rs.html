@@ -30,7 +30,7 @@
 <a href=#30 id=30 data-nosnippet>30</a>        session: SessionId,
 <a href=#31 id=31 data-nosnippet>31</a>        view: EngineHistoryView,
 <a href=#32 id=32 data-nosnippet>32</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;oven_sdk::HistoryTurn&gt;, EngineError&gt; {
-<a href=#33 id=33 data-nosnippet>33</a>        <span class="kw">let </span>events = <span class="self">self</span>.inner.store.get(session)<span class="question-mark">?</span>.log.events();
+<a href=#33 id=33 data-nosnippet>33</a>        <span class="kw">let </span>events = <span class="self">self</span>.inner.store.get(session)<span class="question-mark">?</span>.log.event_snapshot();
 <a href=#34 id=34 data-nosnippet>34</a>        <span class="kw">let </span>run = events
 <a href=#35 id=35 data-nosnippet>35</a>            .iter()
 <a href=#36 id=36 data-nosnippet>36</a>            .rev()

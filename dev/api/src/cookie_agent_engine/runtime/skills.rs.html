@@ -278,7 +278,7 @@
 <a href=#278 id=278 data-nosnippet>278</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;SkillInvocation, EngineError&gt; {
 <a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">let </span>projection = <span class="self">self</span>.inner.store.get(session)<span class="question-mark">?</span>;
 <a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>name = <span class="kw-2">&amp;</span>plan.name;
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span>duplicate = projection.log.events().iter().any(|event| {
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span>duplicate = projection.log.event_snapshot().iter().any(|event| {
 <a href=#282 id=282 data-nosnippet>282</a>            <span class="macro">matches!</span>(
 <a href=#283 id=283 data-nosnippet>283</a>                <span class="kw-2">&amp;</span>event.payload,
 <a href=#284 id=284 data-nosnippet>284</a>                EventPayload::SkillLoaded { name: prior_name, rendered_body, .. }

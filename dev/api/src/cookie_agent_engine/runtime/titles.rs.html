@@ -69,7 +69,7 @@
 <a href=#69 id=69 data-nosnippet>69</a>        {
 <a href=#70 id=70 data-nosnippet>70</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#71 id=71 data-nosnippet>71</a>        }
-<a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span>events = <span class="self">self</span>.inner.store.get(session)<span class="question-mark">?</span>.log.events();
+<a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span>events = <span class="self">self</span>.inner.store.get(session)<span class="question-mark">?</span>.log.event_snapshot();
 <a href=#73 id=73 data-nosnippet>73</a>        <span class="kw">if </span>!automatic_title_eligible(<span class="kw-2">&amp;</span>events) {
 <a href=#74 id=74 data-nosnippet>74</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#75 id=75 data-nosnippet>75</a>        }
@@ -149,7 +149,7 @@
 <a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">if </span><span class="macro">matches!</span>(projection.meta.origin, SessionOrigin::Delegated { .. }) {
 <a href=#150 id=150 data-nosnippet>150</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#151 id=151 data-nosnippet>151</a>        }
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>events = projection.log.events();
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>events = projection.log.event_snapshot();
 <a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">if </span>!automatic_title_eligible(<span class="kw-2">&amp;</span>events) {
 <a href=#154 id=154 data-nosnippet>154</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(());
 <a href=#155 id=155 data-nosnippet>155</a>        }

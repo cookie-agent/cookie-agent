@@ -294,7 +294,7 @@
 <a href=#294 id=294 data-nosnippet>294</a>                .unwrap_or_else(|poisoned| poisoned.into_inner())
 <a href=#295 id=295 data-nosnippet>295</a>                .keys()
 <a href=#296 id=296 data-nosnippet>296</a>                .any(|(session_id, <span class="kw">_</span>)| <span class="kw-2">*</span>session_id == session.meta.session_id)
-<a href=#297 id=297 data-nosnippet>297</a>            || has_runless_pending_inputs(<span class="kw-2">&amp;</span>session.log.events())
+<a href=#297 id=297 data-nosnippet>297</a>            || has_runless_pending_inputs(<span class="kw-2">&amp;</span>session.log.event_snapshot())
 <a href=#298 id=298 data-nosnippet>298</a>        {
 <a href=#299 id=299 data-nosnippet>299</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
 <a href=#300 id=300 data-nosnippet>300</a>        }
@@ -312,8 +312,8 @@
 <a href=#312 id=312 data-nosnippet>312</a>        }
 <a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>ended_at = session
 <a href=#314 id=314 data-nosnippet>314</a>            .log
-<a href=#315 id=315 data-nosnippet>315</a>            .events()
-<a href=#316 id=316 data-nosnippet>316</a>            .into_iter()
+<a href=#315 id=315 data-nosnippet>315</a>            .event_snapshot()
+<a href=#316 id=316 data-nosnippet>316</a>            .iter()
 <a href=#317 id=317 data-nosnippet>317</a>            .filter(|event| {
 <a href=#318 id=318 data-nosnippet>318</a>                event.run_id.is_some()
 <a href=#319 id=319 data-nosnippet>319</a>                    &amp;&amp; <span class="macro">matches!</span>(
