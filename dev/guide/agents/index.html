@@ -1488,10 +1488,10 @@ declare at least one fallback. The chain may contain up to 256 entries with no
 duplicate model keys. Only internal agents may use the <code>${parent_model}</code> model
 expression, and only without a variant.</p>
 <p><code>cache</code> uses the provider-specific shapes documented under
-<a href="../../reference/configuration/#prompt_caching"><code>[prompt_caching]</code></a>. An entry-level
-cache policy overrides runtime prompt caching for that model binding. This is
-resolved independently for every fallback, including mixed-provider chains;
-generic OpenAI-compatible adaptors reject authored cache policy.</p>
+<a href="../../reference/configuration/#providersidcache"><code>[providers.&lt;id&gt;.cache]</code></a>. The
+resolution order is family default, provider <code>cache</code>, then entry-level <code>cache</code>
+for that binding. This is resolved independently for every fallback, including
+mixed-provider chains. OpenAI-compatible cache keys are provider-only.</p>
 <h3 id="modes">Modes<a class="headerlink" href="#modes" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>primary</code> — runnable as a root session agent. Must declare at least one model

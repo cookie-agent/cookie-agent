@@ -1401,7 +1401,7 @@ injection. The engine clears prior markers, then can mark:</p>
 <ul>
 <li>the non-empty system turn at <code>history[0]</code>;</li>
 <li>the final emitted tool definition; and</li>
-<li>the last eligible non-system history turn.</li>
+<li>the last non-system history turn.</li>
 </ul>
 <p>AGENTS.md context does not move or rewrite the system breakpoint. Tool schemas are
 separate request fields, so tool changes use the tool breakpoint instead of
@@ -1414,8 +1414,10 @@ last non-empty text part only when the first turn is an eligible system turn,
 while <code>rolling</code> considers only the latest user turn and marks its last non-empty
 text part. Either placement is omitted when that exact turn has no eligible text;
 Cookie agent does not search another turn. Assistant and tool-result content is
-never selected because those marker locations are rejected by the provider. See
-the <a href="../configuration/#prompt_caching">prompt-caching configuration reference</a>.</p>
+never selected because those marker locations are rejected by the provider.
+Compaction resolves the same structural placements and shares the parent's
+cached prefix rather than using an isolated cache namespace. See the
+<a href="../configuration/#providersidcache">prompt-caching configuration reference</a>.</p>
 <h2 id="agent-matrix">Agent matrix<a class="headerlink" href="#agent-matrix" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

@@ -644,7 +644,7 @@
 <a href=#644 id=644 data-nosnippet>644</a>            <span class="kw">let </span><span class="kw-2">mut </span>strategy = <span class="kw">if </span>inherit_parent_cache &amp;&amp; parent_binding == <span class="prelude-val">Some</span>(binding) {
 <a href=#645 id=645 data-nosnippet>645</a>                owner.raw_cache_strategy(binding)
 <a href=#646 id=646 data-nosnippet>646</a>            } <span class="kw">else </span>{
-<a href=#647 id=647 data-nosnippet>647</a>                policy::resolve_cache_strategy(resolved, binding, <span class="kw-2">&amp;</span>owner.runtime_cache)<span class="question-mark">?
+<a href=#647 id=647 data-nosnippet>647</a>                policy::resolve_cache_strategy(resolved, binding, <span class="kw-2">&amp;</span>owner.runtime)<span class="question-mark">?
 <a href=#648 id=648 data-nosnippet>648</a>            </span>};
 <a href=#649 id=649 data-nosnippet>649</a>            <span class="kw">if </span><span class="macro">matches!</span>(
 <a href=#650 id=650 data-nosnippet>650</a>                kind,

@@ -790,6 +790,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#prompt-caching-availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prompt-caching availability
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#common-managed-examples" class="md-nav__link">
     <span class="md-ellipsis">
       Common managed examples
@@ -1354,6 +1363,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#prompt-caching-availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      Prompt-caching availability
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#common-managed-examples" class="md-nav__link">
     <span class="md-ellipsis">
       Common managed examples
@@ -1527,7 +1545,7 @@ parser is used by <code>/connect</code>, <code>cookie connect</code>, and the TU
 <code>&lt;cwd&gt;/.cookie-agent/config.toml</code> and take precedence. A same-ID workspace
 provider replaces the complete user provider entry; nested fields never merge.</p>
 <p>Available fields for a managed provider are <code>base_url</code>, <code>shape</code>, <code>setup</code>,
-<code>api_key</code>, <code>auth_override</code>, and sparse <code>model_overrides</code>. <code>api_key</code> is allowed
+<code>api_key</code>, <code>auth_override</code>, <code>cache</code>, and sparse <code>model_overrides</code>. <code>api_key</code> is allowed
 only for providers whose recipe's default method is an unambiguous single-secret
 method. Other methods use <code>auth_override</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[providers.google-vertex]</span>
@@ -1701,6 +1719,51 @@ and authentication methods:</p>
 </table>
 <p>Families that build the endpoint from setup fields (<strong>Vertex</strong>, <strong>Bedrock</strong>,
 <strong>Azure</strong>) forbid authored <code>base_url</code> overrides.</p>
+<h3 id="prompt-caching-availability">Prompt-caching availability<a class="headerlink" href="#prompt-caching-availability" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Adaptor family</th>
+<th>Default</th>
+<th>Provider <code>cache</code> surface</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>anthropic</code>, <code>anthropic-compatible</code></td>
+<td>Structural system/tools <code>1h</code>, rolling <code>5m</code></td>
+<td><code>system</code>, <code>tools</code>, <code>rolling</code> TTLs</td>
+</tr>
+<tr>
+<td><code>aws-bedrock-converse</code></td>
+<td>Structural system/tools/rolling <code>5m</code></td>
+<td><code>system</code>, <code>tools</code>, <code>rolling</code> TTLs</td>
+</tr>
+<tr>
+<td><code>openai-chat</code>, <code>openai-responses</code>, Azure OpenAI</td>
+<td>Provider-managed caching; session UUIDv7 key always sent</td>
+<td><code>prompt_cache_retention</code>, <code>mode</code>, <code>ttl</code>, <code>system</code>, <code>rolling</code></td>
+</tr>
+<tr>
+<td><code>openai-compatible</code></td>
+<td>Session UUIDv7 key sent</td>
+<td><code>prompt_cache_key</code>; empty string disables</td>
+</tr>
+<tr>
+<td>Google Gemini and Vertex Gemini</td>
+<td>Implicit caching</td>
+<td>None; a cache table is rejected</td>
+</tr>
+<tr>
+<td>Cohere</td>
+<td>Server-side automatic caching</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<p>Cache tables are strict and must match the resolved adaptor. See the
+<a href="../../reference/configuration/#providersidcache">configuration reference</a> for
+defaults, TTL ordering, OpenAI breakpoint semantics, and model-binding overrides.</p>
 <h3 id="common-managed-examples">Common managed examples<a class="headerlink" href="#common-managed-examples" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># OpenAI</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">[providers.openai]</span>

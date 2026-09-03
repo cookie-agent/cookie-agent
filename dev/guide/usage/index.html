@@ -1208,13 +1208,15 @@ the current configuration or catalog when a rollup is requested; mixed
 rollups therefore combine durable historical prices with best-effort current
 pricing for legacy records.</p>
 <p>To evaluate prompt caching, compare equivalent workloads before and after
-enabling <code>[prompt_caching]</code>. Track <code>cache_hit_rate</code> after the first turn and
+changing <code>[providers.&lt;id&gt;.cache]</code>. Track <code>cache_hit_rate</code> after the first turn and
 <code>estimated_cost_usd</code> over the whole session. Providers that expose writes may
 report them when a prefix is first cached and reads on later matching requests;
 compare totals only after enough repeated-prefix turns to amortize any write and
 storage charges. Use the provider's off configuration as the baseline: set all
-Anthropic TTLs to <code>"off"</code>, use Bedrock <code>enabled = false</code>, or use Google
-<code>mode = "off"</code>. Provider-reported cache reads and writes should then remain zero.</p>
+Anthropic or Bedrock <code>system</code>, <code>tools</code>, and <code>rolling</code> values to <code>"off"</code>; for
+OpenAI GPT-5.6+, use <code>mode = "explicit"</code> with both placements false. Gemini
+caching is always implicit and has no off control. Provider-reported cache reads
+and writes should then remain zero where the provider exposes a kill switch.</p>
 
 
 

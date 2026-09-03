@@ -1072,11 +1072,26 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#prompt_caching" class="md-nav__link">
+  <a href="#providersidcache" class="md-nav__link">
     <span class="md-ellipsis">
-      [prompt_caching]
+      [providers.&lt;id&gt;.cache]
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="[providers.&lt;id&gt;.cache]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Breaking changes
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1437,11 +1452,26 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#prompt_caching" class="md-nav__link">
+  <a href="#providersidcache" class="md-nav__link">
     <span class="md-ellipsis">
-      [prompt_caching]
+      [providers.&lt;id&gt;.cache]
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="[providers.&lt;id&gt;.cache]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Breaking changes
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1688,12 +1718,6 @@ resumes on restart.</p>
 <td>Automatic context compaction</td>
 </tr>
 <tr>
-<td><code>prompt_caching</code></td>
-<td>table</td>
-<td>defaults below</td>
-<td>Provider-specific prompt-cache policy</td>
-</tr>
-<tr>
 <td><code>session_title</code></td>
 <td>table</td>
 <td>defaults below</td>
@@ -1923,102 +1947,77 @@ without a cap. Cancellation still interrupts the wait.</p>
 </tr>
 </tbody>
 </table>
-<h2 id="prompt_caching"><code>[prompt_caching]</code><a class="headerlink" href="#prompt_caching" title="Permanent link">&para;</a></h2>
-<p>Defines provider-specific cache policy. By default only
-<code>[prompt_caching.anthropic]</code> is present, with one-hour system and tool markers
-and a five-minute rolling marker. A model binding selects only its own provider
-section, so one fallback chain may mix provider families.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[prompt_caching.anthropic]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"one_hour"</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">tools</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"one_hour"</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"five_minutes"</span>
+<h2 id="providersidcache"><code>[providers.&lt;id&gt;.cache]</code><a class="headerlink" href="#providersidcache" title="Permanent link">&para;</a></h2>
+<p>Prompt-cache policy belongs to the provider definition. Omit <code>cache</code> to use the
+family defaults. A cache table is validated against the provider's resolved
+adaptor; wrong-family fields and unknown keys are load errors.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[providers.anthropic.cache]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1h"</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">tools</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"1h"</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"5m"</span>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">[prompt_caching.bedrock]</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"five_minutes"</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">tools</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"five_minutes"</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">messages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">history_index</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">ttl</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"five_minutes"</span><span class="w"> </span><span class="p">}]</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">[prompt_caching.google]</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"explicit"</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">cached_content</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"cachedContents/example"</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="k">[prompt_caching.openai]</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="n">prompt_cache_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"cookie-${session_id}"</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"implicit"</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="n">ttl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"30m"</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">[providers.amazon-bedrock.cache]</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"5m"</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">tools</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"5m"</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"5m"</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="k">[providers.openai.cache]</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"auto"</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">ttl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"30m"</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="n">system</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">rolling</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">[providers.</span><span class="s2">"custom.compatible"</span><span class="k">.cache]</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">prompt_cache_key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"tenant-${session_id}"</span>
 </code></pre></div>
-<p>Anthropic <code>system</code> and <code>tools</code> accept <code>"one_hour"</code>, <code>"five_minutes"</code>, or
-<code>"off"</code>; <code>rolling</code> accepts <code>"five_minutes"</code> or <code>"off"</code>. Marker order is tools,
-system, then rolling history, and a one-hour marker cannot follow a five-minute
-marker. Anthropic also offers an automatic caching mode; Cookie agent deliberately
-uses structural markers so the selected breakpoints remain explicit and stable.</p>
-<p>Bedrock <code>enabled = false</code> emits no cache points and cannot be combined with
-other Bedrock fields. <code>enabled = true</code> without placement fields is shorthand for
-five-minute system, tool, and last-message points. Five minutes is the universal
-default because one-hour points are model-dependent: Claude 3.7 Sonnet and Claude
-3.5 Sonnet v2 support only five minutes, while currently documented newer models
-also accept one hour. Opt into <code>"one_hour"</code> only after checking the selected
-model's provider documentation.
-Explicit <code>messages</code> entries use zero-based Oven history indices. Bedrock allows
-at most four total system, tool, and message points and enforces the same
-one-hour-before-five-minute ordering. System and tool points are omitted from a
-request when that request has no eligible system text or tools. Minimum prefix
-sizes are model-specific and currently range from 512 to 4,096 tokens; an
-undersized checkpoint may simply not be cached.</p>
-<p>Google <code>mode</code> is <code>"implicit"</code>, <code>"explicit"</code>, or <code>"off"</code>. Explicit mode requires
-a <code>cachedContents/&lt;id&gt;</code> resource; the other modes reject <code>cached_content</code>.
-Implicit caching is automatic and free to enable. Its documented minimum prefix
-is 2,048 tokens for Gemini 2.x and 4,096 for Gemini 3.x; check the model page as
-these thresholds are model-specific. Explicit <code>cachedContents</code> resources incur
-cache-token and storage-duration charges. The TTL defaults to one hour and has no
-documented minimum or maximum.</p>
-<p>OpenAI and Azure OpenAI accept an optional <code>prompt_cache_key</code>; it may contain
-<code>${session_id}</code> and must be at most 64 characters after substitution. The
-exposed <code>prompt_cache_retention</code> values, <code>"in_memory"</code> and <code>"24h"</code>, apply to
-models before GPT-5.6 and are deprecated on GPT-5.6 and later. GPT-5.6+ uses
-breakpoint-based caching and <code>prompt_cache_options.ttl = "30m"</code> (currently the
-only TTL value). Cookie agent exposes these controls as <code>mode</code>, <code>ttl</code>, <code>system</code>,
-and <code>rolling</code>. Using any of those four fields enables GPT-5.6 controls; omitted
-<code>mode</code> and <code>ttl</code> then default to <code>"implicit"</code> and <code>"30m"</code>. A section containing
-only <code>prompt_cache_key</code> or <code>prompt_cache_retention</code> remains on the pre-5.6 path
-and does not emit <code>prompt_cache_options</code>.</p>
-<p><code>mode = "implicit"</code> retains the provider-managed latest-message breakpoint and
-allows Cookie agent's explicit markers. <code>mode = "explicit"</code> disables that
-provider-managed breakpoint; with both placement fields false, it therefore
-writes no cache. <code>system = true</code> marks the last non-empty text part of the first
-turn, but only when the first turn itself is a system turn; an ineligible first
-turn is skipped without searching later system turns. <code>rolling = true</code> considers
-only the latest user turn and marks its last non-empty text part. If that turn is
-empty or file-only, placement is skipped without falling back to an earlier user
-turn. Rolling deliberately skips files, assistant history, and tool results; the
-provider rejects markers on assistant and tool-result content. There is no
-<code>tools</code> placement because the SDK does not expose markers on tool definitions.
-Existing caller markers are preserved, and the SDK rejects requests exceeding
-the provider's four-write aggregate limit as invalid requests.</p>
-<p>Earlier models cache qualifying prefixes automatically; GPT-5.6+ uses implicit
-or explicit breakpoints. The documented minimum cacheable prefix is 1,024
-visible input tokens for GPT-5.6+ and 2,048 for older models.</p>
-<p>OpenAI cache pricing is model- and tier-dependent. GPT-5.6+ currently charges
-cache reads at 0.1 times uncached input and cache writes at 1.25 times; earlier
-models have model-tier-dependent cached-input discounts, including 90%, 75%, and
-50% tiers. Treat the selected catalog model's <code>cache_read</code> and <code>cache_write</code>
-rates as authoritative rather than assuming one discount.</p>
-<p>Cohere performs server-side automatic inference caching and reports cache hits
-as <code>cached_tokens</code>, but documents no request controls. <code>[prompt_caching]</code>
-therefore has no <code>cohere</code> section by design.</p>
+<p>Anthropic defaults to <code>system = "1h"</code>, <code>tools = "1h"</code>, and <code>rolling = "5m"</code>.
+<code>system</code> and <code>tools</code> accept <code>"1h"</code>, <code>"5m"</code>, or <code>"off"</code>; <code>rolling</code> accepts
+<code>"5m"</code> or <code>"off"</code>. Marker order is tools, system, then rolling history, and a
+one-hour marker cannot follow a five-minute marker. Explicit <code>"1h"</code> placement
+requires the model's authored Anthropic <code>beta</code> options to contain
+<code>extended-cache-ttl-2025-04-11</code>; Cookie agent never inserts an
+<code>anthropic-beta</code> value on the user's behalf.</p>
+<p>Bedrock has the same three fields and ordering rule. All three default to
+<code>"5m"</code>; setting all three to <code>"off"</code> emits no cache points. Rolling always marks
+the last non-system message. There is no <code>enabled</code> switch and no indexed
+<code>messages</code> list. System and tool points are omitted from requests without
+eligible system text or tools. The three structural placements stay below
+Bedrock's four-point request limit.</p>
+<p>Anthropic and Bedrock use structural markers. The selected policy is frozen for
+the run, prior markers are cleared, and ordinary and compaction requests resolve
+the same system, tools, and last-non-system placements. Compaction shares the
+parent's cached prefix instead of creating an isolated cache namespace.</p>
+<p>OpenAI and Azure OpenAI always send the session's bare UUIDv7 as
+<code>prompt_cache_key</code>; this has no configuration field or opt-out. Their cache table
+accepts <code>prompt_cache_retention</code>, <code>mode</code>, <code>ttl</code>, <code>system</code>, and <code>rolling</code>.
+<code>prompt_cache_retention</code> is <code>"in_memory"</code> or <code>"24h"</code>. Using any of <code>mode</code>, <code>ttl</code>,
+<code>system</code>, or <code>rolling</code> enables GPT-5.6 controls; omitted <code>mode</code> and <code>ttl</code> then
+default to <code>"auto"</code> and <code>"30m"</code>. <code>mode = "explicit"</code> disables the
+provider-managed breakpoint, so <code>system = false</code> and <code>rolling = false</code> produce
+zero cache writes. There is no tools placement.</p>
+<p>Custom <code>openai-compatible</code> providers accept only <code>prompt_cache_key</code>. Omission
+defaults to <code>${session_id}</code>, an empty string disables the key, and another value
+is sent verbatim after <code>${session_id}</code> expansion. The expanded value must be at
+most 64 characters. Other template variables are rejected.</p>
+<p>Gemini caching is always implicit and has no configuration surface. A <code>cache</code>
+table on Google Gemini or Vertex Gemini providers is an error. Cohere caching is
+server-side automatic and likewise has no authored cache table.</p>
 <p>Provider behavior changes independently of Cookie agent. See the official
 <a href="https://developers.openai.com/api/docs/guides/prompt-caching">OpenAI prompt-caching guide</a>,
 <a href="https://ai.google.dev/gemini-api/docs/generate-content/caching">Gemini context-caching guide</a>,
 <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html">Amazon Bedrock prompt-caching guide</a>,
 <a href="https://docs.cohere.com/v2/reference/chat">Cohere API reference</a>, and
 <a href="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching">Anthropic prompt-caching guide</a>
-for current model-specific support, thresholds, retention, and billing.</p>
-<p>Unknown fields and incoherent combinations are load errors. A cache section that
-does not match its model binding fails policy freeze. OpenAI-compatible and other
-generic adaptors do not accept authored cache policy.</p>
+for current model support, thresholds, retention, and billing.</p>
+<h3 id="breaking-changes">Breaking changes<a class="headerlink" href="#breaking-changes" title="Permanent link">&para;</a></h3>
+<ol>
+<li>The global <code>[prompt_caching]</code> table and all <code>[prompt_caching.&lt;family&gt;]</code> subtables are removed; use <code>[providers.&lt;id&gt;.cache]</code>.</li>
+<li>Anthropic and Bedrock TTLs accept only <code>"1h"</code>, <code>"5m"</code>, and <code>"off"</code>. The former <code>"one_hour"</code> and <code>"five_minutes"</code> values are removed. Configuration is strict: any other TTL string (for example <code>"automatic"</code>, <code>"short"</code>, <code>"long"</code>, <code>"standard"</code>, <code>"none"</code>, or <code>"ephemeral"</code>) was never a cookie-agent literal and is a hard error, not an alias.</li>
+<li>Google cache configuration is removed, including <code>mode</code> (<code>"implicit"</code>, <code>"explicit"</code>, or <code>"off"</code>) and <code>cached_content</code>; Gemini caching is always implicit.</li>
+<li>Bedrock now uses only <code>system</code>, <code>tools</code>, and <code>rolling</code>. The <code>enabled</code> field, <code>messages</code> list, and each message entry's <code>history_index</code> and <code>ttl</code> fields are removed.</li>
+<li>First-party OpenAI and Azure cache tables no longer accept <code>prompt_cache_key</code>; the bare session UUIDv7 is always sent. OpenAI-compatible providers own that field, default to <code>${session_id}</code>, and use <code>prompt_cache_key = ""</code> to disable it.</li>
+<li>OpenAI cache <code>mode = "implicit"</code> is removed; use <code>mode = "auto"</code>. <code>mode = "explicit"</code> remains supported.</li>
+</ol>
 <p>Media attachments (<code>read</code> on images, PDFs, and video; MCP media results) have no
 configuration keys by design: delivery is driven entirely by the model's catalog
 capabilities and the provider family's wire support, and unsupported
@@ -2376,6 +2375,12 @@ for complete examples.</p>
 <td><code>"chat"</code> or <code>"responses"</code> model shape override.</td>
 </tr>
 <tr>
+<td><code>cache</code></td>
+<td>table</td>
+<td>family default</td>
+<td>Prompt-cache policy matching the resolved adaptor family. See <a href="#providersidcache"><code>[providers.&lt;id&gt;.cache]</code></a>.</td>
+</tr>
+<tr>
 <td><code>model_overrides</code></td>
 <td>map</td>
 <td>empty</td>
@@ -2470,6 +2475,12 @@ catalog provider ID the custom definition takes precedence.</p>
 <td>map of strings</td>
 <td>empty</td>
 <td>Public static headers. No interpolation; may not collide with transport/protocol/auth-owned headers.</td>
+</tr>
+<tr>
+<td><code>cache</code></td>
+<td>table</td>
+<td>adaptor default</td>
+<td>Prompt-cache policy matching <code>adaptor</code>. See <a href="#providersidcache"><code>[providers.&lt;id&gt;.cache]</code></a>.</td>
 </tr>
 <tr>
 <td><code>models</code></td>
@@ -2789,11 +2800,14 @@ removes that document cap. A nonzero <code>timeout_ms</code> is a hard error out
 resolved model from its context limit minus its effective output reserve, with a
 16,384-token fallback when context is unknown; an undersized model is skipped in
 favor of the next candidate.</p>
-<p>Each model entry may include a <code>cache</code> table with the same <code>anthropic</code>,
-<code>bedrock</code>, <code>google</code>, or <code>openai</code> shape as <code>[prompt_caching]</code>. It must match that
-binding's provider family. Cache policy precedence is model-entry <code>cache</code>, then
-runtime <code>[prompt_caching]</code>; omitting <code>cache</code> uses the runtime policy, while
-<code>cache: {}</code> explicitly selects no strategy for that entry.</p>
+<p>Each model entry may include a <code>cache</code> table containing one <code>anthropic</code>,
+<code>bedrock</code>, or <code>openai</code> shape. It must match that binding's provider family.
+Cache policy precedence is family default, provider <code>cache</code>, then model-entry
+<code>cache</code>. A model-entry table replaces the provider policy for that binding;
+<code>cache: {}</code> explicitly selects no structural strategy. First-party OpenAI and
+Azure still send the session-ID <code>prompt_cache_key</code> because that key is
+unconditional rather than a placement strategy. OpenAI-compatible cache keys
+are provider-only.</p>
 <p>For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named <code>model_fallback</code>; only agent frontmatter uses <code>models</code>.</p>
 <p>See <a href="../../guide/agents/">Agents</a> for the full frontmatter reference and reserved
