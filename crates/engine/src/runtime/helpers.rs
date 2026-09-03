@@ -23,6 +23,7 @@ impl Engine {
             .log
             .event_snapshot()
             .iter()
+            .rev()
             .find_map(|event| match &event.payload {
                 Event::ToolCallStarted { start }
                     if event.run_id == Some(run_id) && start.tool_call_id == tool_call_id =>

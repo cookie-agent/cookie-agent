@@ -6906,6 +6906,45 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[tokio::test]
+    async fn session_picker_rows_invalidate_on_title_patch() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.sessions.push(titled_meta(session, "before title", 1));
+        let labels = |app: &mut App| -> Vec<String> {
+            app.current_session_search_rows()
+                .iter()
+                .filter_map(|row| match row {
+                    crate::ui::pickers::SessionSearchRow::Session { label, .. } => {
+                        Some(label.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = labels(&mut app);
+        assert!(
+            before.iter().any(|label| label.contains("before title")),
+            "cached rows contain the initial title: {before:?}"
+        );
+
+        app.apply_title_patch(
+            session,
+            Some(SessionTitle::new("after title").expect("title")),
+            2,
+        );
+
+        let after = labels(&mut app);
+        assert!(
+            after.iter().any(|label| label.contains("after title")),
+            "title patch rebuilds the cached rows: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|label| label.contains("before title")),
+            "stale title is gone from the rebuilt rows: {after:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn title_events_patch_tree_rows_immediately_and_stale_tree_cannot_overwrite() {
         let mut app = test_app().await;
         let root = SessionId::new_v7();
