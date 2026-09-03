@@ -1449,9 +1449,10 @@ line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.<
 </table>
 <p>A multiline paste beginning with <code>/</code> is sent as a normal prompt. Prefix a
 single-line prompt with <code>//</code> to send one leading <code>/</code> literally.</p>
-<p>The model panel includes a search field. It filters case-insensitively by model
-display name or <code>provider/model_id</code>; use Down, Tab, or Enter to move from the
-search field into the matching models.</p>
+<p>The agent and model panels include search fields. Agent search matches agent IDs
+and descriptions; model search matches display names and <code>provider/model_id</code>.
+Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
+into the matching rows.</p>
 <h2 id="steering-and-the-pending-strip">Steering and the pending strip<a class="headerlink" href="#steering-and-the-pending-strip" title="Permanent link">&para;</a></h2>
 <p>Submitting while a run is active calls <code>run.steer</code>. The input enters a durable
 pending lane and is not model-visible yet. At tool or completion boundaries,
