@@ -144,13 +144,12 @@ Prefer interpolation or `/connect` over plaintext credentials, and never commit
 
 ## Prompt caching
 
-Runtime prompt-cache policy is provider-specific. This GPT-5.6+ example keeps
+Prompt-cache policy is configured on each provider. This GPT-5.6+ example keeps
 OpenAI's implicit breakpoint and adds stable system and latest-user boundaries:
 
 ```toml
-[prompt_caching.openai]
-prompt_cache_key = "workspace-${session_id}"
-mode = "implicit"
+[providers.openai.cache]
+mode = "auto"
 ttl = "30m"
 system = true
 rolling = true
@@ -159,8 +158,9 @@ rolling = true
 Use `mode = "explicit"` when only the selected `system` and `rolling` boundaries
 should write. OpenAI and Azure OpenAI do not support a Cookie agent `tools`
 placement because provider breakpoints attach to content parts, not tool
-definitions. See the [configuration reference](../reference/configuration.md#prompt_caching)
-for legacy retention, placement, and provider-specific rules.
+definitions. OpenAI and Azure always use the bare session UUIDv7 as their cache
+key. See the [configuration reference](../reference/configuration.md#providersidcache)
+for retention, placement, and provider-specific rules.
 
 ## Agent documents
 

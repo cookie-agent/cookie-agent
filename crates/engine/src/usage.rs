@@ -527,6 +527,39 @@ mod tests {
     }
 
     #[test]
+    fn openai_cache_write_tokens_use_the_distinct_write_rate() {
+        let key = "custom.test/fallback-zero".parse::<ModelKey>().unwrap();
+        let pricing = PricingConfig {
+            models: BTreeMap::from([(
+                key,
+                ModelPricing {
+                    input_per_million_usd: Some(rate("1")),
+                    output_per_million_usd: Some(rate("0")),
+                    cache_read_per_million_usd: Some(rate("0.1")),
+                    cache_write_per_million_usd: Some(rate("1.25")),
+                    ..ModelPricing::default()
+                },
+            )]),
+        };
+        let usage = Usage {
+            input_tokens: Some(100),
+            input_tokens_cache_read: Some(10),
+            input_tokens_cache_write: Some(20),
+            output_tokens: Some(0),
+            ..Usage::default()
+        };
+        assert_eq!(
+            super::estimated_cost_pico_usd(
+                &model("fallback-zero"),
+                &usage,
+                &pricing,
+                &BTreeMap::new()
+            ),
+            Some(96_000_000)
+        );
+    }
+
+    #[test]
     fn stamped_costs_override_current_pricing() {
         let mut fully_stamped = UsageRollup::default();
         for cost in [500_000_000_000, 250_000_000_000] {

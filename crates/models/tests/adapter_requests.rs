@@ -416,7 +416,11 @@ async fn anthropic_cache_breakpoint_survives_image_bearing_tool_result() {
     );
     assert_eq!(tool_result["content"][1]["source"]["data"], "cG5n");
     assert_eq!(
-        body["messages"][0]["content"][0]["cache_control"]["ttl"],
+        body["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["cache_control"]["ttl"],
         "5m"
     );
 }

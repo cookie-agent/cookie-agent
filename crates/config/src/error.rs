@@ -19,7 +19,7 @@ pub enum ConfigError {
     Toml(String),
     #[error("TOML resource limit or unsupported datetime exceeded")]
     TomlLimit,
-    #[error("provider `{provider}` is invalid")]
+    #[error("provider `{provider}` is invalid: {source}")]
     Provider {
         provider: ProviderId,
         #[source]

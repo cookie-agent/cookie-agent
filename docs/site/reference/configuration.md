@@ -70,7 +70,6 @@ Only these optional keys are allowed at the top of `config.toml`.
 | `approval` | table | defaults below | Approval expiry |
 | `model_retry` | table | defaults below | Model retry budgets |
 | `context_compaction` | table | defaults below | Automatic context compaction |
-| `prompt_caching` | table | defaults below | Provider-specific prompt-cache policy |
 | `session_title` | table | defaults below | Automatic session titles |
 | `delegation` | table | defaults below | Delegation depth and concurrency |
 | `pricing` | table | empty | Optional model-rate overrides for cost estimates |
@@ -165,103 +164,70 @@ Controls the automatic context-limit behavior documented in
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
 
-## `[prompt_caching]`
+## `[providers.<id>.cache]`
 
-Defines provider-specific cache policy. By default only
-`[prompt_caching.anthropic]` is present, with one-hour system and tool markers
-and a five-minute rolling marker. A model binding selects only its own provider
-section, so one fallback chain may mix provider families.
+Prompt-cache policy belongs to the provider definition. Omit `cache` to use the
+family defaults. A cache table is validated against the provider's resolved
+adaptor; wrong-family fields and unknown keys are load errors.
 
 ```toml
-[prompt_caching.anthropic]
-system = "one_hour"
-tools = "one_hour"
-rolling = "five_minutes"
+[providers.anthropic.cache]
+system = "1h"
+tools = "1h"
+rolling = "5m"
 
-[prompt_caching.bedrock]
-enabled = true
-system = "five_minutes"
-tools = "five_minutes"
-messages = [{ history_index = 2, ttl = "five_minutes" }]
+[providers.amazon-bedrock.cache]
+system = "5m"
+tools = "5m"
+rolling = "5m"
 
-[prompt_caching.google]
-mode = "explicit"
-cached_content = "cachedContents/example"
-
-[prompt_caching.openai]
-prompt_cache_key = "cookie-${session_id}"
-mode = "implicit"
+[providers.openai.cache]
+mode = "auto"
 ttl = "30m"
 system = true
 rolling = true
+
+[providers."custom.compatible".cache]
+prompt_cache_key = "tenant-${session_id}"
 ```
 
-Anthropic `system` and `tools` accept `"one_hour"`, `"five_minutes"`, or
-`"off"`; `rolling` accepts `"five_minutes"` or `"off"`. Marker order is tools,
-system, then rolling history, and a one-hour marker cannot follow a five-minute
-marker. Anthropic also offers an automatic caching mode; Cookie agent deliberately
-uses structural markers so the selected breakpoints remain explicit and stable.
+Anthropic defaults to `system = "1h"`, `tools = "1h"`, and `rolling = "5m"`.
+`system` and `tools` accept `"1h"`, `"5m"`, or `"off"`; `rolling` accepts
+`"5m"` or `"off"`. Marker order is tools, system, then rolling history, and a
+one-hour marker cannot follow a five-minute marker. Explicit `"1h"` placement
+requires the model's authored Anthropic `beta` options to contain
+`extended-cache-ttl-2025-04-11`; Cookie agent never inserts an
+`anthropic-beta` value on the user's behalf.
 
-Bedrock `enabled = false` emits no cache points and cannot be combined with
-other Bedrock fields. `enabled = true` without placement fields is shorthand for
-five-minute system, tool, and last-message points. Five minutes is the universal
-default because one-hour points are model-dependent: Claude 3.7 Sonnet and Claude
-3.5 Sonnet v2 support only five minutes, while currently documented newer models
-also accept one hour. Opt into `"one_hour"` only after checking the selected
-model's provider documentation.
-Explicit `messages` entries use zero-based Oven history indices. Bedrock allows
-at most four total system, tool, and message points and enforces the same
-one-hour-before-five-minute ordering. System and tool points are omitted from a
-request when that request has no eligible system text or tools. Minimum prefix
-sizes are model-specific and currently range from 512 to 4,096 tokens; an
-undersized checkpoint may simply not be cached.
+Bedrock has the same three fields and ordering rule. All three default to
+`"5m"`; setting all three to `"off"` emits no cache points. Rolling always marks
+the last non-system message. There is no `enabled` switch and no indexed
+`messages` list. System and tool points are omitted from requests without
+eligible system text or tools. The three structural placements stay below
+Bedrock's four-point request limit.
 
-Google `mode` is `"implicit"`, `"explicit"`, or `"off"`. Explicit mode requires
-a `cachedContents/<id>` resource; the other modes reject `cached_content`.
-Implicit caching is automatic and free to enable. Its documented minimum prefix
-is 2,048 tokens for Gemini 2.x and 4,096 for Gemini 3.x; check the model page as
-these thresholds are model-specific. Explicit `cachedContents` resources incur
-cache-token and storage-duration charges. The TTL defaults to one hour and has no
-documented minimum or maximum.
+Anthropic and Bedrock use structural markers. The selected policy is frozen for
+the run, prior markers are cleared, and ordinary and compaction requests resolve
+the same system, tools, and last-non-system placements. Compaction shares the
+parent's cached prefix instead of creating an isolated cache namespace.
 
-OpenAI and Azure OpenAI accept an optional `prompt_cache_key`; it may contain
-`${session_id}` and must be at most 64 characters after substitution. The
-exposed `prompt_cache_retention` values, `"in_memory"` and `"24h"`, apply to
-models before GPT-5.6 and are deprecated on GPT-5.6 and later. GPT-5.6+ uses
-breakpoint-based caching and `prompt_cache_options.ttl = "30m"` (currently the
-only TTL value). Cookie agent exposes these controls as `mode`, `ttl`, `system`,
-and `rolling`. Using any of those four fields enables GPT-5.6 controls; omitted
-`mode` and `ttl` then default to `"implicit"` and `"30m"`. A section containing
-only `prompt_cache_key` or `prompt_cache_retention` remains on the pre-5.6 path
-and does not emit `prompt_cache_options`.
+OpenAI and Azure OpenAI always send the session's bare UUIDv7 as
+`prompt_cache_key`; this has no configuration field or opt-out. Their cache table
+accepts `prompt_cache_retention`, `mode`, `ttl`, `system`, and `rolling`.
+`prompt_cache_retention` is `"in_memory"` or `"24h"`. Using any of `mode`, `ttl`,
+`system`, or `rolling` enables GPT-5.6 controls; omitted `mode` and `ttl` then
+default to `"auto"` and `"30m"`. `mode = "explicit"` disables the
+provider-managed breakpoint, so `system = false` and `rolling = false` produce
+zero cache writes. There is no tools placement.
 
-`mode = "implicit"` retains the provider-managed latest-message breakpoint and
-allows Cookie agent's explicit markers. `mode = "explicit"` disables that
-provider-managed breakpoint; with both placement fields false, it therefore
-writes no cache. `system = true` marks the last non-empty text part of the first
-turn, but only when the first turn itself is a system turn; an ineligible first
-turn is skipped without searching later system turns. `rolling = true` considers
-only the latest user turn and marks its last non-empty text part. If that turn is
-empty or file-only, placement is skipped without falling back to an earlier user
-turn. Rolling deliberately skips files, assistant history, and tool results; the
-provider rejects markers on assistant and tool-result content. There is no
-`tools` placement because the SDK does not expose markers on tool definitions.
-Existing caller markers are preserved, and the SDK rejects requests exceeding
-the provider's four-write aggregate limit as invalid requests.
+Custom `openai-compatible` providers accept only `prompt_cache_key`. Omission
+defaults to `${session_id}`, an empty string disables the key, and another value
+is sent verbatim after `${session_id}` expansion. The expanded value must be at
+most 64 characters. Other template variables are rejected.
 
-Earlier models cache qualifying prefixes automatically; GPT-5.6+ uses implicit
-or explicit breakpoints. The documented minimum cacheable prefix is 1,024
-visible input tokens for GPT-5.6+ and 2,048 for older models.
-
-OpenAI cache pricing is model- and tier-dependent. GPT-5.6+ currently charges
-cache reads at 0.1 times uncached input and cache writes at 1.25 times; earlier
-models have model-tier-dependent cached-input discounts, including 90%, 75%, and
-50% tiers. Treat the selected catalog model's `cache_read` and `cache_write`
-rates as authoritative rather than assuming one discount.
-
-Cohere performs server-side automatic inference caching and reports cache hits
-as `cached_tokens`, but documents no request controls. `[prompt_caching]`
-therefore has no `cohere` section by design.
+Gemini caching is always implicit and has no configuration surface. A `cache`
+table on Google Gemini or Vertex Gemini providers is an error. Cohere caching is
+server-side automatic and likewise has no authored cache table.
 
 Provider behavior changes independently of Cookie agent. See the official
 [OpenAI prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching),
@@ -269,11 +235,16 @@ Provider behavior changes independently of Cookie agent. See the official
 [Amazon Bedrock prompt-caching guide](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html),
 [Cohere API reference](https://docs.cohere.com/v2/reference/chat), and
 [Anthropic prompt-caching guide](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
-for current model-specific support, thresholds, retention, and billing.
+for current model support, thresholds, retention, and billing.
 
-Unknown fields and incoherent combinations are load errors. A cache section that
-does not match its model binding fails policy freeze. OpenAI-compatible and other
-generic adaptors do not accept authored cache policy.
+### Breaking changes
+
+1. The global `[prompt_caching]` table and all `[prompt_caching.<family>]` subtables are removed; use `[providers.<id>.cache]`.
+2. Anthropic and Bedrock TTLs accept only `"1h"`, `"5m"`, and `"off"`. The former `"one_hour"` and `"five_minutes"` values are removed. Configuration is strict: any other TTL string (for example `"automatic"`, `"short"`, `"long"`, `"standard"`, `"none"`, or `"ephemeral"`) was never a cookie-agent literal and is a hard error, not an alias.
+3. Google cache configuration is removed, including `mode` (`"implicit"`, `"explicit"`, or `"off"`) and `cached_content`; Gemini caching is always implicit.
+4. Bedrock now uses only `system`, `tools`, and `rolling`. The `enabled` field, `messages` list, and each message entry's `history_index` and `ttl` fields are removed.
+5. First-party OpenAI and Azure cache tables no longer accept `prompt_cache_key`; the bare session UUIDv7 is always sent. OpenAI-compatible providers own that field, default to `${session_id}`, and use `prompt_cache_key = ""` to disable it.
+6. OpenAI cache `mode = "implicit"` is removed; use `mode = "auto"`. `mode = "explicit"` remains supported.
 
 Media attachments (`read` on images, PDFs, and video; MCP media results) have no
 configuration keys by design: delivery is driven entirely by the model's catalog
@@ -424,6 +395,7 @@ api_key = "${env:OPENAI_API_KEY}"
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
 | `shape` | string | catalog shape | `"chat"` or `"responses"` model shape override. |
+| `cache` | table | family default | Prompt-cache policy matching the resolved adaptor family. See [`[providers.<id>.cache]`](#providersidcache). |
 | `model_overrides` | map | empty | Sparse per-model overrides: `enabled`, `display_name`, `defaults`, `variants`, `default_variant`, `shape`, `compaction`. Cannot invent a model absent from the catalog or directly change capabilities. |
 
 Within a model override, `compaction` defaults to `"unsupported"`. Set it to
@@ -466,6 +438,7 @@ headers = {}
 | `setup` | map of string values | empty | Adaptor-required setup fields (Vertex `location`/`project`/`resource`, Bedrock `region`, Azure `api_version`/`deployment`). Interpolates `${env:NAME}`. |
 | `auth` | table | *(required)* | Typed auth definition (see below). |
 | `headers` | map of strings | empty | Public static headers. No interpolation; may not collide with transport/protocol/auth-owned headers. |
+| `cache` | table | adaptor default | Prompt-cache policy matching `adaptor`. See [`[providers.<id>.cache]`](#providersidcache). |
 | `models` | map | *(required)* | At least one custom model definition. |
 
 Supported adaptor IDs are `openai-compatible`, `openai-chat`,
@@ -574,11 +547,14 @@ resolved model from its context limit minus its effective output reserve, with a
 16,384-token fallback when context is unknown; an undersized model is skipped in
 favor of the next candidate.
 
-Each model entry may include a `cache` table with the same `anthropic`,
-`bedrock`, `google`, or `openai` shape as `[prompt_caching]`. It must match that
-binding's provider family. Cache policy precedence is model-entry `cache`, then
-runtime `[prompt_caching]`; omitting `cache` uses the runtime policy, while
-`cache: {}` explicitly selects no strategy for that entry.
+Each model entry may include a `cache` table containing one `anthropic`,
+`bedrock`, or `openai` shape. It must match that binding's provider family.
+Cache policy precedence is family default, provider `cache`, then model-entry
+`cache`. A model-entry table replaces the provider policy for that binding;
+`cache: {}` explicitly selects no structural strategy. First-party OpenAI and
+Azure still send the session-ID `prompt_cache_key` because that key is
+unconditional rather than a placement strategy. OpenAI-compatible cache keys
+are provider-only.
 
 For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named `model_fallback`; only agent frontmatter uses `models`.

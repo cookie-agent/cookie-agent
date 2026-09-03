@@ -645,6 +645,7 @@ fn cache_strategies_match_bindings(
                 ) | (
                     cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat
                         | cookie_agent_models::adapters::OvenAdapterFamily::OpenaiResponses
+                        | cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
                         | cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiChat
                         | cookie_agent_models::adapters::OvenAdapterFamily::AzureOpenaiResponses,
                     FrozenCacheStrategy::OpenAi { .. }

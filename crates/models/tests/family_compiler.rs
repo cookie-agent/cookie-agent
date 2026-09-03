@@ -12,7 +12,7 @@ use cookie_agent_models::{
         CatalogModelProviderMetadata, CatalogModelRecord, CatalogModelStatus,
         CatalogProviderRecord, CatalogReasoningOption,
     },
-    compiler::{CompiledModelStatus, DynamicCompiler},
+    compiler::{CompiledModelStatus, DynamicCompileError, DynamicCompiler},
 };
 
 fn record(npm: &str, api: Option<&str>) -> CatalogProviderRecord {
@@ -267,6 +267,7 @@ fn authored_shape_selects_chat() {
         api_key: None,
         auth_override: None,
         shape: Some(ManagedModelShape::Chat),
+        cache: None,
         model_overrides: BTreeMap::new(),
     };
     let compiled = DynamicCompiler::family_registry()
@@ -280,6 +281,77 @@ fn authored_shape_selects_chat() {
         compiled.models.values().next().unwrap().resolved_shape,
         "chat"
     );
+}
+
+#[test]
+fn managed_provider_cache_must_match_resolved_adaptor() {
+    let authored = ModelsDevProvider {
+        base_url: None,
+        setup: BTreeMap::new(),
+        api_key: None,
+        auth_override: None,
+        shape: None,
+        cache: Some(
+            serde_json::from_value(serde_json::json!({"system":"1h"})).expect("provider cache"),
+        ),
+        model_overrides: BTreeMap::new(),
+    };
+    assert!(matches!(
+        DynamicCompiler::family_registry().compile_managed(
+            "sha256:test",
+            &record("@ai-sdk/openai", None),
+            Some(&authored),
+        ),
+        Err(DynamicCompileError::Cache(_))
+    ));
+}
+
+#[test]
+fn managed_cache_validation_precedes_model_availability_and_resolution_skips() {
+    let authored = ModelsDevProvider {
+        base_url: None,
+        setup: BTreeMap::new(),
+        api_key: None,
+        auth_override: None,
+        shape: None,
+        cache: Some(
+            serde_json::from_value(serde_json::json!({"mode":"implicit"}))
+                .expect("provider cache envelope"),
+        ),
+        model_overrides: BTreeMap::new(),
+    };
+
+    let mut absent = record("@ai-sdk/openai", None);
+    absent.models.values_mut().next().unwrap().record = None;
+    let mut deprecated = record("@ai-sdk/openai", None);
+    deprecated
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .status = CatalogModelStatus::Deprecated;
+    let mut unresolved = record("@ai-sdk/openai", None);
+    unresolved
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .shape = Some("future".into());
+
+    for record in [absent, deprecated, unresolved] {
+        let error = DynamicCompiler::family_registry()
+            .compile_managed("sha256:test", &record, Some(&authored))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("implicit"), "{error}");
+        assert!(error.contains("auto"), "{error}");
+    }
 }
 
 #[test]
@@ -403,6 +475,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         api_key: None,
         auth_override: Some(auth("azure-api-key-v1", &[("api_key", "secret")])),
         shape: None,
+        cache: None,
         model_overrides: BTreeMap::new(),
     };
     let azure_model = DynamicCompiler::family_registry()
@@ -434,6 +507,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         api_key: None,
         auth_override: Some(auth("oauth-access-token-v1", &[("access_token", "token")])),
         shape: None,
+        cache: None,
         model_overrides: BTreeMap::new(),
     };
     let vertex_model = DynamicCompiler::family_registry()
@@ -466,6 +540,7 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         api_key: None,
         auth_override: Some(auth("bearer-api-key-v1", &[("api_key", "bedrock-key")])),
         shape: None,
+        cache: None,
         model_overrides: BTreeMap::new(),
     };
     let bedrock_model = DynamicCompiler::family_registry()

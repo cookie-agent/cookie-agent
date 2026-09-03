@@ -6,9 +6,9 @@ use std::{
 
 use http::{HeaderMap, HeaderName, HeaderValue};
 use oven_sdk::{
-    AdapterId, ApiEndpoint, HeaderConfig, HeaderOverrides, HeaderProvider, LanguageModel,
-    ModelCapabilities, ModelConfig, ModelDeclaration, ModelError, ModelId, ProviderConfig,
-    ProviderId, ResourceId, SecretString,
+    AdapterId, ApiEndpoint, HeaderConfig, HeaderContext, HeaderOverrides, HeaderProvider,
+    LanguageModel, ModelCapabilities, ModelConfig, ModelDeclaration, ModelError, ModelId,
+    ProviderConfig, ProviderId, ResourceId, SecretString,
 };
 use oven_sdk_anthropic::{
     AnthropicAuth, AnthropicCacheControl, AnthropicCacheTtl, AnthropicCompatibleAuth,
@@ -421,7 +421,9 @@ struct SecretHeaderProvider {
 }
 
 impl HeaderProvider for SecretHeaderProvider {
-    fn headers(&self) -> Result<HeaderOverrides, ModelError> {
+    fn headers(&self, _context: &HeaderContext) -> Result<HeaderOverrides, ModelError> {
+        // TODO(header-context): requests currently use HeaderContext::default(); wire session IDs
+        // when request-scoped authentication is implemented.
         let name = HeaderName::from_bytes(self.name.as_bytes())
             .map_err(|_| ModelError::invalid_request("invalid API-key header name"))?;
         let value = HeaderValue::from_str(self.value.expose_secret())

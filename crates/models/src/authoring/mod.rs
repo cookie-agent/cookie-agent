@@ -1,5 +1,13 @@
 //! Strict provider authoring data transfer objects.
 
+mod cache;
+
+pub use cache::{
+    AnthropicCacheConfig, BedrockCacheConfig, CacheTtl, OpenAiCacheConfig, OpenAiCacheMode,
+    OpenAiCompatibleCacheConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+    ProviderCacheConfig, RollingCacheTtl,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -305,6 +313,7 @@ pub struct ModelsDevProvider {
     pub api_key: Option<SecretString>,
     pub auth_override: Option<AuthOverride>,
     pub shape: Option<ManagedModelShape>,
+    pub cache: Option<ProviderCacheConfig>,
     #[serde(default)]
     pub model_overrides: BTreeMap<ProviderModelId, ManagedModelOverride>,
 }
@@ -330,6 +339,7 @@ pub struct CustomModelDefinition {
 pub struct CustomProvider {
     pub endpoint: EndpointUrl,
     pub adaptor: AdapterId,
+    pub cache: Option<ProviderCacheConfig>,
     #[serde(default)]
     pub setup: BTreeMap<SetupFieldId, ConfigSetupValue>,
     pub auth: AuthDefinition,
@@ -387,6 +397,8 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
         return Err(AuthoringError::EmptyModels);
     }
     validate_auth_shape(&provider.auth, provider.adaptor.as_str())?;
+    validate_provider_cache(provider.cache.as_ref(), provider.adaptor.as_str())
+        .map_err(AuthoringError::Cache)?;
     validate_header_ownership(&provider.headers, &provider.auth)?;
     for model in provider.models.values() {
         validate_display_name(&model.display_name)?;
@@ -400,6 +412,33 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_provider_cache(
+    cache: Option<&ProviderCacheConfig>,
+    adaptor: &str,
+) -> Result<(), String> {
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    let result = match adaptor {
+        "anthropic" | "anthropic-compatible" => cache.anthropic().map(|_| ()),
+        "aws-bedrock-converse" => cache.bedrock().map(|_| ()),
+        "openai-chat" | "openai-responses" | "azure-openai-chat" | "azure-openai-responses" => {
+            cache.openai().map(|_| ())
+        }
+        "openai-compatible" => cache.openai_compatible().map(|_| ()),
+        "google-gemini" | "google-vertex-gemini" => {
+            return Err("Google caching is always implicit".into());
+        }
+        "cohere-v2-chat" => {
+            return Err(
+                "the provider adaptor does not support authored cache configuration".into(),
+            );
+        }
+        _ => return Err("unsupported adaptor".into()),
+    };
+    result.map_err(|error| format!("invalid cache config for `{adaptor}`: {error}"))
 }
 
 fn validate_display_name(value: &str) -> Result<(), AuthoringError> {
@@ -632,7 +671,7 @@ const fn yes() -> bool {
     true
 }
 
-#[derive(Clone, Copy, Debug, thiserror::Error, Eq, PartialEq)]
+#[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 pub enum AuthoringError {
     #[error("secret values must be nonempty")]
     EmptySecret,
@@ -676,6 +715,8 @@ pub enum AuthoringError {
     AuthShape,
     #[error("static header is transport, protocol, or auth owned")]
     HeaderOwned,
+    #[error("{0}")]
+    Cache(String),
 }
 
 #[cfg(test)]
@@ -686,6 +727,7 @@ mod tests {
         CustomProvider {
             endpoint: EndpointUrl::new("https://api.example.invalid/v1").expect("valid endpoint"),
             adaptor: AdapterId::new("anthropic-compatible").expect("valid adaptor ID"),
+            cache: None,
             setup: BTreeMap::new(),
             auth: AuthDefinition {
                 method: AuthMethodId::new(method).expect("valid auth method ID"),
@@ -712,5 +754,91 @@ mod tests {
             validate_auth_shape(&unsupported.auth, unsupported.adaptor.as_str()),
             Err(AuthoringError::AuthMethod)
         );
+    }
+
+    fn cache(value: serde_json::Value) -> ProviderCacheConfig {
+        serde_json::from_value(value).expect("valid provider cache envelope")
+    }
+
+    #[test]
+    fn provider_cache_shapes_are_validated_against_adaptors() {
+        let cases = [
+            (
+                "anthropic",
+                serde_json::json!({"system":"1h","tools":"1h","rolling":"5m"}),
+            ),
+            (
+                "aws-bedrock-converse",
+                serde_json::json!({"system":"5m","tools":"5m","rolling":"off"}),
+            ),
+            (
+                "openai-responses",
+                serde_json::json!({"mode":"explicit","ttl":"30m","system":true}),
+            ),
+            (
+                "openai-compatible",
+                serde_json::json!({"prompt_cache_key":"tenant-${session_id}"}),
+            ),
+        ];
+        for (adaptor, value) in cases {
+            assert_eq!(
+                validate_provider_cache(Some(&cache(value)), adaptor),
+                Ok(())
+            );
+        }
+
+        let error = validate_provider_cache(
+            Some(&cache(serde_json::json!({"system":"1h"}))),
+            "openai-chat",
+        )
+        .unwrap_err();
+        assert!(error.contains("1h"), "{error}");
+        let error = validate_provider_cache(
+            Some(&cache(serde_json::json!({"system":true}))),
+            "anthropic",
+        )
+        .unwrap_err();
+        assert!(error.contains("boolean"), "{error}");
+        assert_eq!(
+            validate_provider_cache(Some(&cache(serde_json::json!({}))), "google-gemini"),
+            Err("Google caching is always implicit".into())
+        );
+    }
+
+    #[test]
+    fn provider_cache_removed_and_unknown_fields_are_rejected() {
+        for value in [
+            serde_json::json!({"enabled":false}),
+            serde_json::json!({"messages":[]}),
+            serde_json::json!({"unknown":true}),
+        ] {
+            assert!(serde_json::from_value::<ProviderCacheConfig>(value).is_err());
+        }
+        let error = validate_provider_cache(
+            Some(&cache(serde_json::json!({"prompt_cache_key":"x"}))),
+            "openai-chat",
+        )
+        .unwrap_err();
+        assert!(error.contains("prompt_cache_key"), "{error}");
+    }
+
+    #[test]
+    fn compatible_prompt_cache_key_accepts_default_disable_and_session_template() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"prompt_cache_key":""}),
+            serde_json::json!({"prompt_cache_key":"prefix-${session_id}"}),
+        ] {
+            assert_eq!(
+                validate_provider_cache(Some(&cache(value)), "openai-compatible"),
+                Ok(())
+            );
+        }
+        let error = validate_provider_cache(
+            Some(&cache(serde_json::json!({"prompt_cache_key":"${other}"}))),
+            "openai-compatible",
+        )
+        .unwrap_err();
+        assert!(error.contains("${session_id}"), "{error}");
     }
 }

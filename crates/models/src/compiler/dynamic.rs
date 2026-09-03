@@ -121,6 +121,8 @@ pub enum DynamicCompileError {
     CustomModel,
     #[error("invalid_variant")]
     Variant,
+    #[error("invalid cache config: {0}")]
+    Cache(String),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,6 +154,7 @@ impl DynamicCompiler {
             .registry
             .classify(record)
             .ok_or(DynamicCompileError::UnsupportedProvider)?;
+        validate_managed_cache(record, authored, family)?;
         if let Some(authored) = authored
             && let Some(base_url) = authored.base_url.as_ref()
         {
@@ -413,6 +416,8 @@ impl DynamicCompiler {
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
         let adapter = OvenAdapterFamily::parse(provider.adaptor.as_str())
             .ok_or(DynamicCompileError::UnsupportedAdapter)?;
+        crate::authoring::validate_provider_cache(provider.cache.as_ref(), adapter.id())
+            .map_err(DynamicCompileError::Cache)?;
         let wire = wire_adapter_for_custom(adapter);
         validate_custom_endpoint(adapter, &provider.endpoint)
             .map_err(|_| DynamicCompileError::Endpoint)?;
@@ -538,6 +543,72 @@ impl DynamicCompiler {
             unsupported_models: Vec::new(),
             fingerprint: provider_fingerprint,
         })
+    }
+}
+
+pub(crate) fn validate_managed_cache(
+    record: &CatalogProviderRecord,
+    authored: Option<&ModelsDevProvider>,
+    family: &'static FamilyRecipe,
+) -> Result<(), DynamicCompileError> {
+    let Some(authored) = authored else {
+        return Ok(());
+    };
+    let Some(cache) = authored.cache.as_ref() else {
+        return Ok(());
+    };
+    cache.validate_supported_shape().map_err(|error| {
+        DynamicCompileError::Cache(format!("provider `{}`: {error}", record.id))
+    })?;
+
+    let mut adapters = BTreeSet::from([managed_provider_adapter(
+        family.family,
+        authored.shape,
+        record.shape.as_deref(),
+    )]);
+    for (model_id, entry) in &record.models {
+        let Some(model) = entry.record.as_ref() else {
+            continue;
+        };
+        let override_ = authored.model_overrides.get(model_id);
+        if let Ok(resolved) = resolve_model(
+            record,
+            model,
+            authored.shape,
+            override_.and_then(|value| value.shape),
+        ) {
+            adapters.insert(resolved.adapter);
+        }
+    }
+    for adapter in adapters {
+        crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|error| {
+            DynamicCompileError::Cache(format!("provider `{}`: {error}", record.id))
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn managed_provider_adapter(
+    family: FamilyKind,
+    authored_shape: Option<crate::ManagedModelShape>,
+    catalog_shape: Option<&str>,
+) -> OvenAdapterFamily {
+    let responses = matches!(authored_shape, Some(crate::ManagedModelShape::Responses))
+        || authored_shape.is_none() && catalog_shape == Some("responses")
+        || authored_shape.is_none() && catalog_shape.is_none() && family == FamilyKind::OpenAi;
+    match family {
+        FamilyKind::OpenAiCompatibleChat if responses => OvenAdapterFamily::OpenaiResponses,
+        FamilyKind::OpenAiCompatibleChat => OvenAdapterFamily::OpenaiCompatible,
+        FamilyKind::Anthropic => OvenAdapterFamily::AnthropicCompatible,
+        FamilyKind::OpenAi if responses => OvenAdapterFamily::OpenaiResponses,
+        FamilyKind::OpenAi => OvenAdapterFamily::OpenaiChat,
+        FamilyKind::Google => OvenAdapterFamily::GoogleGemini,
+        FamilyKind::Vertex | FamilyKind::VertexAnthropic => OvenAdapterFamily::GoogleVertexGemini,
+        FamilyKind::Bedrock if responses => OvenAdapterFamily::OpenaiResponses,
+        FamilyKind::Bedrock => OvenAdapterFamily::AwsBedrockConverse,
+        FamilyKind::Azure if responses => OvenAdapterFamily::AzureOpenaiResponses,
+        FamilyKind::Azure => OvenAdapterFamily::AzureOpenaiChat,
+        FamilyKind::Cohere => OvenAdapterFamily::CohereV2Chat,
     }
 }
 

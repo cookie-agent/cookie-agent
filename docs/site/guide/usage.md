@@ -58,10 +58,12 @@ rollups therefore combine durable historical prices with best-effort current
 pricing for legacy records.
 
 To evaluate prompt caching, compare equivalent workloads before and after
-enabling `[prompt_caching]`. Track `cache_hit_rate` after the first turn and
+changing `[providers.<id>.cache]`. Track `cache_hit_rate` after the first turn and
 `estimated_cost_usd` over the whole session. Providers that expose writes may
 report them when a prefix is first cached and reads on later matching requests;
 compare totals only after enough repeated-prefix turns to amortize any write and
 storage charges. Use the provider's off configuration as the baseline: set all
-Anthropic TTLs to `"off"`, use Bedrock `enabled = false`, or use Google
-`mode = "off"`. Provider-reported cache reads and writes should then remain zero.
+Anthropic or Bedrock `system`, `tools`, and `rolling` values to `"off"`; for
+OpenAI GPT-5.6+, use `mode = "explicit"` with both placements false. Gemini
+caching is always implicit and has no off control. Provider-reported cache reads
+and writes should then remain zero where the provider exposes a kill switch.

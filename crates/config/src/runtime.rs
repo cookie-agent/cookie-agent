@@ -1,19 +1,13 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use cookie_agent_identity::{ModelKey, ProviderId};
+use cookie_agent_models::ProviderDefinition;
 pub use cookie_agent_models::catalog::PicoUsdPerMillion;
-use cookie_agent_models::{
-    ProviderDefinition,
-    adapters::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig},
-};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::ConfigError;
 use crate::toml_values::{SensitiveProviderValues, zeroize_toml_value};
-use crate::{
-    AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, ConfigError,
-    GoogleCacheConfig, OpenAiCacheConfig, RollingCacheTtl,
-};
 use zeroize::Zeroize;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -297,8 +291,6 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub context_compaction: ContextCompactionConfig,
     #[serde(default)]
-    pub prompt_caching: PromptCachingConfig,
-    #[serde(default)]
     pub session_title: SessionTitleConfig,
     #[serde(default)]
     pub delegation: DelegationConfig,
@@ -317,7 +309,6 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) approval: Option<ApprovalConfig>,
     pub(crate) model_retry: Option<ModelRetryConfig>,
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
-    pub(crate) prompt_caching: Option<PromptCachingConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
     pub(crate) pricing: Option<PricingConfig>,
@@ -375,77 +366,6 @@ pub struct ModelPricing {
     pub reasoning_per_million_usd: Option<PicoUsdPerMillion>,
     pub cache_read_per_million_usd: Option<PicoUsdPerMillion>,
     pub cache_write_per_million_usd: Option<PicoUsdPerMillion>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct PromptCachingConfig {
-    pub anthropic: Option<AnthropicCacheConfig>,
-    pub bedrock: Option<BedrockCacheConfig>,
-    pub google: Option<GoogleCacheConfig>,
-    pub openai: Option<OpenAiCacheConfig>,
-}
-
-impl PromptCachingConfig {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        self.as_cache_config().validate()
-    }
-
-    #[must_use]
-    pub fn as_cache_config(&self) -> CacheConfig {
-        CacheConfig {
-            anthropic: self.anthropic.clone(),
-            bedrock: self.bedrock.clone(),
-            google: self.google.clone(),
-            openai: self.openai.clone(),
-        }
-    }
-
-    #[must_use]
-    pub fn strategy(&self) -> Option<AnthropicCacheStrategyConfig> {
-        let config = self.anthropic.as_ref()?;
-        Some(AnthropicCacheStrategyConfig {
-            system: anthropic_ttl(config.system),
-            tools: anthropic_ttl(config.tools),
-            rolling: match config.rolling {
-                RollingCacheTtl::FiveMinutes => Some(AnthropicCacheTtlConfig::FiveMinutes),
-                RollingCacheTtl::Off => None,
-            },
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for PromptCachingConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let config = CacheConfig::deserialize(deserializer)?;
-        Ok(Self {
-            anthropic: config.anthropic,
-            bedrock: config.bedrock,
-            google: config.google,
-            openai: config.openai,
-        })
-    }
-}
-
-impl Default for PromptCachingConfig {
-    fn default() -> Self {
-        Self {
-            anthropic: Some(AnthropicCacheConfig::default()),
-            bedrock: None,
-            google: None,
-            openai: None,
-        }
-    }
-}
-
-const fn anthropic_ttl(value: CacheTtl) -> Option<AnthropicCacheTtlConfig> {
-    match value {
-        CacheTtl::OneHour => Some(AnthropicCacheTtlConfig::OneHour),
-        CacheTtl::FiveMinutes => Some(AnthropicCacheTtlConfig::FiveMinutes),
-        CacheTtl::Off => None,
-    }
 }
 
 impl Drop for RawRuntimeLayer {
@@ -721,9 +641,6 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     if let Some(value) = &layer.context_compaction {
         runtime.context_compaction = value.clone();
     }
-    if let Some(value) = &layer.prompt_caching {
-        runtime.prompt_caching = value.clone();
-    }
     if let Some(value) = &layer.session_title {
         runtime.session_title = value.clone();
     }
@@ -761,9 +678,6 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         return Err(ConfigError::InvalidRuntime);
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
-        return Err(ConfigError::InvalidRuntime);
-    }
-    if runtime.prompt_caching.validate().is_err() {
         return Err(ConfigError::InvalidRuntime);
     }
     for (id, provider) in &runtime.providers {

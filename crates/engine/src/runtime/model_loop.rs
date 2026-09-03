@@ -175,7 +175,6 @@ impl Engine {
                     self.inner.config.runtime.delegation.max_depth,
                     result_limits,
                     self.inner.config.runtime.model_retry,
-                    self.inner.config.runtime.prompt_caching.as_cache_config(),
                 )?
             }
             SessionOrigin::Delegated { invocation_id, .. } => {
@@ -197,7 +196,6 @@ impl Engine {
                     result_limits.tool_output_max_lines,
                     result_limits.tool_output_max_bytes,
                     self.inner.config.runtime.model_retry,
-                    self.inner.config.runtime.prompt_caching.as_cache_config(),
                     delegation
                         .as_ref()
                         .map(|entry| entry.cache_strategies.as_slice()),

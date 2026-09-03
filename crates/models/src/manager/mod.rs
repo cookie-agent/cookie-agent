@@ -38,7 +38,8 @@ use crate::{
     compiler::{
         AuthSourceCategory, CompiledAuthShape, CompiledDynamicModel, CompiledModelStatus,
         DynamicCompileError, DynamicCompiler, ExecutableBehaviorInput,
-        ExecutableCredentialMaterial, compile_executable,
+        ExecutableCredentialMaterial, compile_executable, managed_provider_adapter,
+        validate_managed_cache,
     },
     manifests::{
         CompiledSafeModelBlueprint, FrozenAuthParameterValue, FrozenCredentialBinding,
@@ -246,6 +247,7 @@ impl ResolvedExecutableModel {
                 self.adapter,
                 OvenAdapterFamily::OpenaiChat
                     | OvenAdapterFamily::OpenaiResponses
+                    | OvenAdapterFamily::OpenaiCompatible
                     | OvenAdapterFamily::AzureOpenaiChat
                     | OvenAdapterFamily::AzureOpenaiResponses
             ))
@@ -298,10 +300,7 @@ fn apply_cache_strategy(
             }) {
                 strategy.system = None;
             }
-            let last_message = request
-                .history
-                .iter()
-                .rposition(|turn| !matches!(turn, oven_sdk::HistoryTurn::System(_)));
+            let last_message = last_non_system_history_index(&request.history);
             strategy.messages.retain_mut(|point| {
                 if point.history_index != usize::MAX {
                     return true;
@@ -351,6 +350,7 @@ fn apply_cache_strategy(
         (
             OvenAdapterFamily::OpenaiChat
             | OvenAdapterFamily::OpenaiResponses
+            | OvenAdapterFamily::OpenaiCompatible
             | OvenAdapterFamily::AzureOpenaiChat
             | OvenAdapterFamily::AzureOpenaiResponses,
             CacheStrategyConfig::OpenAi(strategy),
@@ -358,6 +358,7 @@ fn apply_cache_strategy(
             let (namespace, section) = match adapter {
                 OvenAdapterFamily::OpenaiChat => ("openai", "chat"),
                 OvenAdapterFamily::OpenaiResponses => ("openai", "responses"),
+                OvenAdapterFamily::OpenaiCompatible => ("openai", "chat"),
                 OvenAdapterFamily::AzureOpenaiChat => ("azure_openai", "chat"),
                 OvenAdapterFamily::AzureOpenaiResponses => ("azure_openai", "responses"),
                 _ => unreachable!("OpenAI family match checked"),
@@ -568,7 +569,7 @@ fn apply_anthropic_cache_strategy(request: &mut Request, strategy: &AnthropicCac
     }
 
     if let Some(ttl) = strategy.rolling
-        && let Some(index) = request.history.iter().rposition(turn_is_rolling_eligible)
+        && let Some(index) = last_non_system_history_index(&request.history)
         && Some(index) != system_index
     {
         set_message_cache(turn_provider_options_mut(&mut request.history[index]), ttl);
@@ -591,20 +592,10 @@ fn system_message_is_eligible(message: &oven_sdk::SystemMessage) -> bool {
         .any(|part| matches!(part, oven_sdk::SystemPart::Text(text) if !text.text.is_empty()))
 }
 
-fn turn_is_rolling_eligible(turn: &oven_sdk::HistoryTurn) -> bool {
-    match turn {
-        oven_sdk::HistoryTurn::System(message) => system_message_is_eligible(message),
-        oven_sdk::HistoryTurn::User(message) => message.content.iter().any(|part| match part {
-            oven_sdk::InputPart::Text(text) => !text.text.is_empty(),
-            oven_sdk::InputPart::File(_) => true,
-            oven_sdk::InputPart::Custom(_) => false,
-        }),
-        oven_sdk::HistoryTurn::Assistant(turn) => turn.message.content.iter().any(|part| {
-            matches!(part, oven_sdk::AssistantPart::Text(text) if !text.text.is_empty())
-                || matches!(part, oven_sdk::AssistantPart::ToolCall(_))
-        }),
-        oven_sdk::HistoryTurn::Tool(_) => false,
-    }
+fn last_non_system_history_index(history: &[oven_sdk::HistoryTurn]) -> Option<usize> {
+    history
+        .iter()
+        .rposition(|turn| !matches!(turn, oven_sdk::HistoryTurn::System(_)))
 }
 
 impl fmt::Debug for ResolvedExecutableModel {
@@ -729,6 +720,7 @@ impl CompiledModelRuntime {
         binding: &protocol::FrozenModelBinding,
         blueprint: &CompiledSafeModelBlueprint,
     ) -> Result<ResolvedExecutableModel, ModelManagerError> {
+        validate_frozen_provider_cache(self, binding)?;
         if !binding.matches_blueprint(blueprint)
             || behavior_fingerprint(blueprint, &binding.selection)? != binding.behavior_fingerprint
             || selection_fingerprint(blueprint, &binding.selection)?
@@ -1263,6 +1255,59 @@ impl fmt::Debug for ModelManager {
     }
 }
 
+fn validate_unresolved_managed_cache(
+    provider_id: &ProviderId,
+    provider: &ModelsDevProvider,
+    stored: Option<&StoredManagedConnection>,
+) -> Result<(), ModelManagerError> {
+    let Some(cache) = provider.cache.as_ref() else {
+        return Ok(());
+    };
+    cache
+        .validate_supported_shape()
+        .map_err(|reason| ModelManagerError::ProviderCache {
+            provider: provider_id.clone(),
+            reason,
+        })?;
+    let Some(recipe) = stored
+        .and_then(|connection| family_registry().by_npm(connection.policy.package_claim.as_str()))
+    else {
+        return Ok(());
+    };
+    let adapter = managed_provider_adapter(recipe.family, provider.shape, None);
+    crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|reason| {
+        ModelManagerError::ProviderCache {
+            provider: provider_id.clone(),
+            reason,
+        }
+    })
+}
+
+fn validate_frozen_provider_cache(
+    runtime: &CompiledModelRuntime,
+    binding: &protocol::FrozenModelBinding,
+) -> Result<(), ModelManagerError> {
+    let provider_id = binding.selection.model.provider_id();
+    let Some(cache) = runtime
+        .authored
+        .get(&provider_id)
+        .and_then(|definition| match definition {
+            ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
+            ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
+        })
+    else {
+        return Ok(());
+    };
+    let adapter = crate::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
+        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+    crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|reason| {
+        ModelManagerError::ProviderCache {
+            provider: provider_id,
+            reason,
+        }
+    })
+}
+
 fn compile_runtime(
     authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
     catalog: Arc<CatalogSnapshot>,
@@ -1296,6 +1341,23 @@ fn compile_runtime(
         };
         let stored = store.provider(&provider_id);
         let entry = catalog.provider(&provider_id);
+        if let Some(provider) = authored_managed
+            && provider.cache.is_some()
+        {
+            if let Some(record) = entry.and_then(|entry| entry.record.as_ref()) {
+                let family =
+                    registry
+                        .classify(record)
+                        .ok_or_else(|| ModelManagerError::ProviderCache {
+                            provider: provider_id.clone(),
+                            reason: "cache configuration requires a supported provider family"
+                                .into(),
+                        })?;
+                validate_managed_cache(record, Some(provider), family)?;
+            } else {
+                validate_unresolved_managed_cache(&provider_id, provider, stored)?;
+            }
+        }
         let presence = if entry.is_some() {
             ProviderPresence::Current
         } else {
@@ -1562,6 +1624,7 @@ fn effective_managed(
         api_key: None,
         auth_override: None,
         shape: None,
+        cache: None,
         model_overrides: BTreeMap::new(),
     });
     provider.setup = setup_values.clone();
@@ -2476,6 +2539,20 @@ pub fn safe_definition_fingerprint(
             }))).collect::<BTreeMap<_, _>>(),
         }),
     };
+    let mut value = value;
+    let cache = match definition {
+        ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
+        ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
+    };
+    if let Some(cache) = cache {
+        value
+            .as_object_mut()
+            .expect("provider fingerprint input is an object")
+            .insert(
+                "cache".into(),
+                serde_json::to_value(cache).expect("provider cache serializes"),
+            );
+    }
     safe_hash("cookie-agent/authored-provider-definition/v1", &value)
 }
 
@@ -2915,8 +2992,8 @@ mod cache_strategy_tests {
         let oven_sdk::HistoryTurn::System(system) = &captured.history[0] else {
             panic!("system turn");
         };
-        let oven_sdk::HistoryTurn::User(rolling) = &captured.history[1] else {
-            panic!("rolling user turn");
+        let oven_sdk::HistoryTurn::Tool(rolling) = &captured.history[3] else {
+            panic!("rolling tool turn");
         };
         assert_eq!(marker(&system.provider_options), Some("one_hour"));
         assert_eq!(marker(&rolling.provider_options), Some("five_minutes"));
@@ -2976,8 +3053,28 @@ mod cache_strategy_tests {
         let oven_sdk::HistoryTurn::System(last) = prepared.history.last().unwrap() else {
             panic!("summary system turn");
         };
+        let oven_sdk::HistoryTurn::Tool(rolling) = &prepared.history[3] else {
+            panic!("rolling tool turn");
+        };
         assert_eq!(marker(&first.provider_options), Some("one_hour"));
-        assert_eq!(marker(&last.provider_options), Some("five_minutes"));
+        assert_eq!(marker(&last.provider_options), None);
+        assert_eq!(marker(&rolling.provider_options), Some("five_minutes"));
+    }
+
+    #[test]
+    fn anthropic_rolling_applies_when_other_placements_are_off() {
+        let (resolved, _) = resolved(true, 0);
+        let strategy = CacheStrategyConfig::Anthropic(AnthropicCacheStrategyConfig {
+            system: None,
+            tools: None,
+            rolling: Some(AnthropicCacheTtlConfig::FiveMinutes),
+        });
+        let prepared = resolved.prepare_request_with_cache_strategy(request(), Some(&strategy));
+        let oven_sdk::HistoryTurn::Tool(rolling) = &prepared.history[3] else {
+            panic!("rolling tool turn");
+        };
+        assert_eq!(marker(&rolling.provider_options), Some("five_minutes"));
+        assert_eq!(marker(&prepared.tools[1].provider_options), None);
     }
 
     #[test]
@@ -2989,6 +3086,7 @@ mod cache_strategy_tests {
             oven_sdk::HistoryTurn::user(UserMessage::new(vec![InputPart::Text(TextPart::new(
                 "current input",
             ))])),
+            oven_sdk::HistoryTurn::tool(ToolMessage::new(Vec::new())),
         ]);
         let strategy = CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
             system: Some(BedrockCachePoint {
@@ -3017,7 +3115,7 @@ mod cache_strategy_tests {
                 "system": {"ttl": "1h"},
                 "tools": null,
                 "messages": [{
-                    "historyIndex": 1,
+                    "historyIndex": 2,
                     "ttl": "5m"
                 }]
             })
@@ -3138,6 +3236,47 @@ mod cache_strategy_tests {
                 Some(true)
             );
         }
+    }
+
+    #[test]
+    fn compatible_openai_strategy_writes_the_official_chat_cache_key() {
+        let strategy = CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+            prompt_cache_key: Some("session-key".into()),
+            prompt_cache_retention: None,
+            mode: None,
+            ttl: None,
+            system: false,
+            rolling: false,
+        });
+        let mut request = Request::new(Vec::new());
+        apply_cache_strategy(&mut request, OvenAdapterFamily::OpenaiCompatible, &strategy);
+        assert_eq!(
+            request.provider_options["openai"]["chat"]["prompt_cache_key"],
+            "session-key"
+        );
+    }
+
+    #[test]
+    fn removed_managed_provider_cache_is_validated_without_catalog_metadata() {
+        let provider_id = ProviderId::new("removed").unwrap();
+        let provider = ModelsDevProvider {
+            base_url: None,
+            setup: BTreeMap::new(),
+            api_key: None,
+            auth_override: None,
+            shape: None,
+            cache: Some(
+                serde_json::from_value(json!({"mode":"implicit"}))
+                    .expect("provider cache envelope"),
+            ),
+            model_overrides: BTreeMap::new(),
+        };
+        let error = validate_unresolved_managed_cache(&provider_id, &provider, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("provider `removed`"), "{error}");
+        assert!(error.contains("implicit"), "{error}");
+        assert!(error.contains("auto"), "{error}");
     }
 
     fn openai_strategy(system: bool, rolling: bool) -> CacheStrategyConfig {
@@ -3601,6 +3740,11 @@ pub enum ModelManagerError {
     DuplicateModel(ModelKey),
     #[error("dynamic model compilation failed: {0}")]
     DynamicCompile(#[from] DynamicCompileError),
+    #[error("invalid cache config for provider `{provider}`: {reason}")]
+    ProviderCache {
+        provider: ProviderId,
+        reason: String,
+    },
     #[error("runtime_compile_failed")]
     ExecutableBuild(#[from] ModelBuildError),
     #[error("provider_store_reload_failed")]

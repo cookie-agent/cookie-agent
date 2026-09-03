@@ -54,7 +54,6 @@ impl Engine {
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
             },
             self.inner.config.runtime.model_retry,
-            self.inner.config.runtime.prompt_caching.as_cache_config(),
         )?;
         let id = SessionId::new_v7();
         let cwd_identity = cwd_identity(self.inner.store.cwd())?;

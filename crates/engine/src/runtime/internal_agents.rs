@@ -644,7 +644,7 @@ fn internal_cache_strategies(
             let mut strategy = if inherit_parent_cache && parent_binding == Some(binding) {
                 owner.raw_cache_strategy(binding)
             } else {
-                policy::resolve_cache_strategy(resolved, binding, &owner.runtime_cache)?
+                policy::resolve_cache_strategy(resolved, binding, &owner.runtime)?
             };
             if matches!(
                 kind,

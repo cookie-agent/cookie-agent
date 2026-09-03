@@ -232,7 +232,6 @@ mod tests {
                 approval: ApprovalConfig::default(),
                 model_retry: cookie_agent_config::ModelRetryConfig::default(),
                 context_compaction: ContextCompactionConfig::default(),
-                prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
                 pricing: cookie_agent_config::PricingConfig::default(),

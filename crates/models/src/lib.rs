@@ -23,7 +23,10 @@ pub mod secure_store;
 mod test_support;
 
 pub use authoring::{
-    AuthDefinition, HeaderName, ModelsDevProvider, ProviderDefinition, SecretString,
+    AnthropicCacheConfig, AuthDefinition, BedrockCacheConfig, CacheTtl, HeaderName,
+    ModelsDevProvider, OpenAiCacheConfig, OpenAiCacheMode, OpenAiCompatibleCacheConfig,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, ProviderCacheConfig, ProviderDefinition,
+    RollingCacheTtl, SecretString,
 };
 pub use authoring::{
     AuthOverride, BoundedSetupString, ConfigSetupValue, CustomModelDefinition, CustomProvider,

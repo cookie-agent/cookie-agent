@@ -92,10 +92,10 @@ duplicate model keys. Only internal agents may use the `${parent_model}` model
 expression, and only without a variant.
 
 `cache` uses the provider-specific shapes documented under
-[`[prompt_caching]`](../reference/configuration.md#prompt_caching). An entry-level
-cache policy overrides runtime prompt caching for that model binding. This is
-resolved independently for every fallback, including mixed-provider chains;
-generic OpenAI-compatible adaptors reject authored cache policy.
+[`[providers.<id>.cache]`](../reference/configuration.md#providersidcache). The
+resolution order is family default, provider `cache`, then entry-level `cache`
+for that binding. This is resolved independently for every fallback, including
+mixed-provider chains. OpenAI-compatible cache keys are provider-only.
 
 ### Modes
 

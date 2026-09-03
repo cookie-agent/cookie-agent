@@ -25,7 +25,6 @@ pub(crate) struct ResultLimits {
 pub(crate) struct FreezeOptions {
     pub result_limits: ResultLimits,
     pub model_retry: cookie_agent_config::ModelRetryConfig,
-    pub runtime_cache: cookie_agent_config::CacheConfig,
     pub inherited_cache_strategies:
         Option<Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>>,
 }
@@ -42,7 +41,6 @@ pub(crate) struct FrozenRunPolicy {
     pub result_limits: ResultLimits,
     pub model_retry: cookie_agent_config::ModelRetryConfig,
     pub cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
-    pub runtime_cache: cookie_agent_config::CacheConfig,
 }
 
 impl std::fmt::Debug for FrozenRunPolicy {
@@ -148,7 +146,6 @@ pub(crate) fn freeze_root_agent_policy(
     max_depth: u32,
     result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
-    runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if !agent.runnable_as_root {
         return Err(EngineError::NoRunnableModel);
@@ -197,7 +194,6 @@ pub(crate) fn freeze_root_agent_policy(
         FreezeOptions {
             result_limits,
             model_retry,
-            runtime_cache,
             inherited_cache_strategies: None,
         },
     )
@@ -346,13 +342,13 @@ fn freeze_with_bindings(
         } else {
             bindings
                 .iter()
-                .map(|binding| resolve_cache_strategy(None, binding, &options.runtime_cache))
+                .map(|binding| resolve_cache_strategy(None, binding, &runtime))
                 .collect::<Result<Vec<_>, _>>()?
         }
     } else {
         bindings
             .iter()
-            .map(|binding| resolve_cache_strategy(Some(agent), binding, &options.runtime_cache))
+            .map(|binding| resolve_cache_strategy(Some(agent), binding, &runtime))
             .collect::<Result<Vec<_>, _>>()?
     };
     let preset = registry.preset().map(str::to_owned);
@@ -367,7 +363,6 @@ fn freeze_with_bindings(
         result_limits: options.result_limits,
         model_retry: options.model_retry,
         cache_strategies,
-        runtime_cache: options.runtime_cache,
     })
 }
 
@@ -380,7 +375,6 @@ pub(crate) fn policy_for_session_selection(
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
     model_retry: cookie_agent_config::ModelRetryConfig,
-    runtime_cache: cookie_agent_config::CacheConfig,
     frozen_cache_strategies: Option<&[Option<protocol::FrozenCacheStrategy>]>,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
@@ -412,7 +406,6 @@ pub(crate) fn policy_for_session_selection(
         tool_output_max_lines,
         tool_output_max_bytes,
         model_retry,
-        runtime_cache,
     )?;
     if let Some(strategies) = restored_cache_strategies {
         policy.cache_strategies = strategies;
@@ -429,7 +422,6 @@ pub(crate) fn policy_from_snapshot(
     tool_output_max_lines: usize,
     tool_output_max_bytes: usize,
     model_retry: cookie_agent_config::ModelRetryConfig,
-    runtime_cache: cookie_agent_config::CacheConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
     if selected_suffix.is_empty() {
         return Err(EngineError::NoRunnableModel);
@@ -437,7 +429,7 @@ pub(crate) fn policy_from_snapshot(
     let preset = registry.preset().map(str::to_owned);
     let cache_strategies = selected_suffix
         .iter()
-        .map(|binding| resolve_cache_strategy(registry.get(&agent.agent), binding, &runtime_cache))
+        .map(|binding| resolve_cache_strategy(registry.get(&agent.agent), binding, &runtime))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FrozenRunPolicy {
         agent,
@@ -453,7 +445,6 @@ pub(crate) fn policy_from_snapshot(
         },
         model_retry,
         cache_strategies,
-        runtime_cache,
     })
 }
 
@@ -471,7 +462,7 @@ pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol:
 pub(crate) fn resolve_cache_strategy(
     agent: Option<&ResolvedAgent>,
     binding: &protocol::FrozenModelBinding,
-    runtime_cache: &cookie_agent_config::CacheConfig,
+    runtime: &PublishedRuntime,
 ) -> Result<Option<CacheStrategyConfig>, EngineError> {
     let authored = agent.and_then(|agent| {
         let exact = agent
@@ -517,7 +508,6 @@ pub(crate) fn resolve_cache_strategy(
     if let Some(config) = authored {
         let configured_sections = usize::from(config.anthropic.is_some())
             + usize::from(config.bedrock.is_some())
-            + usize::from(config.google.is_some())
             + usize::from(config.openai.is_some());
         if configured_sections > 1 {
             return Err(EngineError::CacheStrategy(
@@ -525,7 +515,6 @@ pub(crate) fn resolve_cache_strategy(
             ));
         }
     }
-    let config = authored.unwrap_or(runtime_cache);
     let family =
         cookie_agent_models::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
             .ok_or_else(|| {
@@ -537,19 +526,15 @@ pub(crate) fn resolve_cache_strategy(
                 config.anthropic.is_some()
             }
             OvenAdapterFamily::AwsBedrockConverse => config.bedrock.is_some(),
-            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
-                config.google.is_some()
-            }
+            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => false,
             OvenAdapterFamily::OpenaiChat
             | OvenAdapterFamily::OpenaiResponses
             | OvenAdapterFamily::AzureOpenaiChat
             | OvenAdapterFamily::AzureOpenaiResponses => config.openai.is_some(),
             OvenAdapterFamily::OpenaiCompatible | OvenAdapterFamily::CohereV2Chat => false,
         };
-        let has_section = config.anthropic.is_some()
-            || config.bedrock.is_some()
-            || config.google.is_some()
-            || config.openai.is_some();
+        let has_section =
+            config.anthropic.is_some() || config.bedrock.is_some() || config.openai.is_some();
         if has_section && !matches_family {
             return Err(EngineError::CacheStrategy(format!(
                 "cache strategy does not match the {} model adapter family",
@@ -557,88 +542,79 @@ pub(crate) fn resolve_cache_strategy(
             )));
         }
     }
+    let provider_cache = runtime
+        .models
+        .authored()
+        .get(&binding.selection.model.provider_id())
+        .and_then(|provider| match provider {
+            cookie_agent_models::ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
+            cookie_agent_models::ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
+        });
     let strategy = match family {
         OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
-            config.anthropic.as_ref().map(|config| {
-                CacheStrategyConfig::Anthropic(
-                    cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
-                        system: cache_ttl(config.system),
-                        tools: cache_ttl(config.tools),
-                        rolling: match config.rolling {
-                            cookie_agent_config::RollingCacheTtl::FiveMinutes => Some(
-                                cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes,
-                            ),
-                            cookie_agent_config::RollingCacheTtl::Off => None,
-                        },
-                    },
-                )
-            })
-        }
-        OvenAdapterFamily::AwsBedrockConverse => config.bedrock.as_ref().map(|config| {
-            let strategy = if config.enabled {
-                let system = config
-                    .system
-                    .unwrap_or(cookie_agent_config::CacheTtl::FiveMinutes);
-                let tools = config
-                    .tools
-                    .unwrap_or(cookie_agent_config::CacheTtl::FiveMinutes);
-                let messages = config.messages.as_ref().map_or_else(
-                    || {
-                        vec![BedrockMessageCachePoint {
-                            history_index: usize::MAX,
-                            cache_point: BedrockCachePoint {
-                                ttl: Some(BedrockCacheTtl::FiveMinutes),
-                            },
-                        }]
-                    },
-                    |messages| {
-                        messages
-                            .iter()
-                            .map(|message| BedrockMessageCachePoint {
-                                history_index: message.history_index,
-                                cache_point: BedrockCachePoint {
-                                    ttl: Some(match message.ttl {
-                                        cookie_agent_config::BedrockCacheTtl::OneHour => {
-                                            BedrockCacheTtl::OneHour
-                                        }
-                                        cookie_agent_config::BedrockCacheTtl::FiveMinutes => {
-                                            BedrockCacheTtl::FiveMinutes
-                                        }
-                                    }),
-                                },
-                            })
-                            .collect()
-                    },
-                );
-                BedrockCacheStrategy {
-                    system: bedrock_cache_point(system),
-                    tools: bedrock_cache_point(tools),
-                    messages,
-                }
+            let config = if let Some(authored) = authored {
+                let Some(config) = authored.anthropic.clone() else {
+                    return Ok(None);
+                };
+                config
+            } else if let Some(cache) = provider_cache {
+                cache.anthropic().map_err(cache_strategy_error)?
             } else {
-                BedrockCacheStrategy::default()
+                cookie_agent_config::AnthropicCacheConfig::default()
             };
-            CacheStrategyConfig::Bedrock(strategy)
-        }),
-        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => {
-            config.google.as_ref().map(|config| {
-                CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
-                    mode: match config.mode {
-                        cookie_agent_config::GoogleCacheMode::Implicit => GoogleCacheMode::Implicit,
-                        cookie_agent_config::GoogleCacheMode::Explicit => GoogleCacheMode::Explicit,
-                        cookie_agent_config::GoogleCacheMode::Off => GoogleCacheMode::Off,
+            if config.explicitly_requests_one_hour()
+                && !matches!(
+                    &binding.options,
+                    protocol::ProviderOptions::Anthropic { beta, .. }
+                        if beta.iter().any(|value| value == "extended-cache-ttl-2025-04-11")
+                )
+            {
+                return Err(EngineError::CacheStrategy(
+                    "explicit Anthropic 1h caching requires beta extended-cache-ttl-2025-04-11"
+                        .into(),
+                ));
+            }
+            Some(CacheStrategyConfig::Anthropic(
+                cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
+                    system: cache_ttl(config.system),
+                    tools: cache_ttl(config.tools),
+                    rolling: match config.rolling {
+                        cookie_agent_config::RollingCacheTtl::FiveMinutes => Some(
+                            cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes,
+                        ),
+                        cookie_agent_config::RollingCacheTtl::Off => None,
                     },
-                    cached_content: config.cached_content.clone(),
-                })
-            })
+                },
+            ))
         }
+        OvenAdapterFamily::AwsBedrockConverse => {
+            let config = if let Some(authored) = authored {
+                let Some(config) = authored.bedrock.clone() else {
+                    return Ok(None);
+                };
+                config
+            } else if let Some(cache) = provider_cache {
+                cache.bedrock().map_err(cache_strategy_error)?
+            } else {
+                cookie_agent_config::BedrockCacheConfig::default()
+            };
+            Some(CacheStrategyConfig::Bedrock(bedrock_strategy(&config)))
+        }
+        OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini => None,
         OvenAdapterFamily::OpenaiChat
         | OvenAdapterFamily::OpenaiResponses
         | OvenAdapterFamily::AzureOpenaiChat
-        | OvenAdapterFamily::AzureOpenaiResponses => config.openai.as_ref().map(|config| {
+        | OvenAdapterFamily::AzureOpenaiResponses => {
+            let config = if let Some(authored) = authored {
+                authored.openai.clone().unwrap_or_default()
+            } else if let Some(cache) = provider_cache {
+                cache.openai().map_err(cache_strategy_error)?
+            } else {
+                cookie_agent_config::OpenAiCacheConfig::default()
+            };
             let controls = config.gpt_5_6_controls_enabled();
-            CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
-                prompt_cache_key: config.prompt_cache_key.clone(),
+            Some(CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+                prompt_cache_key: Some("${session_id}".into()),
                 prompt_cache_retention: config.prompt_cache_retention.map(|retention| {
                     match retention {
                         cookie_agent_config::OpenAiPromptCacheRetention::InMemory => {
@@ -650,7 +626,7 @@ pub(crate) fn resolve_cache_strategy(
                     }
                 }),
                 mode: controls.then(|| match config.effective_mode() {
-                    cookie_agent_config::OpenAiCacheMode::Implicit => OpenAiCacheMode::Implicit,
+                    cookie_agent_config::OpenAiCacheMode::Auto => OpenAiCacheMode::Implicit,
                     cookie_agent_config::OpenAiCacheMode::Explicit => OpenAiCacheMode::Explicit,
                 }),
                 ttl: controls.then(|| match config.effective_ttl() {
@@ -660,17 +636,35 @@ pub(crate) fn resolve_cache_strategy(
                 }),
                 system: config.system,
                 rolling: config.rolling,
-            })
-        }),
-        OvenAdapterFamily::OpenaiCompatible | OvenAdapterFamily::CohereV2Chat => {
+            }))
+        }
+        OvenAdapterFamily::OpenaiCompatible => {
             if authored.is_some() {
                 return Err(EngineError::CacheStrategy(format!(
                     "{} does not support an authored cache strategy",
                     family.id()
                 )));
             }
-            None
+            let configured = provider_cache
+                .map(cookie_agent_models::ProviderCacheConfig::openai_compatible)
+                .transpose()
+                .map_err(cache_strategy_error)?
+                .and_then(|config| config.prompt_cache_key);
+            let prompt_cache_key = match configured.as_deref() {
+                None => Some("${session_id}".into()),
+                Some("") => None,
+                Some(_) => configured,
+            };
+            Some(CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
+                prompt_cache_key,
+                prompt_cache_retention: None,
+                mode: None,
+                ttl: None,
+                system: false,
+                rolling: false,
+            }))
         }
+        OvenAdapterFamily::CohereV2Chat => None,
     };
     if let Some(CacheStrategyConfig::OpenAi(config)) = &strategy
         && let Some(key) = &config.prompt_cache_key
@@ -683,6 +677,10 @@ pub(crate) fn resolve_cache_strategy(
         }
     }
     Ok(strategy)
+}
+
+fn cache_strategy_error(error: String) -> EngineError {
+    EngineError::CacheStrategy(error)
 }
 
 const fn cache_ttl(
@@ -707,6 +705,23 @@ fn bedrock_cache_point(ttl: cookie_agent_config::CacheTtl) -> Option<BedrockCach
             cookie_agent_config::CacheTtl::Off => return None,
         }),
     })
+}
+
+fn bedrock_strategy(config: &cookie_agent_config::BedrockCacheConfig) -> BedrockCacheStrategy {
+    let messages = match config.rolling {
+        cookie_agent_config::RollingCacheTtl::FiveMinutes => vec![BedrockMessageCachePoint {
+            history_index: usize::MAX,
+            cache_point: BedrockCachePoint {
+                ttl: Some(BedrockCacheTtl::FiveMinutes),
+            },
+        }],
+        cookie_agent_config::RollingCacheTtl::Off => Vec::new(),
+    };
+    BedrockCacheStrategy {
+        system: bedrock_cache_point(config.system),
+        tools: bedrock_cache_point(config.tools),
+        messages,
+    }
 }
 
 pub(crate) fn wire_cache_strategies(
@@ -1007,73 +1022,16 @@ pub(crate) fn adapter_family(value: &str) -> cookie_agent_models::adapters::Oven
 #[cfg(test)]
 mod cache_strategy_tests {
     use super::*;
-    use cookie_agent_identity::ProtocolRecipeId;
-
-    fn binding(recipe: &str) -> protocol::FrozenModelBinding {
-        let mut binding = crate::test_support::model_binding();
-        binding.protocol_recipe = ProtocolRecipeId::new(recipe).unwrap();
-        binding
-    }
 
     #[test]
-    fn mixed_provider_bindings_resolve_their_own_runtime_cache_sections() {
-        let runtime = cookie_agent_config::CacheConfig {
-            anthropic: Some(cookie_agent_config::AnthropicCacheConfig::default()),
-            bedrock: Some(cookie_agent_config::BedrockCacheConfig::default()),
-            google: Some(cookie_agent_config::GoogleCacheConfig::default()),
-            openai: Some(cookie_agent_config::OpenAiCacheConfig {
-                prompt_cache_key: Some("mixed-${session_id}".into()),
-                prompt_cache_retention: None,
-                ttl: Some(cookie_agent_config::OpenAiPromptCacheTtl::ThirtyMinutes),
-                system: true,
-                ..Default::default()
-            }),
-        };
-
-        assert!(matches!(
-            resolve_cache_strategy(None, &binding("oven.anthropic.messages"), &runtime).unwrap(),
-            Some(CacheStrategyConfig::Anthropic(_))
-        ));
-        let Some(CacheStrategyConfig::Bedrock(bedrock)) =
-            resolve_cache_strategy(None, &binding("oven.bedrock.converse"), &runtime).unwrap()
-        else {
-            panic!("Bedrock cache strategy");
-        };
-        assert_eq!(
-            bedrock.system.and_then(|point| point.ttl),
-            Some(BedrockCacheTtl::FiveMinutes)
-        );
-        assert_eq!(
-            bedrock.tools.and_then(|point| point.ttl),
-            Some(BedrockCacheTtl::FiveMinutes)
-        );
-        assert_eq!(bedrock.messages.len(), 1);
-        assert_eq!(
-            bedrock.messages[0].cache_point.ttl,
-            Some(BedrockCacheTtl::FiveMinutes)
-        );
-        assert!(matches!(
-            resolve_cache_strategy(
-                None,
-                &binding("oven.google.gemini.generate-content"),
-                &runtime
-            )
-            .unwrap(),
-            Some(CacheStrategyConfig::Google(_))
-        ));
-        let Some(CacheStrategyConfig::OpenAi(openai)) =
-            resolve_cache_strategy(None, &binding("oven.openai.responses"), &runtime).unwrap()
-        else {
-            panic!("OpenAI cache strategy");
-        };
-        assert_eq!(openai.mode, Some(OpenAiCacheMode::Implicit));
-        assert_eq!(openai.ttl, Some(OpenAiPromptCacheTtl::ThirtyMinutes));
-        assert!(openai.system);
-        assert!(!openai.rolling);
-        assert!(
-            resolve_cache_strategy(None, &binding("oven.openai-compatible.chat"), &runtime)
-                .unwrap()
-                .is_none()
-        );
+    fn all_off_bedrock_config_emits_no_cache_points() {
+        let config: cookie_agent_config::BedrockCacheConfig = serde_json::from_value(
+            serde_json::json!({"system":"off","tools":"off","rolling":"off"}),
+        )
+        .unwrap();
+        let strategy = bedrock_strategy(&config);
+        assert!(strategy.system.is_none());
+        assert!(strategy.tools.is_none());
+        assert!(strategy.messages.is_empty());
     }
 }

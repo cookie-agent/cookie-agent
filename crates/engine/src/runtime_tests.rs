@@ -2705,7 +2705,6 @@ fn fixture() -> Fixture {
             approval: ApprovalConfig::default(),
             model_retry: cookie_agent_config::ModelRetryConfig::default(),
             context_compaction: ContextCompactionConfig::default(),
-            prompt_caching: cookie_agent_config::PromptCachingConfig::default(),
             session_title: SessionTitleConfig::default(),
             delegation: cookie_agent_config::DelegationConfig::default(),
             pricing: cookie_agent_config::PricingConfig::default(),
@@ -3502,6 +3501,7 @@ fn custom_fixture_with_capabilities(
         adaptor,
         capabilities_override,
         None,
+        None,
         "worker",
     )
 }
@@ -3534,6 +3534,7 @@ fn custom_fixture_with_capabilities_and_variants(
         adaptor,
         capabilities_override,
         model_variants,
+        None,
         "worker",
     )
 }
@@ -3552,6 +3553,7 @@ fn custom_fixture_with_capabilities_and_worker_name(
     adaptor: &str,
     capabilities_override: Option<&str>,
     model_variants: Option<&str>,
+    provider_cache: Option<&str>,
     worker_name: &str,
 ) -> (Fixture, RunSelection) {
     let directory = private_tempdir();
@@ -3566,6 +3568,7 @@ source = "custom"
 endpoint = "http://127.0.0.1:9/v1"
 adaptor = "openai-compatible"
 auth = { method = "no-auth-v1", values = {} }
+__PROVIDER_CACHE__
 
 [providers."custom.test".models."group/model"]
 display_name = "Model"
@@ -3592,6 +3595,12 @@ __MODEL_CAPABILITIES__
         .as_str(),
     )
     .replace("__MODEL_VARIANTS__", model_variants.unwrap_or_default());
+    let config_text = config_text.replace(
+        "__PROVIDER_CACHE__",
+        &provider_cache.map_or_else(String::new, |cache| {
+            format!("\n[providers.\"custom.test\".cache]\n{cache}")
+        }),
+    );
     let config_text = if adaptor.starts_with("anthropic") {
         config_text.replace("seed = true", "seed = false").replace(
             "auth = { method = \"no-auth-v1\", values = {} }",
@@ -3709,7 +3718,6 @@ fn try_frozen_root_policy(
             tool_output_max_bytes: 50 * 1024,
         },
         fixture.config.runtime.model_retry,
-        fixture.config.runtime.prompt_caching.as_cache_config(),
     )
 }
 
@@ -3919,7 +3927,6 @@ fn parent_model_resolves_exact_binding_skips_parentless_and_replays_historically
         owner.result_limits.tool_output_max_lines,
         owner.result_limits.tool_output_max_bytes,
         owner.model_retry,
-        owner.runtime_cache.clone(),
     )
     .expect("replayed owner policy");
     let replayed = fixture
@@ -4010,8 +4017,8 @@ async fn internal_agent_cache_strategy_omits_rolling_for_stateless_kinds() {
 }
 
 #[test]
-fn agent_openai_cache_key_is_frozen_per_binding_and_expands_session_id() {
-    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: agent-${session_id}\n        prompt_cache_retention: 24h\npermissions: {}\n---\nStable owner prompt.\n";
+fn first_party_openai_cache_key_is_always_the_session_id() {
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_retention: 24h\npermissions: {}\n---\nStable owner prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             "http://127.0.0.1:9/v1",
@@ -4035,7 +4042,7 @@ fn agent_openai_cache_key_is_frozen_per_binding_and_expands_session_id() {
     };
     assert_eq!(
         strategy.prompt_cache_key.as_deref(),
-        Some(format!("agent-{session}").as_str())
+        Some(session.to_string().as_str())
     );
 
     let internal = fixture
@@ -4050,13 +4057,91 @@ fn agent_openai_cache_key_is_frozen_per_binding_and_expands_session_id() {
     };
     assert_eq!(
         strategy.prompt_cache_key.as_deref(),
-        Some(format!("agent-{session}").as_str())
+        Some(session.to_string().as_str())
     );
+}
+
+#[test]
+fn compatible_openai_cache_key_defaults_disables_and_expands() {
+    let primary = "---\ndescription: Compatible cache owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable owner prompt.\n";
+    for (provider_cache, expected_prefix) in [
+        (None, Some("")),
+        (Some("prompt_cache_key = \"\""), None),
+        (
+            Some("prompt_cache_key = \"tenant-${session_id}\""),
+            Some("tenant-"),
+        ),
+    ] {
+        let (fixture, selection) = custom_fixture_with_capabilities_and_worker_name(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-compatible",
+            None,
+            None,
+            provider_cache,
+            "worker",
+        );
+        let policy = frozen_root_policy(&fixture, &selection);
+        let binding = policy.selected_suffix.first().unwrap();
+        let session = SessionId::new_v7();
+        let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(strategy) =
+            policy.cache_strategy(binding, session).unwrap()
+        else {
+            panic!("compatible OpenAI cache strategy");
+        };
+        let expected = expected_prefix.map(|prefix| format!("{prefix}{session}"));
+        assert_eq!(strategy.prompt_cache_key, expected);
+    }
+}
+
+#[test]
+fn explicit_anthropic_one_hour_requires_authored_beta() {
+    let primary = "---\ndescription: Anthropic cache owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      anthropic: { system: 1h, tools: off, rolling: off }\npermissions: {}\n---\nStable owner prompt.\n";
+    let (without_beta, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            "http://127.0.0.1:9/v1",
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "anthropic-compatible",
+        );
+    assert!(matches!(
+        try_frozen_root_policy(&without_beta, &selection),
+        Err(EngineError::CacheStrategy(_))
+    ));
+
+    let (with_beta, selection) = custom_fixture_with_capabilities_and_variants(
+        "http://127.0.0.1:9/v1",
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        None,
+        Some("options = { beta = [\"extended-cache-ttl-2025-04-11\"] }"),
+    );
+    assert!(try_frozen_root_policy(&with_beta, &selection).is_ok());
 }
 
 #[tokio::test]
 async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy() {
-    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: delegated-${session_id}\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  delegate:\n    worker: allow\n    \"*\": deny\n---\nStable owner prompt.\n";
     let worker = "---\ndescription: Inheriting worker\nmode: subagent\nenabled: true\nmodels: []\npermissions: {}\n---\nWorker prompt.\n";
     let (endpoint, captured) = scripted_delegation_server().await;
     let (fixture, selection) =
@@ -4107,7 +4192,7 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
     assert_eq!(requests.len(), 3);
     assert_eq!(
         request_body(&requests[1])["prompt_cache_key"],
-        format!("delegated-{child}")
+        child.to_string()
     );
     let parent = fixture.engine.inner.store.get(parent.session_id).unwrap();
     assert!(parent.log.events().iter().any(|event| {
@@ -4168,6 +4253,7 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
         4_096,
         Some(worker),
         "openai-chat",
+        None,
         None,
         None,
         "sub-worker",
@@ -4627,7 +4713,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
 
 #[test]
 fn authored_cache_strategy_for_unsupported_family_fails_policy_freeze() {
-    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        prompt_cache_key: unsupported\npermissions: {}\n---\nStable owner prompt.\n";
+    let primary = "---\ndescription: Cached owner\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      openai:\n        mode: explicit\n        ttl: 30m\npermissions: {}\n---\nStable owner prompt.\n";
     let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             "http://127.0.0.1:9/v1",
@@ -6543,6 +6629,31 @@ fn scripted_text_usage_body(
         "data: {}\n\ndata: {}\n\n",
         serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]}),
         serde_json::json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":usage}),
+    )
+}
+
+fn scripted_text_cache_write_usage_body(
+    text: &str,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+) -> String {
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]}),
+        serde_json::json!({
+            "choices":[{"delta":{},"finish_reason":"stop"}],
+            "usage": {
+                "prompt_tokens": input,
+                "prompt_tokens_details": {
+                    "cached_tokens": cache_read,
+                    "cache_write_tokens": cache_write,
+                },
+                "completion_tokens": output,
+                "total_tokens": input + output,
+            }
+        }),
     )
 }
 
@@ -12831,7 +12942,11 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
                 "image/png"
             );
             assert_eq!(
-                follow_up["messages"][1]["content"][0]["cache_control"]["ttl"],
+                follow_up["messages"][2]["content"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["cache_control"]["ttl"],
                 "5m"
             );
         } else {
@@ -12972,6 +13087,57 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     assert_eq!(rollup.cache_read_tokens, 50);
     assert_eq!(rollup.request_count, 3);
     assert_eq!(rollup.cache_hit_rate, Some(50.0 / 90.0));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_adapter_cache_write_usage_reaches_events_and_rollup() {
+    let body = scripted_text_cache_write_usage_body("cached", 100, 5, 20, 30);
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![body], usize::MAX).await;
+    let primary = "---\ndescription: OpenAI cache usage\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable system prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-chat",
+        );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("openai-cache-write-usage").unwrap(),
+                selection,
+                input: "exercise cache accounting".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let usage = projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage.clone()),
+            _ => None,
+        })
+        .expect("OpenAI usage event");
+    assert_eq!(usage.input_tokens_cache_read, Some(20));
+    assert_eq!(usage.input_tokens_cache_write, Some(30));
+    assert_eq!(projection.usage_rollup.cache_write_tokens, 30);
     fixture.engine.shutdown().await;
 }
 
@@ -13273,8 +13439,8 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
         usize::MAX,
     )
     .await;
-    let primary = "---\ndescription: Anthropic cache baseline\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nUncached system prompt.\n";
-    let (mut fixture, selection) =
+    let primary = "---\ndescription: Anthropic cache baseline\nmode: primary\nenabled: true\nmodels:\n  - model: custom.test/group/model\n    variant: base\n    cache:\n      anthropic: { system: off, tools: off, rolling: off }\npermissions: {}\n---\nUncached system prompt.\n";
+    let (fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
             &endpoint,
             primary,
@@ -13287,16 +13453,6 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
             None,
             "anthropic-compatible",
         );
-    fixture.engine.shutdown().await;
-    fixture.config.runtime.prompt_caching.anthropic = None;
-    fixture.engine = Engine::open(EngineOptions {
-        data_dir: fixture._directory.path().join("data"),
-        cwd: fixture._directory.path().to_owned(),
-        config: fixture.config.clone(),
-        model_manager: Arc::clone(&fixture.manager),
-        tools: Vec::new(),
-    })
-    .unwrap();
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     fixture
         .engine

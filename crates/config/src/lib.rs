@@ -20,9 +20,8 @@ pub use agents::{
     PermissionEffect, PermissionRule, PermissionValue,
 };
 pub use cache::{
-    AnthropicCacheConfig, BedrockCacheConfig, BedrockCacheTtl, BedrockMessageCacheConfig,
-    CacheConfig, CacheTtl, GoogleCacheConfig, GoogleCacheMode, OpenAiCacheConfig, OpenAiCacheMode,
-    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
+    AnthropicCacheConfig, BedrockCacheConfig, CacheConfig, CacheTtl, OpenAiCacheConfig,
+    OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, RollingCacheTtl,
 };
 pub use error::ConfigError;
 pub use loader::{ConfigLayerPaths, LoadedConfiguration, load, load_from_roots};
@@ -31,8 +30,8 @@ pub use mcp_store::write_mcp_server;
 pub use runtime::{
     AgentMdConfig, ApprovalConfig, ContextCompactionConfig, ContextCompactionTrigger,
     DelegationConfig, McpConfig, McpOAuthConfig, McpOAuthSettings, McpServerConfig, ModelPricing,
-    ModelRetryConfig, PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig,
-    PromptCachingConfig, RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig,
+    ModelRetryConfig, PicoUsdPerMillion, PluginConfig, PluginsConfig, PricingConfig, RuntimeConfig,
+    ServerConfig, SessionTitleConfig, ToolOutputConfig,
 };
 pub use skills::{
     SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery, SkillDocument,

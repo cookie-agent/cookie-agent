@@ -46,7 +46,7 @@ Workspace-specific providers use the same syntax in
 provider replaces the complete user provider entry; nested fields never merge.
 
 Available fields for a managed provider are `base_url`, `shape`, `setup`,
-`api_key`, `auth_override`, and sparse `model_overrides`. `api_key` is allowed
+`api_key`, `auth_override`, `cache`, and sparse `model_overrides`. `api_key` is allowed
 only for providers whose recipe's default method is an unambiguous single-secret
 method. Other methods use `auth_override`:
 
@@ -98,6 +98,21 @@ and authentication methods:
 
 Families that build the endpoint from setup fields (**Vertex**, **Bedrock**,
 **Azure**) forbid authored `base_url` overrides.
+
+### Prompt-caching availability
+
+| Adaptor family | Default | Provider `cache` surface |
+|---|---|---|
+| `anthropic`, `anthropic-compatible` | Structural system/tools `1h`, rolling `5m` | `system`, `tools`, `rolling` TTLs |
+| `aws-bedrock-converse` | Structural system/tools/rolling `5m` | `system`, `tools`, `rolling` TTLs |
+| `openai-chat`, `openai-responses`, Azure OpenAI | Provider-managed caching; session UUIDv7 key always sent | `prompt_cache_retention`, `mode`, `ttl`, `system`, `rolling` |
+| `openai-compatible` | Session UUIDv7 key sent | `prompt_cache_key`; empty string disables |
+| Google Gemini and Vertex Gemini | Implicit caching | None; a cache table is rejected |
+| Cohere | Server-side automatic caching | None |
+
+Cache tables are strict and must match the resolved adaptor. See the
+[configuration reference](../reference/configuration.md#providersidcache) for
+defaults, TTL ordering, OpenAI breakpoint semantics, and model-binding overrides.
 
 ### Common managed examples
 
