@@ -1572,12 +1572,10 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
                 source,
             })?;
             drop(file);
-            cookie_agent_models::secure_store::replace_windows_path(&temporary, path).map_err(
-                |source| SessionError::Io {
-                    path: path.to_owned(),
-                    source,
-                },
-            )?;
+            replace_windows_cache_path(&temporary, path).map_err(|source| SessionError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
         }
         Ok(())
     })();
@@ -1585,6 +1583,29 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+#[cfg(windows)]
+fn replace_windows_cache_path(source: &Path, target: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: usize = 50;
+    const BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+    for attempt in 0..ATTEMPTS {
+        match cookie_agent_models::secure_store::replace_windows_path(source, target) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt + 1 < ATTEMPTS && windows_replace_is_contended(&error) => {
+                std::thread::sleep(BACKOFF);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("cache replacement attempts are nonzero")
+}
+
+#[cfg(windows)]
+fn windows_replace_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 fn read_cache(path: &Path, events_path: &Path) -> Result<SessionMeta, SessionError> {
