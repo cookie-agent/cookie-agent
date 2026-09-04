@@ -986,6 +986,10 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
     signal.context("wait for daemon shutdown signal")
 }
 
+#[cfg(test)]
+#[path = "../../../test-support/config_harness.rs"]
+mod config_harness;
+
 #[cfg(all(test, unix))]
 mod tests {
     /// Compose with configuration loaded from the workspace only, isolating tests from any

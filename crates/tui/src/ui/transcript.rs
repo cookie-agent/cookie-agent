@@ -3,6 +3,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    ops::Range,
     time::Duration,
 };
 
@@ -10,8 +11,8 @@ use cookie_agent_protocol::{AgentId, SessionId};
 use ratatui::{
     layout::Rect,
     style::Style,
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, Borders},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -328,6 +329,15 @@ struct ItemLayout {
 struct CachedItemLayout {
     key: ItemLayoutKey,
     layout: ItemLayout,
+    assistant_parts: Vec<AssistantPartRange>,
+}
+
+#[derive(Clone)]
+struct AssistantPartRange {
+    id: u64,
+    key: AssistantPartLayoutKey,
+    lines: Range<usize>,
+    regions: Range<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -357,6 +367,7 @@ struct TranscriptRenderContext<'a> {
     clock_bucket: u8,
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
+    assistant_part_ranges: &'a mut Vec<AssistantPartRange>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -431,11 +442,9 @@ pub(super) fn ensure_cached_transcript_layout(
             .iter()
             .enumerate()
             .find_map(|(index, item)| {
-                let item_key = item_layout_key(state, item, expanded, clock_bucket);
-                (!cache
-                    .items
-                    .get(index)
-                    .is_some_and(|cached| cached.key == item_key))
+                (!cache.items.get(index).is_some_and(|cached| {
+                    item_layout_key_matches(&cached.key, state, item, expanded, clock_bucket)
+                }))
                 .then_some(index)
             })
             .or_else(|| {
@@ -459,44 +468,52 @@ pub(super) fn ensure_cached_transcript_layout(
     }
 
     for (index, item) in state.transcript.iter().enumerate().skip(first_dirty) {
-        let item_key = item_layout_key(state, item, expanded, clock_bucket);
         cache
             .item_offsets
             .push(ItemAssemblyOffset::at_end(&cache.layout));
-        if cache
-            .items
-            .get(index)
-            .is_some_and(|cached| cached.key == item_key)
-        {
+        if cache.items.get(index).is_some_and(|cached| {
+            item_layout_key_matches(&cached.key, state, item, expanded, clock_bucket)
+        }) {
             append_item_layout(&mut cache.layout, cache.items[index].layout.clone());
         } else {
-            let layout = transcript_item_layout(
-                state,
-                item,
-                &mut TranscriptRenderContext {
-                    expanded,
-                    width,
-                    theme,
-                    highlighter,
-                    minimum_event_level,
-                    clock_bucket,
-                    assistant_part_cache: &mut cache.assistant_parts,
-                    assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
-                },
-            );
-            let cached = CachedItemLayout {
-                key: item_key,
-                layout: layout.clone(),
+            let item_key = item_layout_key(state, item, expanded, clock_bucket);
+            let mut assistant_part_ranges = Vec::new();
+            let mut context = TranscriptRenderContext {
+                expanded,
+                width,
+                theme,
+                highlighter,
+                minimum_event_level,
+                clock_bucket,
+                assistant_part_cache: &mut cache.assistant_parts,
+                assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
+                assistant_part_ranges: &mut assistant_part_ranges,
             };
-            if index < cache.items.len() {
-                cache.items[index] = cached;
+            let spliced = cache.items.get_mut(index).is_some_and(|cached| {
+                splice_active_assistant_part(cached, state, item, &mut context)
+            });
+            let layout = if spliced {
+                let cached = &mut cache.items[index];
+                cached.key = item_key;
+                cached.layout.clone()
             } else {
-                cache.items.push(cached);
-            }
-            #[cfg(test)]
-            {
-                cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
-            }
+                let layout = transcript_item_layout(state, item, &mut context);
+                let cached = CachedItemLayout {
+                    key: item_key,
+                    layout: layout.clone(),
+                    assistant_parts: assistant_part_ranges,
+                };
+                if index < cache.items.len() {
+                    cache.items[index] = cached;
+                } else {
+                    cache.items.push(cached);
+                }
+                #[cfg(test)]
+                {
+                    cache.item_layout_passes = cache.item_layout_passes.wrapping_add(1);
+                }
+                layout
+            };
             append_item_layout(&mut cache.layout, layout);
         }
         #[cfg(test)]
@@ -525,6 +542,24 @@ fn item_layout_key(
             0
         },
     }
+}
+
+fn item_layout_key_matches(
+    key: &ItemLayoutKey,
+    state: &SessionState,
+    item: &TranscriptItem,
+    expanded: Option<&HashSet<BlockId>>,
+    clock_bucket: u8,
+) -> bool {
+    key.id == item.id()
+        && key.version == item.version()
+        && key.clock
+            == if item_is_live(state, item) {
+                clock_bucket
+            } else {
+                0
+            }
+        && item_interaction_matches(&key.interaction, item, expanded)
 }
 
 impl App {
@@ -726,26 +761,19 @@ impl App {
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
         self.hit_map.scrollbar = scrollbar_track.filter(|track| track.width > 0);
-        self.hit_map.blocks = layout
-            .regions
-            .iter()
-            .filter_map(|region| block_hit(*region, viewport, self.conversation_scroll.offset))
-            .collect();
-        self.hit_map.user_messages = layout
-            .user_regions
-            .iter()
-            .filter_map(|region| {
+        self.hit_map.blocks.clear();
+        self.hit_map.blocks.extend(
+            layout
+                .regions
+                .iter()
+                .filter_map(|region| block_hit(*region, viewport, self.conversation_scroll.offset)),
+        );
+        self.hit_map.user_messages.clear();
+        self.hit_map
+            .user_messages
+            .extend(layout.user_regions.iter().filter_map(|region| {
                 user_message_hit(*region, viewport, self.conversation_scroll.offset)
-            })
-            .collect();
-        let visible_lines = layout
-            .lines
-            .iter()
-            .chain(notice_lines.iter())
-            .skip(self.conversation_scroll.offset)
-            .take(usize::from(viewport.height))
-            .cloned()
-            .collect::<Vec<_>>();
+            }));
         let filter = self.tui_config.minimum_event_level.name();
         // Conversation and Message border titles carry no instructional
         // drag/hotkey prose.
@@ -793,7 +821,23 @@ impl App {
                 .right_aligned(),
             );
         }
-        frame.render_widget(Paragraph::new(Text::from(visible_lines)).block(block), area);
+        frame.render_widget(block, area);
+        // Rendering borrowed Lines avoids viewport clones. Line::style paints
+        // the full row, so future background or REVERSED line styles must be
+        // reviewed as row-wide rather than span-local styling.
+        for (row, line) in layout
+            .lines
+            .iter()
+            .chain(notice_lines.iter())
+            .skip(self.conversation_scroll.offset)
+            .take(usize::from(viewport.height))
+            .enumerate()
+        {
+            frame.render_widget(
+                line,
+                Rect::new(viewport.x, viewport.y + row as u16, viewport.width, 1),
+            );
+        }
         self.scrollbar_geometry = scrollbar_track.and_then(|track| {
             ScrollbarGeometry::resolve(track, content_height)
                 .map(|geometry| geometry.with_thumb(self.conversation_scroll.offset))
@@ -894,6 +938,7 @@ fn transcript_layout_with_level(
         );
     }
     for item in &state.transcript {
+        let mut assistant_part_ranges = Vec::new();
         let item_layout = transcript_item_layout(
             state,
             item,
@@ -906,6 +951,7 @@ fn transcript_layout_with_level(
                 clock_bucket: 0,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
+                assistant_part_ranges: &mut assistant_part_ranges,
             },
         );
         append_item_layout(&mut layout, item_layout);
@@ -955,48 +1001,74 @@ enum Role {
     Internal,
 }
 
-fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
+fn for_each_item_block_id(item: &TranscriptItem, mut visit: impl FnMut(BlockId) -> bool) -> bool {
     match item {
-        TranscriptItem::Assistant { children, .. } => children
-            .iter()
-            .filter_map(|child| match child {
-                AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
-                AssistantChild::Tool { call_id } => Some(BlockId::Tool(*call_id)),
-                AssistantChild::MediaFile {
-                    turn_seq,
-                    content_index,
-                    ..
-                } => Some(BlockId::MediaFile {
-                    turn_seq: *turn_seq,
-                    content_index: *content_index,
-                }),
-                AssistantChild::Text { .. }
-                | AssistantChild::Attribution { .. }
-                | AssistantChild::CommittedTool { .. } => None,
-            })
-            .flat_map(|id| match id {
-                BlockId::Tool(call_id) => vec![
-                    id,
-                    BlockId::ToolOutput {
-                        call_id,
-                        section: ToolOutputSection::Detail,
-                    },
-                    BlockId::ToolOutput {
-                        call_id,
-                        section: ToolOutputSection::Stdout,
-                    },
-                    BlockId::ToolOutput {
-                        call_id,
-                        section: ToolOutputSection::Stderr,
-                    },
-                ],
-                _ => vec![id],
-            })
-            .collect(),
-        TranscriptItem::Compaction { seq, .. } => vec![BlockId::Compaction(*seq)],
-        TranscriptItem::PluginMessage { seq, .. } => vec![BlockId::PluginMessage(*seq)],
-        _ => Vec::new(),
+        TranscriptItem::Assistant { children, .. } => {
+            for child in children {
+                let id = match child {
+                    AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
+                    AssistantChild::Tool { call_id } => Some(BlockId::Tool(*call_id)),
+                    AssistantChild::MediaFile {
+                        turn_seq,
+                        content_index,
+                        ..
+                    } => Some(BlockId::MediaFile {
+                        turn_seq: *turn_seq,
+                        content_index: *content_index,
+                    }),
+                    AssistantChild::Text { .. }
+                    | AssistantChild::Attribution { .. }
+                    | AssistantChild::CommittedTool { .. } => None,
+                };
+                let Some(id) = id else {
+                    continue;
+                };
+                if !visit(id) {
+                    return false;
+                }
+                if let BlockId::Tool(call_id) = id {
+                    for section in [
+                        ToolOutputSection::Detail,
+                        ToolOutputSection::Stdout,
+                        ToolOutputSection::Stderr,
+                    ] {
+                        if !visit(BlockId::ToolOutput { call_id, section }) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        }
+        TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
+        TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
+        TranscriptItem::User { .. } | TranscriptItem::Event { .. } => true,
     }
+}
+
+fn item_interaction_matches(
+    expected: &[(BlockId, bool)],
+    item: &TranscriptItem,
+    expanded: Option<&HashSet<BlockId>>,
+) -> bool {
+    let mut index = 0;
+    let complete = for_each_item_block_id(item, |id| {
+        let matches = expected.get(index).is_some_and(|entry| {
+            *entry == (id, expanded.is_some_and(|blocks| blocks.contains(&id)))
+        });
+        index += 1;
+        matches
+    });
+    complete && index == expected.len()
+}
+
+fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
+    let mut ids = Vec::new();
+    for_each_item_block_id(item, |id| {
+        ids.push(id);
+        true
+    });
+    ids
 }
 
 fn item_interaction(
@@ -1419,32 +1491,7 @@ fn assistant_item_layout(
     for child in children {
         match child {
             AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
-                let block_id = match child {
-                    AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
-                    AssistantChild::Text { .. } => None,
-                    AssistantChild::Tool { .. }
-                    | AssistantChild::Attribution { .. }
-                    | AssistantChild::CommittedTool { .. }
-                    | AssistantChild::MediaFile { .. } => {
-                        unreachable!()
-                    }
-                };
-                let streaming = matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id));
-                let duration = match child {
-                    AssistantChild::Thinking { id, .. } if !streaming => state
-                        .thinking_duration(item_id, *id)
-                        .filter(|duration| duration.as_secs() >= 1),
-                    _ => None,
-                };
-                let key = AssistantPartLayoutKey {
-                    version: child.version(),
-                    expanded: block_id.is_some_and(|id| {
-                        context.expanded.is_some_and(|blocks| blocks.contains(&id))
-                    }),
-                    streaming,
-                    dots: if streaming { context.clock_bucket } else { 0 },
-                    duration,
-                };
+                let key = assistant_part_layout_key(state, item_id, child, context);
                 let part_layout = if context
                     .assistant_part_cache
                     .get(&child.id())
@@ -1471,6 +1518,7 @@ fn assistant_item_layout(
                     part_layout
                 };
                 let start_line = layout.lines.len();
+                let start_region = layout.regions.len();
                 layout.lines.extend(part_layout.lines);
                 layout
                     .regions
@@ -1479,6 +1527,12 @@ fn assistant_item_layout(
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
                     }));
+                context.assistant_part_ranges.push(AssistantPartRange {
+                    id: child.id(),
+                    key,
+                    lines: start_line..layout.lines.len(),
+                    regions: start_region..layout.regions.len(),
+                });
             }
             AssistantChild::Tool { call_id } => {
                 let child_layout = tool_child_layout(state, Some(*call_id), *call_id, context);
@@ -1548,6 +1602,159 @@ fn assistant_item_layout(
         layout.lines.extend(footer);
     }
     layout
+}
+
+fn assistant_part_layout_key(
+    state: &SessionState,
+    item_id: u64,
+    child: &AssistantChild,
+    context: &TranscriptRenderContext<'_>,
+) -> AssistantPartLayoutKey {
+    let block_id = match child {
+        AssistantChild::Thinking { id, .. } => Some(BlockId::Thinking(*id)),
+        AssistantChild::Text { .. }
+        | AssistantChild::Tool { .. }
+        | AssistantChild::Attribution { .. }
+        | AssistantChild::CommittedTool { .. }
+        | AssistantChild::MediaFile { .. } => None,
+    };
+    let streaming = matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id));
+    let duration = match child {
+        AssistantChild::Thinking { id, .. } if !streaming => state
+            .thinking_duration(item_id, *id)
+            .filter(|duration| duration.as_secs() >= 1),
+        _ => None,
+    };
+    AssistantPartLayoutKey {
+        version: child.version(),
+        expanded: block_id
+            .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id))),
+        streaming,
+        dots: if streaming { context.clock_bucket } else { 0 },
+        duration,
+    }
+}
+
+fn splice_active_assistant_part(
+    cached: &mut CachedItemLayout,
+    state: &SessionState,
+    item: &TranscriptItem,
+    context: &mut TranscriptRenderContext<'_>,
+) -> bool {
+    let TranscriptItem::Assistant { id, children, .. } = item else {
+        return false;
+    };
+    let parts = children
+        .iter()
+        .filter(|child| {
+            matches!(
+                child,
+                AssistantChild::Text { .. } | AssistantChild::Thinking { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    if parts.len() != cached.assistant_parts.len() {
+        return false;
+    }
+    let mut dirty = None;
+    for (index, (child, range)) in parts.iter().zip(&cached.assistant_parts).enumerate() {
+        if child.id() != range.id {
+            return false;
+        }
+        let key = assistant_part_layout_key(state, *id, child, context);
+        if key != range.key && dirty.replace((index, *child, key)).is_some() {
+            return false;
+        }
+    }
+    let Some((dirty_index, child, key)) = dirty else {
+        return false;
+    };
+    if !state.is_open_assistant_part(*id, child.id()) {
+        return false;
+    }
+
+    let part_layout = assistant_child_layout(
+        child,
+        key,
+        context.width,
+        context.theme,
+        context.highlighter,
+    );
+    context.assistant_part_cache.insert(
+        child.id(),
+        CachedAssistantPartLayout {
+            key,
+            layout: part_layout.clone(),
+        },
+    );
+    *context.assistant_part_layout_passes = context.assistant_part_layout_passes.wrapping_add(1);
+
+    let old = cached.assistant_parts[dirty_index].clone();
+    let old_line_len = old.lines.len();
+    let new_line_len = part_layout.lines.len();
+    let line_delta = isize::try_from(new_line_len).unwrap_or(isize::MAX)
+        - isize::try_from(old_line_len).unwrap_or(isize::MAX);
+    cached
+        .layout
+        .lines
+        .splice(old.lines.clone(), part_layout.lines);
+
+    let new_regions = part_layout
+        .regions
+        .into_iter()
+        .map(|region| BlockRegion {
+            id: region.id,
+            start_line: old.lines.start + region.start_line,
+            end_line: old.lines.start + region.end_line,
+        })
+        .collect::<Vec<_>>();
+    let old_region_len = old.regions.len();
+    let new_region_len = new_regions.len();
+    cached
+        .layout
+        .regions
+        .splice(old.regions.clone(), new_regions);
+    let region_delta = isize::try_from(new_region_len).unwrap_or(isize::MAX)
+        - isize::try_from(old_region_len).unwrap_or(isize::MAX);
+    let shifted_region_start = old.regions.start + new_region_len;
+    for region in &mut cached.layout.regions[shifted_region_start..] {
+        region.start_line = region
+            .start_line
+            .checked_add_signed(line_delta)
+            .expect("assistant region offset remains valid");
+        region.end_line = region
+            .end_line
+            .checked_add_signed(line_delta)
+            .expect("assistant region offset remains valid");
+    }
+
+    let range = &mut cached.assistant_parts[dirty_index];
+    range.key = key;
+    range.lines.end = range.lines.start + new_line_len;
+    range.regions.end = range.regions.start + new_region_len;
+    for range in &mut cached.assistant_parts[dirty_index + 1..] {
+        range.lines.start = range
+            .lines
+            .start
+            .checked_add_signed(line_delta)
+            .expect("assistant line offset remains valid");
+        range.lines.end = range
+            .lines
+            .end
+            .checked_add_signed(line_delta)
+            .expect("assistant line offset remains valid");
+        range.regions.start = range
+            .regions
+            .start
+            .checked_add_signed(region_delta)
+            .expect("assistant region index remains valid");
+        range.regions.end = range
+            .regions
+            .end
+            .checked_add_signed(region_delta)
+            .expect("assistant region index remains valid");
+    }
+    true
 }
 
 fn assistant_child_layout(
@@ -1664,6 +1871,9 @@ fn tool_child_layout(
             user_seq: None,
         };
     };
+    let arguments = is_expanded
+        .then(|| ParsedToolArguments::parse(&tool.arguments))
+        .flatten();
     let (suffix, role) = match tool.status {
         // The running marker breathes with the animation clock: a resting
         // ellipsis, then growing dots. Subtle liveness, never busy.
@@ -1725,7 +1935,7 @@ fn tool_child_layout(
             ToolBodyLine::wrapped(Line::from(format!("🔨 ▾ {title}{suffix}"))),
             ToolBodyLine::wrapped(Line::from(format!(
                 "arguments: {}",
-                display_tool_arguments(tool)
+                display_tool_arguments(tool, arguments.as_ref())
             ))),
         ]
     } else {
@@ -1738,6 +1948,7 @@ fn tool_child_layout(
             remaining_sections -= 1;
             body.extend(tool_body_lines(
                 tool,
+                arguments.as_ref(),
                 context,
                 ToolOutputSection::Detail,
                 section_expanded(ToolOutputSection::Detail),
@@ -1789,9 +2000,38 @@ fn tool_child_layout(
     }
 }
 
-fn display_tool_arguments(tool: &crate::state::ToolCallState) -> String {
+#[derive(serde::Deserialize)]
+struct ParsedToolArguments<'a> {
+    // Deliberately strict: non-string edit/write fields reject the structured
+    // view and fall back to the bounded raw-arguments rendering.
+    #[serde(borrow, rename = "filePath")]
+    file_path: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    path: Option<Cow<'a, str>>,
+    #[serde(borrow, rename = "oldString")]
+    before: Option<Cow<'a, str>>,
+    #[serde(borrow, rename = "newString")]
+    after: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    content: Option<Cow<'a, str>>,
+}
+
+impl<'a> ParsedToolArguments<'a> {
+    fn parse(arguments: &'a str) -> Option<Self> {
+        serde_json::from_str(arguments).ok()
+    }
+
+    fn file_path(&self) -> Option<&str> {
+        self.file_path.as_deref().or(self.path.as_deref())
+    }
+}
+
+fn display_tool_arguments(
+    tool: &crate::state::ToolCallState,
+    arguments: Option<&ParsedToolArguments<'_>>,
+) -> String {
     if matches!(tool.presentation.title.as_str(), "edit" | "write")
-        && let Some(path) = tool_file_path(&tool.arguments)
+        && let Some(path) = arguments.and_then(ParsedToolArguments::file_path)
     {
         return format!("filePath={path} (content shown below)");
     }
@@ -1963,6 +2203,7 @@ fn output_section_limits(expanded: bool) -> RenderLimits {
 /// gutters. All sections consume one aggregate per-tool render budget.
 fn tool_body_lines(
     tool: &crate::state::ToolCallState,
+    arguments: Option<&ParsedToolArguments<'_>>,
     context: &TranscriptRenderContext<'_>,
     section: ToolOutputSection,
     expanded: bool,
@@ -1970,8 +2211,8 @@ fn tool_body_lines(
     future_sections: usize,
 ) -> Vec<ToolBodyLine> {
     if tool.status == ToolStatus::Completed {
-        let path = tool_file_path(&tool.arguments);
-        let language = path.as_deref().and_then(path_extension);
+        let path = arguments.and_then(ParsedToolArguments::file_path);
+        let language = path.and_then(path_extension);
         if tool.presentation.title.as_str() == "read"
             && let Some(read) = parse_read_output(&tool.detail)
         {
@@ -1986,7 +2227,7 @@ fn tool_body_lines(
             );
         }
         if matches!(tool.presentation.title.as_str(), "edit" | "write")
-            && let Some(diff) = tool_diff(tool)
+            && let Some(diff) = tool_diff(tool, arguments)
         {
             return render_diff_output(
                 &diff,
@@ -2008,18 +2249,6 @@ fn tool_body_lines(
         future_sections,
         context.theme,
     )
-}
-
-fn tool_file_path(arguments: &str) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct PathArguments {
-        #[serde(rename = "filePath")]
-        file_path: Option<String>,
-        path: Option<String>,
-    }
-
-    let arguments = serde_json::from_str::<PathArguments>(arguments).ok()?;
-    arguments.file_path.or(arguments.path)
 }
 
 fn path_extension(path: &str) -> Option<&str> {
@@ -2259,44 +2488,36 @@ struct DiffRow<'a> {
 enum ToolDiff<'a> {
     Unified(&'a str),
     Edit {
-        before: String,
-        after: String,
+        before: &'a str,
+        after: &'a str,
         metadata: &'a str,
     },
     Write {
-        content: String,
+        content: &'a str,
         metadata: &'a str,
     },
 }
 
-fn tool_diff(tool: &crate::state::ToolCallState) -> Option<ToolDiff<'_>> {
+fn tool_diff<'a>(
+    tool: &'a crate::state::ToolCallState,
+    arguments: Option<&'a ParsedToolArguments<'_>>,
+) -> Option<ToolDiff<'a>> {
     if is_unified_diff(&tool.detail) {
         return Some(ToolDiff::Unified(&tool.detail));
     }
     match tool.presentation.title.as_str() {
         "edit" => {
-            #[derive(serde::Deserialize)]
-            struct EditArguments {
-                #[serde(rename = "oldString")]
-                before: String,
-                #[serde(rename = "newString")]
-                after: String,
-            }
-            let arguments = serde_json::from_str::<EditArguments>(&tool.arguments).ok()?;
+            let arguments = arguments?;
             Some(ToolDiff::Edit {
-                before: arguments.before,
-                after: arguments.after,
+                before: arguments.before.as_deref()?,
+                after: arguments.after.as_deref()?,
                 metadata: &tool.detail,
             })
         }
         "write" => {
-            #[derive(serde::Deserialize)]
-            struct WriteArguments {
-                content: String,
-            }
-            let arguments = serde_json::from_str::<WriteArguments>(&tool.arguments).ok()?;
+            let arguments = arguments?;
             Some(ToolDiff::Write {
-                content: arguments.content,
+                content: arguments.content.as_deref()?,
                 metadata: &tool.detail,
             })
         }
@@ -12735,17 +12956,15 @@ mod tests {
 
     #[test]
     fn tool_path_and_extension_parsing_is_structural() {
-        assert_eq!(
-            tool_file_path(r#"{"filePath":"src/main.rs","content":"path: fake.txt"}"#).as_deref(),
-            Some("src/main.rs")
-        );
-        assert_eq!(
-            tool_file_path(r#"{"path":"src/lib.rs"}"#).as_deref(),
-            Some("src/lib.rs")
-        );
+        let file_path =
+            ParsedToolArguments::parse(r#"{"filePath":"src/main.rs","content":"path: fake.txt"}"#)
+                .expect("arguments");
+        assert_eq!(file_path.file_path(), Some("src/main.rs"));
+        let path = ParsedToolArguments::parse(r#"{"path":"src/lib.rs"}"#).expect("arguments");
+        assert_eq!(path.file_path(), Some("src/lib.rs"));
         assert_eq!(path_extension("src/main.rs"), Some("rs"));
         assert_eq!(path_extension("README"), None);
-        assert_eq!(tool_file_path("not json"), None);
+        assert!(ParsedToolArguments::parse("not json").is_none());
     }
 
     #[test]
@@ -12853,8 +13072,8 @@ mod tests {
     #[test]
     fn synthetic_diffs_preserve_newline_termination_semantics() {
         let terminated = ToolDiff::Edit {
-            before: "old\n".into(),
-            after: "new\n".into(),
+            before: "old\n",
+            after: "new\n",
             metadata: "",
         };
         let mut terminated_rows = Vec::new();
@@ -12877,8 +13096,8 @@ mod tests {
         );
 
         let unterminated = ToolDiff::Edit {
-            before: "old".into(),
-            after: "new".into(),
+            before: "old",
+            after: "new",
             metadata: "",
         };
         let mut markers = 0;
@@ -12889,7 +13108,7 @@ mod tests {
         assert_eq!(markers, 2);
 
         let empty_write = ToolDiff::Write {
-            content: String::new(),
+            content: "",
             metadata: "",
         };
         let mut hunk = None;
@@ -15074,7 +15293,8 @@ mod tests {
         for event in [
             user_input(session, 1, run, "stable user message"),
             attempt_started(session, 2, run, attempt, None),
-            text_delta(session, 3, run, attempt, "streaming"),
+            reasoning_delta(session, 3, run, attempt, "stable thought"),
+            text_delta(session, 4, run, attempt, "streaming"),
         ] {
             assert!(store.apply_event(event));
         }
@@ -15098,8 +15318,12 @@ mod tests {
         let clean_prefix = cache.layout.lines[..tail_offset.lines].to_vec();
         let item_passes = cache.item_layout_passes;
         let assembly_passes = cache.item_assembly_passes;
+        let stable_part = &cache.items[1].assistant_parts[0];
+        let stable_span_ptr = cache.items[1].layout.lines[stable_part.lines.start].spans[0]
+            .content
+            .as_ptr();
 
-        assert!(store.apply_event(text_delta(session, 4, run, attempt, " tail")));
+        assert!(store.apply_event(text_delta(session, 5, run, attempt, " tail")));
         ensure_cached_transcript_layout(
             &mut cache,
             session,
@@ -15113,10 +15337,17 @@ mod tests {
             0,
         );
 
-        assert_eq!(cache.item_layout_passes, item_passes + 1);
+        assert_eq!(cache.item_layout_passes, item_passes);
         assert_eq!(cache.item_assembly_passes, assembly_passes + 1);
         assert_eq!(cache.item_offsets[1], tail_offset);
         assert_eq!(cache.layout.lines[..tail_offset.lines], clean_prefix);
+        let stable_part = &cache.items[1].assistant_parts[0];
+        assert_eq!(
+            cache.items[1].layout.lines[stable_part.lines.start].spans[0]
+                .content
+                .as_ptr(),
+            stable_span_ptr
+        );
         assert!(snapshot_lines(&cache.layout.lines).contains("streaming tail"));
     }
 

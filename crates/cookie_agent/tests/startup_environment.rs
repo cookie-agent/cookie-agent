@@ -8,6 +8,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "../../../test-support/config_harness.rs"]
+mod config_harness;
+
 struct TestHome(PathBuf);
 
 impl TestHome {

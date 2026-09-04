@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use futures_util::stream;
 use oven_sdk::{
-    AbortSignal, AssistantPart, BoxFuture, Finish, FinishReason, HeaderProvider, HistoryTurn,
-    InputPart, LanguageModel, LanguageModelDescriptor, ModelError, ModelId, ModelIdentity,
-    PartMetadata, ProviderId, Request, StreamPart, StreamResponse, SystemPart, Usage,
+    AbortSignal, AssistantPart, BoxFuture, Finish, FinishReason, HistoryTurn, InputPart,
+    LanguageModel, LanguageModelDescriptor, ModelError, ModelId, ModelIdentity, PartMetadata,
+    ProviderId, Request, StreamPart, StreamResponse, SystemPart, Usage,
 };
 use serde_json::{Value, json};
 
@@ -84,9 +84,8 @@ impl LanguageModel for NoAuthResponsesModel {
                 .map_err(|error| *error)?;
             let headers = self
                 .headers
-                .headers(&request.header_context)?
-                .as_map()
-                .clone();
+                .resolved_headers(&request.header_context)
+                .map_err(ModelError::invalid_request)?;
             let send = self
                 .client
                 .post(format!(

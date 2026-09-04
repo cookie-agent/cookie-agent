@@ -495,6 +495,11 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub fn is_open_assistant_part(&self, item_id: u64, part_id: u64) -> bool {
+        self.open_assistant
+            .is_some_and(|open| open.item_id == item_id && open.part_id == part_id)
+    }
+
     pub fn is_open_thinking(&self, item_id: u64, part_id: u64) -> bool {
         self.open_assistant.is_some_and(|open| {
             open.item_id == item_id
@@ -2786,9 +2791,10 @@ fn pending_stream(output: &PendingOutput) -> bool {
 /// Byte-offset ordered renderer for one stdout or stderr stream.
 #[derive(Clone, Debug, Default)]
 pub struct OrderedOutput {
-    pub data: Vec<u8>,
+    data: Vec<u8>,
     pub next_offset: u64,
     pub has_gap: bool,
+    line_count: usize,
     pending: BTreeMap<u64, Vec<u8>>,
 }
 
@@ -2796,11 +2802,12 @@ impl OrderedOutput {
     pub fn replace_snapshot(&mut self, start: u64, end: u64, mut chunks: Vec<OutputDelta>) {
         self.data.clear();
         self.pending.clear();
+        self.line_count = 0;
         self.has_gap = start > 0;
         chunks.sort_by_key(|chunk| chunk.byte_offset);
         for chunk in chunks {
             if let Ok(bytes) = STANDARD.decode(chunk.data) {
-                self.data.extend_from_slice(&bytes);
+                self.append_bytes(&bytes);
             }
         }
         self.next_offset = end;
@@ -2833,21 +2840,28 @@ impl OrderedOutput {
     /// valid UTF-8 stream. The line count describes the complete stream so a
     /// bounded renderer can still report accurate truncation.
     pub fn bounded_text(&self, max_bytes: usize) -> (Cow<'_, str>, usize) {
-        let original_lines = if self.data.is_empty() {
-            0
-        } else {
-            self.data.iter().filter(|byte| **byte == b'\n').count()
-                + usize::from(!self.data.ends_with(b"\n"))
-        };
         let prefix = &self.data[..self.data.len().min(max_bytes)];
-        (String::from_utf8_lossy(prefix), original_lines)
+        (String::from_utf8_lossy(prefix), self.line_count)
     }
 
     fn flush(&mut self) {
         while let Some(bytes) = self.pending.remove(&self.next_offset) {
             self.next_offset += bytes.len() as u64;
-            self.data.extend_from_slice(&bytes);
+            self.append_bytes(&bytes);
         }
+    }
+
+    fn append_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
+        if self.data.is_empty() || self.data.ends_with(b"\n") {
+            self.line_count += newlines + usize::from(!bytes.ends_with(b"\n"));
+        } else {
+            self.line_count += newlines.saturating_sub(usize::from(bytes.ends_with(b"\n")));
+        }
+        self.data.extend_from_slice(bytes);
     }
 }
 
@@ -2857,10 +2871,8 @@ mod tests {
 
     #[test]
     fn ordered_output_bounded_text_borrows_valid_prefix_and_keeps_full_line_count() {
-        let output = OrderedOutput {
-            data: b"first\nsecond\nthird".to_vec(),
-            ..OrderedOutput::default()
-        };
+        let mut output = OrderedOutput::default();
+        output.append_bytes(b"first\nsecond\nthird");
         let (complete, complete_lines) = output.bounded_text(usize::MAX);
         assert!(matches!(complete, Cow::Borrowed("first\nsecond\nthird")));
         assert_eq!(complete, output.text());
@@ -2869,6 +2881,20 @@ mod tests {
         let (prefix, original_lines) = output.bounded_text(8);
         assert!(matches!(prefix, Cow::Borrowed("first\nse")));
         assert_eq!(original_lines, 3);
+    }
+
+    #[test]
+    fn ordered_output_updates_line_count_across_chunk_boundaries() {
+        let mut output = OrderedOutput::default();
+        for chunk in [b"first".as_slice(), b"\nsecond\n".as_slice(), b"third"] {
+            output.append_bytes(chunk);
+        }
+        assert_eq!(output.bounded_text(0).1, 3);
+
+        output.append_bytes(b"\n");
+        assert_eq!(output.bounded_text(0).1, 3);
+        output.append_bytes(b"\n");
+        assert_eq!(output.bounded_text(0).1, 4);
     }
 
     #[test]

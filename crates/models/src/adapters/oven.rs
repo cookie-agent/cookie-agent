@@ -432,7 +432,24 @@ impl HeaderProvider for SecretHeaderProvider {
 
 #[derive(Clone)]
 pub(crate) struct TemplateHeaderProvider {
-    templates: Vec<(HeaderName, String)>,
+    templates: Vec<(HeaderName, HeaderTemplate)>,
+}
+
+#[derive(Clone)]
+enum HeaderTemplate {
+    Static(Option<HeaderValue>),
+    Dynamic(Vec<HeaderTemplateSegment>),
+}
+
+#[derive(Clone)]
+enum HeaderTemplateSegment {
+    Literal(String),
+    SessionId,
+    ParentSessionId,
+    Env {
+        name: String,
+        default: Option<String>,
+    },
 }
 
 impl TemplateHeaderProvider {
@@ -440,53 +457,89 @@ impl TemplateHeaderProvider {
         let templates = values
             .iter()
             .map(|(name, value)| {
-                Ok((
-                    HeaderName::from_bytes(name.as_bytes())
-                        .map_err(|_| ModelBuildError::HeaderName(name.clone()))?,
-                    value.clone(),
-                ))
+                let header_name = HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| ModelBuildError::HeaderName(name.clone()))?;
+                let template = parse_header_template(value)
+                    .map_err(|()| ModelBuildError::HeaderTemplate(name.clone()))?;
+                let template = match template {
+                    ParsedHeaderTemplate::Static(value) => HeaderTemplate::Static(
+                        (!value.is_empty())
+                            .then(|| HeaderValue::from_str(&value))
+                            .transpose()
+                            .map_err(|_| ModelBuildError::HeaderValue(name.clone()))?,
+                    ),
+                    ParsedHeaderTemplate::Dynamic(segments) => HeaderTemplate::Dynamic(segments),
+                };
+                Ok((header_name, template))
             })
             .collect::<Result<_, ModelBuildError>>()?;
         Ok(Self { templates })
+    }
+
+    pub(crate) fn resolved_headers(
+        &self,
+        context: &HeaderContext,
+    ) -> Result<HeaderMap, &'static str> {
+        let mut headers = HeaderMap::new();
+        for (name, template) in &self.templates {
+            let value = match template {
+                HeaderTemplate::Static(value) => value.clone(),
+                HeaderTemplate::Dynamic(segments) => {
+                    let value = resolve_header_template(segments, context)?;
+                    (!value.is_empty())
+                        .then(|| HeaderValue::from_str(&value))
+                        .transpose()
+                        .map_err(|_| "invalid configured header value")?
+                }
+            };
+            if let Some(value) = value {
+                headers.insert(name.clone(), value);
+            }
+        }
+        Ok(headers)
     }
 }
 
 impl HeaderProvider for TemplateHeaderProvider {
     fn headers(&self, context: &HeaderContext) -> Result<HeaderOverrides, ModelError> {
-        let mut headers = HeaderMap::new();
-        for (name, template) in &self.templates {
-            let value =
-                resolve_header_template(template, context).map_err(ModelError::invalid_request)?;
-            if value.is_empty() {
-                continue;
-            }
-            let value = HeaderValue::from_str(&value)
-                .map_err(|_| ModelError::invalid_request("invalid configured header value"))?;
-            headers.insert(name.clone(), value);
-        }
-        Ok(HeaderOverrides::new(headers))
+        self.resolved_headers(context)
+            .map(HeaderOverrides::new)
+            .map_err(ModelError::invalid_request)
     }
 }
 
-fn resolve_header_template(
-    template: &str,
-    context: &HeaderContext,
-) -> Result<String, &'static str> {
-    let mut output = String::new();
+enum ParsedHeaderTemplate {
+    Static(String),
+    Dynamic(Vec<HeaderTemplateSegment>),
+}
+
+fn parse_header_template(template: &str) -> Result<ParsedHeaderTemplate, ()> {
+    let mut segments = Vec::new();
+    let mut literal = String::new();
     let mut cursor = 0;
+    let mut dynamic = false;
+    let push_literal = |segments: &mut Vec<HeaderTemplateSegment>, literal: &mut String| {
+        if !literal.is_empty() {
+            segments.push(HeaderTemplateSegment::Literal(std::mem::take(literal)));
+        }
+    };
     while cursor < template.len() {
         let remaining = &template[cursor..];
         if let Some(text) = remaining.strip_prefix("$$") {
-            output.push('$');
+            literal.push('$');
             cursor = template.len() - text.len();
         } else if let Some(text) = remaining.strip_prefix("${session_id}") {
-            output.push_str(&context.session_id);
+            push_literal(&mut segments, &mut literal);
+            segments.push(HeaderTemplateSegment::SessionId);
+            dynamic = true;
             cursor = template.len() - text.len();
         } else if let Some(text) = remaining.strip_prefix("${parent_session_id}") {
-            output.push_str(context.parent_session_id.as_deref().unwrap_or_default());
+            push_literal(&mut segments, &mut literal);
+            segments.push(HeaderTemplateSegment::ParentSessionId);
+            dynamic = true;
             cursor = template.len() - text.len();
         } else if let Some(expression) = remaining.strip_prefix("${env:") {
-            let end = expression.find('}').ok_or("invalid header template")?;
+            let end = expression.find('}').ok_or(())?;
             let expression_body = &expression[..end];
             let (name, default) = expression_body
                 .split_once(":-")
@@ -494,22 +547,53 @@ fn resolve_header_template(
                     (name, Some(default))
                 });
             if !valid_env_name(name) {
-                return Err("invalid header template");
+                return Err(());
             }
-            match env::var(name) {
+            push_literal(&mut segments, &mut literal);
+            segments.push(HeaderTemplateSegment::Env {
+                name: name.to_owned(),
+                default: default.map(str::to_owned),
+            });
+            dynamic = true;
+            cursor += 6 + end + 1;
+        } else {
+            let character = remaining.chars().next().expect("nonempty remainder");
+            literal.push(character);
+            cursor += character.len_utf8();
+        }
+    }
+    if !dynamic {
+        return Ok(ParsedHeaderTemplate::Static(literal));
+    }
+    push_literal(&mut segments, &mut literal);
+    Ok(ParsedHeaderTemplate::Dynamic(segments))
+}
+
+fn resolve_header_template(
+    segments: &[HeaderTemplateSegment],
+    context: &HeaderContext,
+) -> Result<String, &'static str> {
+    let mut output = String::new();
+    for segment in segments {
+        match segment {
+            HeaderTemplateSegment::Literal(literal) => output.push_str(literal),
+            HeaderTemplateSegment::SessionId => output.push_str(&context.session_id),
+            HeaderTemplateSegment::ParentSessionId => {
+                output.push_str(context.parent_session_id.as_deref().unwrap_or_default());
+            }
+            HeaderTemplateSegment::Env { name, default } => match env::var(name) {
                 Ok(value) => output.push_str(&value),
                 Err(env::VarError::NotPresent) => {
-                    output.push_str(default.ok_or("missing header environment variable")?);
+                    output.push_str(
+                        default
+                            .as_deref()
+                            .ok_or("missing header environment variable")?,
+                    );
                 }
                 Err(env::VarError::NotUnicode(_)) => {
                     return Err("header environment variable is not UTF-8");
                 }
-            }
-            cursor += 6 + end + 1;
-        } else {
-            let character = remaining.chars().next().expect("nonempty remainder");
-            output.push(character);
-            cursor += character.len_utf8();
+            },
         }
     }
     Ok(output)
@@ -610,6 +694,8 @@ pub enum ModelBuildError {
     HeaderName(String),
     #[error("invalid HTTP header value for `{0}`")]
     HeaderValue(String),
+    #[error("invalid HTTP header template for `{0}`")]
+    HeaderTemplate(String),
     #[error("{adapter} adapter requires auth.type = {expected}")]
     WrongAuth {
         adapter: &'static str,
@@ -643,6 +729,8 @@ fn secret(value: &str) -> SecretString {
 }
 
 fn header_config(values: &BTreeMap<String, String>) -> Result<HeaderConfig, ModelBuildError> {
+    // TODO: Once cookie-agent can advance Oven without a release-integrity
+    // ripple, consume dynamic HeaderOverrides with into_map instead of cloning.
     Ok(HeaderConfig {
         static_headers: HeaderOverrides::new(HeaderMap::new()),
         dynamic_headers: if values.is_empty() {
@@ -2018,6 +2106,35 @@ mod tests {
             .headers(&HeaderContext::new("child").with_parent_session_id("root"))
             .unwrap();
         assert_eq!(child.as_map()["x-session-parent-id"], "root");
+    }
+
+    #[test]
+    fn literal_header_templates_are_prevalidated_and_stored_as_values() {
+        let headers = TemplateHeaderProvider::new(&BTreeMap::from([
+            ("x-literal".into(), "fixed$$value".into()),
+            ("x-empty".into(), String::new()),
+        ]))
+        .unwrap();
+        assert!(
+            headers
+                .templates
+                .iter()
+                .all(|(_, template)| matches!(template, HeaderTemplate::Static(_)))
+        );
+        let resolved = headers.headers(&HeaderContext::new("unused")).unwrap();
+        assert_eq!(resolved.as_map()["x-literal"], "fixed$value");
+        assert!(!resolved.as_map().contains_key("x-empty"));
+    }
+
+    #[test]
+    fn malformed_header_templates_fail_during_model_construction() {
+        let error = TemplateHeaderProvider::new(&BTreeMap::from([(
+            "x-invalid".into(),
+            "${env:UNFINISHED".into(),
+        )]))
+        .err()
+        .expect("invalid template");
+        assert!(matches!(error, ModelBuildError::HeaderTemplate(name) if name == "x-invalid"));
     }
 
     #[test]

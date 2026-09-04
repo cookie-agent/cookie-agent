@@ -357,6 +357,33 @@ pub(super) struct UiHitMap {
     pub(super) provider_cancel: Option<Rect>,
 }
 
+impl UiHitMap {
+    fn clear(&mut self) {
+        self.input = None;
+        self.conversation = None;
+        self.scrollbar = None;
+        self.tree = None;
+        self.picker = None;
+        self.picker_input = None;
+        self.palette = None;
+        self.blocks.clear();
+        self.tree_rows.clear();
+        self.picker_rows.clear();
+        self.palette_rows.clear();
+        self.approval_actions.clear();
+        self.approval = None;
+        self.title_segments.clear();
+        self.queue_entries.clear();
+        self.user_messages.clear();
+        self.permission_mode = None;
+        self.session_cost = None;
+        self.event_level_filter = None;
+        self.provider_fields.clear();
+        self.provider_submit = None;
+        self.provider_cancel = None;
+    }
+}
+
 struct BottomBarRender {
     line: Line<'static>,
     mode_span: Option<usize>,
@@ -6794,7 +6821,7 @@ impl App {
         // unstyled cells still land on the light theme; overlays then paint
         // their own panels over it instead of clearing to the terminal.
         frame.render_widget(Block::default().style(self.theme.surface()), frame.area());
-        self.hit_map = UiHitMap::default();
+        self.hit_map.clear();
         // The composer takes one text row by default and grows with its
         // soft-wrapped content up to the ceiling; the layout reclaims those
         // rows from the conversation pane.

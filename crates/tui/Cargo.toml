@@ -17,6 +17,7 @@ cookie_agent_protocol = { version = "=0.2.0", path = "../protocol" }
 cookie_agent_server = { version = "=0.2.0", path = "../server" }
 crossterm.workspace = true
 futures-util.workspace = true
+foldhash.workspace = true
 jiff.workspace = true
 pulldown-cmark.workspace = true
 ratatui.workspace = true

@@ -1,9 +1,10 @@
 //! Incremental Markdown parsing and direct ratatui span rendering.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
-    mem::size_of,
+    any::TypeId,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    hash::BuildHasher,
+    mem::{size_of, size_of_val},
     sync::{Arc, Mutex},
 };
 
@@ -19,8 +20,8 @@ use ratatui::{
 };
 use syntect::{
     easy::HighlightLines,
-    highlighting::{FontStyle, Style as SyntectStyle, ThemeSet},
-    parsing::SyntaxSet,
+    highlighting::{FontStyle, HighlightState, Style as SyntectStyle, ThemeSet},
+    parsing::{ParseState, SyntaxSet},
     util::LinesWithEndings,
 };
 
@@ -77,7 +78,7 @@ struct HighlightCacheKey {
 #[derive(Debug)]
 struct HighlightCacheEntry {
     source: Arc<str>,
-    lines: Vec<Line<'static>>,
+    lines: Arc<[Line<'static>]>,
     bytes: usize,
     last_used: u64,
 }
@@ -91,7 +92,7 @@ impl HighlightCache {
         self.theme = Some(theme);
     }
 
-    fn get(&mut self, key: &HighlightCacheKey, source: &str) -> Option<Vec<Line<'static>>> {
+    fn get(&mut self, key: &HighlightCacheKey, source: &str) -> Option<Arc<[Line<'static>]>> {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let entry = self.entries.get_mut(key)?;
@@ -104,10 +105,10 @@ impl HighlightCache {
         Some(entry.lines.clone())
     }
 
-    fn insert(&mut self, key: HighlightCacheKey, source: &str, lines: Vec<Line<'static>>) {
+    fn insert(&mut self, key: HighlightCacheKey, source: &str, lines: Arc<[Line<'static>]>) {
         debug_assert!(self.used_bytes <= self.budget_bytes);
         self.generation = self.generation.wrapping_add(1);
-        let bytes = highlight_entry_bytes(&key, source, &lines, lines.capacity());
+        let bytes = highlight_entry_bytes(&key, source, &lines);
         // A single entry cannot displace enough data to fit, so return it to
         // the renderer without caching it.
         if bytes > self.budget_bytes {
@@ -144,12 +145,7 @@ impl HighlightCache {
     }
 }
 
-fn highlight_entry_bytes(
-    key: &HighlightCacheKey,
-    source: &str,
-    lines: &[Line<'static>],
-    lines_capacity: usize,
-) -> usize {
+fn highlight_entry_bytes(key: &HighlightCacheKey, source: &str, lines: &[Line<'static>]) -> usize {
     size_of::<HighlightCacheKey>()
         + size_of::<HighlightCacheEntry>()
         + HIGHLIGHT_CACHE_ENTRY_OVERHEAD_BYTES
@@ -157,12 +153,12 @@ fn highlight_entry_bytes(
         + key.language.capacity()
         + source.len()
         + 2 * size_of::<usize>()
-        + size_of::<Line<'static>>() * lines_capacity
+        + size_of_val(lines)
         + lines
             .iter()
             .map(|line| {
                 size_of::<Span<'static>>() * line.spans.capacity()
-                    + usize::from(line.spans.capacity() > 0)
+                    + usize::from(!line.spans.is_empty())
                         * HIGHLIGHT_CACHE_ALLOCATION_OVERHEAD_BYTES
                     + line
                         .spans
@@ -182,6 +178,27 @@ fn highlight_entry_bytes(
 pub struct MarkdownBlock {
     kind: MarkdownBlockKind,
     events: Vec<Event<'static>>,
+    source: Arc<str>,
+    content_hash: u64,
+    content_len: usize,
+    rendered: Arc<Mutex<Option<RenderedBlockCacheEntry>>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RenderedBlockCacheKey {
+    content_hash: u64,
+    code_len: usize,
+    width: u16,
+    theme: ThemeKey,
+    quote_depth: usize,
+    highlighter: u64,
+}
+
+#[derive(Clone, Debug)]
+struct RenderedBlockCacheEntry {
+    key: RenderedBlockCacheKey,
+    source: Arc<str>,
+    lines: Arc<[MarkdownLine]>,
 }
 
 impl MarkdownBlock {
@@ -415,12 +432,18 @@ fn parse_document(source: &str) -> ParsedDocument {
         }
         current.push(event.into_static());
         if depth == 0 {
+            let range = current_start..current_end;
             blocks.push(ParsedBlock {
                 block: MarkdownBlock {
                     kind: current_kind,
                     events: std::mem::take(&mut current),
+                    source: Arc::from(&source[range.clone()]),
+                    content_hash: foldhash::fast::FixedState::default()
+                        .hash_one(&source[range.clone()]),
+                    content_len: range.len(),
+                    rendered: Arc::new(Mutex::new(None)),
                 },
-                range: current_start..current_end,
+                range,
                 reference_dependencies: BTreeSet::new(),
             });
         }
@@ -482,10 +505,17 @@ fn block_kind(event: &Event<'_>) -> MarkdownBlockKind {
 }
 
 pub trait Highlighter: Send + Sync + 'static {
-    fn highlight(&self, language: &str, code: &str, theme: &Theme) -> Vec<Line<'static>>;
+    fn highlight(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]>;
 
-    fn highlight_stable(&self, language: &str, code: &str, theme: &Theme) -> Vec<Line<'static>> {
+    fn highlight_stable(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
         self.highlight(language, code, theme)
+    }
+
+    fn cache_key(&self) -> u64 {
+        foldhash::fast::FixedState::default().hash_one((
+            TypeId::of::<Self>(),
+            std::ptr::from_ref(self).cast::<()>() as usize,
+        ))
     }
 }
 
@@ -493,9 +523,24 @@ pub trait Highlighter: Send + Sync + 'static {
 pub struct PlainHighlighter;
 
 impl Highlighter for PlainHighlighter {
-    fn highlight(&self, _language: &str, code: &str, _theme: &Theme) -> Vec<Line<'static>> {
-        plain_code_lines(code)
+    fn highlight(&self, _language: &str, code: &str, _theme: &Theme) -> Arc<[Line<'static>]> {
+        plain_code_lines(code).into()
     }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct IncrementalHighlightKey {
+    language: String,
+    theme: ThemeKey,
+    syntect_theme: &'static str,
+}
+
+#[derive(Debug)]
+struct IncrementalHighlightEntry {
+    complete_source: String,
+    lines: Vec<Line<'static>>,
+    highlight_state: HighlightState,
+    parse_state: ParseState,
 }
 
 pub struct SyntectHighlighter {
@@ -503,8 +548,11 @@ pub struct SyntectHighlighter {
     themes: ThemeSet,
     plain: PlainHighlighter,
     cache: Mutex<HighlightCache>,
+    incremental: Mutex<HashMap<IncrementalHighlightKey, IncrementalHighlightEntry>>,
     #[cfg(test)]
     highlight_calls: AtomicUsize,
+    #[cfg(test)]
+    incremental_bytes: AtomicUsize,
 }
 
 impl Default for SyntectHighlighter {
@@ -514,14 +562,17 @@ impl Default for SyntectHighlighter {
             themes: ThemeSet::load_defaults(),
             plain: PlainHighlighter,
             cache: Mutex::new(HighlightCache::default()),
+            incremental: Mutex::new(HashMap::new()),
             #[cfg(test)]
             highlight_calls: AtomicUsize::new(0),
+            #[cfg(test)]
+            incremental_bytes: AtomicUsize::new(0),
         }
     }
 }
 
 impl Highlighter for SyntectHighlighter {
-    fn highlight(&self, language: &str, code: &str, theme: &Theme) -> Vec<Line<'static>> {
+    fn highlight(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
         #[cfg(test)]
         self.highlight_calls.fetch_add(1, Ordering::Relaxed);
         let language = normalized_language(language);
@@ -538,38 +589,108 @@ impl Highlighter for SyntectHighlighter {
         let Some(syntax_theme) = self.themes.themes.get(theme_name) else {
             return self.plain.highlight(&language, code, theme);
         };
-        let mut highlighter = HighlightLines::new(syntax, syntax_theme);
-        let mut lines = Vec::new();
-        for source_line in LinesWithEndings::from(code) {
-            let Ok(ranges) = highlighter.highlight_line(source_line, &self.syntaxes) else {
-                return self.plain.highlight(&language, code, theme);
-            };
-            let mut spans = Vec::new();
-            for (syntect_style, content) in ranges {
-                let content = content.strip_suffix('\n').unwrap_or(content);
-                let content = content.strip_suffix('\r').unwrap_or(content);
-                if content.is_empty() {
-                    continue;
-                }
-                spans.push(Span::styled(
-                    content.to_owned(),
-                    terminal_style_from_syntect(syntect_style, theme),
-                ));
+        let complete_len = code.rfind('\n').map_or(0, |index| index + 1);
+        let complete_source = &code[..complete_len];
+        let partial_source = &code[complete_len..];
+        let key = IncrementalHighlightKey {
+            language: language.clone(),
+            theme: theme.key(),
+            syntect_theme: theme_name,
+        };
+        let mut cache = self
+            .incremental
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = cache.entry(key).or_insert_with(|| {
+            let highlighter = HighlightLines::new(syntax, syntax_theme);
+            let (highlight_state, parse_state) = highlighter.state();
+            IncrementalHighlightEntry {
+                complete_source: String::new(),
+                lines: Vec::new(),
+                highlight_state,
+                parse_state,
             }
-            lines.push(Line::from(spans));
+        });
+        let extends_cached = complete_source.starts_with(&entry.complete_source);
+        let mut highlighter = if extends_cached {
+            HighlightLines::from_state(
+                syntax_theme,
+                entry.highlight_state.clone(),
+                entry.parse_state.clone(),
+            )
+        } else {
+            entry.complete_source.clear();
+            entry.lines.clear();
+            HighlightLines::new(syntax, syntax_theme)
+        };
+        let appended = if extends_cached {
+            &complete_source[entry.complete_source.len()..]
+        } else {
+            complete_source
+        };
+        #[cfg(test)]
+        self.incremental_bytes
+            .fetch_add(appended.len() + partial_source.len(), Ordering::Relaxed);
+        if append_highlighted_lines(
+            &mut highlighter,
+            appended,
+            &self.syntaxes,
+            theme,
+            &mut entry.lines,
+        )
+        .is_err()
+        {
+            let reset = HighlightLines::new(syntax, syntax_theme);
+            let (highlight_state, parse_state) = reset.state();
+            entry.complete_source.clear();
+            entry.lines.clear();
+            entry.highlight_state = highlight_state;
+            entry.parse_state = parse_state;
+            return self.plain.highlight(language.as_str(), code, theme);
+        }
+        entry.complete_source.clear();
+        entry.complete_source.push_str(complete_source);
+        let (highlight_state, parse_state) = highlighter.state();
+        entry.highlight_state = highlight_state;
+        entry.parse_state = parse_state;
+
+        let mut lines = entry.lines.clone();
+        if !partial_source.is_empty() {
+            let mut partial = HighlightLines::from_state(
+                syntax_theme,
+                entry.highlight_state.clone(),
+                entry.parse_state.clone(),
+            );
+            if append_highlighted_lines(
+                &mut partial,
+                partial_source,
+                &self.syntaxes,
+                theme,
+                &mut lines,
+            )
+            .is_err()
+            {
+                return self.plain.highlight(language.as_str(), code, theme);
+            }
         }
         if lines.is_empty() {
             lines.push(Line::default());
         }
-        lines
+        lines.into()
     }
 
-    fn highlight_stable(&self, language: &str, code: &str, theme: &Theme) -> Vec<Line<'static>> {
-        let mut hasher = DefaultHasher::new();
-        language.hash(&mut hasher);
-        code.hash(&mut hasher);
+    fn highlight_stable(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
+        let incremental_key = IncrementalHighlightKey {
+            language: normalized_language(language),
+            theme: theme.key(),
+            syntect_theme: syntect_theme_name(theme),
+        };
+        self.incremental
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&incremental_key);
         let key = HighlightCacheKey {
-            content_hash: hasher.finish(),
+            content_hash: foldhash::fast::FixedState::default().hash_one((language, code)),
             code_len: code.len(),
             language: language.to_owned(),
             theme: theme.key(),
@@ -586,21 +707,81 @@ impl Highlighter for SyntectHighlighter {
             }
         }
 
-        let lines = self.highlight(language, code, theme);
+        #[cfg(test)]
+        self.highlight_calls.fetch_add(1, Ordering::Relaxed);
+        let lines = self.highlight_fresh(language, code, theme);
         let mut cache = self
             .cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.set_theme(theme.key());
-        cache.insert(key, code, lines.clone());
+        cache.insert(key, code, Arc::clone(&lines));
         lines
     }
+}
+
+impl SyntectHighlighter {
+    fn highlight_fresh(&self, language: &str, code: &str, theme: &Theme) -> Arc<[Line<'static>]> {
+        let language = normalized_language(language);
+        let Some(syntax) = self
+            .syntaxes
+            .find_syntax_by_token(&language)
+            .or_else(|| self.syntaxes.find_syntax_by_extension(&language))
+        else {
+            return self.plain.highlight(&language, code, theme);
+        };
+        let Some(syntax_theme) = self.themes.themes.get(syntect_theme_name(theme)) else {
+            return self.plain.highlight(&language, code, theme);
+        };
+        let mut highlighter = HighlightLines::new(syntax, syntax_theme);
+        let mut lines = Vec::new();
+        if append_highlighted_lines(&mut highlighter, code, &self.syntaxes, theme, &mut lines)
+            .is_err()
+        {
+            return self.plain.highlight(&language, code, theme);
+        }
+        if lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.into()
+    }
+}
+
+fn append_highlighted_lines(
+    highlighter: &mut HighlightLines<'_>,
+    source: &str,
+    syntaxes: &SyntaxSet,
+    theme: &Theme,
+    lines: &mut Vec<Line<'static>>,
+) -> Result<(), syntect::Error> {
+    for source_line in LinesWithEndings::from(source) {
+        let ranges = highlighter.highlight_line(source_line, syntaxes)?;
+        let spans = ranges
+            .into_iter()
+            .filter_map(|(syntect_style, content)| {
+                let content = content.strip_suffix('\n').unwrap_or(content);
+                let content = content.strip_suffix('\r').unwrap_or(content);
+                (!content.is_empty()).then(|| {
+                    Span::styled(
+                        content.to_owned(),
+                        terminal_style_from_syntect(syntect_style, theme),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        lines.push(Line::from(spans));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 impl SyntectHighlighter {
     fn highlight_calls(&self) -> usize {
         self.highlight_calls.load(Ordering::Relaxed)
+    }
+
+    fn incremental_bytes(&self) -> usize {
+        self.incremental_bytes.load(Ordering::Relaxed)
     }
 
     fn set_cache_budget(&self, budget_bytes: usize) {
@@ -984,21 +1165,74 @@ pub(crate) fn render_markdown_lines_width(
     highlighter: &dyn Highlighter,
     width: u16,
 ) -> Vec<MarkdownLine> {
+    let mut lines = Vec::new();
+    let highlighter_key = highlighter.cache_key();
+    for block in &document.stable_blocks {
+        let key = RenderedBlockCacheKey {
+            content_hash: block.content_hash,
+            code_len: block.content_len,
+            width,
+            theme: theme.key(),
+            quote_depth: 0,
+            highlighter: highlighter_key,
+        };
+        let cached = block
+            .rendered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|entry| entry.key == key && entry.source == block.source)
+            .map(|entry| Arc::clone(&entry.lines));
+        let rendered = cached.unwrap_or_else(|| {
+            let rendered: Arc<[MarkdownLine]> =
+                render_block(block, true, theme, highlighter, width).into();
+            *block
+                .rendered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(RenderedBlockCacheEntry {
+                    key,
+                    source: Arc::clone(&block.source),
+                    lines: Arc::clone(&rendered),
+                });
+            rendered
+        });
+        lines.extend(rendered.iter().cloned());
+    }
     let mut renderer = MarkdownRenderer::new(theme, highlighter);
     renderer.width = usize::from(width);
-    for block in &document.stable_blocks {
-        renderer.begin_block(true);
-        for event in &block.events {
-            renderer.event(event);
-        }
-    }
     for block in &document.tail_blocks {
         renderer.begin_block(false);
         for event in &block.events {
             renderer.event(event);
         }
     }
-    renderer.finish()
+    renderer.flush();
+    lines.extend(renderer.lines);
+    if lines.is_empty() {
+        lines.push(MarkdownLine::default());
+    }
+    lines
+}
+
+fn render_block(
+    block: &MarkdownBlock,
+    stable: bool,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    width: u16,
+) -> Vec<MarkdownLine> {
+    let mut renderer = MarkdownRenderer::new(theme, highlighter);
+    renderer.width = usize::from(width);
+    renderer.begin_block(stable);
+    for event in &block.events {
+        renderer.event(event);
+    }
+    // Stable blocks render independently for cacheability. This flush is
+    // intentionally a block boundary, so trailing HTML/footnote text cannot
+    // merge into the following paragraph as it did before block caching.
+    renderer.flush();
+    renderer.lines
 }
 
 pub(crate) fn normalized_language(language: &str) -> String {
@@ -1450,29 +1684,28 @@ impl<'a> MarkdownRenderer<'a> {
         ]));
         // Highlighting is cached before code-band styling and width-dependent
         // wrapping, so stable entries survive terminal resizes.
-        let mut highlighted = if code.stable {
+        let highlighted = if code.stable {
             self.highlighter
                 .highlight_stable(label, &code.code, self.theme)
         } else {
             self.highlighter.highlight(label, &code.code, self.theme)
         };
-        if let Some(band) = band {
-            for line in &mut highlighted {
-                for span in &mut line.spans {
-                    span.style = span.style.patch(band);
-                }
-            }
-        }
         let quote_width = UnicodeWidthStr::width(quote_prefix.as_str());
         let first_width = self.width.saturating_sub(quote_width + 2).max(1);
         let continuation_width = self.width.saturating_sub(quote_width + 1).max(1);
         let mut body = Vec::new();
-        for line in highlighted {
+        for line in highlighted.iter() {
             let line_style = line.style;
-            for (index, content) in wrap_code_spans(line.spans, first_width, continuation_width)
-                .into_iter()
-                .enumerate()
+            for (index, mut content) in
+                wrap_code_spans(line.spans.clone(), first_width, continuation_width)
+                    .into_iter()
+                    .enumerate()
             {
+                if let Some(band) = band {
+                    for span in &mut content {
+                        span.style = span.style.patch(band);
+                    }
+                }
                 let mut spans = vec![
                     Span::styled(quote_prefix.clone(), self.theme.quote()),
                     Span::styled(if index == 0 { "│ " } else { "│" }, border),
@@ -1583,6 +1816,8 @@ pub(crate) fn wrap_code_spans(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use insta::assert_snapshot;
     use ratatui::style::Modifier;
     use syntect::{
@@ -1768,7 +2003,7 @@ mod tests {
                 _language: &str,
                 _code: &str,
                 _theme: &Theme,
-            ) -> Vec<ratatui::text::Line<'static>> {
+            ) -> Arc<[ratatui::text::Line<'static>]> {
                 vec![ratatui::text::Line::from(vec![
                     ratatui::text::Span::styled(
                         "abc",
@@ -1779,6 +2014,7 @@ mod tests {
                         ratatui::style::Style::default().add_modifier(Modifier::ITALIC),
                     ),
                 ])]
+                .into()
             }
         }
 
@@ -1881,15 +2117,94 @@ mod tests {
     }
 
     #[test]
+    fn stable_markdown_blocks_keep_their_render_cache_while_the_tail_grows() {
+        let mut document = MarkdownDocument::new("first\n\nsecond\n\ntail".to_owned());
+        let theme = Theme::default();
+        let highlighter = PlainHighlighter;
+        render_markdown(&document, &theme, &highlighter);
+        let cached = document.stable_blocks[0]
+            .rendered
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("stable block render")
+            .lines
+            .clone();
+
+        document.append(" grows");
+        render_markdown(&document, &theme, &highlighter);
+        let reused = document.stable_blocks[0]
+            .rendered
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("stable block render")
+            .lines
+            .clone();
+
+        assert!(Arc::ptr_eq(&cached, &reused));
+    }
+
+    #[test]
+    fn stable_block_cache_invalidates_for_width_theme_and_source() {
+        let document = MarkdownDocument::new("---\n\ntail".to_owned());
+        let light = Theme::default();
+        let dark = Theme::new(ThemeKind::Dark, ColorLevel::TrueColor);
+        let highlighter = PlainHighlighter;
+
+        let light_narrow = super::render_markdown_width(&document, &light, &highlighter, 8);
+        let light_wide = super::render_markdown_width(&document, &light, &highlighter, 16);
+        let dark_narrow = super::render_markdown_width(&document, &dark, &highlighter, 8);
+        let dark_wide = super::render_markdown_width(&document, &dark, &highlighter, 16);
+
+        assert_eq!(light_narrow[0].to_string(), "─".repeat(8));
+        assert_eq!(light_wide[0].to_string(), "─".repeat(16));
+        assert_eq!(dark_narrow[0].to_string(), "─".repeat(8));
+        assert_eq!(dark_wide[0].to_string(), "─".repeat(16));
+        assert_ne!(light_narrow[0], dark_narrow[0]);
+        assert_ne!(light_wide[0], dark_wide[0]);
+
+        let mut cached = document.stable_blocks[0].rendered.lock().unwrap();
+        let entry = cached.as_mut().expect("stable block render");
+        entry.source = Arc::from("same-length collision");
+        entry.lines = vec![super::MarkdownLine {
+            line: ratatui::text::Line::from("wrong cached output"),
+            kind: super::MarkdownLineKind::Prose,
+        }]
+        .into();
+        drop(cached);
+
+        let rerendered = super::render_markdown_width(&document, &dark, &highlighter, 16);
+        assert_eq!(rerendered[0].to_string(), "─".repeat(16));
+    }
+
+    #[test]
+    fn unstable_highlighting_resumes_after_the_complete_line_prefix() {
+        let theme = Theme::default();
+        let highlighter = SyntectHighlighter::default();
+        let initial = "fn first() {}\nlet value";
+        highlighter.highlight("rust", initial, &theme);
+        let before = highlighter.incremental_bytes();
+        let appended = "fn first() {}\nlet value = 1;\nnext";
+        let incremental = highlighter.highlight("rust", appended, &theme);
+        let processed = highlighter.incremental_bytes() - before;
+        let fresh = highlighter.highlight_fresh("rust", appended, &theme);
+
+        assert_eq!(incremental, fresh);
+        assert_eq!(processed, "let value = 1;\nnext".len());
+        assert!(processed < appended.len());
+    }
+
+    #[test]
     fn highlight_cache_evicts_least_recent_entries_under_budget_pressure() {
-        let documents = [
-            MarkdownDocument::new("```rust\nfn one() {}\n```\n\ntail".to_owned()),
-            MarkdownDocument::new("```json\n{\"two\": 2}\n```\n\ntail".to_owned()),
-            MarkdownDocument::new("```bash\necho three\n```\n\ntail".to_owned()),
+        let sources = [
+            ("rust", "fn one() {}"),
+            ("json", "{\"two\": 2}"),
+            ("bash", "echo three"),
         ];
         let highlighter = SyntectHighlighter::default();
-        for document in &documents {
-            render_markdown(document, &Theme::default(), &highlighter);
+        for (language, source) in sources {
+            highlighter.highlight_stable(language, source, &Theme::default());
         }
         let sizes = highlighter
             .cache
@@ -1906,7 +2221,8 @@ mod tests {
         highlighter.set_cache_budget(budget);
 
         for index in [0, 1, 0, 2] {
-            render_markdown(&documents[index], &Theme::default(), &highlighter);
+            let (language, source) = sources[index];
+            highlighter.highlight_stable(language, source, &Theme::default());
             let cache = highlighter.cache.lock().unwrap();
             assert!(cache.used_bytes <= cache.budget_bytes);
         }
@@ -1927,10 +2243,8 @@ mod tests {
         }
 
         for index in 0..256 {
-            let document = MarkdownDocument::new(format!(
-                "```rust\nfn unique_{index}() -> usize {{ {index} }}\n```\n\ntail"
-            ));
-            render_markdown(&document, &Theme::default(), &highlighter);
+            let source = format!("fn unique_{index}() -> usize {{ {index} }}");
+            highlighter.highlight_stable("rust", &source, &Theme::default());
             let cache = highlighter.cache.lock().unwrap();
             assert!(cache.used_bytes <= cache.budget_bytes);
         }
@@ -1948,7 +2262,11 @@ mod tests {
         };
         let mut cache = super::HighlightCache::default();
         cache.set_theme(theme.key());
-        cache.insert(key.clone(), "left", vec![ratatui::text::Line::from("left")]);
+        cache.insert(
+            key.clone(),
+            "left",
+            vec![ratatui::text::Line::from("left")].into(),
+        );
 
         assert!(cache.get(&key, "rift").is_none());
         assert_eq!(cache.get(&key, "left").unwrap()[0].to_string(), "left");
@@ -1965,9 +2283,9 @@ mod tests {
             theme: theme.key(),
             syntect_theme: super::syntect_theme_name(&theme),
         };
-        let make_lines = || vec![ratatui::text::Line::from(source)];
+        let make_lines = || Arc::from(vec![ratatui::text::Line::from(source)]);
         let lines = make_lines();
-        let entry_bytes = super::highlight_entry_bytes(&key, source, &lines, lines.capacity());
+        let entry_bytes = super::highlight_entry_bytes(&key, source, &lines);
 
         let mut exact = super::HighlightCache {
             budget_bytes: entry_bytes,
@@ -2028,6 +2346,7 @@ mod tests {
         render_markdown(&document, &Theme::default(), &highlighter);
         render_markdown(&document, &Theme::default(), &highlighter);
         assert_eq!(highlighter.highlight_calls(), 5);
+        assert!(highlighter.incremental.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -2162,8 +2481,8 @@ mod tests {
                 snapshot.push(format!("  {language}:"));
                 for span in highlighter
                     .highlight(language, code, &theme)
-                    .into_iter()
-                    .flat_map(|line| line.spans)
+                    .iter()
+                    .flat_map(|line| &line.spans)
                 {
                     snapshot.push(format!(
                         "    text={:?} fg={:?} bg={:?} modifiers={:?}",

@@ -815,6 +815,7 @@ dependencies = [
  "cookie_agent_server",
  "cookie_agent_tools",
  "crossterm",
+ "foldhash",
  "futures-util",
  "insta",
  "jiff",

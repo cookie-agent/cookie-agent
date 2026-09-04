@@ -14,6 +14,10 @@ pub use client::{
 pub use ui::{run_with_client, run_with_new_session};
 
 #[cfg(test)]
+#[path = "../../../test-support/config_harness.rs"]
+mod config_harness;
+
+#[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, fs, sync::Arc};
 
