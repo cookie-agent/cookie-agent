@@ -31,9 +31,10 @@ pub(crate) struct UiLayout {
 
 /// Resolve the single top-to-bottom pane geometry for a known visible tree
 /// row count, queue-strip row demand, and composer text-row demand. The
-/// Agents panel is exactly `clamp(visible_tree_row_count, 1, 8)` text rows
-/// with its borders outside that count, so the conversation starts
-/// immediately below it. The composer takes one text row by default and
+/// Agents panel is hidden when `visible_tree_row_count` is zero or one; otherwise it
+/// is exactly `clamp(visible_tree_row_count, 1, 8)` text rows with its borders
+/// outside that count, so the conversation starts immediately below it. The
+/// composer takes one text row by default and
 /// grows with its content up to five; every added composer row is reclaimed
 /// from the conversation pane. The queue strip reclaims conversation rows
 /// the same way, keeping the status line and composer pinned and always
@@ -44,8 +45,13 @@ pub(crate) fn terminal_layout_with_tree_rows(
     queue_rows: u16,
     input_text_rows: u16,
 ) -> UiLayout {
-    let agent_text_rows = visible_tree_rows.clamp(1, 8) as u16;
-    let agent_height = agent_text_rows.saturating_add(2).min(MAX_AGENT_HEIGHT);
+    let agent_height = if visible_tree_rows <= 1 {
+        0
+    } else {
+        (visible_tree_rows.clamp(1, 8) as u16)
+            .saturating_add(2)
+            .min(MAX_AGENT_HEIGHT)
+    };
     let bar_height = u16::from(area.height > 0);
     let input_height = input_text_rows
         .clamp(1, input::MAX_TEXT_ROWS)

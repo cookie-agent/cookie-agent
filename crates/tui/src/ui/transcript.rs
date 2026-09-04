@@ -17,7 +17,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    markdown::Highlighter,
+    markdown::{Highlighter, MarkdownLine, MarkdownLineKind},
     state::{AssistantChild, SessionState, ToolStatus, TranscriptItem},
     theme::{Theme, ThemeKey},
 };
@@ -1507,10 +1507,18 @@ fn assistant_child_layout(
 ) -> ItemLayout {
     match child {
         AssistantChild::Text { markdown, .. } => ItemLayout {
-            lines: crate::markdown::render_markdown_width(markdown, theme, highlighter, width)
+            lines: {
+                let markdown_width = width.saturating_sub(u16::from(width >= 3) * 2);
+                crate::markdown::render_markdown_lines_width(
+                    markdown,
+                    theme,
+                    highlighter,
+                    markdown_width,
+                )
                 .into_iter()
-                .flat_map(|line| assistant_body_line(line, width, theme))
-                .collect(),
+                .flat_map(|line| assistant_markdown_body_line(line, width, theme))
+                .collect()
+            },
             regions: Vec::new(),
             user_seq: None,
         },
@@ -1887,6 +1895,96 @@ fn assistant_footer_line(
 fn assistant_body_line(line: Line<'static>, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.assistant())]);
     repeated_prefixed_wrapped_line(prefix.unwrap_or_default(), line, width)
+}
+
+fn assistant_markdown_body_line(
+    line: MarkdownLine,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let prefix = (width >= 3).then(|| vec![Span::styled("│ ", theme.assistant())]);
+    let prefix = prefix.unwrap_or_default();
+    match line.kind {
+        MarkdownLineKind::Prose => repeated_prefixed_wrapped_line(prefix, line.line, width),
+        MarkdownLineKind::ListItem {
+            continuation_indent,
+        } => repeated_prefixed_hanging_line(prefix, line.line, width, continuation_indent),
+        MarkdownLineKind::Code => vec![prefixed_unwrapped_line(prefix, line.line, width)],
+    }
+}
+
+fn prefixed_unwrapped_line(
+    mut prefix: Vec<Span<'static>>,
+    line: Line<'static>,
+    width: u16,
+) -> Line<'static> {
+    let width = usize::from(width.max(1));
+    let prefix_width = prefix
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    if prefix_width >= width {
+        prefix.clear();
+    }
+    let line_style = line.style;
+    prefix.extend(line.spans);
+    Line::from(prefix).style(line_style)
+}
+
+fn repeated_prefixed_hanging_line(
+    mut prefix: Vec<Span<'static>>,
+    line: Line<'static>,
+    width: u16,
+    continuation_indent: usize,
+) -> Vec<Line<'static>> {
+    let width = usize::from(width.max(1));
+    let prefix_width = prefix
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    if prefix_width >= width {
+        prefix.clear();
+    }
+    let inner_width = width.saturating_sub(prefix_width).max(1);
+    let continuation_indent = continuation_indent.min(inner_width.saturating_sub(1));
+    let line_style = line.style;
+    let (first_prefix, content) = split_spans_at_width(line.spans, continuation_indent);
+    let mut wrapped = wrapped_line(
+        Line::from(content).style(line_style),
+        u16::try_from(inner_width.saturating_sub(continuation_indent).max(1)).unwrap_or(u16::MAX),
+    );
+    for (index, line) in wrapped.iter_mut().enumerate() {
+        let mut spans = prefix.clone();
+        if index == 0 {
+            spans.extend(first_prefix.clone());
+        } else if continuation_indent > 0 {
+            spans.push(Span::raw(" ".repeat(continuation_indent)));
+        }
+        spans.append(&mut line.spans);
+        line.spans = spans;
+    }
+    wrapped
+}
+
+fn split_spans_at_width(
+    spans: Vec<Span<'static>>,
+    width: usize,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let mut prefix = Vec::new();
+    let mut content = Vec::new();
+    let mut consumed = 0;
+    for span in spans {
+        for grapheme in span.content.graphemes(true) {
+            let target = if consumed < width {
+                consumed += UnicodeWidthStr::width(grapheme);
+                &mut prefix
+            } else {
+                &mut content
+            };
+            append_span(target, grapheme.to_owned(), span.style);
+        }
+    }
+    (prefix, content)
 }
 
 fn thinking_body_lines(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -2488,6 +2586,7 @@ mod tests {
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
                 pricing: cookie_agent_config::PricingConfig::default(),
+                headers: BTreeMap::new(),
                 providers: BTreeMap::new(),
             },
             agents: BTreeMap::new(),
@@ -4540,11 +4639,14 @@ mod tests {
     #[tokio::test]
     async fn agent_panel_text_rows_are_clamped_1_to_8_with_borders_outside() {
         let mut app = test_app().await;
-        for (sessions, expected_rows) in [(0usize, 3u16), (1, 3), (2, 4), (3, 5), (8, 10), (9, 10)]
-        {
-            let layout =
-                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions.max(1), 0, 1);
-            app.tree = (sessions > 0).then(|| SessionTree {
+        for sessions in [0usize, 1] {
+            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, 1);
+            assert_eq!(layout.agent.height, 0);
+            assert_eq!(layout.conversation.y, 0);
+        }
+        for (sessions, expected_rows) in [(2usize, 4u16), (3, 5), (8, 10), (9, 10)] {
+            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, 1);
+            app.tree = Some(SessionTree {
                 session: session_meta(SessionId::new_v7()),
                 children: (1..sessions)
                     .map(|_| SessionTree {
@@ -4574,6 +4676,60 @@ mod tests {
         // (borders only at this extreme).
         assert_eq!(tiny.agent.height, 2);
         assert_eq!(tiny.conversation.height, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_panel_tracks_delegated_agent_visibility_transitions() {
+        let mut app = test_app().await;
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let root_tree = || SessionTree {
+            session: session_meta(root),
+            children: Vec::new(),
+        };
+        app.selected = Some(root);
+        app.tree_root = Some(root);
+        app.tree = Some(root_tree());
+
+        let root_only = frame_rows(&mut app, 80, 24);
+        assert!(!root_only.iter().any(|row| row.contains("Agents")));
+        assert_eq!(app.hit_map.conversation.expect("conversation").y, 1);
+        assert!(app.hit_map.tree.is_none());
+
+        let mut child_meta = delegated_meta(child, root, "worker");
+        child_meta.status = SessionStatus::Running;
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: child_meta,
+                children: Vec::new(),
+            }],
+        });
+        let delegated = frame_rows(&mut app, 80, 24);
+        assert!(delegated.iter().any(|row| row.contains("Agents")));
+        assert!(app.hit_map.conversation.expect("conversation").y > 1);
+        assert!(app.hit_map.tree.is_some());
+
+        app.handle_delivery(live_event(event(
+            child,
+            3,
+            run_id(),
+            EventPayload::RunCompleted { final_text: None },
+        )))
+        .await;
+        assert_eq!(app.tree.as_ref().expect("tree").children.len(), 1);
+        assert_eq!(
+            app.tree.as_ref().expect("tree").children[0].session.status,
+            SessionStatus::Completed
+        );
+        let completed = frame_rows(&mut app, 80, 24);
+        assert!(!completed.iter().any(|row| row.contains("Agents")));
+        assert_eq!(app.hit_map.conversation.expect("conversation").y, 1);
+        assert!(app.hit_map.tree.is_none());
+        assert!(app.hit_map.tree_rows.is_empty());
+        wait_for_recorded_request(&recorded, "session.tree", 1).await;
     }
 
     #[test]
@@ -7064,13 +7220,15 @@ mod tests {
         let watched = SessionId::new_v7();
         let other = SessionId::new_v7();
         let sibling = SessionId::new_v7();
+        let mut other_meta = meta(other, "cursor child");
+        other_meta.status = SessionStatus::Running;
         app.selected = Some(watched);
         app.tree_root = Some(watched);
         app.tree = Some(SessionTree {
             session: meta(watched, "watched root"),
             children: vec![
                 SessionTree {
-                    session: meta(other, "cursor child"),
+                    session: other_meta,
                     children: Vec::new(),
                 },
                 SessionTree {
@@ -7409,7 +7567,7 @@ mod tests {
             vec![root, worker, ghost]
         );
 
-        // A tree of ghosts only renders the panel's empty state, never rows.
+        // A root-only tree stays hidden, including when the root is a ghost.
         let mut solo = session_meta(root);
         solo.last_event_seq = 1;
         app.tree = Some(SessionTree {
@@ -7418,7 +7576,8 @@ mod tests {
         });
         assert!(app.tree_entries().is_empty());
         let rendered = frame_rows(&mut app, 100, 30).join("\n");
-        assert!(rendered.contains("No sessions yet"));
+        assert!(!rendered.contains("Agents"));
+        assert!(!rendered.contains("No sessions yet"));
     }
 
     #[tokio::test]
@@ -7493,10 +7652,11 @@ mod tests {
         });
 
         let rendered = frame_rows(&mut app, 100, 30).join("\n");
-        // The panel shows its empty state with no ghost row or hit region…
+        // The root-only panel stays hidden with no ghost row or hit region…
         assert!(app.tree_entries().is_empty());
         assert!(app.hit_map.tree_rows.is_empty());
-        assert!(rendered.contains("No sessions yet"));
+        assert!(!rendered.contains("Agents"));
+        assert!(!rendered.contains("No sessions yet"));
         // …while the composer and the Message title bar keep working.
         assert!(app.hit_map.input.is_some());
         assert!(!app.hit_map.title_segments.is_empty());
@@ -10570,6 +10730,191 @@ mod tests {
             Submission::Prompt("line one\n/quit".into())
         );
         assert!(parse_submission("/nope").is_err());
+        assert_eq!(
+            parse_submission("/show agent panel").expect("show agent panel"),
+            Submission::Command(SlashCommand::ShowAgentPanel)
+        );
+        assert_eq!(
+            parse_submission("/hide agent panel").expect("hide agent panel"),
+            Submission::Command(SlashCommand::HideAgentPanel)
+        );
+        assert_eq!(
+            command_spec("show").map(|spec| spec.usage),
+            Some("/show agent panel")
+        );
+        assert_eq!(
+            command_spec("hide").map(|spec| spec.usage),
+            Some("/hide agent panel")
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let first = SessionId::new_v7();
+        let second = SessionId::new_v7();
+        let mut first_meta = delegated_meta(first, root, "worker");
+        first_meta.status = SessionStatus::Running;
+        app.selected = Some(root);
+        app.tree_root = Some(root);
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: first_meta,
+                children: Vec::new(),
+            }],
+        });
+
+        let auto = frame_rows(&mut app, 80, 24);
+        assert!(auto.iter().any(|row| row.contains("Agents")));
+        let visible_conversation_y = app.hit_map.conversation.expect("conversation").y;
+        app.input.set_buffer("/".into());
+        let labels = app.skill_palette_labels_for_test();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("/hide agent panel"))
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.starts_with("/show agent panel"))
+        );
+
+        app.run_command(SlashCommand::HideAgentPanel).await;
+        let hidden = frame_rows(&mut app, 80, 24);
+        assert!(!hidden.iter().any(|row| row.contains("Agents")));
+        assert_eq!(app.hit_map.conversation.expect("conversation").y, 1);
+        assert!(visible_conversation_y > 1);
+        app.input.set_buffer("/".into());
+        let labels = app.skill_palette_labels_for_test();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("/show agent panel"))
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.starts_with("/hide agent panel"))
+        );
+
+        let mut second_meta = delegated_meta(second, root, "reviewer");
+        second_meta.status = SessionStatus::Running;
+        app.tree.as_mut().expect("tree").children.push(SessionTree {
+            session: second_meta,
+            children: Vec::new(),
+        });
+        let hidden_with_new_delegation = frame_rows(&mut app, 80, 24);
+        assert!(
+            !hidden_with_new_delegation
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+
+        app.run_command(SlashCommand::ShowAgentPanel).await;
+        app.apply_status_patch(first, SessionStatus::Completed, 3);
+        app.apply_status_patch(second, SessionStatus::Failed, 3);
+        let shown_after_completion = frame_rows(&mut app, 80, 24);
+        assert!(
+            shown_after_completion
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+        assert!(app.hit_map.conversation.expect("conversation").y > 1);
+
+        app.input.set_buffer("/".into());
+        let labels = app.skill_palette_labels_for_test();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("/hide agent panel"))
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.starts_with("/show agent panel"))
+        );
+        app.show_help();
+        let help = app.transient_notices.last().expect("command help");
+        assert!(help.contains("/hide agent panel"));
+        assert!(!help.contains("/show agent panel"));
+        assert!(help.contains("until toggled or a different root session is selected"));
+    }
+
+    #[tokio::test]
+    async fn agent_panel_commands_latch_without_an_immediate_visibility_change() {
+        let live_tree = |root: SessionId, child: SessionId| {
+            let mut child_meta = delegated_meta(child, root, "worker");
+            child_meta.status = SessionStatus::Running;
+            SessionTree {
+                session: session_meta(root),
+                children: vec![SessionTree {
+                    session: child_meta,
+                    children: Vec::new(),
+                }],
+            }
+        };
+
+        let mut shown = test_app().await;
+        let shown_root = SessionId::new_v7();
+        let shown_child = SessionId::new_v7();
+        shown.selected = Some(shown_root);
+        shown.tree_root = Some(shown_root);
+        shown.tree = Some(live_tree(shown_root, shown_child));
+        assert!(
+            frame_rows(&mut shown, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+        shown.run_command(SlashCommand::ShowAgentPanel).await;
+        shown.apply_status_patch(shown_child, SessionStatus::Completed, 3);
+        assert!(
+            frame_rows(&mut shown, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+
+        let mut hidden = test_app().await;
+        let hidden_root = SessionId::new_v7();
+        let hidden_child = SessionId::new_v7();
+        hidden.selected = Some(hidden_root);
+        hidden.tree_root = Some(hidden_root);
+        hidden.tree = Some(SessionTree {
+            session: session_meta(hidden_root),
+            children: Vec::new(),
+        });
+        assert!(
+            !frame_rows(&mut hidden, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+        hidden.run_command(SlashCommand::HideAgentPanel).await;
+        hidden.tree = Some(live_tree(hidden_root, hidden_child));
+        assert!(
+            !frame_rows(&mut hidden, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+
+        hidden.reroot_tree(hidden_root);
+        hidden.tree = Some(live_tree(hidden_root, hidden_child));
+        assert!(
+            !frame_rows(&mut hidden, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
+
+        let next_root = SessionId::new_v7();
+        let next_child = SessionId::new_v7();
+        hidden.reroot_tree(next_root);
+        hidden.tree = Some(live_tree(next_root, next_child));
+        assert!(
+            frame_rows(&mut hidden, 80, 24)
+                .iter()
+                .any(|row| row.contains("Agents"))
+        );
     }
 
     #[tokio::test]
@@ -11272,6 +11617,45 @@ mod tests {
         assert!(layout.lines.iter().all(|line| {
             unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= 50
         }));
+    }
+
+    #[test]
+    fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
+        let state = assistant_state(vec![AssistantChild::Text {
+            id: 1,
+            version: 0,
+            markdown: MarkdownDocument::new(
+                "```\nabcdefghijklmnopq\n```\n\n- alpha beta gamma delta\n  - bravo charlie delta echo\n    - charlie delta echo foxtrot"
+                    .to_owned(),
+            ),
+        }]);
+        let rendered = transcript_layout(&state, None, 18)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line == "│ │ abcdefghijklmn"));
+        assert!(rendered.iter().any(|line| line.starts_with("│ │opq")));
+        for (first, continuation) in [
+            ("│ • alpha beta", "│   gamma delta"),
+            ("│   • bravo", "│     charlie"),
+            ("│     • charlie", "│       delta echo"),
+        ] {
+            assert!(
+                rendered.iter().any(|line| line.starts_with(first)),
+                "{rendered:?}"
+            );
+            assert!(
+                rendered.iter().any(|line| line.starts_with(continuation)),
+                "{rendered:?}"
+            );
+        }
+        assert!(
+            rendered
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 18)
+        );
     }
 
     #[test]
@@ -13702,6 +14086,7 @@ mod tests {
     async fn hover_only_targets_elements_with_a_click_action() {
         let mut app = test_app().await;
         let session = SessionId::new_v7();
+        let child = SessionId::new_v7();
         app.selected = Some(session);
         app.tree_root = Some(session);
         app.store.sessions.insert(
@@ -13714,7 +14099,10 @@ mod tests {
         );
         app.tree = Some(SessionTree {
             session: titled_meta(session, "root", 1),
-            children: Vec::new(),
+            children: vec![SessionTree {
+                session: delegated_meta(child, session, "worker"),
+                children: Vec::new(),
+            }],
         });
         rendered_frame(&mut app, 80, 24);
         let moved = |column: u16, row: u16| MouseEvent {

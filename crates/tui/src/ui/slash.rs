@@ -10,6 +10,8 @@ use ratatui::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SlashCommand {
     Quit,
+    ShowAgentPanel,
+    HideAgentPanel,
     New,
     Preset,
     Connect,
@@ -40,6 +42,20 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &["q"],
         usage: "/quit",
         description: "exit the TUI",
+        requires_arguments: false,
+    },
+    CommandSpec {
+        name: "show",
+        aliases: &[],
+        usage: "/show agent panel",
+        description: "show the agent panel until toggled or a different root session is selected",
+        requires_arguments: false,
+    },
+    CommandSpec {
+        name: "hide",
+        aliases: &[],
+        usage: "/hide agent panel",
+        description: "hide the agent panel until toggled or a different root session is selected",
         requires_arguments: false,
     },
     CommandSpec {
@@ -192,7 +208,29 @@ pub(crate) fn parse_submission_with_skills(
     }) {
         return Err(format!("unknown command: /{command_line}"));
     }
-    let command = if let Some(name) = parts
+    let exact_builtin = match parts.as_slice() {
+        ["show", "agent", "panel"] => Some(SlashCommand::ShowAgentPanel),
+        ["hide", "agent", "panel"] => Some(SlashCommand::HideAgentPanel),
+        ["approve", "once"] => Some(SlashCommand::Approve(ApprovalUserDecision::ApproveOnce)),
+        ["approve", "all"] => Some(SlashCommand::Approve(ApprovalUserDecision::ApproveTree)),
+        ["approve", "reject"] => Some(SlashCommand::Approve(ApprovalUserDecision::Reject)),
+        ["approve", "cancel"] => Some(SlashCommand::Approve(ApprovalUserDecision::Cancel)),
+        ["events", "debug"] => Some(SlashCommand::Events(crate::state::EventLevel::Debug)),
+        ["events", "info"] => Some(SlashCommand::Events(crate::state::EventLevel::Info)),
+        ["events", "warning"] => Some(SlashCommand::Events(crate::state::EventLevel::Warning)),
+        ["events", "error"] => Some(SlashCommand::Events(crate::state::EventLevel::Error)),
+        _ => None,
+    };
+    let command = if let Some(command) = exact_builtin {
+        command
+    } else if parts.first() == Some(&"compact") {
+        let focus = command_line
+            .strip_prefix("compact")
+            .map(str::trim)
+            .filter(|focus| !focus.is_empty())
+            .map(str::to_owned);
+        SlashCommand::Compact(focus)
+    } else if let Some(name) = parts
         .first()
         .filter(|name| skills.iter().any(|skill| skill == **name))
     {
@@ -205,13 +243,6 @@ pub(crate) fn parse_submission_with_skills(
             name: (*name).to_owned(),
             args,
         }
-    } else if parts.first() == Some(&"compact") {
-        let focus = command_line
-            .strip_prefix("compact")
-            .map(str::trim)
-            .filter(|focus| !focus.is_empty())
-            .map(str::to_owned);
-        SlashCommand::Compact(focus)
     } else {
         match parts.as_slice() {
             ["quit"] | ["q"] => SlashCommand::Quit,
@@ -224,14 +255,6 @@ pub(crate) fn parse_submission_with_skills(
             ["sessions"] => SlashCommand::Sessions,
             ["usage"] => SlashCommand::Usage,
             ["cancel"] => SlashCommand::Cancel,
-            ["approve", "once"] => SlashCommand::Approve(ApprovalUserDecision::ApproveOnce),
-            ["approve", "all"] => SlashCommand::Approve(ApprovalUserDecision::ApproveTree),
-            ["approve", "reject"] => SlashCommand::Approve(ApprovalUserDecision::Reject),
-            ["approve", "cancel"] => SlashCommand::Approve(ApprovalUserDecision::Cancel),
-            ["events", "debug"] => SlashCommand::Events(crate::state::EventLevel::Debug),
-            ["events", "info"] => SlashCommand::Events(crate::state::EventLevel::Info),
-            ["events", "warning"] => SlashCommand::Events(crate::state::EventLevel::Warning),
-            ["events", "error"] => SlashCommand::Events(crate::state::EventLevel::Error),
             ["help"] => SlashCommand::Help,
             _ => return Err(format!("invalid command: /{command_line}")),
         }
@@ -292,13 +315,31 @@ mod parse_tests {
             Submission::Command(SlashCommand::Preset)
         );
     }
-}
 
-/// One readable line per command for the in-transcript help notice.
-pub(crate) fn command_help_lines() -> impl Iterator<Item = String> {
-    COMMANDS
-        .iter()
-        .map(|spec| format!("{} — {}", spec.usage, spec.description))
+    #[test]
+    fn parses_agent_panel_visibility_commands() {
+        assert_eq!(
+            parse_submission("/show agent panel").unwrap(),
+            Submission::Command(SlashCommand::ShowAgentPanel)
+        );
+        assert_eq!(
+            parse_submission("/hide agent panel").unwrap(),
+            Submission::Command(SlashCommand::HideAgentPanel)
+        );
+        assert!(parse_submission("/show panel").is_err());
+        assert!(parse_submission("/hide agents").is_err());
+        assert_eq!(
+            parse_submission_with_skills("/show agent panel", &["show".into()]).unwrap(),
+            Submission::Command(SlashCommand::ShowAgentPanel)
+        );
+        assert_eq!(
+            parse_submission_with_skills("/show custom args", &["show".into()]).unwrap(),
+            Submission::Command(SlashCommand::Skill {
+                name: "show".into(),
+                args: "custom args".into(),
+            })
+        );
+    }
 }
 
 pub(crate) fn move_selection(state: &mut ListState, len: usize, up: bool) {

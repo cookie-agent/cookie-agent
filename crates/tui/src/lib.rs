@@ -235,6 +235,7 @@ mod tests {
                 session_title: SessionTitleConfig::default(),
                 delegation: cookie_agent_config::DelegationConfig::default(),
                 pricing: cookie_agent_config::PricingConfig::default(),
+                headers: BTreeMap::new(),
                 providers,
             },
             agents: BTreeMap::from([(agent_id.clone(), agent)]),
@@ -475,7 +476,7 @@ mod tests {
                 })
                 .collect::<String>();
             assert!(rendered.contains("Approval"));
-            assert!(rendered.contains("Agents"));
+            assert!(!rendered.contains("Agents"));
             if width >= 80 {
                 assert!(rendered.contains("Conversation"));
             }

@@ -78,8 +78,7 @@ use super::provider::{
     ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
-    CommandSpec, SlashCommand, Submission, command_help_lines, move_selection,
-    parse_submission_with_skills,
+    COMMANDS, CommandSpec, SlashCommand, Submission, move_selection, parse_submission_with_skills,
 };
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
@@ -427,6 +426,14 @@ struct SessionSearchRowsCache {
     rows: Vec<SessionSearchRow>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum AgentPanelMode {
+    #[default]
+    Auto,
+    Shown,
+    Hidden,
+}
+
 pub struct App {
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
@@ -465,6 +472,7 @@ pub struct App {
     pub(super) provider_operations: HashMap<cookie_agent_protocol::ProviderId, ProviderOperation>,
     pub(super) connect_task: Option<tokio::task::JoinHandle<()>>,
     pub(super) tree: Option<SessionTree>,
+    agent_panel_mode: AgentPanelMode,
     /// Session the conversation currently shows. Independent of the tree root.
     pub(super) selected: Option<SessionId>,
     /// Stable delegation-tree root; every tree refresh queries this session.
@@ -899,6 +907,7 @@ impl App {
             provider_operations: HashMap::new(),
             connect_task: None,
             tree: None,
+            agent_panel_mode: AgentPanelMode::Auto,
             selected: None,
             tree_root: None,
             selection_generation: 0,
@@ -2145,11 +2154,15 @@ impl App {
     }
 
     /// Intentionally reroot the delegation tree at a separate session.
-    fn reroot_tree(&mut self, session_id: SessionId) {
+    pub(super) fn reroot_tree(&mut self, session_id: SessionId) {
+        let root_changed = self.tree_root != Some(session_id);
         self.set_selected_session(session_id);
         self.selection_generation = self.selection_generation.wrapping_add(1);
         self.tree_root = Some(session_id);
         self.tree = None;
+        if root_changed {
+            self.agent_panel_mode = AgentPanelMode::Auto;
+        }
         self.tree_cursor = Some(session_id);
         self.tree_subscription_sessions.clear();
         self.tree_subscription_sessions.insert(session_id);
@@ -2783,6 +2796,18 @@ impl App {
         };
         let linked = event
             .is_some_and(|event| matches!(&event.payload, EventPayload::ToolCallLinked { .. }));
+        let terminalized = event.is_some_and(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::RunCompleted { .. }
+                    | EventPayload::RunFailed { .. }
+                    | EventPayload::RunCancelled { .. }
+                    | EventPayload::RunInterrupted { .. }
+                    | EventPayload::DelegateFinished { .. }
+                    | EventPayload::DelegateFinishedV2 { .. }
+                    | EventPayload::DelegateChildTerminated { .. }
+            )
+        });
         let title_change = event.and_then(title_change_from_event);
         let status_change = event.and_then(status_change_from_event);
         let refresh_skills = event.and_then(|event| {
@@ -2864,7 +2889,7 @@ impl App {
             }
         }
         self.reconcile_pending_approval();
-        if linked || replay_finished {
+        if linked || terminalized || replay_finished {
             self.refresh_tree_background();
         }
     }
@@ -3635,6 +3660,7 @@ impl App {
             .to_ascii_lowercase();
         super::slash::entries(self.input.as_str())
             .into_iter()
+            .filter(|spec| self.command_is_available(spec))
             .map(PaletteEntry::Command)
             .chain(
                 self.skills
@@ -6268,6 +6294,14 @@ impl App {
     pub(super) async fn run_command(&mut self, command: SlashCommand) {
         match command {
             SlashCommand::Quit => self.should_quit = true,
+            SlashCommand::ShowAgentPanel => {
+                self.agent_panel_mode = AgentPanelMode::Shown;
+                self.status = "agent panel shown; manual visibility override active".into();
+            }
+            SlashCommand::HideAgentPanel => {
+                self.agent_panel_mode = AgentPanelMode::Hidden;
+                self.status = "agent panel hidden; manual visibility override active".into();
+            }
             SlashCommand::New => {
                 if self.runtime.is_empty() {
                     self.status = EMPTY_RUNTIME_GUIDANCE.into();
@@ -6407,7 +6441,12 @@ impl App {
         // One line per command in the transcript; the status line stays a
         // short pointer instead of a truncated wall of text.
         let notice = std::iter::once("Available commands:".to_owned())
-            .chain(command_help_lines())
+            .chain(
+                COMMANDS
+                    .iter()
+                    .filter(|spec| self.command_is_available(spec))
+                    .map(|spec| format!("{} — {}", spec.usage, spec.description)),
+            )
             .chain(std::iter::once(
                 "Use // to send a prompt beginning with /.".to_owned(),
             ))
@@ -6765,9 +6804,14 @@ impl App {
         .unwrap_or(u16::MAX)
         .clamp(1, super::input::MAX_TEXT_ROWS);
         let tree_entries = self.tree_entries();
+        let tree_rows = if self.agent_panel_visible() {
+            tree_entries.len().max(2)
+        } else {
+            0
+        };
         let layout = super::terminal_layout_with_tree_rows(
             frame.area(),
-            tree_entries.len(),
+            tree_rows,
             self.queue_strip_height(),
             input_text_rows,
         );
@@ -7229,6 +7273,12 @@ impl App {
         area: Rect,
         entries: &[(SessionId, SessionMeta, usize)],
     ) {
+        if area.height == 0 {
+            self.tree_viewport_height = 0;
+            self.hit_map.tree = None;
+            self.hit_map.tree_rows.clear();
+            return;
+        }
         // The Agents panel has exactly clamp(visible row count, 1, 8) text
         // rows, with its borders outside that count.
         let text_rows = entries.len().clamp(1, 8) as u16;
@@ -7406,6 +7456,35 @@ impl App {
         // empty session stays visible — an explicit user act, not a ghost.
         entries.retain(|(_, meta, _)| meta.last_event_seq > 1);
         entries
+    }
+
+    fn tree_has_live_delegated_agents(&self) -> bool {
+        fn has_live_descendant(tree: &SessionTree) -> bool {
+            tree.children.iter().any(|child| {
+                matches!(
+                    child.session.status,
+                    SessionStatus::Idle | SessionStatus::Running
+                ) || has_live_descendant(child)
+            })
+        }
+
+        self.tree.as_ref().is_some_and(has_live_descendant)
+    }
+
+    fn agent_panel_visible(&self) -> bool {
+        match self.agent_panel_mode {
+            AgentPanelMode::Auto => self.tree_has_live_delegated_agents(),
+            AgentPanelMode::Shown => true,
+            AgentPanelMode::Hidden => false,
+        }
+    }
+
+    fn command_is_available(&self, spec: &CommandSpec) -> bool {
+        match spec.name {
+            "show" => !self.agent_panel_visible(),
+            "hide" => self.agent_panel_visible(),
+            _ => true,
+        }
     }
 
     pub(super) fn render_approval(
