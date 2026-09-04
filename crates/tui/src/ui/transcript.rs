@@ -200,10 +200,27 @@ pub(super) enum BlockId {
     SystemPrompt,
     Compaction(u64),
     PluginMessage(u64),
-    MediaFile { turn_seq: u64, content_index: u32 },
+    MediaFile {
+        turn_seq: u64,
+        content_index: u32,
+    },
     Thinking(u64),
     Tool(cookie_agent_protocol::ToolCallId),
-    CommittedTool { turn_seq: u64, content_index: u32 },
+    ToolOutput {
+        call_id: cookie_agent_protocol::ToolCallId,
+        section: ToolOutputSection,
+    },
+    CommittedTool {
+        turn_seq: u64,
+        content_index: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum ToolOutputSection {
+    Detail,
+    Stdout,
+    Stderr,
 }
 
 /// A contiguous logical-line range owned by one collapsible transcript block.
@@ -957,6 +974,24 @@ fn item_block_ids(item: &TranscriptItem) -> Vec<BlockId> {
                 | AssistantChild::Attribution { .. }
                 | AssistantChild::CommittedTool { .. } => None,
             })
+            .flat_map(|id| match id {
+                BlockId::Tool(call_id) => vec![
+                    id,
+                    BlockId::ToolOutput {
+                        call_id,
+                        section: ToolOutputSection::Detail,
+                    },
+                    BlockId::ToolOutput {
+                        call_id,
+                        section: ToolOutputSection::Stdout,
+                    },
+                    BlockId::ToolOutput {
+                        call_id,
+                        section: ToolOutputSection::Stderr,
+                    },
+                ],
+                _ => vec![id],
+            })
             .collect(),
         TranscriptItem::Compaction { seq, .. } => vec![BlockId::Compaction(*seq)],
         TranscriptItem::PluginMessage { seq, .. } => vec![BlockId::PluginMessage(*seq)],
@@ -1279,8 +1314,25 @@ fn display_line_count(text: &str) -> usize {
 
 const MAX_EXPANDED_BODY_LINES: usize = 64;
 const MAX_EXPANDED_BODY_BYTES: usize = 8 * 1024;
+const MAX_EXPANDED_TOOL_OUTPUT_LINES: usize = 1024;
+const MAX_EXPANDED_TOOL_OUTPUT_BYTES: usize = 128 * 1024;
 const MAX_SYSTEM_PROMPT_BODY_LINES: usize = 256;
 const MAX_SYSTEM_PROMPT_BODY_BYTES: usize = 32 * 1024;
+
+#[derive(Clone, Copy)]
+struct RenderLimits {
+    lines: usize,
+    bytes: usize,
+}
+
+const COLLAPSED_TOOL_OUTPUT_LIMITS: RenderLimits = RenderLimits {
+    lines: MAX_EXPANDED_BODY_LINES,
+    bytes: MAX_EXPANDED_BODY_BYTES,
+};
+const EXPANDED_TOOL_OUTPUT_LIMITS: RenderLimits = RenderLimits {
+    lines: MAX_EXPANDED_TOOL_OUTPUT_LINES,
+    bytes: MAX_EXPANDED_TOOL_OUTPUT_BYTES,
+};
 
 fn bounded_safe_display_text(
     text: &str,
@@ -1627,45 +1679,128 @@ fn tool_child_layout(
         ToolStatus::Cancelled => (" cancelled".to_owned(), Role::ToolFailure),
         ToolStatus::Interrupted => (" interrupted".to_owned(), Role::ToolFailure),
     };
+    let output_block_id = |section| call_id.map(|call_id| BlockId::ToolOutput { call_id, section });
+    let section_expanded = |section| {
+        output_block_id(section)
+            .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
+    };
+    let stream_sections = if !tool.has_output_chunks {
+        call_id
+            .into_iter()
+            .flat_map(|call_id| {
+                [
+                    (false, "STDOUT", ToolOutputSection::Stdout),
+                    (true, "STDERR", ToolOutputSection::Stderr),
+                ]
+                .into_iter()
+                .filter_map(move |(stderr, label, section)| {
+                    state.output.get(&(call_id, stderr)).map(|output| {
+                        let gap = if output.has_gap { " [OUTPUT GAP]" } else { "" };
+                        (format!("{label}{gap}:"), section, output)
+                    })
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let section_count = usize::from(!tool.detail.is_empty()) + stream_sections.len();
+    let any_output_expanded = [
+        ToolOutputSection::Detail,
+        ToolOutputSection::Stdout,
+        ToolOutputSection::Stderr,
+    ]
+    .into_iter()
+    .any(section_expanded);
+    let limits = if any_output_expanded {
+        EXPANDED_TOOL_OUTPUT_LIMITS
+    } else {
+        COLLAPSED_TOOL_OUTPUT_LIMITS
+    };
+    let mut budget = RenderBudget::new(limits);
+    let mut remaining_sections = section_count;
     let title = tool.compact_title();
     let mut body = if is_expanded {
         vec![
-            Line::from(format!("🔨 ▾ {title}{suffix}")),
-            Line::from(format!("arguments: {}", tool.arguments)),
+            ToolBodyLine::wrapped(Line::from(format!("🔨 ▾ {title}{suffix}"))),
+            ToolBodyLine::wrapped(Line::from(format!(
+                "arguments: {}",
+                display_tool_arguments(tool)
+            ))),
         ]
     } else {
-        vec![Line::from(format!("🔨 ▸ {title}{suffix}"))]
+        vec![ToolBodyLine::wrapped(Line::from(format!(
+            "🔨 ▸ {title}{suffix}"
+        )))]
     };
     if is_expanded {
         if !tool.detail.is_empty() {
-            body.extend(tool_body_lines(tool, context));
+            remaining_sections -= 1;
+            body.extend(tool_body_lines(
+                tool,
+                context,
+                ToolOutputSection::Detail,
+                section_expanded(ToolOutputSection::Detail),
+                &mut budget,
+                remaining_sections,
+            ));
         }
-        if !tool.has_output_chunks
-            && let Some(call_id) = call_id
-        {
-            for (stderr, label) in [(false, "STDOUT"), (true, "STDERR")] {
-                if let Some(output) = state.output.get(&(call_id, stderr)) {
-                    let gap = if output.has_gap { " [OUTPUT GAP]" } else { "" };
-                    body.push(Line::from(format!("{label}{gap}:")));
-                    body.extend(
-                        output
-                            .text()
-                            .lines()
-                            .map(|line| Line::from(line.to_owned())),
-                    );
-                }
-            }
+        for (label, section, output) in stream_sections {
+            remaining_sections -= 1;
+            let expanded = section_expanded(section);
+            let display_bytes = budget
+                .section_capacity(output_section_limits(expanded), remaining_sections)
+                .bytes
+                .saturating_add(4);
+            let (output, original_lines) = output.bounded_text(display_bytes);
+            body.extend(generic_output_lines(
+                Some(&label),
+                OutputText {
+                    text: output.as_ref(),
+                    original_lines,
+                },
+                section,
+                expanded,
+                &mut budget,
+                remaining_sections,
+                context.theme,
+            ));
         }
     }
-    let lines = tool_block_lines(role, body, context.width, context.theme);
+    let rendered = tool_block_lines(role, body, context.width, context.theme);
+    let mut regions = vec![BlockRegion {
+        id: block_id,
+        start_line: 0,
+        end_line: rendered.lines.len(),
+    }];
+    if let Some(call_id) = call_id {
+        regions.extend(rendered.output_toggles.into_iter().map(
+            |(section, start_line, end_line)| BlockRegion {
+                id: BlockId::ToolOutput { call_id, section },
+                start_line,
+                end_line,
+            },
+        ));
+    }
     ItemLayout {
-        regions: vec![BlockRegion {
-            id: block_id,
-            start_line: 0,
-            end_line: lines.len(),
-        }],
-        lines,
+        regions,
+        lines: rendered.lines,
         user_seq: None,
+    }
+}
+
+fn display_tool_arguments(tool: &crate::state::ToolCallState) -> String {
+    if matches!(tool.presentation.title.as_str(), "edit" | "write")
+        && let Some(path) = tool_file_path(&tool.arguments)
+    {
+        return format!("filePath={path} (content shown below)");
+    }
+    const MAX_ARGUMENT_BYTES: usize = 2 * 1024;
+    let (arguments, complete) = sanitized_display_prefix(&tool.arguments, MAX_ARGUMENT_BYTES);
+    if complete {
+        arguments
+    } else {
+        format!("{arguments}…")
     }
 }
 
@@ -1681,77 +1816,812 @@ impl From<cookie_agent_protocol::ToolCallId> for BlockKey {
     }
 }
 
-/// Expanded tool detail lines. A successful `read` of a validated textual
-/// file is syntax-highlighted with the language inferred deterministically
-/// from the read path's extension (the same path the tool was invoked with).
-/// Binary/image/PDF summaries, failed calls, truncation/attachment metadata,
-/// and unknown extensions stay plain. The reduced detail is free of secrets:
-/// it contains only safe tool output and engine-authored metadata.
+enum ToolBodyLineKind {
+    Wrapped,
+    Code {
+        first_gutter: Vec<Span<'static>>,
+        continuation_gutter: Vec<Span<'static>>,
+    },
+}
+
+struct ToolBodyLine {
+    line: Line<'static>,
+    kind: ToolBodyLineKind,
+    output_toggle: Option<ToolOutputSection>,
+}
+
+impl ToolBodyLine {
+    fn wrapped(line: Line<'static>) -> Self {
+        Self {
+            line,
+            kind: ToolBodyLineKind::Wrapped,
+            output_toggle: None,
+        }
+    }
+
+    fn code(line: Line<'static>) -> Self {
+        Self::guttered_code(line, Vec::new(), Vec::new())
+    }
+
+    fn guttered_code(
+        line: Line<'static>,
+        first_gutter: Vec<Span<'static>>,
+        continuation_gutter: Vec<Span<'static>>,
+    ) -> Self {
+        Self {
+            line,
+            kind: ToolBodyLineKind::Code {
+                first_gutter,
+                continuation_gutter,
+            },
+            output_toggle: None,
+        }
+    }
+
+    fn toggle(line: Line<'static>, section: ToolOutputSection) -> Self {
+        Self {
+            line,
+            kind: ToolBodyLineKind::Wrapped,
+            output_toggle: Some(section),
+        }
+    }
+}
+
+const OUTPUT_NOTICE_RESERVE_BYTES: usize = 96;
+
+struct RenderBudget {
+    remaining: RenderLimits,
+}
+
+impl RenderBudget {
+    fn new(limits: RenderLimits) -> Self {
+        Self { remaining: limits }
+    }
+
+    fn section_capacity(&self, limits: RenderLimits, future_sections: usize) -> RenderLimits {
+        let reserved_sections = future_sections.saturating_add(1);
+        RenderLimits {
+            lines: limits
+                .lines
+                .saturating_sub(1)
+                .min(self.remaining.lines.saturating_sub(reserved_sections)),
+            bytes: limits
+                .bytes
+                .saturating_sub(OUTPUT_NOTICE_RESERVE_BYTES)
+                .min(
+                    self.remaining
+                        .bytes
+                        .saturating_sub(reserved_sections * OUTPUT_NOTICE_RESERVE_BYTES),
+                ),
+        }
+    }
+
+    fn consume(&mut self, capacity: &mut RenderLimits, text: &str) -> Option<(String, bool)> {
+        if capacity.lines == 0 || capacity.bytes == 0 {
+            return None;
+        }
+        let available = capacity.bytes.min(self.remaining.bytes);
+        let (text, complete) = sanitized_display_prefix(text, available);
+        if text.is_empty() && !complete {
+            return None;
+        }
+        capacity.lines -= 1;
+        capacity.bytes = capacity.bytes.saturating_sub(text.len());
+        self.remaining.lines = self.remaining.lines.saturating_sub(1);
+        self.remaining.bytes = self.remaining.bytes.saturating_sub(text.len());
+        Some((text, complete))
+    }
+
+    fn consume_notice(&mut self, text: &str) -> bool {
+        if self.remaining.lines == 0 || self.remaining.bytes < text.len() {
+            return false;
+        }
+        self.remaining.lines -= 1;
+        self.remaining.bytes -= text.len();
+        true
+    }
+}
+
+struct SectionRenderer<'a> {
+    budget: &'a mut RenderBudget,
+    capacity: RenderLimits,
+    fully_rendered: usize,
+}
+
+impl<'a> SectionRenderer<'a> {
+    fn new(budget: &'a mut RenderBudget, expanded: bool, future_sections: usize) -> Self {
+        let limits = output_section_limits(expanded);
+        let capacity = budget.section_capacity(limits, future_sections);
+        Self {
+            budget,
+            capacity,
+            fully_rendered: 0,
+        }
+    }
+
+    fn take(&mut self, text: &str) -> Option<String> {
+        let (text, complete) = self.budget.consume(&mut self.capacity, text)?;
+        self.fully_rendered += usize::from(complete);
+        Some(text)
+    }
+
+    fn exhausted(&self) -> bool {
+        self.capacity.lines == 0 || self.capacity.bytes == 0
+    }
+}
+
+fn output_section_limits(expanded: bool) -> RenderLimits {
+    if expanded {
+        EXPANDED_TOOL_OUTPUT_LIMITS
+    } else {
+        COLLAPSED_TOOL_OUTPUT_LIMITS
+    }
+}
+
+/// Expanded tool detail lines. File reads use source line numbers carried by
+/// the result. Edit/write arguments and strict unified-diff output use diff
+/// gutters. All sections consume one aggregate per-tool render budget.
 fn tool_body_lines(
     tool: &crate::state::ToolCallState,
     context: &TranscriptRenderContext<'_>,
-) -> Vec<Line<'static>> {
-    if tool.presentation.title.as_str() == "read" && tool.status == ToolStatus::Completed {
-        let language =
-            read_path_extension(&tool.arguments).map(crate::markdown::normalized_language);
-        let (content, metadata) = split_read_detail(&tool.detail);
-        let highlighted = language.and_then(|language| {
-            (!content.is_empty()).then(|| {
-                context
-                    .highlighter
-                    .highlight(&language, content, context.theme)
-            })
-        });
-        if let Some(mut lines) = highlighted {
-            lines.extend(metadata.iter().map(|line| Line::from((*line).to_owned())));
-            return lines;
+    section: ToolOutputSection,
+    expanded: bool,
+    budget: &mut RenderBudget,
+    future_sections: usize,
+) -> Vec<ToolBodyLine> {
+    if tool.status == ToolStatus::Completed {
+        let path = tool_file_path(&tool.arguments);
+        let language = path.as_deref().and_then(path_extension);
+        if tool.presentation.title.as_str() == "read"
+            && let Some(read) = parse_read_output(&tool.detail)
+        {
+            return render_read_output(
+                read,
+                language,
+                section,
+                expanded,
+                budget,
+                future_sections,
+                context,
+            );
+        }
+        if matches!(tool.presentation.title.as_str(), "edit" | "write")
+            && let Some(diff) = tool_diff(tool)
+        {
+            return render_diff_output(
+                &diff,
+                language,
+                section,
+                expanded,
+                budget,
+                future_sections,
+                context,
+            );
         }
     }
-    tool.detail
-        .lines()
-        .map(|line| Line::from(line.to_owned()))
-        .collect()
+    generic_output_lines(
+        None,
+        OutputText::complete(&tool.detail),
+        section,
+        expanded,
+        budget,
+        future_sections,
+        context.theme,
+    )
 }
 
-/// The extension of the `path` argument in a reduced `read` call's arguments
-/// JSON, located structurally without a JSON parser: the argument string is
-/// produced by the engine's own serialization, so the `"path"` key and its
-/// quoted value are exact. Anything unexpected yields `None` and plain text.
-fn read_path_extension(arguments: &str) -> Option<&str> {
-    let key = arguments.find("\"path\"")?;
-    let after_key = arguments.get(key + "\"path\"".len()..)?;
-    let colon = after_key.find(':')?;
-    let after_colon = after_key.get(colon + 1..)?.trim_start();
-    let quoted = after_colon.strip_prefix('"')?;
-    let end = quoted.find('"')?;
-    let path = &quoted[..end];
+fn tool_file_path(arguments: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct PathArguments {
+        #[serde(rename = "filePath")]
+        file_path: Option<String>,
+        path: Option<String>,
+    }
+
+    let arguments = serde_json::from_str::<PathArguments>(arguments).ok()?;
+    arguments.file_path.or(arguments.path)
+}
+
+fn path_extension(path: &str) -> Option<&str> {
     let name = path.rsplit(['/', '\\']).next()?;
     name.rsplit_once('.')
         .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
         .map(|(_, extension)| extension)
 }
 
-/// Split reduced `read` detail into the file content and trailing
-/// engine-authored metadata lines (truncation retention references,
-/// attachment descriptors). Only the content is highlighted; metadata lines
-/// always stay plain.
-fn split_read_detail(detail: &str) -> (&str, Vec<&str>) {
-    let mut content_len = detail.len();
-    let mut metadata = Vec::new();
-    loop {
-        let content = detail[..content_len].trim_end_matches('\n');
-        let Some(last) = content.rsplit('\n').next() else {
+struct ReadOutput<'a> {
+    preamble: &'a str,
+    content: &'a str,
+    metadata: &'a str,
+}
+
+fn parse_read_output(detail: &str) -> Option<ReadOutput<'_>> {
+    const OPEN: &str = "<content>\n";
+    const CLOSE: &str = "</content>";
+    let open = detail.find(OPEN)?;
+    let content_start = open + OPEN.len();
+    let remaining = &detail[content_start..];
+    let close_offset = if remaining.starts_with(CLOSE) {
+        0
+    } else {
+        remaining.find("\n</content>")? + 1
+    };
+    let close = content_start + close_offset;
+    let content = detail[content_start..close].trim_end_matches('\n');
+    if !content
+        .lines()
+        .all(|line| parse_numbered_read_line(line).is_some())
+    {
+        return None;
+    }
+    Some(ReadOutput {
+        preamble: detail[..open].trim_end_matches('\n'),
+        content,
+        metadata: detail[close + CLOSE.len()..].trim_start_matches('\n'),
+    })
+}
+
+fn parse_numbered_read_line(line: &str) -> Option<(usize, &str)> {
+    let (number, text) = line.split_once(": ")?;
+    Some((number.parse().ok()?, text))
+}
+
+fn render_read_output(
+    read: ReadOutput<'_>,
+    language: Option<&str>,
+    section: ToolOutputSection,
+    expanded: bool,
+    budget: &mut RenderBudget,
+    future_sections: usize,
+    context: &TranscriptRenderContext<'_>,
+) -> Vec<ToolBodyLine> {
+    let preamble = || read.preamble.lines().filter(|line| !line.starts_with('<'));
+    let metadata = || read.metadata.lines().filter(|line| !line.is_empty());
+    let total_lines = preamble().count() + read.content.lines().count() + metadata().count();
+    let number_width = read
+        .content
+        .lines()
+        .filter_map(|line| parse_numbered_read_line(line).map(|(number, _)| number))
+        .max()
+        .unwrap_or(1)
+        .max(1)
+        .ilog10() as usize
+        + 1;
+    let mut renderer = SectionRenderer::new(budget, expanded, future_sections);
+    let mut output = Vec::new();
+    for line in preamble() {
+        let Some(line) = renderer.take(line) else {
             break;
         };
-        let trimmed = last.trim_start();
-        if trimmed.starts_with("attachment: ") || trimmed.starts_with("retained output: ") {
-            metadata.insert(0, last);
-            content_len = content.len() - last.len();
+        output.push(ToolBodyLine::wrapped(Line::from(Span::styled(
+            line,
+            context.theme.muted(),
+        ))));
+    }
+    let mut rows = Vec::new();
+    if !renderer.exhausted() {
+        for line in read.content.lines() {
+            let (number, text) = parse_numbered_read_line(line).expect("validated read row");
+            let Some(text) = renderer.take(text) else {
+                break;
+            };
+            rows.push((number, text));
+        }
+    }
+    let source = rows
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = language.map(|language| {
+        context.highlighter.highlight_stable(
+            &crate::markdown::normalized_language(language),
+            &source,
+            context.theme,
+        )
+    });
+    for (index, (number, text)) in rows.into_iter().enumerate() {
+        let line = highlighted
+            .as_ref()
+            .and_then(|lines| lines.get(index))
+            .cloned()
+            .unwrap_or_else(|| Line::from(text));
+        output.push(ToolBodyLine::guttered_code(
+            line,
+            vec![
+                Span::styled(
+                    format!("{number:>number_width$}"),
+                    context.theme.code_gutter(),
+                ),
+                Span::styled(" │ ", context.theme.code_gutter()),
+            ],
+            vec![
+                Span::styled(" ".repeat(number_width), context.theme.code_gutter()),
+                Span::styled(" │ ", context.theme.code_gutter()),
+            ],
+        ));
+    }
+    if !renderer.exhausted() {
+        for line in metadata() {
+            let Some(line) = renderer.take(line) else {
+                break;
+            };
+            output.push(ToolBodyLine::wrapped(Line::from(Span::styled(
+                line,
+                context.theme.muted(),
+            ))));
+        }
+    }
+    let omitted = total_lines.saturating_sub(renderer.fully_rendered);
+    append_output_notice(
+        &mut output,
+        omitted,
+        expanded,
+        section,
+        renderer.budget,
+        context.theme,
+    );
+    output
+}
+
+#[derive(Clone, Copy)]
+struct OutputText<'a> {
+    text: &'a str,
+    original_lines: usize,
+}
+
+impl<'a> OutputText<'a> {
+    fn complete(text: &'a str) -> Self {
+        Self {
+            text,
+            original_lines: text.lines().count(),
+        }
+    }
+}
+
+fn generic_output_lines(
+    heading: Option<&str>,
+    source: OutputText<'_>,
+    section: ToolOutputSection,
+    expanded: bool,
+    budget: &mut RenderBudget,
+    future_sections: usize,
+    theme: &Theme,
+) -> Vec<ToolBodyLine> {
+    let total_lines = usize::from(heading.is_some()) + source.original_lines;
+    let mut renderer = SectionRenderer::new(budget, expanded, future_sections);
+    let mut output = Vec::new();
+    if let Some(heading) = heading
+        && let Some(heading) = renderer.take(heading)
+    {
+        output.push(ToolBodyLine::wrapped(Line::from(heading)));
+    }
+    if !renderer.exhausted() {
+        for line in source.text.lines() {
+            let Some(line) = renderer.take(line) else {
+                break;
+            };
+            output.push(ToolBodyLine::wrapped(Line::from(line)));
+        }
+    }
+    let omitted = total_lines.saturating_sub(renderer.fully_rendered);
+    append_output_notice(
+        &mut output,
+        omitted,
+        expanded,
+        section,
+        renderer.budget,
+        theme,
+    );
+    output
+}
+
+fn append_output_notice(
+    output: &mut Vec<ToolBodyLine>,
+    omitted: usize,
+    expanded: bool,
+    section: ToolOutputSection,
+    budget: &mut RenderBudget,
+    theme: &Theme,
+) {
+    let notice = if omitted > 0 && expanded {
+        format!("… {omitted} more lines (maximum shown; click to collapse)")
+    } else if omitted > 0 {
+        format!("… {omitted} more lines (click to expand)")
+    } else if expanded {
+        "▴ click to collapse".to_owned()
+    } else {
+        return;
+    };
+    if budget.consume_notice(&notice) {
+        output.push(ToolBodyLine::toggle(
+            Line::from(Span::styled(notice, theme.muted())),
+            section,
+        ));
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiffRowKind {
+    Hunk,
+    Added(usize),
+    Removed(usize),
+    Context(usize),
+    NoNewline,
+    Metadata,
+}
+
+struct DiffRow<'a> {
+    kind: DiffRowKind,
+    text: Cow<'a, str>,
+}
+
+enum ToolDiff<'a> {
+    Unified(&'a str),
+    Edit {
+        before: String,
+        after: String,
+        metadata: &'a str,
+    },
+    Write {
+        content: String,
+        metadata: &'a str,
+    },
+}
+
+fn tool_diff(tool: &crate::state::ToolCallState) -> Option<ToolDiff<'_>> {
+    if is_unified_diff(&tool.detail) {
+        return Some(ToolDiff::Unified(&tool.detail));
+    }
+    match tool.presentation.title.as_str() {
+        "edit" => {
+            #[derive(serde::Deserialize)]
+            struct EditArguments {
+                #[serde(rename = "oldString")]
+                before: String,
+                #[serde(rename = "newString")]
+                after: String,
+            }
+            let arguments = serde_json::from_str::<EditArguments>(&tool.arguments).ok()?;
+            Some(ToolDiff::Edit {
+                before: arguments.before,
+                after: arguments.after,
+                metadata: &tool.detail,
+            })
+        }
+        "write" => {
+            #[derive(serde::Deserialize)]
+            struct WriteArguments {
+                content: String,
+            }
+            let arguments = serde_json::from_str::<WriteArguments>(&tool.arguments).ok()?;
+            Some(ToolDiff::Write {
+                content: arguments.content,
+                metadata: &tool.detail,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn is_unified_diff(text: &str) -> bool {
+    let mut has_file_header = false;
+    for line in text.lines() {
+        has_file_header |= line.starts_with("diff --git ");
+        if parse_hunk_starts(line).is_some()
+            || has_file_header && (line.starts_with("Binary files ") || line == "GIT binary patch")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_hunk_starts(line: &str) -> Option<(usize, usize)> {
+    let ranges = line.strip_prefix("@@ -")?.split_once(" @@")?.0;
+    let (old, new) = ranges.split_once(" +")?;
+    let start = |range: &str| range.split(',').next()?.parse::<usize>().ok();
+    Some((start(old)?, start(new)?))
+}
+
+fn diff_range(count: usize) -> String {
+    match count {
+        0 => "0,0".to_owned(),
+        1 => "1".to_owned(),
+        count => format!("1,{count}"),
+    }
+}
+
+fn for_each_diff_row<'a>(diff: &'a ToolDiff<'a>, mut visit: impl FnMut(DiffRow<'a>) -> bool) {
+    match diff {
+        ToolDiff::Unified(text) => for_each_unified_diff_row(text, visit),
+        ToolDiff::Edit {
+            before,
+            after,
+            metadata,
+        } => {
+            let before_count = before.lines().count();
+            let after_count = after.lines().count();
+            if !visit(DiffRow {
+                kind: DiffRowKind::Hunk,
+                text: Cow::Owned(format!(
+                    "@@ -{} +{} @@",
+                    diff_range(before_count),
+                    diff_range(after_count)
+                )),
+            }) {
+                return;
+            }
+            for (index, text) in before.lines().enumerate() {
+                if !visit(DiffRow {
+                    kind: DiffRowKind::Removed(index + 1),
+                    text: Cow::Borrowed(text),
+                }) {
+                    return;
+                }
+            }
+            if !before.is_empty()
+                && !before.ends_with('\n')
+                && !visit(DiffRow {
+                    kind: DiffRowKind::NoNewline,
+                    text: Cow::Borrowed("\\ No newline at end of file"),
+                })
+            {
+                return;
+            }
+            for (index, text) in after.lines().enumerate() {
+                if !visit(DiffRow {
+                    kind: DiffRowKind::Added(index + 1),
+                    text: Cow::Borrowed(text),
+                }) {
+                    return;
+                }
+            }
+            if !after.is_empty()
+                && !after.ends_with('\n')
+                && !visit(DiffRow {
+                    kind: DiffRowKind::NoNewline,
+                    text: Cow::Borrowed("\\ No newline at end of file"),
+                })
+            {
+                return;
+            }
+            for line in metadata.lines() {
+                if !visit(DiffRow {
+                    kind: DiffRowKind::Metadata,
+                    text: Cow::Borrowed(line),
+                }) {
+                    return;
+                }
+            }
+        }
+        ToolDiff::Write { content, metadata } => {
+            let count = content.lines().count();
+            if !visit(DiffRow {
+                kind: DiffRowKind::Hunk,
+                text: Cow::Owned(format!("@@ -0,0 +{} @@", diff_range(count))),
+            }) {
+                return;
+            }
+            for (index, text) in content.lines().enumerate() {
+                if !visit(DiffRow {
+                    kind: DiffRowKind::Added(index + 1),
+                    text: Cow::Borrowed(text),
+                }) {
+                    return;
+                }
+            }
+            if !content.is_empty()
+                && !content.ends_with('\n')
+                && !visit(DiffRow {
+                    kind: DiffRowKind::NoNewline,
+                    text: Cow::Borrowed("\\ No newline at end of file"),
+                })
+            {
+                return;
+            }
+            for line in metadata.lines() {
+                if !visit(DiffRow {
+                    kind: DiffRowKind::Metadata,
+                    text: Cow::Borrowed(line),
+                }) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn for_each_unified_diff_row<'a>(text: &'a str, mut visit: impl FnMut(DiffRow<'a>) -> bool) {
+    let mut old_line = 0;
+    let mut new_line = 0;
+    let mut in_hunk = false;
+    for line in text.lines() {
+        let row = if let Some((old_start, new_start)) = parse_hunk_starts(line) {
+            old_line = old_start;
+            new_line = new_start;
+            in_hunk = true;
+            DiffRow {
+                kind: DiffRowKind::Hunk,
+                text: Cow::Borrowed(line),
+            }
+        } else if in_hunk && line.starts_with('+') && !line.starts_with("+++") {
+            let row = DiffRow {
+                kind: DiffRowKind::Added(new_line),
+                text: Cow::Borrowed(&line[1..]),
+            };
+            new_line += 1;
+            row
+        } else if in_hunk && line.starts_with('-') && !line.starts_with("---") {
+            let row = DiffRow {
+                kind: DiffRowKind::Removed(old_line),
+                text: Cow::Borrowed(&line[1..]),
+            };
+            old_line += 1;
+            row
+        } else if in_hunk && let Some(content) = line.strip_prefix(' ') {
+            let row = DiffRow {
+                kind: DiffRowKind::Context(new_line),
+                text: Cow::Borrowed(content),
+            };
+            old_line += 1;
+            new_line += 1;
+            row
+        } else if line == "\\ No newline at end of file" {
+            DiffRow {
+                kind: DiffRowKind::NoNewline,
+                text: Cow::Borrowed(line),
+            }
         } else {
+            DiffRow {
+                kind: DiffRowKind::Metadata,
+                text: Cow::Borrowed(line),
+            }
+        };
+        if !visit(row) {
             break;
         }
     }
-    (detail[..content_len].trim_end_matches('\n'), metadata)
+}
+
+struct RenderedDiffRow {
+    kind: DiffRowKind,
+    text: String,
+}
+
+fn diff_total_lines(diff: &ToolDiff<'_>) -> usize {
+    match diff {
+        ToolDiff::Unified(text) => text.lines().count(),
+        ToolDiff::Edit {
+            before,
+            after,
+            metadata,
+        } => {
+            1 + before.lines().count()
+                + usize::from(!before.is_empty() && !before.ends_with('\n'))
+                + after.lines().count()
+                + usize::from(!after.is_empty() && !after.ends_with('\n'))
+                + metadata.lines().count()
+        }
+        ToolDiff::Write { content, metadata } => {
+            1 + content.lines().count()
+                + usize::from(!content.is_empty() && !content.ends_with('\n'))
+                + metadata.lines().count()
+        }
+    }
+}
+
+fn render_diff_output(
+    diff: &ToolDiff<'_>,
+    language: Option<&str>,
+    section: ToolOutputSection,
+    expanded: bool,
+    budget: &mut RenderBudget,
+    future_sections: usize,
+    context: &TranscriptRenderContext<'_>,
+) -> Vec<ToolBodyLine> {
+    let total_lines = diff_total_lines(diff);
+    let mut renderer = SectionRenderer::new(budget, expanded, future_sections);
+    let mut rows = Vec::new();
+    for_each_diff_row(diff, |row| {
+        if renderer.exhausted() {
+            return false;
+        }
+        let Some(text) = renderer.take(row.text.as_ref()) else {
+            return false;
+        };
+        rows.push(RenderedDiffRow {
+            kind: row.kind,
+            text,
+        });
+        true
+    });
+    let max_number = rows
+        .iter()
+        .filter_map(|row| match row.kind {
+            DiffRowKind::Added(number)
+            | DiffRowKind::Removed(number)
+            | DiffRowKind::Context(number) => Some(number),
+            DiffRowKind::Hunk | DiffRowKind::NoNewline | DiffRowKind::Metadata => None,
+        })
+        .max()
+        .unwrap_or(1);
+    let number_width = max_number.max(1).ilog10() as usize + 1;
+    let code_source = rows
+        .iter()
+        .filter_map(|row| match row.kind {
+            DiffRowKind::Added(_) | DiffRowKind::Removed(_) | DiffRowKind::Context(_) => {
+                Some(row.text.as_str())
+            }
+            DiffRowKind::Hunk | DiffRowKind::NoNewline | DiffRowKind::Metadata => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = language.map(|language| {
+        context.highlighter.highlight_stable(
+            &crate::markdown::normalized_language(language),
+            &code_source,
+            context.theme,
+        )
+    });
+    let mut highlight_index = 0;
+    let mut output = Vec::new();
+    for row in rows {
+        match row.kind {
+            DiffRowKind::Hunk => output.push(ToolBodyLine::code(Line::from(Span::styled(
+                row.text,
+                context.theme.diff_hunk(),
+            )))),
+            DiffRowKind::NoNewline | DiffRowKind::Metadata => {
+                output.push(ToolBodyLine::code(Line::from(Span::styled(
+                    row.text,
+                    context.theme.code_gutter(),
+                ))));
+            }
+            DiffRowKind::Added(number)
+            | DiffRowKind::Removed(number)
+            | DiffRowKind::Context(number) => {
+                let (marker, marker_style) = match row.kind {
+                    DiffRowKind::Added(_) => ("+", context.theme.diff_added()),
+                    DiffRowKind::Removed(_) => ("-", context.theme.diff_removed()),
+                    DiffRowKind::Context(_) => (" ", context.theme.code_gutter()),
+                    DiffRowKind::Hunk | DiffRowKind::NoNewline | DiffRowKind::Metadata => {
+                        unreachable!()
+                    }
+                };
+                let line = highlighted
+                    .as_ref()
+                    .and_then(|lines| lines.get(highlight_index))
+                    .cloned()
+                    .unwrap_or_else(|| Line::from(row.text));
+                highlight_index += 1;
+                output.push(ToolBodyLine::guttered_code(
+                    line,
+                    vec![
+                        Span::styled(
+                            format!("{number:>number_width$}"),
+                            context.theme.code_gutter(),
+                        ),
+                        Span::styled(format!(" {marker} │ "), marker_style),
+                    ],
+                    vec![
+                        Span::styled(" ".repeat(number_width), context.theme.code_gutter()),
+                        Span::styled("   │ ", marker_style),
+                    ],
+                ));
+            }
+        }
+    }
+    let omitted = total_lines.saturating_sub(renderer.fully_rendered);
+    append_output_notice(
+        &mut output,
+        omitted,
+        expanded,
+        section,
+        renderer.budget,
+        context.theme,
+    );
+    output
 }
 
 /// A settled thinking duration as compact text: seconds under a minute,
@@ -2021,39 +2891,30 @@ fn role_block(
 /// Tool children render inside the assistant item without a standalone
 /// `TOOL` header: the compact/expanded rows keep the assistant gutter and
 /// take only their status style.
+struct ToolBlockLayout {
+    lines: Vec<Line<'static>>,
+    output_toggles: Vec<(ToolOutputSection, usize, usize)>,
+}
+
 fn tool_block_lines(
     role: Role,
-    body: Vec<Line<'static>>,
+    body: Vec<ToolBodyLine>,
     width: u16,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+) -> ToolBlockLayout {
     let style = match role {
         Role::ToolRunning => theme.tool_running(),
         Role::ToolSuccess => theme.tool_success(),
         Role::ToolFailure => theme.tool_failure(),
         _ => theme.tool(),
     };
-    if width < 8 {
-        let short = match role {
-            Role::ToolRunning => "T…",
-            Role::ToolSuccess => "T✓",
-            Role::ToolFailure => "T!",
-            _ => "T",
-        };
-        let mut lines = Vec::new();
-        for (index, line) in body.into_iter().enumerate() {
-            let prefix = if index == 0 {
-                format!("[{short}] ")
-            } else {
-                "    ".into()
-            };
-            lines.extend(prefixed_wrapped_line(prefix, style, line, width));
-        }
-        return lines;
-    }
     let mut lines = Vec::new();
-    for line in body {
-        let spans = line
+    let mut output_toggles = Vec::new();
+    for (index, body_line) in body.into_iter().enumerate() {
+        let output_toggle = body_line.output_toggle;
+        let line_style = body_line.line.style;
+        let spans = body_line
+            .line
             .spans
             .into_iter()
             .map(|mut span| {
@@ -2061,13 +2922,82 @@ fn tool_block_lines(
                 span
             })
             .collect::<Vec<_>>();
-        lines.extend(repeated_prefixed_wrapped_line(
-            vec![Span::styled("│ ", theme.assistant())],
-            Line::from(spans),
-            width,
-        ));
+        let line = Line::from(spans).style(line_style);
+        let start = lines.len();
+        match body_line.kind {
+            ToolBodyLineKind::Wrapped if width < 8 => {
+                let short = match role {
+                    Role::ToolRunning => "T…",
+                    Role::ToolSuccess => "T✓",
+                    Role::ToolFailure => "T!",
+                    _ => "T",
+                };
+                let prefix = if index == 0 {
+                    format!("[{short}] ")
+                } else {
+                    "    ".into()
+                };
+                lines.extend(prefixed_wrapped_line(prefix, style, line, width));
+            }
+            ToolBodyLineKind::Wrapped => lines.extend(repeated_prefixed_wrapped_line(
+                vec![Span::styled("│ ", theme.assistant())],
+                line,
+                width,
+            )),
+            ToolBodyLineKind::Code {
+                mut first_gutter,
+                mut continuation_gutter,
+            } => {
+                let prefix = (width >= 3)
+                    .then(|| Span::styled("│ ", theme.assistant()))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let prefix_width = prefix
+                    .iter()
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum::<usize>();
+                let available = usize::from(width.max(1)).saturating_sub(prefix_width);
+                let mut first_gutter_width = first_gutter
+                    .iter()
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum::<usize>();
+                let mut continuation_gutter_width = continuation_gutter
+                    .iter()
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum::<usize>();
+                if first_gutter_width >= available || continuation_gutter_width >= available {
+                    first_gutter.clear();
+                    continuation_gutter.clear();
+                    first_gutter_width = 0;
+                    continuation_gutter_width = 0;
+                }
+                for (wrapped_index, content) in crate::markdown::wrap_code_spans(
+                    line.spans,
+                    available.saturating_sub(first_gutter_width).max(1),
+                    available.saturating_sub(continuation_gutter_width).max(1),
+                )
+                .into_iter()
+                .enumerate()
+                {
+                    let mut spans = prefix.clone();
+                    if wrapped_index == 0 {
+                        spans.extend(first_gutter.clone());
+                    } else {
+                        spans.extend(continuation_gutter.clone());
+                    }
+                    spans.extend(content);
+                    lines.push(Line::from(spans).style(line_style));
+                }
+            }
+        }
+        if let Some(section) = output_toggle {
+            output_toggles.push((section, start, lines.len()));
+        }
     }
-    lines
+    ToolBlockLayout {
+        lines,
+        output_toggles,
+    }
 }
 
 fn role_block_lines(
@@ -11719,6 +12649,17 @@ mod tests {
         state
     }
 
+    fn read_detail(rows: &[(usize, &str)]) -> String {
+        let mut detail =
+            "Read file src/main.rs\n<path>src/main.rs</path>\n<type>file</type>\n<content>\n"
+                .to_owned();
+        for (number, text) in rows {
+            detail.push_str(&format!("{number}: {text}\n"));
+        }
+        detail.push_str("</content>\nmetadata: {\"kind\":\"text\"}");
+        detail
+    }
+
     fn expanded_read_layout(state: &SessionState, theme: &Theme) -> Vec<Line<'static>> {
         let call_id = read_tool_id(state);
         let expanded = std::collections::HashSet::from([BlockId::Tool(call_id)]);
@@ -11741,12 +12682,16 @@ mod tests {
             .expect("read tool present")
     }
 
+    fn tool_output_id(call_id: ToolCallId, section: ToolOutputSection) -> BlockId {
+        BlockId::ToolOutput { call_id, section }
+    }
+
     #[test]
     fn read_rust_output_is_syntax_highlighted_with_tool_gutter_preserved() {
         let state = read_tool_state(
             "src/main.rs",
             ToolStatus::Completed,
-            "Read 2 lines\nfn main() {\n    let x = 1;\n}",
+            &read_detail(&[(1, "fn main() {"), (2, "    let x = 1;"), (3, "}")]),
         );
         let lines = expanded_read_layout(&state, &Theme::default());
         let rendered = lines
@@ -11789,13 +12734,355 @@ mod tests {
     }
 
     #[test]
-    fn read_path_extension_parsing_is_deterministic() {
+    fn tool_path_and_extension_parsing_is_structural() {
         assert_eq!(
-            read_path_extension(r#"{"path": "src/main.rs"}"#),
-            Some("rs")
+            tool_file_path(r#"{"filePath":"src/main.rs","content":"path: fake.txt"}"#).as_deref(),
+            Some("src/main.rs")
         );
-        assert_eq!(read_path_extension(r#"{"path": "README"}"#), None);
-        assert_eq!(read_path_extension("not json"), None);
+        assert_eq!(
+            tool_file_path(r#"{"path":"src/lib.rs"}"#).as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(path_extension("src/main.rs"), Some("rs"));
+        assert_eq!(path_extension("README"), None);
+        assert_eq!(tool_file_path("not json"), None);
+    }
+
+    #[test]
+    fn read_line_number_gutter_aligns_single_and_four_digit_numbers() {
+        let state = read_tool_state(
+            "src/main.rs",
+            ToolStatus::Completed,
+            &read_detail(&[(1, "one"), (1000, "thousand")]),
+        );
+        let lines = expanded_read_layout(&state, &Theme::default());
+        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("│    1 │ one")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("│ 1000 │ thousand"))
+        );
+    }
+
+    #[test]
+    fn guttered_code_wraps_without_repeating_the_line_number() {
+        let body = vec![ToolBodyLine::guttered_code(
+            Line::from("abcdefghijklmnopqrstuvwxyz"),
+            vec![Span::raw("1"), Span::raw(" │ ")],
+            vec![Span::raw(" "), Span::raw(" │ ")],
+        )];
+        let rendered = tool_block_lines(Role::ToolSuccess, body, 12, &Theme::default()).lines;
+        let text = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(text.len() > 1);
+        assert_eq!(text.iter().filter(|line| line.contains("1 │ ")).count(), 1);
+        assert!(text.iter().skip(1).all(|line| line.starts_with("│   │ ")));
+        assert!(text.last().is_some_and(|line| line.ends_with('z')));
+        assert!(
+            text.iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 12)
+        );
+    }
+
+    #[test]
+    fn guttered_code_handles_zero_and_one_column_widths() {
+        for width in [0, 1] {
+            let body = vec![ToolBodyLine::guttered_code(
+                Line::from("abc"),
+                vec![Span::raw("100 │ ")],
+                vec![Span::raw("    │ ")],
+            )];
+            let rendered = tool_block_lines(Role::ToolSuccess, body, width, &Theme::default())
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>();
+            assert_eq!(rendered, "abc", "width {width}");
+        }
+
+        for (width, expected) in [(0, "�"), (1, "�"), (2, "界"), (3, "│ �")] {
+            let body = vec![ToolBodyLine::guttered_code(
+                Line::from("界"),
+                vec![Span::raw("1 │ ")],
+                vec![Span::raw("  │ ")],
+            )];
+            let lines = tool_block_lines(Role::ToolSuccess, body, width, &Theme::default()).lines;
+            assert_eq!(snapshot_lines(&lines), expected, "width {width}");
+            assert!(lines.iter().all(|line| {
+                UnicodeWidthStr::width(line.to_string().as_str()) <= usize::from(width.max(1))
+            }));
+        }
+    }
+
+    #[test]
+    fn absent_and_unknown_read_languages_fall_back_to_plain_code() {
+        for path in ["README", "src/value.unknown-language"] {
+            let state = read_tool_state(
+                path,
+                ToolStatus::Completed,
+                &read_detail(&[(1, "plain value")]),
+            );
+            let rendered = snapshot_lines(&expanded_read_layout(&state, &Theme::default()));
+            assert!(rendered.contains("1 │ plain value"), "{path}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn unified_diff_detection_handles_boundaries_without_false_positives() {
+        let text = "@@ -1 +1 @@\n-old\n+new";
+        assert!(is_unified_diff(text));
+        let mut parsed = Vec::new();
+        for_each_diff_row(&ToolDiff::Unified(text), |row| {
+            parsed.push((row.kind, row.text.into_owned()));
+            true
+        });
+        assert!(matches!(parsed[1].0, DiffRowKind::Removed(1)));
+        assert!(matches!(parsed[2].0, DiffRowKind::Added(1)));
+        assert_eq!(parsed[2].1, "new");
+
+        assert!(is_unified_diff(
+            "diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ"
+        ));
+
+        assert!(!is_unified_diff(
+            "status: +added-looking text\nordinary output"
+        ));
+        assert!(!is_unified_diff("Binary files may differ"));
+    }
+
+    #[test]
+    fn synthetic_diffs_preserve_newline_termination_semantics() {
+        let terminated = ToolDiff::Edit {
+            before: "old\n".into(),
+            after: "new\n".into(),
+            metadata: "",
+        };
+        let mut terminated_rows = Vec::new();
+        for_each_diff_row(&terminated, |row| {
+            terminated_rows.push((row.kind, row.text.into_owned()));
+            true
+        });
+        assert_eq!(terminated_rows[0].1, "@@ -1 +1 @@");
+        assert_eq!(
+            terminated_rows
+                .iter()
+                .filter(|(kind, _)| matches!(kind, DiffRowKind::Added(_) | DiffRowKind::Removed(_)))
+                .count(),
+            2
+        );
+        assert!(
+            !terminated_rows
+                .iter()
+                .any(|(kind, _)| *kind == DiffRowKind::NoNewline)
+        );
+
+        let unterminated = ToolDiff::Edit {
+            before: "old".into(),
+            after: "new".into(),
+            metadata: "",
+        };
+        let mut markers = 0;
+        for_each_diff_row(&unterminated, |row| {
+            markers += usize::from(row.kind == DiffRowKind::NoNewline);
+            true
+        });
+        assert_eq!(markers, 2);
+
+        let empty_write = ToolDiff::Write {
+            content: String::new(),
+            metadata: "",
+        };
+        let mut hunk = None;
+        for_each_diff_row(&empty_write, |row| {
+            hunk = Some(row.text.into_owned());
+            false
+        });
+        assert_eq!(hunk.as_deref(), Some("@@ -0,0 +0,0 @@"));
+    }
+
+    #[test]
+    fn edit_arguments_render_added_and_removed_diff_gutters() {
+        let call_id = ToolCallId::new_v7();
+        let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
+        state.tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                owner: owner(1, "call-1"),
+                presentation: presentation("edit", Some("src/main.rs")),
+                arguments: serde_json::json!({
+                    "filePath": "src/main.rs",
+                    "oldString": "let old = 1;",
+                    "newString": "let new = 2;"
+                })
+                .to_string(),
+                status: ToolStatus::Completed,
+                detail: "Edited src/main.rs\nEdit applied atomically".into(),
+                has_output_chunks: false,
+            },
+        );
+        let expanded = HashSet::from([BlockId::Tool(call_id)]);
+        let lines = transcript_layout(&state, Some(&expanded), 80).lines;
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains(" - │ let old"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.to_string().contains(" + │ let new"))
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains('+')
+                    && span.style.fg == Theme::default().diff_added().fg)
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains('-')
+                    && span.style.fg == Theme::default().diff_removed().fg)
+        );
+    }
+
+    #[test]
+    fn tool_output_limits_toggle_and_stay_bounded_at_narrow_widths() {
+        let rows = (1..=1030)
+            .map(|number| (number, "let value = 1;"))
+            .collect::<Vec<_>>();
+        let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
+        let call_id = read_tool_id(&state);
+        let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
+
+        let collapsed = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
+        assert!(collapsed.contains("… 969 more lines (click to expand)"));
+
+        expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
+        let fully_expanded = transcript_layout(&state, Some(&expanded), 12);
+        let rendered = snapshot_lines(&fully_expanded.lines);
+        assert!(rendered.contains("… 9 more"));
+        assert!(rendered.contains("maximum"));
+        assert!(
+            fully_expanded
+                .lines
+                .iter()
+                .all(|line| { UnicodeWidthStr::width(line.to_string().as_str()) <= 12 })
+        );
+
+        expanded.remove(&tool_output_id(call_id, ToolOutputSection::Detail));
+        let collapsed_again = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
+        assert!(collapsed_again.contains("… 969 more lines (click to expand)"));
+    }
+
+    #[test]
+    fn byte_limit_counts_a_partially_rendered_line_as_omitted() {
+        let long = "x".repeat(MAX_EXPANDED_BODY_BYTES + 10);
+        let mut budget = RenderBudget::new(COLLAPSED_TOOL_OUTPUT_LIMITS);
+        let mut renderer = SectionRenderer::new(&mut budget, false, 0);
+        let rendered = renderer.take(&long).expect("partial line");
+        assert_eq!(
+            rendered.len(),
+            MAX_EXPANDED_BODY_BYTES - OUTPUT_NOTICE_RESERVE_BYTES
+        );
+        assert_eq!(renderer.fully_rendered, 0);
+    }
+
+    #[test]
+    fn detail_stdout_and_stderr_share_one_aggregate_budget() {
+        let text = (0..100).map(|_| "output").collect::<Vec<_>>().join("\n");
+        let mut budget = RenderBudget::new(COLLAPSED_TOOL_OUTPUT_LIMITS);
+        let detail = generic_output_lines(
+            None,
+            OutputText::complete(&text),
+            ToolOutputSection::Detail,
+            false,
+            &mut budget,
+            2,
+            &Theme::default(),
+        );
+        let stdout = generic_output_lines(
+            Some("STDOUT:"),
+            OutputText::complete(&text),
+            ToolOutputSection::Stdout,
+            false,
+            &mut budget,
+            1,
+            &Theme::default(),
+        );
+        let stderr = generic_output_lines(
+            Some("STDERR:"),
+            OutputText::complete(&text),
+            ToolOutputSection::Stderr,
+            false,
+            &mut budget,
+            0,
+            &Theme::default(),
+        );
+        let lines = detail.len() + stdout.len() + stderr.len();
+        let bytes = detail
+            .iter()
+            .chain(&stdout)
+            .chain(&stderr)
+            .map(|line| line.line.to_string().len())
+            .sum::<usize>();
+        assert!(lines <= COLLAPSED_TOOL_OUTPUT_LIMITS.lines, "{lines}");
+        assert!(bytes <= COLLAPSED_TOOL_OUTPUT_LIMITS.bytes, "{bytes}");
+        assert_eq!(
+            detail
+                .iter()
+                .chain(&stdout)
+                .chain(&stderr)
+                .filter(|line| line.output_toggle.is_some())
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn tool_code_views_snapshot() {
+        let read_id = ToolCallId::new_v7();
+        let edit_id = ToolCallId::new_v7();
+        let mut state = assistant_state(vec![
+            AssistantChild::Tool { call_id: read_id },
+            AssistantChild::Tool { call_id: edit_id },
+        ]);
+        state.tools.insert(
+            read_id,
+            ToolCallState {
+                id: read_id,
+                owner: owner(1, "call-read"),
+                presentation: presentation("read", Some("src/main.rs")),
+                arguments: r#"{"filePath":"src/main.rs"}"#.into(),
+                status: ToolStatus::Completed,
+                detail: read_detail(&[(1, "fn main() {"), (1000, "    println!(\"hi\");")]),
+                has_output_chunks: false,
+            },
+        );
+        state.tools.insert(
+            edit_id,
+            ToolCallState {
+                id: edit_id,
+                owner: owner(1, "call-edit"),
+                presentation: presentation("edit", Some("src/main.rs")),
+                arguments: serde_json::json!({
+                    "filePath": "src/main.rs",
+                    "oldString": "let old = 1;\n",
+                    "newString": "let new = 2;"
+                })
+                .to_string(),
+                status: ToolStatus::Completed,
+                detail: "Edit applied atomically".into(),
+                has_output_chunks: false,
+            },
+        );
+        let expanded = HashSet::from([BlockId::Tool(read_id), BlockId::Tool(edit_id)]);
+        insta::assert_snapshot!(snapshot_lines(
+            &transcript_layout(&state, Some(&expanded), 60).lines
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -11839,6 +13126,122 @@ mod tests {
                 .is_some_and(|set| set.contains(&block.id))
         );
         assert!(!app.input_focused);
+    }
+
+    #[tokio::test]
+    async fn clicking_tool_output_notice_expands_and_collapses_nested_view() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let rows = (1..=70)
+            .map(|number| (number, "let value = 1;"))
+            .collect::<Vec<_>>();
+        let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
+        let call_id = read_tool_id(&state);
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.store.sessions.insert(session, state);
+        app.expanded_blocks
+            .insert(session, HashSet::from([BlockId::Tool(call_id)]));
+
+        rendered_frame(&mut app, 80, 100);
+        let notice = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == tool_output_id(call_id, ToolOutputSection::Detail))
+            .copied()
+            .expect("collapsed output notice");
+        app.handle_click(notice.rect.x, notice.rect.y).await;
+        assert!(
+            app.expanded_blocks[&session]
+                .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
+        );
+
+        rendered_frame(&mut app, 80, 100);
+        let collapse = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == tool_output_id(call_id, ToolOutputSection::Detail))
+            .copied()
+            .expect("expanded output collapse notice");
+        app.handle_click(collapse.rect.x, collapse.rect.y).await;
+        assert!(
+            !app.expanded_blocks[&session]
+                .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
+        );
+    }
+
+    #[tokio::test]
+    async fn multi_section_notices_have_independent_click_regions() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let call_id = ToolCallId::new_v7();
+        let text = (0..100).map(|_| "output").collect::<Vec<_>>().join("\n");
+        let mut state = assistant_state(vec![AssistantChild::Tool { call_id }]);
+        state.tools.insert(
+            call_id,
+            ToolCallState {
+                id: call_id,
+                owner: owner(1, "call-1"),
+                presentation: presentation("bash", None),
+                arguments: r#"{"command":"build"}"#.into(),
+                status: ToolStatus::Running,
+                detail: text.clone(),
+                has_output_chunks: false,
+            },
+        );
+        app.store.sessions.insert(session, state);
+        for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+            app.store.apply_output_delta(OutputDelta {
+                call_id,
+                stream,
+                byte_offset: 0,
+                data: STANDARD.encode(text.as_bytes()),
+            });
+        }
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.expanded_blocks
+            .insert(session, HashSet::from([BlockId::Tool(call_id)]));
+
+        rendered_frame(&mut app, 80, 100);
+        let sections = app
+            .hit_map
+            .blocks
+            .iter()
+            .filter_map(|hit| match hit.id {
+                BlockId::ToolOutput { section, .. } => Some(section),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            sections,
+            HashSet::from([
+                ToolOutputSection::Detail,
+                ToolOutputSection::Stdout,
+                ToolOutputSection::Stderr,
+            ])
+        );
+        let stdout_id = tool_output_id(call_id, ToolOutputSection::Stdout);
+        let stdout = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == stdout_id)
+            .copied()
+            .expect("stdout notice");
+        app.handle_click(stdout.rect.x, stdout.rect.y).await;
+        assert!(app.expanded_blocks[&session].contains(&stdout_id));
+        assert!(
+            !app.expanded_blocks[&session]
+                .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
+        );
+        assert!(
+            !app.expanded_blocks[&session]
+                .contains(&tool_output_id(call_id, ToolOutputSection::Stderr))
+        );
+        assert!(app.expanded_blocks[&session].contains(&BlockId::Tool(call_id)));
     }
 
     // ------------------------------------------------------------------
@@ -13536,6 +14939,48 @@ mod tests {
     // ------------------------------------------------------------------
     // Layout cache
     // ------------------------------------------------------------------
+
+    #[test]
+    fn tool_output_expansion_invalidates_the_layout_cache() {
+        let rows = (1..=70).map(|number| (number, "value")).collect::<Vec<_>>();
+        let state = read_tool_state("src/main.rs", ToolStatus::Completed, &read_detail(&rows));
+        let call_id = read_tool_id(&state);
+        let session = SessionId::new_v7();
+        let theme = Theme::default();
+        let highlighter = crate::markdown::SyntectHighlighter::default();
+        let mut cache = LayoutCache::default();
+        let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
+        assert!(!ensure_cached_transcript_layout(
+            &mut cache,
+            session,
+            &state,
+            None,
+            Some(&expanded),
+            80,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+        ));
+        let passes = cache.item_layout_passes;
+        let collapsed = snapshot_lines(&cache.layout.lines);
+
+        expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
+        assert!(!ensure_cached_transcript_layout(
+            &mut cache,
+            session,
+            &state,
+            None,
+            Some(&expanded),
+            80,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+        ));
+        assert_eq!(cache.item_layout_passes, passes + 1);
+        assert_ne!(snapshot_lines(&cache.layout.lines), collapsed);
+    }
 
     #[test]
     fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {

@@ -4565,6 +4565,7 @@ impl App {
             .hit_map
             .blocks
             .iter()
+            .rev()
             .find(|hit| contains(hit.rect, column, row))
             .copied()
         {

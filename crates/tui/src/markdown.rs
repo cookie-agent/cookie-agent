@@ -1541,7 +1541,7 @@ impl<'a> MarkdownRenderer<'a> {
     }
 }
 
-fn wrap_code_spans(
+pub(crate) fn wrap_code_spans(
     spans: Vec<Span<'static>>,
     first_width: usize,
     continuation_width: usize,
@@ -1549,16 +1549,22 @@ fn wrap_code_spans(
     let mut lines = Vec::new();
     let mut current: Vec<Span<'static>> = Vec::new();
     let mut current_width = 0;
-    let mut available = first_width;
+    let mut available = first_width.max(1);
 
     for span in spans {
         for grapheme in span.content.graphemes(true) {
-            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            let mut grapheme_width = UnicodeWidthStr::width(grapheme);
             if current_width > 0 && current_width + grapheme_width > available {
                 lines.push(std::mem::take(&mut current));
                 current_width = 0;
-                available = continuation_width;
+                available = continuation_width.max(1);
             }
+            let grapheme = if grapheme_width > available {
+                grapheme_width = 1;
+                "�"
+            } else {
+                grapheme
+            };
             if let Some(last) = current.last_mut()
                 && last.style == span.style
             {

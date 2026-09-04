@@ -10,6 +10,7 @@ mod runtime;
 pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
@@ -2828,6 +2829,20 @@ impl OrderedOutput {
         String::from_utf8_lossy(&self.data).into_owned()
     }
 
+    /// Return at most `max_bytes` of display text without materializing a
+    /// valid UTF-8 stream. The line count describes the complete stream so a
+    /// bounded renderer can still report accurate truncation.
+    pub fn bounded_text(&self, max_bytes: usize) -> (Cow<'_, str>, usize) {
+        let original_lines = if self.data.is_empty() {
+            0
+        } else {
+            self.data.iter().filter(|byte| **byte == b'\n').count()
+                + usize::from(!self.data.ends_with(b"\n"))
+        };
+        let prefix = &self.data[..self.data.len().min(max_bytes)];
+        (String::from_utf8_lossy(prefix), original_lines)
+    }
+
     fn flush(&mut self) {
         while let Some(bytes) = self.pending.remove(&self.next_offset) {
             self.next_offset += bytes.len() as u64;
@@ -2839,6 +2854,22 @@ impl OrderedOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_output_bounded_text_borrows_valid_prefix_and_keeps_full_line_count() {
+        let output = OrderedOutput {
+            data: b"first\nsecond\nthird".to_vec(),
+            ..OrderedOutput::default()
+        };
+        let (complete, complete_lines) = output.bounded_text(usize::MAX);
+        assert!(matches!(complete, Cow::Borrowed("first\nsecond\nthird")));
+        assert_eq!(complete, output.text());
+        assert_eq!(complete_lines, 3);
+
+        let (prefix, original_lines) = output.bounded_text(8);
+        assert!(matches!(prefix, Cow::Borrowed("first\nse")));
+        assert_eq!(original_lines, 3);
+    }
 
     #[test]
     fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() {

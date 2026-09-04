@@ -565,6 +565,22 @@ impl Theme {
         self.semantic(self.palette().tan, Color::White, Modifier::DIM)
     }
 
+    pub fn code_gutter(&self) -> Style {
+        self.muted()
+    }
+
+    pub fn diff_added(&self) -> Style {
+        self.semantic(self.palette().basil, Color::LightGreen, Modifier::BOLD)
+    }
+
+    pub fn diff_removed(&self) -> Style {
+        self.semantic(self.palette().cranberry, Color::LightRed, Modifier::BOLD)
+    }
+
+    pub fn diff_hunk(&self) -> Style {
+        self.semantic(self.palette().slate, Color::LightCyan, Modifier::BOLD)
+    }
+
     pub fn quote(&self) -> Style {
         self.semantic(self.palette().quote, Color::LightMagenta, Modifier::ITALIC)
     }
@@ -762,6 +778,52 @@ mod tests {
             Theme::new(ThemeKind::Default, ColorLevel::Ansi16).quantize_rgb(12, 34, 56),
             Some(Color::Black | Color::Blue | Color::DarkGray)
         ));
+    }
+
+    #[test]
+    fn diff_styles_quantize_at_every_color_level() {
+        for (level, expected) in [
+            (ColorLevel::None, "none"),
+            (ColorLevel::Ansi16, "ansi16"),
+            (ColorLevel::Ansi256, "ansi256"),
+            (ColorLevel::TrueColor, "truecolor"),
+        ] {
+            let theme = Theme::new(ThemeKind::Default, level);
+            let added = theme.diff_added();
+            let removed = theme.diff_removed();
+            match expected {
+                "none" => {
+                    assert!(added.fg.is_none());
+                    assert!(removed.fg.is_none());
+                }
+                "ansi16" => {
+                    assert!(
+                        added.fg.is_some_and(|color| !matches!(
+                            color,
+                            Color::Rgb(..) | Color::Indexed(_)
+                        ))
+                    );
+                    assert!(
+                        removed.fg.is_some_and(|color| !matches!(
+                            color,
+                            Color::Rgb(..) | Color::Indexed(_)
+                        ))
+                    );
+                }
+                "ansi256" => {
+                    assert!(matches!(added.fg, Some(Color::Indexed(_))));
+                    assert!(matches!(removed.fg, Some(Color::Indexed(_))));
+                }
+                "truecolor" => {
+                    assert!(matches!(added.fg, Some(Color::Rgb(..))));
+                    assert!(matches!(removed.fg, Some(Color::Rgb(..))));
+                }
+                _ => unreachable!(),
+            }
+            if level != ColorLevel::None {
+                assert_ne!(added.fg, removed.fg);
+            }
+        }
     }
 
     #[test]
