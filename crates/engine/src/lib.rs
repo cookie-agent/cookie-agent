@@ -5,6 +5,7 @@ mod config_store;
 mod delegation_api;
 pub mod delegation_events;
 pub mod events;
+mod goal_projection;
 pub mod grant_journal;
 mod mcp;
 mod media;

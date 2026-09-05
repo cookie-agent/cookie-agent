@@ -13,11 +13,13 @@ use cookie_agent_protocol::{
     RuntimeSnapshotGetParams, RuntimeSnapshotResult, ServerContext, ServerFault, ServerProtocol,
     SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
     SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionListParams, SessionListResult,
-    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
-    SessionPermissionMutationResult, SessionPermissionSetParams, SessionRenameErrorCode,
-    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
-    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
+    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
+    SessionGoalSetResult, SessionListParams, SessionListResult, SessionPermissionClearParams,
+    SessionPermissionGetParams, SessionPermissionGetResult, SessionPermissionMutationResult,
+    SessionPermissionSetParams, SessionProducersParams, SessionProducersResult,
+    SessionRenameErrorCode, SessionRenameParams, SessionRenameResult, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
     SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
     SkillsListResult,
@@ -65,6 +67,40 @@ impl ServerProtocol for Server {
         self.engine
             .get_session(params.session_id)
             .map(|session| SessionGetResult { session })
+            .map_err(protocol_fault)
+    }
+
+    async fn get_session_goal(&self, params: SessionGoalGetParams) -> Result<SessionGoalGetResult> {
+        self.engine
+            .get_session_goal(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn set_session_goal(&self, params: SessionGoalSetParams) -> Result<SessionGoalSetResult> {
+        self.engine
+            .set_session_goal(params, rpc_origin())
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult> {
+        self.engine
+            .change_session_goal_lifecycle(params, rpc_origin())
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult> {
+        self.engine
+            .session_producers(params)
+            .await
             .map_err(protocol_fault)
     }
 

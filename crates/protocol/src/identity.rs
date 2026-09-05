@@ -130,6 +130,11 @@ macro_rules! bounded_control_free_type {
 
 bounded_control_free_type!(ClientRunId, 256, "Bounded run idempotency key.");
 bounded_control_free_type!(
+    ProducerIdempotencyKey,
+    256,
+    "Sender-chosen idempotency key scoped to a session and stable producer owner."
+);
+bounded_control_free_type!(
     ClientResponseId,
     256,
     "Bounded approval response idempotency key."
@@ -268,6 +273,9 @@ uuid_id!(InternalAgentRunId);
 uuid_id!(ApprovalId);
 uuid_id!(TreeApprovalGrantId);
 uuid_id!(DurableProviderReceiptId);
+uuid_id!(GoalId);
+uuid_id!(ProducerId);
+uuid_id!(ProducerMessageId);
 
 #[derive(Clone, Eq, Hash, PartialEq, TS)]
 #[ts(type = "string")]

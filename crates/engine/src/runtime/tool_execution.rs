@@ -812,7 +812,9 @@ impl Engine {
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
                 let delegation_tool = tool.permission_name == "delegate";
-                let enabled = !delegation_tool || delegate_enabled;
+                let goal_tool = matches!(tool.name.as_str(), "goal_get" | "goal_update");
+                let enabled = (!delegation_tool || delegate_enabled)
+                    && (!goal_tool || policy.goal_tools_enabled);
                 if enabled
                     && PermissionPipeline::tool_visible_with_grants(
                         &policy.agent,

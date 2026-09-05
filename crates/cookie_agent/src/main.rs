@@ -396,6 +396,15 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         engine.shutdown().await;
         return Err(error);
     }
+    if let Err(error) = engine
+        .try_register_tool_provider(Arc::new(cookie_agent_tools::goal::GoalTools::new(
+            engine.clone(),
+        )))
+        .context("register goal tools")
+    {
+        engine.shutdown().await;
+        return Err(error);
+    }
     let server = Arc::new(Server::new(engine.clone()));
     let catalog_refresh_shutdown = CancellationToken::new();
     let catalog_refresh_task = tokio::spawn(run_catalog_refresh_loop(

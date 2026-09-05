@@ -55,6 +55,21 @@ use crate::{
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
 
+#[path = "producer_runtime_tests.rs"]
+mod producer_runtime_tests;
+
+#[path = "producer_plugin_tests.rs"]
+mod producer_plugin_tests;
+
+#[path = "producer_discard_tests.rs"]
+mod producer_discard_tests;
+
+#[path = "delegation_revert_tests.rs"]
+mod delegation_revert_tests;
+
+#[path = "goal_selection_tests.rs"]
+mod goal_selection_tests;
+
 fn private_tempdir() -> PanicResistantTempDir {
     let directory = TempDir::new().expect("temp directory");
     #[cfg(unix)]
@@ -299,7 +314,7 @@ impl Drop for PanicResistantTempDir {
 }
 
 #[tokio::test]
-async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
+async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission() {
     let (mut fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
     fixture
@@ -326,7 +341,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),
@@ -343,6 +358,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
             ]),
             cwd: None,
             enabled: true,
+            producer_messaging: false,
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
@@ -382,19 +398,42 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
             if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
     ));
 
-    await_event(
-        &engine,
-        session.session_id,
-        "durable plugin event",
-        |event| {
-            matches!(
-                &event.payload,
-                EventPayload::PluginEventAdded { plugin, name, payload }
-                    if plugin == "fixture" && name == "fixture_notice" && payload["value"] == 7
-            )
-        },
-    )
-    .await;
+    let receipt = tokio::time::timeout(test_timeout(3), async {
+        loop {
+            if let Ok(contents) = fs::read_to_string(&result_file)
+                && let Some(receipt) = contents
+                    .lines()
+                    .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            {
+                break receipt;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("plugin emit receipt");
+    assert_eq!(receipt["durable"], "rejected");
+    assert!(
+        engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::PluginEventAdded { .. }))
+    );
+    assert!(
+        engine
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: session.session_id
+            })
+            .await
+            .unwrap()
+            .producers
+            .is_empty()
+    );
     let streamed = fs::read_to_string(&event_file).expect("streamed events");
     assert_eq!(
         streamed.lines().count(),
@@ -526,7 +565,7 @@ async fn plugin_publication_streams_bus_persists_and_excludes_self_echo() {
             .log
             .events()
             .iter()
-            .any(|event| matches!(event.payload, EventPayload::PluginEventAdded { .. }))
+            .all(|event| !matches!(event.payload, EventPayload::PluginEventAdded { .. }))
     );
     reopened.shutdown().await;
 }
@@ -562,7 +601,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                 ("FIXTURE_NAME".into(), "fixture".into()),
                 (
                     "FIXTURE_CAPABILITIES".into(),
-                    r#"{"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":true,"intercept":[]}"#.into(),
+                    r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":true,"publish_session_events":true,"intercept":[]}"#.into(),
                 ),
                 (
                     "FIXTURE_EMIT_ON_EVENT".into(),
@@ -573,6 +612,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             ]),
             cwd: None,
             enabled: true,
+            producer_messaging: false,
             interception_timeout_ms: 2_000,
             startup_timeout_ms: 10_000,
             shutdown_grace_ms: 3_000,
@@ -582,6 +622,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
     drop(fixture.engine);
     let engine = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     engine.inner.plugins.await_eager_ready().await;
+    let mut bus = engine.subscribe_engine_events();
     for (session_id, message) in [
         (session_a.session_id, "trigger A"),
         (session_b.session_id, "trigger B"),
@@ -601,6 +642,13 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
             .await
             .expect("trigger event");
     }
+    let delivered = tokio::time::timeout(test_timeout(3), bus.recv())
+        .await
+        .expect("delayed bus emit")
+        .expect("bus event");
+    assert!(
+        matches!(delivered, crate::EngineEvent::PluginEvent { session_id, name, .. } if session_id == session_a.session_id && name == "delayed_a")
+    );
     await_projection(
         &engine,
         session_a.session_id,
@@ -625,7 +673,7 @@ async fn interleaved_plugin_emit_uses_its_correlated_session_context() {
                     }
                 )
             });
-            published == 1 && replay_diagnosed
+            published == 0 && replay_diagnosed
         },
     )
     .await;
@@ -4190,7 +4238,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     fixture.config.skills =
         cookie_agent_config::load_skill_roots(None, None, &[fixture._directory.path().to_owned()])
             .expect("fixture skills");
-    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(
@@ -5482,8 +5530,8 @@ async fn scripted_channel_server(
         let mut requests = Vec::with_capacity(expected_requests);
         let mut pending_responses = Vec::<MatchedScriptedResponse>::new();
         for _ in 0..expected_requests {
-            let (mut socket, _) = listener.accept().await.expect("channel script accept");
-            let request = read_scripted_http_request(&mut socket).await;
+            let (mut socket, request) =
+                accept_scripted_planned_request(&listener, "channel script accept").await;
             let body = loop {
                 if let Some(index) = pending_responses
                     .iter()
@@ -5501,6 +5549,7 @@ async fn scripted_channel_server(
             requests.push(String::from_utf8(request).expect("channel script request"));
             write_scripted_sse(&mut socket, &body).await;
         }
+        spawn_scripted_auxiliary_tail(listener);
         requests
     });
     (format!("http://{address}/v1"), responses, task)
@@ -5616,22 +5665,7 @@ impl MatchedScriptedResponse {
     }
 
     fn matches(&self, request: &[u8]) -> bool {
-        let Some(body_start) = request
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map(|position| position + 4)
-        else {
-            return false;
-        };
-        let Ok(request) = serde_json::from_slice::<serde_json::Value>(&request[body_start..])
-        else {
-            return false;
-        };
-        let Some(last_message) = request
-            .get("messages")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|messages| messages.last())
-        else {
+        let Some(last_message) = scripted_effective_last_message(request) else {
             return false;
         };
         match &self.matcher {
@@ -5642,6 +5676,136 @@ impl MatchedScriptedResponse {
                 last_message.to_string().contains(text)
             }
         }
+    }
+}
+
+fn scripted_request_messages(request: &[u8]) -> Option<Vec<serde_json::Value>> {
+    let body_start = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?
+        + 4;
+    serde_json::from_slice::<serde_json::Value>(&request[body_start..])
+        .ok()?
+        .get("messages")?
+        .as_array()
+        .cloned()
+}
+
+fn scripted_message_is_subagent_notification(message: &serde_json::Value) -> bool {
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+        return false;
+    }
+    let text = match message.get("content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect::<String>(),
+        _ => return false,
+    };
+    let text = text.trim();
+    text.starts_with("<subagent_notification>") && text.ends_with("</subagent_notification>")
+}
+
+fn scripted_effective_last_message(request: &[u8]) -> Option<serde_json::Value> {
+    scripted_request_messages(request)?
+        .into_iter()
+        .rev()
+        .find(|message| !scripted_message_is_subagent_notification(message))
+}
+
+fn scripted_is_auxiliary_subagent_notification(request: &[u8]) -> bool {
+    let Some(messages) = scripted_request_messages(request) else {
+        return false;
+    };
+    messages
+        .last()
+        .is_some_and(scripted_message_is_subagent_notification)
+        && messages
+            .iter()
+            .rev()
+            .find(|message| !scripted_message_is_subagent_notification(message))
+            .and_then(|message| message.get("role"))
+            .and_then(serde_json::Value::as_str)
+            == Some("assistant")
+}
+
+async fn accept_scripted_planned_request(
+    listener: &tokio::net::TcpListener,
+    context: &str,
+) -> (tokio::net::TcpStream, Vec<u8>) {
+    loop {
+        let (mut socket, _) = listener.accept().await.expect(context);
+        let request = read_scripted_http_request(&mut socket).await;
+        if scripted_is_auxiliary_subagent_notification(&request) {
+            write_scripted_sse(
+                &mut socket,
+                &scripted_text_body("auxiliary subagent notification accepted"),
+            )
+            .await;
+            continue;
+        }
+        return (socket, request);
+    }
+}
+
+fn spawn_scripted_auxiliary_tail(listener: tokio::net::TcpListener) {
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let request = read_scripted_http_request(&mut socket).await;
+            if scripted_is_auxiliary_subagent_notification(&request) {
+                write_scripted_sse(
+                    &mut socket,
+                    &scripted_text_body("auxiliary subagent notification accepted"),
+                )
+                .await;
+            }
+        }
+    });
+}
+
+#[test]
+fn scripted_matchers_ignore_only_trailing_subagent_notifications() {
+    fn request(messages: serde_json::Value) -> Vec<u8> {
+        let body = serde_json::json!({"messages": messages}).to_string();
+        format!(
+            "POST /v1 HTTP/1.1\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    let post_tool = request(serde_json::json!([
+        {"role":"user","content":"delegate"},
+        {"role":"assistant","content":"","tool_calls":[]},
+        {"role":"tool","content":"admitted"},
+        {"role":"user","content":"<subagent_notification>{}</subagent_notification>"}
+    ]));
+    assert!(MatchedScriptedResponse::last_message_role("tool", String::new()).matches(&post_tool));
+    assert!(!scripted_is_auxiliary_subagent_notification(&post_tool));
+
+    let continuation = request(serde_json::json!([
+        {"role":"user","content":"delegate"},
+        {"role":"assistant","content":"complete"},
+        {"role":"user","content":"<subagent_notification>{}</subagent_notification>"}
+    ]));
+    assert!(scripted_is_auxiliary_subagent_notification(&continuation));
+
+    for semantic in [
+        "producer progress body",
+        "Continue working toward the original goal.",
+    ] {
+        let semantic_request = request(serde_json::json!([
+            {"role":"assistant","content":"complete"},
+            {"role":"user","content":semantic}
+        ]));
+        assert!(!scripted_is_auxiliary_subagent_notification(
+            &semantic_request
+        ));
+        assert!(
+            MatchedScriptedResponse::last_message_contains(semantic, String::new())
+                .matches(&semantic_request)
+        );
     }
 }
 
@@ -6380,8 +6544,8 @@ async fn scripted_queued_delegation_server() -> (String, tokio::task::JoinHandle
         .expect("queued delegation listener");
     let address = listener.local_addr().expect("listener address");
     let task = tokio::spawn(async move {
-        let (mut initial, _) = listener.accept().await.expect("queued parent initial");
-        let _ = read_scripted_http_request(&mut initial).await;
+        let (mut initial, _) =
+            accept_scripted_planned_request(&listener, "queued parent initial").await;
         let calls = (0..5)
             .map(|index| {
                 serde_json::json!({
@@ -6409,10 +6573,9 @@ async fn scripted_queued_delegation_server() -> (String, tokio::task::JoinHandle
         let mut children = Vec::new();
         let mut parent_responded = false;
         while children.len() < 4 || !parent_responded {
-            let (mut socket, _) = listener.accept().await.expect("queued concurrent request");
-            let request = read_scripted_http_request(&mut socket).await;
-            let text = String::from_utf8_lossy(&request);
-            if text.contains("\"role\":\"tool\"") {
+            let (mut socket, request) =
+                accept_scripted_planned_request(&listener, "queued concurrent request").await;
+            if MatchedScriptedResponse::last_message_role("tool", String::new()).matches(&request) {
                 let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent admitted all children\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
                 write_scripted_sse(&mut socket, body).await;
                 parent_responded = true;
@@ -6426,11 +6589,15 @@ async fn scripted_queued_delegation_server() -> (String, tokio::task::JoinHandle
             );
             write_scripted_sse(child, &body).await;
         }
-        let (mut queued, _) = listener.accept().await.expect("queued child start");
-        let request = read_scripted_http_request(&mut queued).await;
-        assert!(String::from_utf8_lossy(&request).contains("queued child"));
+        let (mut queued, request) =
+            accept_scripted_planned_request(&listener, "queued child start").await;
+        assert!(
+            scripted_effective_last_message(&request)
+                .is_some_and(|message| message.to_string().contains("queued child"))
+        );
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued child done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
         write_scripted_sse(&mut queued, body).await;
+        spawn_scripted_auxiliary_tail(listener);
     });
     (format!("http://{address}/v1"), task)
 }
@@ -6773,23 +6940,40 @@ async fn scripted_queued_resume_server() -> (
         )
         .await;
         for text in ["terminal target complete", "first parent complete"] {
-            let (mut socket, _) = listener.accept().await.expect("first resume phase request");
-            requests.push(
-                String::from_utf8(read_scripted_http_request(&mut socket).await)
-                    .expect("first resume phase request text"),
-            );
+            let (mut socket, request) =
+                accept_scripted_planned_request(&listener, "first resume phase request").await;
+            requests.push(String::from_utf8(request).expect("first resume phase request text"));
             write_scripted_sse(&mut socket, &scripted_text_body(text)).await;
         }
 
-        let resume_session_id = resume_rx.await.expect("queued resume session ID");
-        let (mut second_parent, _) = listener
-            .accept()
-            .await
-            .expect("queued resume second parent");
-        requests.push(
-            String::from_utf8(read_scripted_http_request(&mut second_parent).await)
-                .expect("second parent request"),
-        );
+        let mut resume_rx = resume_rx;
+        let mut accepted_second_parent = None;
+        let resume_session_id = loop {
+            tokio::select! {
+                resume_session_id = &mut resume_rx => {
+                    break resume_session_id.expect("queued resume session ID");
+                }
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.expect("queued resume continuation");
+                    let request = read_scripted_http_request(&mut socket).await;
+                    if scripted_is_auxiliary_subagent_notification(&request) {
+                        write_scripted_sse(
+                            &mut socket,
+                            &scripted_text_body("auxiliary subagent notification accepted"),
+                        )
+                        .await;
+                    } else {
+                        accepted_second_parent = Some((socket, request));
+                        break resume_rx.await.expect("queued resume session ID");
+                    }
+                }
+            }
+        };
+        let (mut second_parent, request) = match accepted_second_parent {
+            Some(request) => request,
+            None => accept_scripted_planned_request(&listener, "queued resume second parent").await,
+        };
+        requests.push(String::from_utf8(request).expect("second parent request"));
         let calls = [
             serde_json::json!({
                 "index":0,
@@ -6845,14 +7029,13 @@ async fn scripted_queued_resume_server() -> (
         let mut slot_holder = None;
         let mut parent_done = false;
         while slot_holder.is_none() || !parent_done {
-            let (mut socket, _) = listener
-                .accept()
-                .await
-                .expect("queued resume admission request");
-            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
-                .expect("queued resume admission request text");
+            let (mut socket, request) =
+                accept_scripted_planned_request(&listener, "queued resume admission request").await;
+            let request = String::from_utf8(request).expect("queued resume admission request text");
             requests.push(request.clone());
-            if request.contains("\"role\":\"tool\"") {
+            if MatchedScriptedResponse::last_message_role("tool", String::new())
+                .matches(request.as_bytes())
+            {
                 write_scripted_sse(&mut socket, &scripted_text_body("parent queued resume")).await;
                 parent_done = true;
             } else {
@@ -6863,28 +7046,19 @@ async fn scripted_queued_resume_server() -> (
         let _ = release_rx.await;
         let mut slot_holder = slot_holder.expect("slot holder request");
         write_scripted_sse(&mut slot_holder, &scripted_text_body("slot holder done")).await;
-        let (mut resumed, _) = listener
-            .accept()
-            .await
-            .expect("queued resumed child request");
-        requests.push(
-            String::from_utf8(read_scripted_http_request(&mut resumed).await)
-                .expect("queued resumed child request text"),
-        );
+        let (mut resumed, request) =
+            accept_scripted_planned_request(&listener, "queued resumed child request").await;
+        requests.push(String::from_utf8(request).expect("queued resumed child request text"));
         write_scripted_sse(&mut resumed, &scripted_text_body("queued resume done")).await;
-        let (mut steered, _) = listener
-            .accept()
-            .await
-            .expect("queued resume steer request");
-        requests.push(
-            String::from_utf8(read_scripted_http_request(&mut steered).await)
-                .expect("queued resume steer request text"),
-        );
+        let (mut steered, request) =
+            accept_scripted_planned_request(&listener, "queued resume steer request").await;
+        requests.push(String::from_utf8(request).expect("queued resume steer request text"));
         write_scripted_sse(
             &mut steered,
             &scripted_text_body("queued resume correction done"),
         )
         .await;
+        spawn_scripted_auxiliary_tail(listener);
         requests
     });
     (
@@ -6955,15 +7129,37 @@ async fn scripted_queued_steer_recovery_server() -> (
         let _ = release_rx.await;
         drop(children);
 
-        let (mut queued, _) = listener.accept().await.expect("recovered queued child");
-        let first = String::from_utf8(read_scripted_http_request(&mut queued).await)
-            .expect("queued initial request");
+        let (mut queued, first) = loop {
+            let (mut socket, _) = listener.accept().await.expect("recovered queued child");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("queued initial request");
+            if request.contains("Worker prompt.") {
+                break (socket, request);
+            }
+            write_scripted_sse(
+                &mut socket,
+                &scripted_text_body("parent accepted recovered child completion"),
+            )
+            .await;
+        };
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued initial pass\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
         write_scripted_sse(&mut queued, body).await;
 
-        let (mut steered, _) = listener.accept().await.expect("recovered steer request");
-        let second = String::from_utf8(read_scripted_http_request(&mut steered).await)
-            .expect("queued steered request");
+        let (mut steered, second) = loop {
+            let (mut socket, _) = listener.accept().await.expect("recovered steer request");
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("queued steered request");
+            if request.contains("Worker prompt.")
+                && request.contains("apply this queued correction")
+            {
+                break (socket, request);
+            }
+            write_scripted_sse(
+                &mut socket,
+                &scripted_text_body("parent accepted recovered child completion"),
+            )
+            .await;
+        };
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued steer done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
         write_scripted_sse(&mut steered, body).await;
         vec![first, second]
@@ -7477,7 +7673,7 @@ fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig
         ("FIXTURE_TOOLS".into(), "[]".into()),
         (
             "FIXTURE_CAPABILITIES".into(),
-            r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#.into(),
+            r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#.into(),
         ),
     ]);
     env.extend(
@@ -7492,6 +7688,7 @@ fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig
         env,
         cwd: None,
         enabled: true,
+        producer_messaging: false,
         interception_timeout_ms: 2_000,
         startup_timeout_ms: 10_000,
         shutdown_grace_ms: 3_000,
@@ -12042,7 +12239,7 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
 
 #[tokio::test]
 async fn user_input_transform_audit_uses_the_final_chain_value() {
-    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
     let cases = [
         (
             "noop",
@@ -12138,7 +12335,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
     for inject_message in [false, true] {
         let (mut fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
         if inject_message {
-            let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
+            let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["agent_before_start"]}"#;
             reopen_with_interception_plugins(
                 &mut fixture,
                 vec![(
@@ -12209,7 +12406,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
 async fn compact_cancellation_reason_reaches_the_engine_result() {
     let (endpoint, captured) = scripted_model_server().await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["session_before_compact"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["session_before_compact"]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(
@@ -12264,7 +12461,7 @@ async fn compact_cancellation_reason_reaches_the_engine_result() {
 async fn active_run_steering_uses_user_input_interception_and_audit() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(
@@ -12345,7 +12542,7 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
 async fn blocking_steering_uses_the_same_input_interception_and_audit() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     let (mut fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
+    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}"#;
     reopen_with_interception_plugins(
         &mut fixture,
         vec![(
@@ -13257,8 +13454,8 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         );
     let marker = tempfile::tempdir().unwrap();
     let provider_file = marker.path().join("provider.jsonl");
-    let model_capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_request"]}"#;
-    let provider_capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["provider_before_headers","provider_after_response"]}"#;
+    let model_capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_request"]}"#;
+    let provider_capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["provider_before_headers","provider_after_response"]}"#;
     let replacement = serde_json::json!({
         "action": "replace",
         "messages": [
@@ -15763,6 +15960,21 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     for index in 0..3 {
         let parent_input = format!("create paging child {index}");
         let child_prompt = format!("paging child task {index}");
+        await_projection(
+            &fixture.engine,
+            parent.session_id,
+            "parent producer deliveries settled before next paging run",
+            |parent| {
+                parent.status != SessionStatus::Running
+                    && crate::goal_projection::GoalProducerProjection::from_events(
+                        &parent.log.event_snapshot(),
+                    )
+                    .messages
+                    .iter()
+                    .all(|message| message.consumed || message.discarded)
+            },
+        )
+        .await;
         responses
             .send(MatchedScriptedResponse::last_message_contains(
                 &parent_input,
@@ -16290,6 +16502,22 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .await
         .expect("evict before resume");
 
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "parent producer deliveries settled before explicit resume",
+        |parent| {
+            parent.status != SessionStatus::Running
+                && crate::goal_projection::GoalProducerProjection::from_events(
+                    &parent.log.event_snapshot(),
+                )
+                .messages
+                .iter()
+                .all(|message| message.consumed || message.discarded)
+        },
+    )
+    .await;
+
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "resume the evicted paging child",
@@ -16613,8 +16841,9 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         )
         .await
         .expect("queued cancel second run");
-    queued
+    tokio::time::timeout(test_timeout(3), queued)
         .await
+        .expect("terminal resume queue timeout")
         .expect("terminal resume queued for cancellation");
     fixture
         .engine
@@ -16689,8 +16918,8 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
             .and_then(|entry| entry.terminal_status),
         Some(SessionStatus::Cancelled)
     );
-    fixture.engine.shutdown().await;
     server.abort();
+    fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);
     assert!(

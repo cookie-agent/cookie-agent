@@ -1012,6 +1012,15 @@ fn event_requires_durable_barrier(payload: &EventPayload) -> bool {
         | EventPayload::AgentMdLoaded { .. }
         | EventPayload::PluginEventAdded { .. }
         | EventPayload::PluginDiagnostic { .. }
+        | EventPayload::GoalActivated { .. }
+        | EventPayload::GoalChecklistRevised { .. }
+        | EventPayload::GoalLifecycleChanged { .. }
+        | EventPayload::ProducerMessageAccepted { .. }
+        | EventPayload::ProducerMessageAdmitted { .. }
+        | EventPayload::ProducerMessagesClaimed { .. }
+        | EventPayload::ProducerMessagesReleased { .. }
+        | EventPayload::ProducerMessageConsumed { .. }
+        | EventPayload::ProducerMessageDiscarded { .. }
         | EventPayload::RunStarted { .. }
         | EventPayload::MessageInjected { .. }
         | EventPayload::UserInputAdmitted { .. }
@@ -2613,6 +2622,15 @@ fn validate_record_incremental(
         EventPayload::PluginEventAdded { .. } | EventPayload::PluginDiagnostic { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "plugin events must be runless");
+            }
+        }
+        EventPayload::GoalActivated { .. }
+        | EventPayload::GoalChecklistRevised { .. }
+        | EventPayload::GoalLifecycleChanged { .. }
+        | EventPayload::ProducerMessageAccepted { .. }
+        | EventPayload::ProducerMessageDiscarded { .. } => {
+            if record.run_id.is_some() {
+                require_started_run(path, runs, record.run_id)?;
             }
         }
         _ => {
@@ -5206,6 +5224,14 @@ mod tests {
             &EventPayload::UserInputAdmitted {
                 input: "steer".into(),
             }
+        ));
+        assert!(event_requires_durable_barrier(
+            &EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![cookie_agent_protocol::ProducerMessageId::new_v7()],
+            }
+        ));
+        assert!(event_requires_durable_barrier(
+            &EventPayload::ProducerMessagesReleased { claim_seq: 2 }
         ));
     }
 

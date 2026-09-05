@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionProducerSendParams",
+  "description": "Send requires a live registration owned by this connection and session.\nIdentical (session, stable owner, key) retries return the original receipt;\ndifferent body or mode is rejected. A missing ACK is commit-uncertain.",
+  "type": "object",
+  "properties": {
+    "body": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "description": "Sender-chosen idempotency key scoped to a session and stable producer owner.",
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+    },
+    "mode": {
+      "$ref": "#/$defs/ProducerDeliveryMode"
+    },
+    "producer_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "producer_id",
+    "mode",
+    "idempotency_key",
+    "body"
+  ],
+  "$defs": {
+    "ProducerDeliveryMode": {
+      "description": "Per-send mode. Queue remains accepted-but-deferred during an active run;\nsteer joins the next safe request without interrupting an in-flight request.",
+      "type": "string",
+      "enum": [
+        "steer",
+        "queue"
+      ]
+    }
+  }
+}

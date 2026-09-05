@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.4"
+      "const": "0.0.5"
     },
     "tools": {
       "type": "array",
@@ -59,6 +59,9 @@
             "$ref": "#/$defs/ExtensionInterceptionHook"
           }
         },
+        "producer_messaging": {
+          "type": "boolean"
+        },
         "publish_bus": {
           "type": "boolean"
         },
@@ -80,6 +83,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "producer_messaging",
         "tools",
         "resources",
         "subscribe_events",

@@ -34,6 +34,16 @@ use cookie_agent_protocol::{
     PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
     PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
 };
+use cookie_agent_protocol::{
+    ExtensionInitializeParams, ExtensionProducerDiscardParams, ExtensionProducerDiscardResult,
+    ExtensionProducerRegisterParams, ExtensionProducerRegisterResult, ExtensionProducerSendParams,
+    ExtensionProducerSendResult, ExtensionProducerUnregisterParams,
+    ExtensionProducerUnregisterResult, ExtensionRecoveryCompleteParams,
+    ExtensionRecoveryCompleteResult, ExtensionRecoveryOutcome, PLUGIN_PRODUCER_DISCARD_METHOD,
+    PLUGIN_PRODUCER_REGISTER_METHOD, PLUGIN_PRODUCER_SEND_METHOD,
+    PLUGIN_PRODUCER_UNREGISTER_METHOD, PLUGIN_RECOVERY_COMPLETE_METHOD, PluginRecoveryState,
+    PluginRecoveryStatus, extension_recovery_start_notification,
+};
 use futures_util::StreamExt as _;
 use indexmap::IndexMap;
 use oven_sdk::JsonSchema;
@@ -45,8 +55,8 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use serde_json::Value;
 use tokio::{
     io::AsyncWriteExt as _,
-    sync::{Notify, mpsc, oneshot},
-    task::JoinHandle,
+    sync::{Notify, mpsc, oneshot, watch},
+    task::{JoinHandle, JoinSet},
     time::Instant,
 };
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -61,6 +71,7 @@ pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
 pub(crate) const MAX_PLUGIN_EVENT_TOTAL_BYTES: usize = 272 * 1024;
 const PLUGIN_OUTBOUND_CAPACITY: usize = 1024;
+const PLUGIN_PRODUCER_CONCURRENCY: usize = 32;
 const PLUGIN_NOTIFICATION_CAPACITY: usize = 1024;
 const PLUGIN_CONTEXT_CAPACITY: usize = 1024;
 const PLUGIN_SPENT_CONTEXT_CAPACITY: usize = 256;
@@ -123,6 +134,75 @@ pub(crate) type PluginEmitHandler = Arc<
         + Sync,
 >;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PluginConnectionAuthority {
+    pub plugin: String,
+    pub connection_epoch: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PluginProducerRequest {
+    Register(ExtensionProducerRegisterParams),
+    Send(ExtensionProducerSendParams),
+    Unregister(ExtensionProducerUnregisterParams),
+    Discard(ExtensionProducerDiscardParams),
+    RecoveryComplete(ExtensionRecoveryCompleteParams),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum PluginProducerResponse {
+    Register(ExtensionProducerRegisterResult),
+    Send(ExtensionProducerSendResult),
+    Unregister(ExtensionProducerUnregisterResult),
+    Discard(ExtensionProducerDiscardResult),
+    RecoveryComplete(ExtensionRecoveryCompleteResult),
+}
+
+pub(crate) type PluginProducerHandler = Arc<
+    dyn Fn(
+            PluginConnectionAuthority,
+            PluginProducerRequest,
+        )
+            -> Pin<Box<dyn Future<Output = Result<PluginProducerResponse, JsonRpcError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+struct ProducerConnection {
+    epoch: Option<u64>,
+    live: bool,
+    recovery: Option<PluginRecoveryStatus>,
+    outcome: Option<ExtensionRecoveryOutcome>,
+}
+
+/// Invalidates authority even when the supervisor is aborted during shutdown.
+struct ProducerConnectionLease(Arc<PluginRuntime>, u64);
+
+impl Drop for ProducerConnectionLease {
+    fn drop(&mut self) {
+        let mut connection = self
+            .0
+            .producer_connection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if connection.epoch != Some(self.1) {
+            return;
+        }
+        connection.epoch = None;
+        connection.live = false;
+        if connection
+            .recovery
+            .is_some_and(|status| status != PluginRecoveryStatus::Disabled)
+        {
+            connection.recovery = Some(PluginRecoveryStatus::Failed);
+        }
+        drop(connection);
+        self.0
+            .producer_changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
     PluginEvent {
@@ -166,6 +246,9 @@ struct PluginRuntime {
     ready: Arc<Notify>,
     mcp: Arc<crate::McpRegistry>,
     emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
+    producer_handler: Arc<Mutex<Option<PluginProducerHandler>>>,
+    producer_connection: Mutex<ProducerConnection>,
+    producer_changes: watch::Sender<u64>,
     contexts: Mutex<PluginContexts>,
     publish_quotas: Mutex<HashMap<cookie_agent_protocol::SessionId, PublishQuota>>,
 }
@@ -204,6 +287,7 @@ impl Drop for PluginContextLease {
 }
 
 enum Control {
+    ReplyFrame(Response),
     Ping(oneshot::Sender<Result<(), String>>),
     ToolCall {
         params: ExtensionToolCallParams,
@@ -365,6 +449,8 @@ struct PluginRegistryInner {
     tasks: Mutex<Vec<JoinHandle<()>>>,
     ready: Arc<Notify>,
     emit_handler: Arc<Mutex<Option<PluginEmitHandler>>>,
+    producer_handler: Arc<Mutex<Option<PluginProducerHandler>>>,
+    producer_changes: watch::Sender<u64>,
 }
 
 fn record_plugin_delivery_drop(
@@ -414,6 +500,8 @@ impl PluginRegistry {
     ) -> Self {
         let ready = Arc::new(Notify::new());
         let emit_handler = Arc::new(Mutex::new(None));
+        let producer_handler = Arc::new(Mutex::new(None));
+        let (producer_changes, _) = watch::channel(0);
         let plugins: IndexMap<String, Arc<PluginRuntime>> = plugins
             .into_iter()
             .map(|(name, config)| {
@@ -424,6 +512,18 @@ impl PluginRegistry {
                 };
                 let runtime = Arc::new(PluginRuntime {
                     name: name.clone(),
+                    producer_connection: Mutex::new(ProducerConnection {
+                        epoch: None,
+                        live: false,
+                        recovery: config.producer_messaging.then_some(if config.enabled {
+                            PluginRecoveryStatus::Starting
+                        } else {
+                            PluginRecoveryStatus::Disabled
+                        }),
+                        outcome: None,
+                    }),
+                    producer_handler: Arc::clone(&producer_handler),
+                    producer_changes: producer_changes.clone(),
                     config,
                     status: Mutex::new(PluginStatus {
                         plugin: name.clone(),
@@ -455,6 +555,8 @@ impl PluginRegistry {
             tasks: Mutex::new(Vec::new()),
             ready,
             emit_handler,
+            producer_handler,
+            producer_changes,
         });
         let weak = Arc::downgrade(&inner);
         mcp.set_plugin_collision_handler(Arc::new(move |plugin, tool, replacement| {
@@ -579,6 +681,92 @@ impl PluginRegistry {
             .emit_handler
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handler);
+    }
+
+    pub(crate) fn set_producer_handler(&self, handler: PluginProducerHandler) {
+        *self
+            .inner
+            .producer_handler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(handler);
+    }
+
+    /// Coalescing wakeups, not a lifecycle event log. On every change reconcile
+    /// readiness and revoke registrations whose name/epoch is no longer current.
+    pub(crate) fn subscribe_producer_changes(&self) -> watch::Receiver<u64> {
+        self.inner.producer_changes.subscribe()
+    }
+
+    /// Snapshot of configured or declared producer plugins, including unavailable
+    /// ones. Failed/disabled external work is unknown, never proof of completion.
+    #[must_use]
+    pub fn producer_recovery_states(&self) -> Vec<PluginRecoveryState> {
+        self.inner
+            .plugins
+            .values()
+            .filter_map(|plugin| {
+                let connection = plugin
+                    .producer_connection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                connection.recovery.map(|status| PluginRecoveryState {
+                    plugin: plugin.name.clone(),
+                    status,
+                })
+            })
+            .collect()
+    }
+
+    /// Runtime actor operations must also check registration owner and session.
+    pub(crate) fn producer_connection_is_current(&self, plugin: &str, epoch: &u64) -> bool {
+        self.inner.plugins.get(plugin).is_some_and(|plugin| {
+            let connection = plugin
+                .producer_connection
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            connection.live && connection.epoch == Some(*epoch)
+        })
+    }
+
+    /// Call inside the runtime RecoveryComplete handler before reconciling actors
+    /// and acknowledging. Exact repeats are idempotent; conflicting outcomes fail.
+    pub(crate) fn complete_producer_recovery(
+        &self,
+        authority: &PluginConnectionAuthority,
+        outcome: &ExtensionRecoveryOutcome,
+    ) -> Result<(), JsonRpcError> {
+        let plugin = self
+            .inner
+            .plugins
+            .get(&authority.plugin)
+            .ok_or_else(|| producer_error(-32600, "unknown plugin connection"))?;
+        let mut connection = plugin
+            .producer_connection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !connection.live || connection.epoch != Some(authority.connection_epoch) {
+            return Err(producer_error(-32600, "stale plugin connection"));
+        }
+        if let Some(previous) = &connection.outcome {
+            return if previous == outcome {
+                Ok(())
+            } else {
+                Err(producer_error(-32600, "recovery outcome already reported"))
+            };
+        }
+        connection.recovery = Some(match outcome {
+            ExtensionRecoveryOutcome::Ready => PluginRecoveryStatus::Ready,
+            ExtensionRecoveryOutcome::Failed { .. } => PluginRecoveryStatus::Failed,
+        });
+        connection.outcome = Some(outcome.clone());
+        drop(connection);
+        if let ExtensionRecoveryOutcome::Failed { message } = outcome {
+            self.note_offender_diagnostic(&authority.plugin, message.to_string());
+        }
+        plugin
+            .producer_changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+        Ok(())
     }
 
     pub(crate) fn check_publish_quota(
@@ -1207,8 +1395,25 @@ impl PluginRuntime {
         receiver: mpsc::Receiver<Control>,
         notifications: Arc<PluginNotificationQueue>,
     ) {
+        static NEXT_CONNECTION_EPOCH: AtomicU64 = AtomicU64::new(1);
+        let epoch = NEXT_CONNECTION_EPOCH
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .expect("plugin connection epoch space exhausted");
+        {
+            let mut connection = self
+                .producer_connection
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            connection.epoch = Some(epoch);
+            connection.live = false;
+            connection.outcome = None;
+        }
+        let lease = ProducerConnectionLease(Arc::clone(&self), epoch);
         self.set_status(PluginState::Connecting, None, Vec::new());
         let result = self.spawn_and_supervise(receiver, &notifications).await;
+        drop(lease);
         *self
             .control
             .lock()
@@ -1234,10 +1439,16 @@ impl PluginRuntime {
     }
 
     async fn spawn_and_supervise(
-        &self,
+        self: &Arc<Self>,
         receiver: mpsc::Receiver<Control>,
         notifications: &Arc<PluginNotificationQueue>,
     ) -> Result<(), String> {
+        let epoch = self
+            .producer_connection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .epoch
+            .expect("supervisor owns a connection epoch");
         let command = self
             .config
             .command
@@ -1266,6 +1477,8 @@ impl PluginRuntime {
         let result = self
             .supervise_spawned(&mut child, receiver, notifications)
             .await;
+        // Revoke before process cleanup, which may wait for the shutdown grace.
+        drop(ProducerConnectionLease(Arc::clone(self), epoch));
         let cleanup = terminate_and_reap(&mut child).await;
         match (result, cleanup) {
             (Err(reason), Err(cleanup)) => Err(format!("{reason}; cleanup failed: {cleanup}")),
@@ -1275,7 +1488,7 @@ impl PluginRuntime {
     }
 
     async fn supervise_spawned(
-        &self,
+        self: &Arc<Self>,
         child: &mut Box<dyn ChildWrapper>,
         receiver: mpsc::Receiver<Control>,
         notifications: &Arc<PluginNotificationQueue>,
@@ -1298,18 +1511,26 @@ impl PluginRuntime {
     }
 
     async fn run_host_loop(
-        &self,
+        self: &Arc<Self>,
         child: &mut Box<dyn ChildWrapper>,
         mut stdin: tokio::process::ChildStdin,
         mut control: mpsc::Receiver<Control>,
         notifications: &Arc<PluginNotificationQueue>,
         mut inbound: mpsc::Receiver<ReaderEvent>,
     ) -> Result<(), String> {
-        write_json(
-            &mut stdin,
-            &extension_initialize_request(env!("CARGO_PKG_VERSION")),
-        )
-        .await?;
+        let mut initialize = extension_initialize_request(env!("CARGO_PKG_VERSION"));
+        let mut params: ExtensionInitializeParams =
+            serde_json::from_value(initialize.params.take().expect("initialize has params"))
+                .expect("initialize params are typed");
+        params.capabilities.producer_messaging = self.config.producer_messaging
+            && self
+                .producer_handler
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some();
+        initialize.params =
+            Some(serde_json::to_value(params).expect("initialize params serialize"));
+        write_json(&mut stdin, &initialize).await?;
         let mut pending = HashMap::from([(
             1_i64,
             PendingRequest::Initialize {
@@ -1318,6 +1539,7 @@ impl PluginRuntime {
         )]);
         let mut next_request_id = 2_i64;
         let mut connected = false;
+        let mut producer_tasks = JoinSet::new();
 
         loop {
             if let Some(reason) = self
@@ -1343,6 +1565,7 @@ impl PluginRuntime {
                             &mut stdin,
                             &mut pending,
                             &mut connected,
+                            &mut producer_tasks,
                         ).await?;
                     }
                     Some(ReaderEvent::Failed(reason)) => return Err(reason),
@@ -1365,6 +1588,7 @@ impl PluginRuntime {
                     }
                 },
                 command = control.recv() => match command {
+                    Some(Control::ReplyFrame(response)) => write_json(&mut stdin, &response).await?,
                     Some(Control::Ping(reply)) if connected => {
                         let id = next_request_id;
                         next_request_id = next_request_id.checked_add(1)
@@ -1453,6 +1677,10 @@ impl PluginRuntime {
                     }
                 },
                 () = self.forced_failure_notify.notified() => {}
+                completed = producer_tasks.join_next(), if !producer_tasks.is_empty() => {
+                    completed.expect("task set is nonempty")
+                        .map_err(|error| format!("plugin producer handler failed: {error}"))?;
+                }
                 () = wait_for_deadline(deadline) => {
                     let now = Instant::now();
                     let expired = pending
@@ -1479,11 +1707,12 @@ impl PluginRuntime {
     }
 
     async fn dispatch_message(
-        &self,
+        self: &Arc<Self>,
         message: &str,
         stdin: &mut tokio::process::ChildStdin,
         pending: &mut HashMap<i64, PendingRequest>,
         connected: &mut bool,
+        producer_tasks: &mut JoinSet<()>,
     ) -> Result<(), String> {
         let value: Value = serde_json::from_str(message)
             .map_err(|error| format!("malformed plugin message: {error}"))?;
@@ -1491,17 +1720,9 @@ impl PluginRuntime {
             if value.get("id").is_some() {
                 let request: Request = serde_json::from_value(value)
                     .map_err(|error| format!("malformed plugin request: {error}"))?;
-                let response = ErrorResponse {
-                    jsonrpc: JsonRpcVersion::current(),
-                    id: request.id,
-                    error: JsonRpcError {
-                        code: -32601,
-                        message: "plugin method is reserved but not supported by this engine stage"
-                            .into(),
-                        data: None,
-                    },
-                };
-                write_json(stdin, &response).await?;
+                if let Some(response) = self.dispatch_producer_request(request, producer_tasks) {
+                    write_json(stdin, &response).await?;
+                }
             } else {
                 let notification = serde_json::from_value::<Notification>(value)
                     .map_err(|error| format!("malformed plugin notification: {error}"))?;
@@ -1594,6 +1815,39 @@ impl PluginRuntime {
                     Some(initialize.capabilities);
                 self.set_status(PluginState::Connected, None, names);
                 *connected = true;
+                let capable = self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .is_some_and(|capabilities| capabilities.producer_messaging);
+                let handler_available = self
+                    .producer_handler
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some();
+                {
+                    let mut connection = self
+                        .producer_connection
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    connection.live =
+                        capable && self.config.producer_messaging && handler_available;
+                    if capable || self.config.producer_messaging {
+                        connection.recovery = Some(if connection.live {
+                            PluginRecoveryStatus::Starting
+                        } else if capable && self.config.producer_messaging {
+                            PluginRecoveryStatus::Failed
+                        } else {
+                            PluginRecoveryStatus::Disabled
+                        });
+                    }
+                }
+                self.producer_changes
+                    .send_modify(|revision| *revision = revision.wrapping_add(1));
+                if capable && self.config.producer_messaging && handler_available {
+                    write_json(stdin, &extension_recovery_start_notification()).await?;
+                }
                 Ok(())
             }
             PendingRequest::Ping { reply, .. } => {
@@ -1620,6 +1874,91 @@ impl PluginRuntime {
         }
     }
 
+    fn dispatch_producer_request(
+        self: &Arc<Self>,
+        request: Request,
+        tasks: &mut JoinSet<()>,
+    ) -> Option<Response> {
+        let id = request.id;
+        let reject = |error| Some(producer_response(id.clone(), Err(error)));
+        let decoded =
+            match decode_producer_request(&request.method, request.params.unwrap_or(Value::Null)) {
+                Ok(decoded) => decoded,
+                Err(error) => return reject(error),
+            };
+        let authority = {
+            let connection = self
+                .producer_connection
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if !connection.live {
+                return reject(producer_error(
+                    -32600,
+                    "producer messaging is not enabled on this connection",
+                ));
+            }
+            PluginConnectionAuthority {
+                plugin: self.name.clone(),
+                connection_epoch: connection.epoch.expect("live connection has an epoch"),
+            }
+        };
+        let Some(handler) = self
+            .producer_handler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        else {
+            return reject(producer_error(
+                -32601,
+                "plugin producer handler is unavailable",
+            ));
+        };
+        // Never wait for capacity on the reader: callbacks may themselves need
+        // replies from this connection. Overload is an explicit rejection.
+        if tasks.len() >= PLUGIN_PRODUCER_CONCURRENCY {
+            return reject(producer_error(
+                -32000,
+                "plugin producer handler capacity exceeded",
+            ));
+        }
+        let Some(control) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        else {
+            return reject(producer_error(-32600, "plugin connection is closed"));
+        };
+        let runtime = Arc::clone(self);
+        tasks.spawn(async move {
+            let current = || {
+                let connection = runtime
+                    .producer_connection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                connection.live && connection.epoch == Some(authority.connection_epoch)
+            };
+            let result = if current() {
+                handler(authority.clone(), decoded)
+                    .await
+                    .and_then(|response| producer_result(&request.method, response))
+            } else {
+                Err(producer_error(-32600, "stale plugin connection"))
+            };
+            let result = if current() {
+                result
+            } else {
+                Err(producer_error(-32600, "stale plugin connection"))
+            };
+            // A closed receiver means the transport disconnected; the caller sees
+            // EOF, not a fabricated ACK. A full queue is awaited without dropping.
+            let _ = control
+                .send(Control::ReplyFrame(producer_response(id, result)))
+                .await;
+        });
+        None
+    }
+
     fn set_status(&self, state: PluginState, reason: Option<String>, tools: Vec<String>) {
         let mut status = self
             .status
@@ -1637,6 +1976,82 @@ impl PluginRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+}
+
+fn producer_error(code: i32, message: &str) -> JsonRpcError {
+    JsonRpcError {
+        code,
+        message: message.into(),
+        data: None,
+    }
+}
+
+fn decode_producer_request(
+    method: &str,
+    params: Value,
+) -> Result<PluginProducerRequest, JsonRpcError> {
+    let decoded = match method {
+        PLUGIN_PRODUCER_REGISTER_METHOD => {
+            serde_json::from_value(params).map(PluginProducerRequest::Register)
+        }
+        PLUGIN_PRODUCER_SEND_METHOD => {
+            serde_json::from_value(params).map(PluginProducerRequest::Send)
+        }
+        PLUGIN_PRODUCER_UNREGISTER_METHOD => {
+            serde_json::from_value(params).map(PluginProducerRequest::Unregister)
+        }
+        PLUGIN_PRODUCER_DISCARD_METHOD => {
+            serde_json::from_value(params).map(PluginProducerRequest::Discard)
+        }
+        PLUGIN_RECOVERY_COMPLETE_METHOD => {
+            serde_json::from_value(params).map(PluginProducerRequest::RecoveryComplete)
+        }
+        _ => return Err(producer_error(-32601, "unknown plugin request method")),
+    };
+    decoded
+        .map_err(|error| producer_error(-32602, &format!("invalid producer parameters: {error}")))
+}
+
+fn producer_result(method: &str, response: PluginProducerResponse) -> Result<Value, JsonRpcError> {
+    let result = match (method, response) {
+        (PLUGIN_PRODUCER_REGISTER_METHOD, PluginProducerResponse::Register(result)) => {
+            serde_json::to_value(result)
+        }
+        (PLUGIN_PRODUCER_SEND_METHOD, PluginProducerResponse::Send(result)) => {
+            serde_json::to_value(result)
+        }
+        (PLUGIN_PRODUCER_UNREGISTER_METHOD, PluginProducerResponse::Unregister(result)) => {
+            serde_json::to_value(result)
+        }
+        (PLUGIN_PRODUCER_DISCARD_METHOD, PluginProducerResponse::Discard(result)) => {
+            serde_json::to_value(result)
+        }
+        (PLUGIN_RECOVERY_COMPLETE_METHOD, PluginProducerResponse::RecoveryComplete(result)) => {
+            serde_json::to_value(result)
+        }
+        _ => {
+            return Err(producer_error(
+                -32603,
+                "plugin producer handler returned the wrong response variant",
+            ));
+        }
+    };
+    result.map_err(|error| producer_error(-32603, &error.to_string()))
+}
+
+fn producer_response(id: JsonRpcId, result: Result<Value, JsonRpcError>) -> Response {
+    match result {
+        Ok(result) => Response::Success(SuccessResponse {
+            jsonrpc: JsonRpcVersion::current(),
+            id,
+            result,
+        }),
+        Err(error) => Response::Error(ErrorResponse {
+            jsonrpc: JsonRpcVersion::current(),
+            id,
+            error,
+        }),
     }
 }
 
@@ -2087,6 +2502,537 @@ async fn terminate_and_reap(child: &mut Box<dyn ChildWrapper>) -> Result<(), Str
 }
 
 #[cfg(test)]
+mod producer_tests {
+    use super::*;
+    use cookie_agent_protocol::{ProducerId, ProducerMessageId, SessionId};
+    use serde_json::json;
+
+    fn registry(
+        enabled: bool,
+        producers: bool,
+        script: &str,
+    ) -> (tempfile::TempDir, PluginRegistry) {
+        let directory = tempfile::tempdir().unwrap();
+        let mcp = Arc::new(
+            crate::McpRegistry::new(Default::default(), directory.path().join("oauth.json"))
+                .unwrap(),
+        );
+        let config = serde_json::from_value(json!({
+            "command": if cfg!(windows) { "python" } else { "python3" },
+            "args": ["-c", script], "enabled": enabled, "producer_messaging": producers,
+            "env": std::env::vars().filter(|(name, _)| ["PATH", "SYSTEMROOT", "WINDIR"].contains(&name.as_str())).collect::<std::collections::BTreeMap<_, _>>(),
+        })).unwrap();
+        (
+            directory,
+            PluginRegistry::new(IndexMap::from([("owner".into(), config)]), mcp),
+        )
+    }
+
+    fn activate(registry: &PluginRegistry, epoch: u64) -> Arc<PluginRuntime> {
+        let runtime = Arc::clone(&registry.inner.plugins["owner"]);
+        *runtime.producer_connection.lock().unwrap() = ProducerConnection {
+            epoch: Some(epoch),
+            live: true,
+            recovery: Some(PluginRecoveryStatus::Starting),
+            outcome: None,
+        };
+        runtime
+    }
+
+    fn request(method: &str, params: Value) -> Request {
+        Request::new(
+            JsonRpcId::String("originating-id".into()),
+            method,
+            Some(params),
+        )
+    }
+
+    #[test]
+    fn producer_methods_decode_strictly_and_serialize_only_matching_inner_results() {
+        let session = SessionId::new_v7();
+        let producer = ProducerId::new_v7();
+        let message = ProducerMessageId::new_v7();
+        let cases = [
+            (
+                PLUGIN_PRODUCER_REGISTER_METHOD,
+                json!({"session_id": session}),
+                PluginProducerResponse::Register(ExtensionProducerRegisterResult {
+                    producer_id: producer,
+                }),
+                json!({"producer_id": producer}),
+            ),
+            (
+                PLUGIN_PRODUCER_SEND_METHOD,
+                json!({"session_id": session, "producer_id": producer, "body": "hello", "mode": "queue", "idempotency_key": "key"}),
+                PluginProducerResponse::Send(ExtensionProducerSendResult {
+                    message_id: message,
+                }),
+                json!({"message_id": message}),
+            ),
+            (
+                PLUGIN_PRODUCER_UNREGISTER_METHOD,
+                json!({"session_id": session, "producer_id": producer}),
+                PluginProducerResponse::Unregister(ExtensionProducerUnregisterResult {}),
+                json!({}),
+            ),
+            (
+                PLUGIN_RECOVERY_COMPLETE_METHOD,
+                json!({"outcome": {"status": "ready"}}),
+                PluginProducerResponse::RecoveryComplete(ExtensionRecoveryCompleteResult {}),
+                json!({}),
+            ),
+            (
+                PLUGIN_PRODUCER_DISCARD_METHOD,
+                json!({"session_id": session, "message_id": message}),
+                PluginProducerResponse::Discard(ExtensionProducerDiscardResult {}),
+                json!({}),
+            ),
+        ];
+        for (method, params, response, expected) in cases {
+            assert!(decode_producer_request(method, params.clone()).is_ok());
+            let mut foreign = params;
+            foreign["plugin"] = json!("foreign");
+            assert_eq!(
+                decode_producer_request(method, foreign).unwrap_err().code,
+                -32602
+            );
+            let result = producer_result(method, response).unwrap();
+            let wire = serde_json::to_value(producer_response(
+                JsonRpcId::String("same-id".into()),
+                Ok(result),
+            ))
+            .unwrap();
+            assert_eq!(wire["id"], "same-id");
+            assert_eq!(wire["result"], expected);
+        }
+        assert_eq!(
+            decode_producer_request("producer.register", json!({}))
+                .unwrap_err()
+                .code,
+            -32601
+        );
+        assert!(
+            producer_result(
+                PLUGIN_PRODUCER_SEND_METHOD,
+                PluginProducerResponse::Unregister(ExtensionProducerUnregisterResult {})
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn producer_capability_absent_handler_and_overload_fail_explicitly() {
+        let (_directory, registry) = registry(true, false, "");
+        assert!(registry.producer_recovery_states().is_empty());
+        let runtime = &registry.inner.plugins["owner"];
+        let mut tasks = JoinSet::new();
+        let register = || {
+            request(
+                PLUGIN_PRODUCER_REGISTER_METHOD,
+                json!({"session_id": SessionId::new_v7()}),
+            )
+        };
+        assert!(matches!(
+            runtime.dispatch_producer_request(register(), &mut tasks),
+            Some(Response::Error(_))
+        ));
+        let runtime = activate(&registry, 7);
+        assert!(matches!(
+            runtime.dispatch_producer_request(register(), &mut tasks),
+            Some(Response::Error(_))
+        ));
+        registry.set_producer_handler(Arc::new(|_, _| Box::pin(std::future::pending())));
+        let (sender, _receiver) = mpsc::channel(1);
+        *runtime.control.lock().unwrap() = Some(sender);
+        for _ in 0..PLUGIN_PRODUCER_CONCURRENCY {
+            assert!(
+                runtime
+                    .dispatch_producer_request(register(), &mut tasks)
+                    .is_none()
+            );
+        }
+        let response = runtime
+            .dispatch_producer_request(register(), &mut tasks)
+            .unwrap();
+        let wire = serde_json::to_value(response).unwrap();
+        assert_eq!(wire["id"], "originating-id");
+        assert_eq!(wire["error"]["code"], -32000);
+    }
+
+    #[test]
+    fn producer_discard_wire_excludes_registration_and_caller_authority() {
+        let params =
+            json!({"session_id": SessionId::new_v7(), "message_id": ProducerMessageId::new_v7()});
+        assert!(decode_producer_request("plugin/producer/discard", params.clone()).is_ok());
+        for (field, value) in [
+            ("producer_id", json!(ProducerId::new_v7())),
+            ("plugin", json!("foreign")),
+            ("connection_epoch", json!(17)),
+        ] {
+            let mut foreign = params.clone();
+            foreign[field] = value;
+            assert_eq!(
+                decode_producer_request("plugin/producer/discard", foreign)
+                    .unwrap_err()
+                    .code,
+                -32602
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn producer_discard_routes_current_authority_without_a_registration() {
+        let (_directory, registry) = registry(true, true, "");
+        let (control, mut receive) = mpsc::channel(1);
+        let runtime = &registry.inner.plugins["owner"];
+        *runtime.control.lock().unwrap() = Some(control);
+        let authorities = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&authorities);
+        registry.set_producer_handler(Arc::new(move |authority, request| {
+            assert!(matches!(request, PluginProducerRequest::Discard(_)));
+            recorded.lock().unwrap().push(authority);
+            Box::pin(async {
+                Err(producer_error(
+                    -32000,
+                    "message already consumed or in flight",
+                ))
+            })
+        }));
+        let mut tasks = JoinSet::new();
+        let params =
+            json!({"session_id": SessionId::new_v7(), "message_id": ProducerMessageId::new_v7()});
+        assert!(matches!(
+            runtime.dispatch_producer_request(
+                request("plugin/producer/discard", params.clone()),
+                &mut tasks
+            ),
+            Some(Response::Error(_))
+        ));
+        for epoch in [31, 32] {
+            let runtime = activate(&registry, epoch);
+            assert!(
+                runtime
+                    .dispatch_producer_request(
+                        request("plugin/producer/discard", params.clone()),
+                        &mut tasks
+                    )
+                    .is_none()
+            );
+            let Control::ReplyFrame(Response::Error(response)) = receive.recv().await.unwrap()
+            else {
+                panic!("runtime rejection must be returned")
+            };
+            assert_eq!(response.id, JsonRpcId::String("originating-id".into()));
+            assert_eq!(
+                response.error.message,
+                "message already consumed or in flight"
+            );
+            tasks.join_next().await.unwrap().unwrap();
+            drop(ProducerConnectionLease(runtime, epoch));
+        }
+        assert_eq!(
+            *authorities.lock().unwrap(),
+            vec![
+                PluginConnectionAuthority {
+                    plugin: "owner".into(),
+                    connection_epoch: 31
+                },
+                PluginConnectionAuthority {
+                    plugin: "owner".into(),
+                    connection_epoch: 32
+                },
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn producer_readiness_is_epoch_bound_idempotent_and_watched_without_deadline() {
+        let (_directory, registry) = registry(true, true, "");
+        let mut changes = registry.subscribe_producer_changes();
+        let runtime = activate(&registry, 9);
+        let authority = PluginConnectionAuthority {
+            plugin: "owner".into(),
+            connection_epoch: 9,
+        };
+        assert!(registry.producer_connection_is_current("owner", &9));
+        assert!(!registry.producer_connection_is_current("foreign", &9));
+        assert!(!registry.producer_connection_is_current("owner", &8));
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        assert_eq!(
+            registry.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Starting
+        );
+        registry
+            .complete_producer_recovery(&authority, &ExtensionRecoveryOutcome::Ready)
+            .unwrap();
+        changes.changed().await.unwrap();
+        registry
+            .complete_producer_recovery(&authority, &ExtensionRecoveryOutcome::Ready)
+            .unwrap();
+        assert!(!changes.has_changed().unwrap());
+        tokio::time::advance(Duration::from_secs(86_400)).await;
+        assert_eq!(
+            registry.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Ready
+        );
+        let failed = ExtensionRecoveryOutcome::Failed {
+            message: cookie_agent_protocol::SafeErrorMessage::new("lost work").unwrap(),
+        };
+        assert!(
+            registry
+                .complete_producer_recovery(&authority, &failed)
+                .is_err()
+        );
+        drop(ProducerConnectionLease(runtime, 9));
+        changes.changed().await.unwrap();
+        assert!(!registry.producer_connection_is_current("owner", &9));
+        assert_eq!(
+            registry.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Failed
+        );
+        assert!(
+            registry
+                .complete_producer_recovery(&authority, &ExtensionRecoveryOutcome::Ready)
+                .is_err()
+        );
+        let replacement = activate(&registry, 10);
+        drop(ProducerConnectionLease(replacement, 9));
+        assert!(registry.producer_connection_is_current("owner", &10));
+        registry
+            .complete_producer_recovery(
+                &PluginConnectionAuthority {
+                    plugin: "owner".into(),
+                    connection_epoch: 10,
+                },
+                &failed,
+            )
+            .unwrap();
+        assert_eq!(
+            registry.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Failed
+        );
+        assert_eq!(registry.statuses()[0].reason.as_deref(), Some("lost work"));
+        assert!(
+            registry
+                .complete_producer_recovery(&authority, &ExtensionRecoveryOutcome::Ready)
+                .is_err()
+        );
+        let (_directory, disabled) = self::registry(false, true, "");
+        assert_eq!(
+            disabled.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Disabled
+        );
+    }
+
+    #[tokio::test]
+    async fn producer_handshake_requires_both_configuration_and_plugin_capability() {
+        let script = r#"
+import json, sys
+def send(value):
+    print(json.dumps(value), flush=True)
+rejected = False
+ping = None
+for line in sys.stdin:
+    frame = json.loads(line)
+    method = frame.get('method')
+    if method == 'plugin/initialize':
+        send({'jsonrpc':'2.0','id':frame['id'],'result':{
+            'protocol_version':frame['params']['protocol_version'],'name':'owner','version':'1',
+            'capabilities':{'producer_messaging':capable,'tools':False,'resources':False,'subscribe_events':False,'subscribe_bus':False,'publish_bus':False,'publish_session_events':False,'intercept':[]},'tools':[]}})
+        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':'01900000-0000-7000-8000-000000000001'}})
+    elif frame.get('id') == 'register':
+        assert 'error' in frame
+        rejected = True
+    elif method == 'plugin/ping':
+        ping = frame['id']
+    elif method == 'plugin/shutdown':
+        break
+    else:
+        raise AssertionError(frame)
+    if rejected and ping is not None:
+        send({'jsonrpc':'2.0','id':ping,'result':{}})
+        ping = None
+"#;
+        for (configured, capable) in [(false, "True"), (true, "False")] {
+            let (_directory, registry) =
+                registry(true, configured, &format!("capable = {capable}\n{script}"));
+            registry.set_producer_handler(Arc::new(|_, _| panic!("disabled producer dispatched")));
+            registry.start_eager(&tokio::runtime::Handle::current());
+            tokio::time::timeout(Duration::from_secs(5), registry.await_eager_ready())
+                .await
+                .unwrap();
+            registry.ping("owner").await.unwrap();
+            assert_eq!(
+                registry.producer_recovery_states()[0].status,
+                PluginRecoveryStatus::Disabled
+            );
+            registry.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn producer_handler_replies_wait_for_control_capacity_and_recheck_epoch() {
+        let (_directory, registry) = registry(true, true, "");
+        let runtime = activate(&registry, 4);
+        let (control, mut receive) = mpsc::channel(1);
+        *runtime.control.lock().unwrap() = Some(control.clone());
+        control
+            .send(Control::ReplyFrame(producer_response(
+                JsonRpcId::Number(0),
+                Ok(json!({})),
+            )))
+            .await
+            .unwrap();
+        let release = Arc::new(Notify::new());
+        let wait = Arc::clone(&release);
+        registry.set_producer_handler(Arc::new(move |authority, request| {
+            assert_eq!(authority.plugin, "owner");
+            assert_eq!(authority.connection_epoch, 4);
+            assert!(matches!(request, PluginProducerRequest::Register(_)));
+            let wait = Arc::clone(&wait);
+            Box::pin(async move {
+                wait.notified().await;
+                Ok(PluginProducerResponse::Register(
+                    ExtensionProducerRegisterResult {
+                        producer_id: ProducerId::new_v7(),
+                    },
+                ))
+            })
+        }));
+        let mut tasks = JoinSet::new();
+        assert!(
+            runtime
+                .dispatch_producer_request(
+                    request(
+                        PLUGIN_PRODUCER_REGISTER_METHOD,
+                        json!({"session_id": SessionId::new_v7()})
+                    ),
+                    &mut tasks
+                )
+                .is_none()
+        );
+        tokio::task::yield_now().await;
+        drop(ProducerConnectionLease(Arc::clone(&runtime), 4));
+        release.notify_one();
+        tokio::task::yield_now().await;
+        assert!(!tasks.is_empty());
+        receive.recv().await.unwrap();
+        let Control::ReplyFrame(Response::Error(response)) = receive.recv().await.unwrap() else {
+            panic!("stale request must reject")
+        };
+        assert_eq!(response.id, JsonRpcId::String("originating-id".into()));
+        tasks.join_next().await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn producer_recovery_register_and_handler_notification_before_reply_do_not_deadlock() {
+        // This fixture requires a host notification and ping to be serviced while
+        // its register request is still awaiting the async runtime handler.
+        let script = r#"
+import json, sys
+def send(value):
+    print(json.dumps(value), flush=True)
+session = '01900000-0000-7000-8000-000000000001'
+notice = False
+for line in sys.stdin:
+    frame = json.loads(line)
+    method = frame.get('method')
+    if method == 'plugin/initialize':
+        assert frame['params']['capabilities']['producer_messaging']
+        send({'jsonrpc':'2.0','id':frame['id'],'result':{
+            'protocol_version':frame['params']['protocol_version'],'name':'owner','version':'1',
+            'capabilities':{'producer_messaging':True,'tools':False,'resources':False,'subscribe_events':False,'subscribe_bus':True,'publish_bus':False,'publish_session_events':False,'intercept':[]},'tools':[]}})
+    elif method == 'plugin/recovery/start':
+        assert 'id' not in frame and frame['params'] == {}
+        send({'jsonrpc':'2.0','id':'register','method':'plugin/producer/register','params':{'session_id':session}})
+    elif method == 'plugin/bus_event':
+        notice = True
+    elif method == 'plugin/ping':
+        assert notice
+        send({'jsonrpc':'2.0','id':frame['id'],'result':{}})
+    elif frame.get('id') == 'register':
+        assert notice and set(frame['result']) == {'producer_id'}
+        send({'jsonrpc':'2.0','id':'complete','method':'plugin/recovery/complete','params':{'outcome':{'status':'ready'}}})
+    elif frame.get('id') == 'complete':
+        assert frame['result'] == {}
+    elif method == 'plugin/shutdown':
+        break
+"#;
+        let (_directory, registry) = registry(true, true, script);
+        let mut changes = registry.subscribe_producer_changes();
+        let weak = Arc::downgrade(&registry.inner);
+        registry.set_producer_handler(Arc::new(move |authority, request| {
+            let registry = PluginRegistry {
+                inner: weak.upgrade().unwrap(),
+            };
+            Box::pin(async move {
+                assert!(registry.producer_connection_is_current(
+                    &authority.plugin,
+                    &authority.connection_epoch
+                ));
+                match request {
+                    PluginProducerRequest::Register(params) => {
+                        assert_eq!(
+                            registry.producer_recovery_states()[0].status,
+                            PluginRecoveryStatus::Starting
+                        );
+                        let control = registry.inner.plugins["owner"]
+                            .control
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap();
+                        control
+                            .send(Control::Notify {
+                                notification: Notification::new(
+                                    PLUGIN_BUS_EVENT_METHOD,
+                                    Some(json!({})),
+                                ),
+                                session_id: params.session_id,
+                                context_id: plugin_context_id(),
+                                context_lifetime: Duration::from_secs(5),
+                            })
+                            .await
+                            .unwrap();
+                        registry.ping("owner").await.unwrap();
+                        Ok(PluginProducerResponse::Register(
+                            ExtensionProducerRegisterResult {
+                                producer_id: ProducerId::new_v7(),
+                            },
+                        ))
+                    }
+                    PluginProducerRequest::RecoveryComplete(params) => {
+                        registry.complete_producer_recovery(&authority, &params.outcome)?;
+                        Ok(PluginProducerResponse::RecoveryComplete(
+                            ExtensionRecoveryCompleteResult {},
+                        ))
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            })
+        }));
+        registry.start_eager(&tokio::runtime::Handle::current());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while registry.producer_recovery_states()[0].status != PluginRecoveryStatus::Ready {
+                changes.changed().await.unwrap();
+                assert_ne!(
+                    registry.producer_recovery_states()[0].status,
+                    PluginRecoveryStatus::Failed
+                );
+            }
+        })
+        .await
+        .expect("recovery must remain serviceable");
+        registry.ping("owner").await.unwrap();
+        registry.shutdown().await;
+        assert_eq!(
+            registry.producer_recovery_states()[0].status,
+            PluginRecoveryStatus::Failed
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -2127,6 +3073,7 @@ mod tests {
 
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
     const DECLARATION: &str = r#"[{"name":"fixture_echo","description":"Echo","parameters":{"type":"object","properties":{"text":{"type":"string"},"path":{"type":"string"}}},"permission_name":"fixture_echo","primary_resource_param":"path"}]"#;
+    const CAPABILITIES: &str = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
     #[cfg(unix)]
     const PYTHON: &str = "python3";
     #[cfg(windows)]
@@ -2154,6 +3101,7 @@ mod tests {
         let mut env = BTreeMap::from([
             ("FIXTURE_NAME".into(), "fixture".into()),
             ("FIXTURE_TOOLS".into(), DECLARATION.into()),
+            ("FIXTURE_CAPABILITIES".into(), CAPABILITIES.into()),
         ]);
         #[cfg(windows)]
         for name in ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
@@ -2170,6 +3118,7 @@ mod tests {
             BTreeMap::from([(
                 "fixture".into(),
                 PluginConfig {
+                    producer_messaging: false,
                     command: Some(PYTHON.into()),
                     args: vec![FIXTURE.into()],
                     env,
@@ -2226,6 +3175,7 @@ mod tests {
                 let mut env = BTreeMap::from([
                     ("FIXTURE_NAME".into(), (*name).to_owned()),
                     ("FIXTURE_TOOLS".into(), "[]".into()),
+                    ("FIXTURE_CAPABILITIES".into(), CAPABILITIES.into()),
                 ]);
                 env.extend(
                     extra_env
@@ -2245,6 +3195,7 @@ mod tests {
                 (
                     (*name).to_owned(),
                     PluginConfig {
+                        producer_messaging: false,
                         command: Some(PYTHON.into()),
                         args: vec![FIXTURE.into()],
                         env,
@@ -2437,7 +3388,7 @@ mod tests {
         let marker = tempfile::tempdir().expect("marker directory");
         let event_file = marker.path().join("events.jsonl");
         let bus_file = marker.path().join("bus.jsonl");
-        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":true,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
         let harness = harness(
             &[
                 ("FIXTURE_CAPABILITIES", capabilities),
@@ -2556,7 +3507,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
-        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]}"#;
         let active = harness(
             &[
                 ("FIXTURE_CAPABILITIES", capabilities),
@@ -2684,7 +3635,7 @@ mod tests {
     async fn tool_before_interception_orders_and_block_short_circuits() {
         let marker = tempfile::tempdir().expect("marker directory");
         let second_file = marker.path().join("second.jsonl");
-        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
         let first_env = [
             ("FIXTURE_CAPABILITIES", capabilities),
             (
@@ -2750,7 +3701,7 @@ mod tests {
     async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
         let marker = tempfile::tempdir().expect("marker directory");
         let second_file = marker.path().join("second.jsonl");
-        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
         let slow_env = [
             ("FIXTURE_CAPABILITIES", capabilities),
             ("FIXTURE_INTERCEPT_DELAY_MS", "200"),
@@ -2789,7 +3740,7 @@ mod tests {
     async fn result_agent_and_compaction_hooks_receive_accumulated_state() {
         let marker = tempfile::tempdir().expect("marker directory");
         let alpha_file = marker.path().join("alpha.jsonl");
-        let capabilities = r#"{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_after_result","agent_before_start","session_before_compact"]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_after_result","agent_before_start","session_before_compact"]}"#;
         let zeta_env = [
             ("FIXTURE_CAPABILITIES", capabilities),
             (
@@ -2858,7 +3809,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_plugin_buffer_drops_without_blocking_and_counts_loss() {
-        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
         let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
         let runtime = harness
             .registry
@@ -2912,7 +3863,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_flood_evicts_by_priority_without_reordering_terminal() {
-        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":true,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
         let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
         let runtime = harness
             .registry
@@ -3059,7 +4010,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_context_is_spent_and_keeps_only_its_known_session() {
-        let capabilities = r#"{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
+        let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}"#;
         let harness = harness(&[("FIXTURE_CAPABILITIES", capabilities)], 1_000).await;
         let runtime = harness
             .registry

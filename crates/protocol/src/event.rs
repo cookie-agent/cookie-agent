@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::BTreeMap, fmt};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashSet},
+    fmt,
+};
 
 use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -1834,6 +1838,72 @@ pub enum EventPayload {
         message: String,
         count: u64,
     },
+    GoalActivated {
+        goal_id: GoalId,
+        objective: String,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        selection: Option<RunSelection>,
+    },
+    GoalChecklistRevised {
+        goal_id: GoalId,
+        items: Vec<GoalItem>,
+        revision: u64,
+    },
+    GoalLifecycleChanged {
+        goal_id: GoalId,
+        status: GoalStatus,
+        revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        selection: Option<RunSelection>,
+    },
+    /// Sole durable message body and per-send delivery mode. Acceptance is valid
+    /// during an active run without creating a runless UserInputAdmitted.
+    ProducerMessageAccepted {
+        message_id: ProducerMessageId,
+        producer_owner: ProducerOwner,
+        mode: ProducerDeliveryMode,
+        idempotency_key: ProducerIdempotencyKey,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        reminder: Option<GoalReminderIdentity>,
+    },
+    /// Run-scoped reference, not a second body or consumption marker. Its event
+    /// sequence participates in ModelTurnCommitted.input_through_seq coverage.
+    ProducerMessageAdmitted {
+        message_id: ProducerMessageId,
+    },
+    /// Run-scoped reservation of pending admitted messages. The envelope
+    /// sequence is the claim token, not proof that provider dispatch occurred.
+    ProducerMessagesClaimed {
+        #[schemars(length(min = 1))]
+        message_ids: Vec<ProducerMessageId>,
+    },
+    /// Releases the claim identified by a ProducerMessagesClaimed envelope.
+    ProducerMessagesReleased {
+        #[schemars(range(min = 1))]
+        claim_seq: u64,
+    },
+    /// Append only after committed model input coverage includes the admission.
+    /// Recovery repairs missing markers from that commit, never from API selection.
+    ProducerMessageConsumed {
+        message_id: ProducerMessageId,
+        run_id: RunId,
+    },
+    /// Pending messages may be discarded by stable owner identity. Historical
+    /// goal reminder discards omitted producer_owner and remain readable.
+    ProducerMessageDiscarded {
+        message_id: ProducerMessageId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        reminder: Option<GoalReminderIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        producer_owner: Option<ProducerOwner>,
+    },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
@@ -2185,6 +2255,11 @@ impl EventPayload {
                 | Self::SkillInvocationNoted { .. }
                 | Self::PluginEventAdded { .. }
                 | Self::PluginDiagnostic { .. }
+                | Self::GoalActivated { .. }
+                | Self::GoalChecklistRevised { .. }
+                | Self::GoalLifecycleChanged { .. }
+                | Self::ProducerMessageAccepted { .. }
+                | Self::ProducerMessageDiscarded { .. }
                 | Self::SessionTitleCommitted { .. }
                 | Self::UserInputAdmitted { .. }
                 | Self::UserInputRecalled { .. }
@@ -2194,6 +2269,44 @@ impl EventPayload {
     }
     fn validate(&self) -> Result<(), EventSchemaError> {
         match self {
+            Self::GoalActivated { objective, .. } if objective.trim().is_empty() => {
+                return Err(EventSchemaError::InvalidGoalEvent);
+            }
+            Self::GoalLifecycleChanged { status, selection: Some(_), .. }
+                if *status != GoalStatus::Active => {
+                return Err(EventSchemaError::InvalidGoalEvent);
+            }
+            Self::GoalChecklistRevised { items, .. } => {
+                if items.iter().any(|item| item.description.trim().is_empty()) {
+                    return Err(EventSchemaError::InvalidGoalEvent);
+                }
+            }
+            Self::ProducerMessageAccepted { producer_owner, reminder, .. } => {
+                if matches!(producer_owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty())
+                    || reminder.as_ref().is_some_and(|identity| {
+                        !matches!(producer_owner, ProducerOwner::Goal { goal_id } if *goal_id == identity.goal_id)
+                    })
+                {
+                    return Err(EventSchemaError::InvalidProducerMessage);
+                }
+            }
+            Self::ProducerMessagesClaimed { message_ids }
+                if message_ids.is_empty()
+                    || message_ids.iter().copied().collect::<HashSet<_>>().len()
+                        != message_ids.len() =>
+            {
+                return Err(EventSchemaError::InvalidProducerMessage);
+            }
+            Self::ProducerMessagesReleased { claim_seq } if *claim_seq == 0 => {
+                return Err(EventSchemaError::InvalidProducerMessage);
+            }
+            Self::ProducerMessageDiscarded {
+                reminder,
+                producer_owner,
+                ..
+            } if reminder.is_none() && producer_owner.is_none() => {
+                return Err(EventSchemaError::InvalidProducerMessage);
+            }
             Self::SessionCreated {
                 creation_selection,
                 creation_agent,
@@ -2523,6 +2636,8 @@ pub enum PluginDiagnosticKind {
     UnsupportedCapability,
     ContextMismatch,
     RateLimited,
+    RecoveryFailed,
+    RecoveryDisabled,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
@@ -2558,6 +2673,11 @@ impl StoredEvent {
         }
         if self.payload.requires_run_id() && self.run_id.is_none() {
             return Err(EventSchemaError::MissingRunId);
+        }
+        if let EventPayload::ProducerMessageConsumed { run_id, .. } = &self.payload
+            && self.run_id != Some(*run_id)
+        {
+            return Err(EventSchemaError::InvalidProducerMessage);
         }
         self.payload.validate()?;
         Ok(())
@@ -2630,8 +2750,21 @@ pub struct EventPayloadRead {
 
 /// Decodes an event payload, replacing only leaves which Serde identifies as
 /// nullable fields. Required-field and unknown-variant failures remain errors.
+/// Historical checklist item IDs are ignored here only; authored tool/RPC values
+/// remain strict. The original event log is not rewritten.
 pub fn deserialize_event_payload_best_effort(mut value: Value) -> Result<EventPayloadRead, String> {
     let mut degraded_fields = Vec::new();
+    if value.get("type").and_then(Value::as_str) == Some("goal_checklist_revised")
+        && let Some(items) = value.get_mut("items").and_then(Value::as_array_mut)
+    {
+        let mut removed_item_ids = false;
+        for item in items.iter_mut().filter_map(Value::as_object_mut) {
+            removed_item_ids |= item.remove("id").is_some();
+        }
+        if removed_item_ids {
+            degraded_fields.push("items[].id".into());
+        }
+    }
     let mut previous_path = None;
     for _ in 0..=MAX_DEGRADED_FIELDS {
         match serde_path_to_error::deserialize::<_, EventPayload>(value.clone().into_deserializer())
@@ -2900,6 +3033,8 @@ pub struct OutputSnapshotEnvelope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {
+    InvalidGoalEvent,
+    InvalidProducerMessage,
     InvalidOrigin,
     InvalidAgentMd,
     EmptyTitle,
@@ -2950,6 +3085,10 @@ pub enum EventSchemaError {
 impl fmt::Display for EventSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidGoalEvent => "goal objective/items must be nonblank",
+            Self::InvalidProducerMessage => {
+                "producer owner, reminder identity, or consumed run is invalid"
+            }
             Self::InvalidOrigin => "event origin is invalid",
             Self::InvalidAgentMd => "AGENTS.md context event is invalid",
             Self::EmptyTitle => "session title must not be blank",

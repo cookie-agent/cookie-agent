@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    sync::{Arc, atomic::Ordering},
+    sync::atomic::Ordering,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -210,6 +210,17 @@ impl Engine {
         event: Event,
     ) -> Result<(), EngineError> {
         self.append_direct_with_mode(session, run, origin, event, false)
+            .map(|_| ())
+    }
+
+    pub(super) fn append_direct_record(
+        &self,
+        session: SessionId,
+        run: Option<RunId>,
+        origin: EventOrigin,
+        event: Event,
+    ) -> Result<StoredEvent, EngineError> {
+        self.append_direct_with_mode(session, run, origin, event, false)
     }
 
     pub(crate) fn append_recovery_direct(
@@ -220,6 +231,7 @@ impl Engine {
         event: Event,
     ) -> Result<(), EngineError> {
         self.append_direct_with_mode(session, run, origin, event, true)
+            .map(|_| ())
     }
 
     fn append_direct_with_mode(
@@ -229,7 +241,7 @@ impl Engine {
         origin: EventOrigin,
         event: Event,
         recovery: bool,
-    ) -> Result<(), EngineError> {
+    ) -> Result<StoredEvent, EngineError> {
         let was_persisted = self.inner.store.is_persisted(session)?;
         let envelope = if recovery {
             self.inner
@@ -254,7 +266,7 @@ impl Engine {
                 .stream_session_event(&envelope, envelope.origin.as_ref());
             self.record_plugin_drops(session, drops);
         }
-        Ok(())
+        Ok(envelope)
     }
 
     fn publish_stored_event(&self, envelope: &StoredEvent) {
@@ -430,7 +442,7 @@ impl Engine {
         }
 
         let mut bus = ExtensionEmitStatus::Rejected;
-        let mut durable = ExtensionEmitStatus::Rejected;
+        let durable = ExtensionEmitStatus::Rejected;
         let mut reason = None;
         if request.publish_bus {
             let event = crate::EngineEvent::PluginEvent {
@@ -454,22 +466,7 @@ impl Engine {
             bus = ExtensionEmitStatus::Published;
         }
         if request.publish_session_events {
-            let result = self
-                .request(session_id, |reply| SessionCommand::AppendPluginEvent {
-                    plugin: request.plugin.clone(),
-                    session: session_id,
-                    event: Event::PluginEventAdded {
-                        plugin: request.plugin.clone(),
-                        name: request.name,
-                        payload: request.payload,
-                    },
-                    reply,
-                })
-                .await;
-            match result {
-                Ok(()) => durable = ExtensionEmitStatus::Published,
-                Err(error) => reason = Some(error.to_string()),
-            }
+            reason = Some("model-bound session emission requires explicit producer.register and producer.send".into());
         }
         if !request.publish_bus && !request.publish_session_events {
             reason = Some("plugin did not declare an event publishing capability".into());
@@ -511,7 +508,7 @@ impl Engine {
         &self,
         session: SessionId,
         run: RunId,
-    ) -> Result<Arc<[StoredEvent]>, EngineError> {
+    ) -> Result<super::producer_claims::ClaimedPrompt, EngineError> {
         let events = self
             .request(session, |reply| SessionCommand::PromotePendingInputs {
                 run,
@@ -537,6 +534,23 @@ impl Engine {
             hook.release.notified().await;
         }
         Ok(events)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_prompt_snapshot_hook_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, std::sync::Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .prompt_snapshot_hook
+            .lock()
+            .expect("snapshot hook lock") = Some(std::sync::Arc::new(super::PromptSnapshotHook {
+            reached: std::sync::Mutex::new(Some(reached)),
+            release: release.clone(),
+        }));
+        (receiver, release)
     }
 
     #[cfg(test)]
@@ -721,7 +735,7 @@ impl Engine {
         Ok(())
     }
 
-    fn ensure_not_shutting_down(&self) -> Result<(), EngineError> {
+    pub(super) fn ensure_not_shutting_down(&self) -> Result<(), EngineError> {
         if self
             .inner
             .admission_tasks_closing
@@ -733,7 +747,7 @@ impl Engine {
         }
     }
 
-    fn reserve_compaction(&self, session: SessionId) -> bool {
+    pub(super) fn reserve_compaction(&self, session: SessionId) -> bool {
         self.inner
             .compaction_in_progress
             .lock()
@@ -741,7 +755,7 @@ impl Engine {
             .insert(session)
     }
 
-    async fn finish_compaction(&self, session: SessionId) -> Result<(), EngineError> {
+    pub(super) async fn finish_compaction(&self, session: SessionId) -> Result<(), EngineError> {
         self.request(session, |reply| SessionCommand::CompactionFinished {
             reply,
         })
@@ -749,6 +763,15 @@ impl Engine {
     }
 
     async fn release_compaction_direct(&self, session: SessionId) {
+        if let Some(state) = self
+            .inner
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(&session)
+        {
+            state.starting = false;
+        }
         self.inner
             .compaction_in_progress
             .lock()
@@ -767,6 +790,19 @@ impl Engine {
     }
 
     pub(super) async fn handle_actor_command(&self, session: SessionId, command: SessionCommand) {
+        if matches!(&command, SessionCommand::Start { .. }) {
+            {
+                let mut registry = self
+                    .inner
+                    .producers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let state = registry.entry(session).or_default();
+                if state.starting {
+                    state.preempted = true;
+                }
+            }
+        }
         if let Some(kind) = command.compaction_deferred_kind()
             && self
                 .inner
@@ -799,7 +835,38 @@ impl Engine {
             }
             return;
         }
+        let reconcile = match &command {
+            SessionCommand::EvictionBarrier { .. } => false,
+            SessionCommand::Append { event, .. } => matches!(
+                event,
+                Event::ModelTurnCommitted { .. }
+                    | Event::RunCompleted { .. }
+                    | Event::RunFailed { .. }
+                    | Event::RunCancelled { .. }
+                    | Event::RunInterrupted { .. }
+                    | Event::GoalActivated { .. }
+                    | Event::GoalChecklistRevised { .. }
+                    | Event::GoalLifecycleChanged { .. }
+                    | Event::ProducerMessageAccepted { .. }
+                    | Event::ProducerMessageConsumed { .. }
+                    | Event::ProducerMessageDiscarded { .. }
+                    | Event::UserInputAdmitted { .. }
+                    | Event::UserInputSubmitted { .. }
+                    | Event::UserInputRecalled { .. }
+                    | Event::UserInputRecalledV2 { .. }
+                    | Event::SessionReverted { .. }
+            ),
+            SessionCommand::Producer(
+                super::producers::ProducerCommand::WakeFinished { .. }
+                | super::producers::ProducerCommand::Reconcile { .. }
+                | super::producers::ProducerCommand::CommitStart { .. },
+            ) => false,
+            _ => true,
+        };
         match command {
+            SessionCommand::Producer(command) => {
+                self.handle_producer_command(session, command).await
+            }
             SessionCommand::EvictionBarrier { reply } => {
                 let _ = reply.send(Ok(()));
             }
@@ -836,17 +903,17 @@ impl Engine {
                     ))));
                     return;
                 }
-                let _ = reply.send(self.append_direct(session, run, origin, event));
-            }
-            SessionCommand::AppendPluginEvent {
-                plugin,
-                session: event_session,
-                event,
-                reply,
-            } => {
-                debug_assert_eq!(session, event_session);
-                let origin = crate::plugin::plugin_event_origin(&plugin);
-                let _ = reply.send(self.append_direct(session, None, origin, event));
+                let reverted = matches!(&event, Event::SessionReverted { .. });
+                let result = self
+                    .append_direct(session, run, origin, event)
+                    .and_then(|result| {
+                        if reverted {
+                            self.inner.delegation_events.reconcile_parent(session)?;
+                            self.reconcile_reverted_producers_direct(session)?;
+                        }
+                        Ok(result)
+                    });
+                let _ = reply.send(result);
             }
             SessionCommand::EnsureToolCallLinked {
                 run,
@@ -893,7 +960,9 @@ impl Engine {
                     let engine = self.clone();
                     tokio::spawn(async move {
                         let child_session_id = params.session_id;
-                        let mut result = engine.start_run_direct(params, origin, admission).await;
+                        let mut result = engine
+                            .start_run_direct(params, origin, admission, false)
+                            .await;
                         if let (Some((invocation_id, generation)), Ok(started)) =
                             (admission, result.as_ref())
                             && let Err(error) = engine.publish_admission_run(
@@ -1137,7 +1206,9 @@ impl Engine {
                             },
                         )?;
                     }
-                    let promoted = already_promoted || !eligible.is_empty();
+                    let producer_promoted =
+                        self.promote_producer_inputs_direct(session, run, false)?;
+                    let promoted = already_promoted || !eligible.is_empty() || producer_promoted;
                     let pending =
                         pending_inputs(&self.inner.store.get(session)?.log.event_snapshot(), run);
                     if pending.is_empty() && !promoted && complete_if_empty {
@@ -1238,6 +1309,8 @@ impl Engine {
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&session);
                         self.rebuild_visible_tree_grants();
+                        self.inner.delegation_events.reconcile_parent(session)?;
+                        self.reconcile_reverted_producers_direct(session)?;
                         Ok(SessionRevertResult {
                             session: self.inner.store.get(session)?.metadata(),
                             instructions_override,
@@ -1549,6 +1622,14 @@ impl Engine {
                 complete_if_empty,
                 reply,
             } => {
+                let producer_promoted =
+                    match self.promote_producer_inputs_direct(session, run, false) {
+                        Ok(promoted) => promoted,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            return;
+                        }
+                    };
                 let active = self
                     .inner
                     .active
@@ -1573,7 +1654,7 @@ impl Engine {
                     }
                 };
                 if pending.is_empty() {
-                    let result = if complete_if_empty {
+                    let result = if complete_if_empty && !producer_promoted {
                         self.append_direct(
                             session,
                             Some(run),
@@ -1583,7 +1664,7 @@ impl Engine {
                     } else {
                         Ok(())
                     }
-                    .map(|()| false);
+                    .map(|()| producer_promoted);
                     let _ = reply.send(result);
                 } else if !self.reserve_compaction(session) {
                     let _ = reply.send(Err(EngineError::SessionRunning(session)));
@@ -1680,6 +1761,7 @@ impl Engine {
                     .filter(|active| active.session == session)
                     .ok_or(EngineError::MissingRun(run))
                     .and_then(|_| {
+                        self.promote_producer_inputs_direct(session, run, false)?;
                         let events = self.inner.store.get(session)?.log.event_snapshot();
                         let applied: HashSet<u64> = events
                             .iter()
@@ -1710,10 +1792,13 @@ impl Engine {
                                 Event::UserInputApplied { user_input_seq },
                             )?;
                         }
-                        Ok(self.inner.store.get(session)?.log.event_snapshot())
+                        self.claim_producer_snapshot_direct(session, run)
                     });
                 let _ = reply.send(result);
             }
+        }
+        if reconcile && let Err(error) = self.reconcile_producers_direct(session) {
+            eprintln!("session {session} producer reconciliation failed: {error}");
         }
     }
 }
@@ -1754,6 +1839,7 @@ fn pending_inputs(events: &[StoredEvent], run: RunId) -> Vec<PendingInput> {
                 ))
     }) {
         match &event.payload {
+            Event::ProducerMessageAdmitted { .. } => initial_input_submitted = true,
             Event::UserInputAdmitted { input } => pending.push_back(PendingInput {
                 admission_seq: event.seq,
                 origin: event

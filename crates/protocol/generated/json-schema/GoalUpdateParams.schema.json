@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalUpdateParams",
+  "description": "`goal_update` replaces the current root goal's checklist at actor execution,\neven if the goal changed since the calling run started. It is never a lifecycle\ncommand. The engine rejects absent/terminal goals and blank descriptions.\nReplacements are serialized; the last accepted update wins. Duplicate descriptions\nare allowed. Empty items preserve active/paused status. A nonempty\nall-finished update completes even while paused, without scheduling a wake.",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GoalItem"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "$defs": {
+    "GoalItem": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "finished": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "finished"
+      ]
+    }
+  }
+}

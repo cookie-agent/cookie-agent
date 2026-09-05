@@ -295,6 +295,7 @@ impl Engine {
                 .keys()
                 .any(|(session_id, _)| *session_id == session.meta.session_id)
             || has_runless_pending_inputs(&session.log.event_snapshot())
+            || self.producers_pin_session(session.meta.session_id)
         {
             return None;
         }
@@ -350,6 +351,11 @@ impl Engine {
     }
 
     fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
+        self.inner
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session_id);
         // Permission modes are tree-root keyed. Paging out a child must retain
         // the shared mode; an evicted root no longer owns runtime-only state.
         if root_id(origin, session_id) == session_id {
@@ -377,7 +383,7 @@ impl Engine {
     }
 }
 
-fn has_runless_pending_inputs(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+pub(super) fn has_runless_pending_inputs(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
     let boundary = events
         .iter()
         .rev()

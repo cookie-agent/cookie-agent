@@ -142,6 +142,30 @@ sessions do not resolve. Returned pages include `next_offset` metadata when more
 lines remain. Pages over the 2 MiB terminal-result limit fail and must be
 requested with a smaller limit.
 
+## Goal checklist tools
+
+`goal_get` returns the current root goal's objective, status, revision, and entire
+checklist. `goal_update { items }` replaces the entire ordered checklist;
+each item contains only `description` and `finished`, with no item ID. The session
+actor serializes replacements, and the last accepted update wins. The tool has no
+`goal_id` or `expected_revision` parameter or lost-update protection. Its target is
+the current/latest session goal when the engine actor accepts the update, so an
+older run's update can intentionally affect a newly activated active or paused
+goal. Both tools are available
+only for root goals that are active or paused at run admission; lifecycle changes
+do not change an already-admitted run's tool set. Updates reject if the current
+goal is absent or terminal, even when the tool remains in an admitted run.
+Engine-owned goal IDs and revisions remain; `SessionGoalLifecycleParams.goal_id`
+and `expected_revision` apply to user lifecycle RPC controls, not model checklist
+updates.
+
+The model cannot set an objective, pause, resume, or cancel. Empty checklists
+preserve the active or paused lifecycle; nonempty all-finished checklists complete
+it even while paused. The root must verify evidence before marking items finished. Both tools
+return the full state without display truncation. Their existing permission
+actions are `read` and `write`, respectively, both with resource `goal:current`.
+Ordinary permission matching, deny/ask rules, and the unmatched default still apply.
+
 ## Delegation and skills
 
 Delegation tools start, inspect, steer, and cancel owned subagent sessions.

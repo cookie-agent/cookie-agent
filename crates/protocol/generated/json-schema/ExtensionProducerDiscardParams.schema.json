@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionProducerDiscardParams",
+  "description": "Discard an owned message only while it remains waiting. Authority is the live\nconnection's stable plugin owner and session, not a registration.\n\nA durable actor claim reserves the message and removes it from waiting before\nrequest preparation and hooks. Discard rejects until that claim is released,\neven before network activity; a claim does not prove provider receipt or execution.\nRelease after failed preparation or cancellation may return an unconsumed\nmessage to waiting. Consumed messages cannot return or be discarded.\nDiscard rejection makes no exactly-once claim about execution or external effects.",
+  "type": "object",
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "message_id"
+  ]
+}

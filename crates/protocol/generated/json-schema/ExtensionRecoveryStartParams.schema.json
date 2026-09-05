@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionRecoveryStartParams",
+  "description": "Engine-to-plugin notification, never a deadlineful pending request. Restore\nfrom plugin-owned storage/services and report completion on the same connection.\nNo response, recovery deadline, replay, or eager session adoption is implied.",
+  "type": "object",
+  "additionalProperties": false
+}

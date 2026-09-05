@@ -19,6 +19,7 @@ pub mod bash;
 pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
+pub mod goal;
 pub mod read;
 pub mod read_tool_result;
 pub mod skill;
@@ -426,7 +427,8 @@ mod tests {
 
     use super::{
         BuiltinTools, bash::BashTool, delegate::DelegateToolProvider, edit::EditTool,
-        read::ReadTool, read_tool_result::ReadToolResultProvider, write::WriteTool,
+        goal::GoalTools, read::ReadTool, read_tool_result::ReadToolResultProvider,
+        write::WriteTool,
     };
 
     #[test]
@@ -435,6 +437,11 @@ mod tests {
         assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
         assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
         assert_eq!(BashTool::get_permission_name("bash").unwrap(), "bash");
+        assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), "read");
+        assert_eq!(
+            GoalTools::get_permission_name("goal_update").unwrap(),
+            "write"
+        );
         assert_eq!(
             ReadToolResultProvider::get_permission_name("read_tool_result").unwrap(),
             "read_tool_result"

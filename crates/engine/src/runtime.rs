@@ -26,7 +26,7 @@ use cookie_agent_protocol::{
     RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
     RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason, RuntimeChangedNotification,
     RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta, SessionRenameParams,
-    SessionRenameResult, SessionRevertResult, StoredEvent, ToolCallId, ToolCallPresentation,
+    SessionRenameResult, SessionRevertResult, ToolCallId, ToolCallPresentation,
 };
 use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,8 @@ mod helpers;
 mod internal_agents;
 mod mailbox;
 mod model_loop;
+mod producer_claims;
+pub(crate) mod producers;
 mod recovery;
 mod residency;
 mod runs;
@@ -182,6 +184,10 @@ pub enum EngineError {
     CacheStrategy(String),
     #[error("session permission error: {0}")]
     Permission(String),
+    #[error("goal operation rejected: {0}")]
+    Goal(String),
+    #[error("producer operation rejected: {0}")]
+    Producer(String),
     #[error(transparent)]
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
@@ -492,7 +498,7 @@ enum PendingTool {
 #[cfg(test)]
 struct PromptSnapshotHook {
     reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: tokio::sync::Notify,
+    release: Arc<tokio::sync::Notify>,
 }
 
 #[cfg(test)]
@@ -904,15 +910,10 @@ async fn run_plugin_diagnostic_aggregator(
 
 #[allow(clippy::large_enum_variant)]
 enum SessionCommand {
+    Producer(producers::ProducerCommand),
     Append {
         run: Option<RunId>,
         origin: cookie_agent_protocol::EventOrigin,
-        event: Event,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    AppendPluginEvent {
-        plugin: String,
-        session: SessionId,
         event: Event,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
@@ -1052,7 +1053,7 @@ enum SessionCommand {
     },
     PromotePendingInputs {
         run: RunId,
-        reply: oneshot::Sender<Result<Arc<[StoredEvent]>, EngineError>>,
+        reply: oneshot::Sender<Result<producer_claims::ClaimedPrompt, EngineError>>,
     },
     EvictionBarrier {
         reply: oneshot::Sender<Result<(), EngineError>>,
@@ -1062,6 +1063,7 @@ enum SessionCommand {
 impl SessionCommand {
     fn compaction_deferred_kind(&self) -> Option<CompactionDeferredKind> {
         match self {
+            Self::Start { .. } => Some(CompactionDeferredKind::Start),
             Self::PromotePendingInputs { .. } => Some(CompactionDeferredKind::PromotePendingInputs),
             Self::PromotePendingOrComplete { .. } => {
                 Some(CompactionDeferredKind::PromotePendingOrComplete)
@@ -1073,6 +1075,9 @@ impl SessionCommand {
 
     fn reject_duplicate_during_compaction(self, session: SessionId) {
         match self {
+            Self::Start { reply, .. } => {
+                let _ = reply.send(Err(EngineError::SessionRunning(session)));
+            }
             Self::PromotePendingInputs { reply, .. } => {
                 let _ = reply.send(Err(EngineError::SessionRunning(session)));
             }
@@ -1089,12 +1094,13 @@ impl SessionCommand {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CompactionDeferredKind {
+    Start,
     PromotePendingInputs,
     PromotePendingOrComplete,
     Resume,
 }
 
-const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 3;
+const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 4;
 
 pub(crate) struct Inner {
     config: LoadedConfiguration,
@@ -1117,6 +1123,7 @@ pub(crate) struct Inner {
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
+    producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
     pub(crate) approvals: ApprovalStore,
     permissions: PermissionPipeline,
@@ -1125,6 +1132,10 @@ pub(crate) struct Inner {
     delegations_by_session: Mutex<HashMap<SessionId, DelegationRecord>>,
     delegation_queue: Mutex<VecDeque<SessionId>>,
     delegation_admission: tokio::sync::Mutex<()>,
+    delegation_reconciliation_running: AtomicBool,
+    delegation_reconciliation_requested: AtomicBool,
+    delegation_recovery_stale_producers:
+        Mutex<Vec<(SessionId, InvocationId, cookie_agent_protocol::ProducerId)>>,
     next_admission_generation: AtomicU64,
     subscribers: Mutex<HashMap<SessionId, Vec<PersistedSubscriber>>>,
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
@@ -1288,6 +1299,7 @@ impl Engine {
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 plugins,
+                producers: Mutex::new(HashMap::new()),
                 mcp_mutation: tokio::sync::Mutex::new(()),
                 approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
@@ -1296,6 +1308,9 @@ impl Engine {
                 delegations_by_session: Mutex::new(HashMap::new()),
                 delegation_queue: Mutex::new(VecDeque::new()),
                 delegation_admission: tokio::sync::Mutex::new(()),
+                delegation_reconciliation_running: AtomicBool::new(false),
+                delegation_reconciliation_requested: AtomicBool::new(false),
+                delegation_recovery_stale_producers: Mutex::new(Vec::new()),
                 next_admission_generation: AtomicU64::new(1),
                 subscribers: Mutex::new(HashMap::new()),
                 actors: Mutex::new(HashMap::new()),
@@ -1403,6 +1418,7 @@ impl Engine {
         engine.validate_referenced_manifests()?;
         engine.rebuild_approvals();
         engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
+        engine.install_producer_runtime();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);
@@ -1905,7 +1921,9 @@ impl Engine {
             task.abort();
         }
         for task in tasks {
-            if let Err(error) = task.await {
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
                 eprintln!("admission task stopped during shutdown: {error}");
             }
         }

@@ -40,6 +40,8 @@ pub struct PluginConfig {
     pub cwd: Option<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    #[serde(default)]
+    pub producer_messaging: bool,
     #[serde(default = "default_plugin_interception_timeout_ms")]
     pub interception_timeout_ms: u64,
     #[serde(default = "default_plugin_startup_timeout_ms")]

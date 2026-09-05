@@ -613,6 +613,104 @@ async fn disconnect_publishes_one_ordered_runtime_changed_notification() {
 }
 
 #[tokio::test]
+async fn goal_and_producer_inspection_are_reachable_through_rpc() {
+    let mut catalog = (*openai_catalog()).clone();
+    catalog
+        .providers
+        .values_mut()
+        .next()
+        .expect("OpenAI provider")
+        .record
+        .as_mut()
+        .expect("OpenAI provider record")
+        .api = Some("http://127.0.0.1:9/v1".into());
+    let catalog = Arc::new(catalog);
+    let harness = harness_with_catalog(Arc::clone(&catalog), |_| {});
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    let (connected, _) = request(
+        &mut client,
+        2,
+        "provider.connect",
+        json!({
+            "provider_id":"openai",
+            "expected_catalog_revision":catalog.revision,
+            "setup_values":{},
+            "auth_method":"bearer-api-key-v1",
+            "auth_values":{"api_key":"test-secret"},
+            "client_connect_id":"goal-rpc-test"
+        }),
+    )
+    .await;
+    assert!(connected.get("result").is_some(), "{connected}");
+
+    let (created, _) = request(
+        &mut client,
+        3,
+        "session.create",
+        json!({
+            "selection": {
+                "agent": "default",
+                "model": { "model": "openai/gpt-5-mini", "variant": null }
+            }
+        }),
+    )
+    .await;
+    let session_id = created["result"]["session"]["session_id"]
+        .as_str()
+        .expect("created session ID");
+
+    let (activated, _) = request(
+        &mut client,
+        4,
+        cookie_agent_protocol::SESSION_GOAL_SET_METHOD,
+        json!({"session_id":session_id,"objective":"Verify the goal RPC surface"}),
+    )
+    .await;
+    let goal_id = activated["result"]["goal"]["goal_id"]
+        .as_str()
+        .expect("activated goal ID");
+    let revision = activated["result"]["goal"]["revision"]
+        .as_u64()
+        .expect("activated goal revision");
+
+    let (paused, _) = request(
+        &mut client,
+        5,
+        cookie_agent_protocol::SESSION_GOAL_LIFECYCLE_METHOD,
+        json!({
+            "session_id":session_id,
+            "goal_id":goal_id,
+            "expected_revision":revision,
+            "action":"pause"
+        }),
+    )
+    .await;
+    assert_eq!(paused["result"]["goal"]["status"], "paused");
+
+    let (goal, _) = request(
+        &mut client,
+        6,
+        cookie_agent_protocol::SESSION_GOAL_GET_METHOD,
+        json!({"session_id":session_id}),
+    )
+    .await;
+    assert_eq!(goal["result"]["goal"], paused["result"]["goal"]);
+
+    let (producers, _) = request(
+        &mut client,
+        7,
+        cookie_agent_protocol::SESSION_PRODUCERS_METHOD,
+        json!({"session_id":session_id}),
+    )
+    .await;
+    assert_eq!(producers["result"]["producers"], json!([]));
+    assert_eq!(producers["result"]["plugin_recovery"], json!([]));
+
+    harness.server.shutdown();
+    harness.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn catalog_churn_projects_supported_removed_and_reconnects_via_retained_recipe() {
     let current = openai_catalog();
     let harness = harness_with_catalog(Arc::clone(&current), |_| {});

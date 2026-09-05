@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionProducerDiscardResult",
+  "description": "Already-discarded owned messages succeed; consumed or currently claimed messages reject.",
+  "type": "object",
+  "additionalProperties": false
+}

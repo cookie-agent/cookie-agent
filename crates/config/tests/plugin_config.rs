@@ -16,10 +16,37 @@ fn enabled_plugin_requires_command() {
 }
 
 #[test]
-fn plugin_unknown_field_is_rejected() {
+fn producer_messaging_defaults_off_and_accepts_boolean_opt_in() {
+    let defaults = root("[plugins.demo]\ncommand = \"plugin\"\n");
+    let loaded = load_from_roots(Some(defaults.path()), None).expect("default capability");
+    assert!(!loaded.plugins["demo"].producer_messaging);
+
+    for (configured, expected) in [("true", true), ("false", false)] {
+        let directory = root(&format!(
+            "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {configured}\n"
+        ));
+        let loaded = load_from_roots(Some(directory.path()), None).expect("boolean capability");
+        assert_eq!(loaded.plugins["demo"].producer_messaging, expected);
+    }
+}
+
+#[test]
+fn plugin_fields_are_strict() {
     let directory = root("[plugins.demo]\ncommand = \"plugin\"\nunknown = true\n");
     let error = load_from_roots(Some(directory.path()), None).expect_err("unknown field");
     assert!(error.to_string().contains("unknown"));
+
+    for value in ["\"true\"", "1", "[]", "{}"] {
+        let directory = root(&format!(
+            "[plugins.demo]\ncommand = \"plugin\"\nproducer_messaging = {value}\n"
+        ));
+        let error = load_from_roots(Some(directory.path()), None).expect_err("non-boolean field");
+        assert!(
+            error
+                .to_string()
+                .contains("malformed configuration content")
+        );
+    }
 }
 
 #[test]
@@ -66,7 +93,7 @@ fn disabled_plugin_still_rejects_invalid_fields() {
 #[test]
 fn workspace_plugin_overrides_user_entry_by_name() {
     let user = root(
-        "[plugins.zeta]\ncommand = \"zeta\"\n[plugins.demo]\ncommand = \"user-plugin\"\n[plugins.alpha]\ncommand = \"alpha\"\n",
+        "[plugins.zeta]\ncommand = \"zeta\"\n[plugins.demo]\ncommand = \"user-plugin\"\nproducer_messaging = true\n[plugins.alpha]\ncommand = \"alpha\"\n",
     );
     let workspace = root("[plugins.demo]\ncommand = \"workspace-plugin\"\n");
     let loaded = load_from_roots(Some(user.path()), Some(workspace.path())).expect("plugins");
@@ -74,6 +101,7 @@ fn workspace_plugin_overrides_user_entry_by_name() {
         loaded.plugins["demo"].command.as_deref(),
         Some("workspace-plugin")
     );
+    assert!(!loaded.plugins["demo"].producer_messaging);
     assert_eq!(
         loaded
             .plugins

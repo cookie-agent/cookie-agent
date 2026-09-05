@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionRecoveryCompleteParams",
+  "description": "Plugin-to-engine completion request. The engine owns starting/disabled states.\nThe transport supplies authenticated plugin name + connection epoch out of band.",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "$ref": "#/$defs/ExtensionRecoveryOutcome"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "outcome"
+  ],
+  "$defs": {
+    "ExtensionRecoveryOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "ready"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "description": "Control-free bounded safe error text.",
+              "type": "string",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "status": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "message"
+          ]
+        }
+      ]
+    }
+  }
+}

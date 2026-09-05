@@ -53,6 +53,7 @@ nav:
       - TUI: guide/tui.md
       - Headless runs: guide/headless.md
       - Sessions: guide/sessions.md
+      - Goals: guide/goals.md
       - Permissions: guide/permissions.md
       - Security guarantees: guide/security.md
       - MCP servers: guide/mcp.md
@@ -66,6 +67,7 @@ nav:
   - Development:
       - Building and testing: development/building.md
       - Plugin development: development/plugins.md
+      - Goal mode (design spec): development/goal-mode.md
       - Rust API: reference/api.md
   - Reference:
       - Configuration: reference/configuration.md

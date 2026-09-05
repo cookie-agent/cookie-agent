@@ -2,4 +2,8 @@
 import type { SessionId } from "./SessionId.js";
 import type { JsonValue } from "./serde_json/JsonValue.js";
 
+/**
+ * Non-model publication only. Model-bound content must use producer.send with
+ * an explicitly registered producer; emit must never implicitly register one.
+ */
 export type ExtensionEmitParams = { session_id: SessionId, context_id: string, name: string, payload: JsonValue, };

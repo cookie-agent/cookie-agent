@@ -1382,7 +1382,7 @@ fn cookie_binary_treats_plugin_handled_input_as_success_without_a_run() {
 [plugins.command_handler]
 command = "/usr/bin/python3"
 args = ['{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
+env = {{ FIXTURE_NAME = 'command_handler', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["user_before_input"]}}', FIXTURE_USER_BEFORE_INPUT_RESULT = '{{"action":"handled","reason":"command consumed"}}' }}
 "#
     )
     .expect("plugin config");
@@ -1418,7 +1418,7 @@ fn cookie_binary_treats_blocked_model_selection_as_failure() {
 [plugins.model_guard]
 command = "/usr/bin/python3"
 args = ['{PLUGIN_FIXTURE}']
-env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_select"]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
+env = {{ FIXTURE_NAME = 'model_guard', FIXTURE_CAPABILITIES = '{{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["model_before_select"]}}', FIXTURE_MODEL_BEFORE_SELECT_RESULT = '{{"action":"block","reason":"model denied"}}' }}
 "#
     )
     .expect("plugin config");
@@ -1445,7 +1445,7 @@ fn cookie_binary_sigint_cancels_the_active_run() {
     fixture
         .server
         .enqueue(MockResponse::Delay(Duration::from_millis(500)));
-    let child = fixture
+    let mut child = fixture
         .command()
         .args(["run", "SIGINT prompt", "--output", "none", "--data-dir"])
         .arg(&fixture.data_dir)
@@ -1453,16 +1453,22 @@ fn cookie_binary_sigint_cancels_the_active_run() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn cookie SIGINT run");
-    for _ in 0..1_000 {
-        if !fixture.server.requests().is_empty() {
+    for _ in 0..3_000 {
+        if !fixture.server.requests().is_empty()
+            || child.try_wait().expect("child status").is_some()
+        {
             break;
         }
         thread::sleep(Duration::from_millis(10));
     }
-    assert!(
-        !fixture.server.requests().is_empty(),
-        "cookie binary did not start its model request"
-    );
+    if fixture.server.requests().is_empty() {
+        let _ = child.kill();
+        let output = child.wait_with_output().expect("collect failed startup");
+        panic!(
+            "cookie binary did not start its model request: {}",
+            process_report(&output)
+        );
+    }
     let result = unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
     assert_eq!(result, 0, "send SIGINT to cookie binary");
     let output = child

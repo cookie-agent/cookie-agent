@@ -9,6 +9,10 @@ use crate::*;
 
 pub const SESSION_TREE_USAGE_MISSING_SESSION_CODE: i32 = -32030;
 pub const SESSION_TREE_USAGE_CORRUPT_DELEGATION_CODE: i32 = -32031;
+pub const SESSION_GOAL_GET_METHOD: &str = "session.goal.get";
+pub const SESSION_GOAL_SET_METHOD: &str = "session.goal.set";
+pub const SESSION_GOAL_LIFECYCLE_METHOD: &str = "session.goal.lifecycle";
+pub const SESSION_PRODUCERS_METHOD: &str = "session.producers";
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
 #[ts(type = "\"2.0\"")]
@@ -210,6 +214,67 @@ pub struct SessionGetParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionGetResult {
     pub session: SessionMeta,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalGetParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalGetResult {
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<GoalState>", required)]
+    pub goal: Option<GoalState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalSetParams {
+    pub session_id: SessionId,
+    pub objective: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub selection: Option<RunSelection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalSetResult {
+    pub goal: GoalState,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalLifecycleParams {
+    pub session_id: SessionId,
+    pub goal_id: GoalId,
+    pub expected_revision: u64,
+    pub action: GoalLifecycleAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub selection: Option<RunSelection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionGoalLifecycleResult {
+    pub goal: GoalState,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionProducersParams {
+    pub session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SessionProducersResult {
+    pub producers: Vec<ProducerRegistration>,
+    pub plugin_recovery: Vec<PluginRecoveryState>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]

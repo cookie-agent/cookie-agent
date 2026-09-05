@@ -287,6 +287,21 @@ impl SessionStore {
             .cloned()
     }
 
+    /// Inspects recovery controls without paging an owned dormant session back in.
+    pub(crate) fn recovery_event_snapshot(
+        &self,
+        id: SessionId,
+    ) -> Result<Arc<[cookie_agent_protocol::StoredEvent]>, SessionError> {
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session.log.event_snapshot());
+        }
+        Ok(EventLog::open_read_only(
+            self.sessions_dir.join(id.to_string()).join("events.jsonl"),
+            id,
+        )?
+        .event_snapshot())
+    }
+
     /// Arc clone of the resident log plus its persistence flag, without
     /// cloning the whole projection. Used by the append hot path, which only
     /// needs the log and the `first_user_message` gate.
@@ -672,6 +687,8 @@ impl SessionStore {
             && matches!(
                 event,
                 EventPayload::UserInputAdmitted { .. }
+                    | EventPayload::GoalActivated { .. }
+                    | EventPayload::ProducerMessageAccepted { .. }
                     | EventPayload::UserInputSubmitted { .. }
                     | EventPayload::DelegatedContextSeeded { .. }
                     | EventPayload::SessionPermissionOverlaySet { .. }

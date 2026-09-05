@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
     ExtensionToolAfterResultParams, ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams,
     InternalAgentKind, InvocationId, OperationFingerprint, PersistedAssistantPart,
     PluginDiagnosticKind, RunId, RunStartParams, RunStartResult, SessionId, SessionOrigin,
-    SessionStatus, Sha256Digest, StoredEvent, ToolCallId, ToolCallStart,
+    SessionStatus, Sha256Digest, ToolCallId, ToolCallStart,
 };
 use futures_util::StreamExt;
 use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
@@ -44,11 +44,37 @@ use crate::{
 };
 
 impl Engine {
+    pub(super) fn freeze_root_selection(
+        &self,
+        selection: &cookie_agent_protocol::RunSelection,
+    ) -> Result<FrozenRunPolicy, EngineError> {
+        self.reconcile_provider_store()?;
+        let runtime = self.current_runtime();
+        let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
+        let agent = resolve_agent(&agents, &selection.agent)?;
+        if !agent.runnable_as_root {
+            return Err(EngineError::NoRunnableModel);
+        }
+        freeze_root_agent_policy(
+            agent,
+            Arc::clone(&agents),
+            runtime,
+            &selection.model,
+            self.inner.config.runtime.delegation.max_depth,
+            policy::ResultLimits {
+                tool_output_max_lines: self.inner.config.runtime.tool_output.max_lines,
+                tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
+            },
+            self.inner.config.runtime.model_retry,
+        )
+    }
+
     pub(super) async fn start_run_direct(
         &self,
         mut params: RunStartParams,
         origin: cookie_agent_protocol::EventOrigin,
         admission: Option<(InvocationId, u64)>,
+        producer_start: bool,
     ) -> Result<RunStartResult, EngineError> {
         self.inner.mcp.await_eager_ready().await;
         self.inner.plugins.await_eager_ready().await;
@@ -60,19 +86,23 @@ impl Engine {
             ));
         }
         let session = self.inner.store.get(params.session_id)?;
-        let mut original_input = match self
-            .intercept_user_input(params.session_id, params.input)
-            .await?
-        {
-            UserInputInterception::Accepted {
-                input,
-                original_input,
-            } => {
-                params.input = input;
-                original_input
-            }
-            UserInputInterception::Handled { reason } => {
-                return Err(EngineError::InputHandled(reason));
+        let mut original_input = if producer_start {
+            None
+        } else {
+            match self
+                .intercept_user_input(params.session_id, params.input)
+                .await?
+            {
+                UserInputInterception::Accepted {
+                    input,
+                    original_input,
+                } => {
+                    params.input = input;
+                    original_input
+                }
+                UserInputInterception::Handled { reason } => {
+                    return Err(EngineError::InputHandled(reason));
+                }
             }
         };
         let from_model = session.log.last_run_started().map(|(_, _, model)| model);
@@ -159,24 +189,7 @@ impl Engine {
         };
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let mut run_policy = match &session.meta.origin {
-            SessionOrigin::Root => {
-                self.reconcile_provider_store()?;
-                let runtime = self.current_runtime();
-                let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
-                let agent = resolve_agent(&agents, &params.selection.agent)?;
-                if !agent.runnable_as_root {
-                    return Err(EngineError::NoRunnableModel);
-                }
-                freeze_root_agent_policy(
-                    agent,
-                    Arc::clone(&agents),
-                    runtime,
-                    &params.selection.model,
-                    self.inner.config.runtime.delegation.max_depth,
-                    result_limits,
-                    self.inner.config.runtime.model_retry,
-                )?
-            }
+            SessionOrigin::Root => self.freeze_root_selection(&params.selection)?,
             SessionOrigin::Delegated { invocation_id, .. } => {
                 if params.selection.preset != session.meta.creation_selection.preset {
                     return Err(EngineError::NoRunnableModel);
@@ -306,37 +319,68 @@ impl Engine {
         run_policy.internal_agents = self.freeze_internal_agent_definitions(&run_policy)?;
         let run_id = RunId::new_v7();
         let input_through_seq = session.meta.last_event_seq;
-        self.append(
-            params.session_id,
-            Some(run_id),
-            origin.clone(),
-            Event::RunStarted {
-                client_run_id: params.client_run_id.clone(),
-                selection: params.selection.clone(),
-                agent: Box::new(run_policy.agent.clone()),
-                runtime_revision: run_policy.runtime.result.snapshot.runtime_revision.clone(),
-                catalog_revision: run_policy.runtime.result.snapshot.catalog_revision.clone(),
-                provider_state_revision: run_policy
-                    .runtime
-                    .result
-                    .snapshot
-                    .provider_state_revision
-                    .clone(),
-                model_revision: run_policy.runtime.result.snapshot.model_revision.clone(),
-                agent_revision: run_policy.runtime.result.snapshot.agent_revision.clone(),
-                recipe_registry_revision: run_policy
-                    .runtime
-                    .result
-                    .snapshot
-                    .recipe_registry_revision
-                    .clone(),
-                manifest_revision: run_policy.selected_suffix[0].manifest_revision.clone(),
-                selected_suffix: run_policy.selected_suffix.clone(),
-                internal_agents: run_policy.internal_agents.clone(),
-                input_through_seq,
-            },
-        )
-        .await?;
+        let run_started = Event::RunStarted {
+            client_run_id: params.client_run_id.clone(),
+            selection: params.selection.clone(),
+            agent: Box::new(run_policy.agent.clone()),
+            runtime_revision: run_policy.runtime.result.snapshot.runtime_revision.clone(),
+            catalog_revision: run_policy.runtime.result.snapshot.catalog_revision.clone(),
+            provider_state_revision: run_policy
+                .runtime
+                .result
+                .snapshot
+                .provider_state_revision
+                .clone(),
+            model_revision: run_policy.runtime.result.snapshot.model_revision.clone(),
+            agent_revision: run_policy.runtime.result.snapshot.agent_revision.clone(),
+            recipe_registry_revision: run_policy
+                .runtime
+                .result
+                .snapshot
+                .recipe_registry_revision
+                .clone(),
+            manifest_revision: run_policy.selected_suffix[0].manifest_revision.clone(),
+            selected_suffix: run_policy.selected_suffix.clone(),
+            internal_agents: run_policy.internal_agents.clone(),
+            input_through_seq,
+        };
+        if producer_start {
+            self.request(params.session_id, |reply| {
+                super::SessionCommand::Producer(super::producers::ProducerCommand::CommitStart {
+                    run: run_id,
+                    event: Box::new(run_started),
+                    reply,
+                })
+            })
+            .await?;
+        } else {
+            self.append(params.session_id, Some(run_id), origin.clone(), run_started)
+                .await?;
+        }
+        let admission_events = self
+            .inner
+            .store
+            .get(params.session_id)?
+            .log
+            .event_snapshot();
+        let admission_end = admission_events
+            .iter()
+            .position(|event| {
+                event.run_id == Some(run_id) && matches!(event.payload, Event::RunStarted { .. })
+            })
+            .expect("run start was appended");
+        run_policy.goal_tools_enabled = is_root
+            && crate::goal_projection::GoalProducerProjection::from_events(
+                &admission_events[..admission_end],
+            )
+            .goal
+            .is_some_and(|goal| {
+                matches!(
+                    goal.status,
+                    cookie_agent_protocol::GoalStatus::Active
+                        | cookie_agent_protocol::GoalStatus::Paused
+                )
+            });
         let active = Arc::new(ActiveRun {
             session: params.session_id,
             policy: Arc::new(run_policy),
@@ -416,6 +460,9 @@ impl Engine {
                 .await);
         }
         let setup_result = async {
+            if producer_start {
+                return Ok(());
+            }
             if let Some(original_input) = original_input {
                 self.append(
                     params.session_id,
@@ -486,6 +533,7 @@ impl Engine {
             return Ok(RunStartResult { run_id });
         }
         let engine = self.clone();
+        let session_id = params.session_id;
         tokio::spawn(async move {
             if let Some((name, args)) = direct_skill
                 && let Err(error) = engine
@@ -527,6 +575,7 @@ impl Engine {
                 if let Ok(mut active_runs) = engine.inner.active.lock() {
                     active_runs.remove(&run_id);
                 }
+                let _ = engine.reconcile_producers(session_id).await;
                 return;
             }
             if let Err(error) = engine.run_loop(run_id, active).await {
@@ -539,6 +588,7 @@ impl Engine {
             if let Ok(mut active_runs) = engine.inner.active.lock() {
                 active_runs.remove(&run_id);
             }
+            let _ = engine.reconcile_producers(session_id).await;
         });
         Ok(RunStartResult { run_id })
     }
@@ -1263,7 +1313,7 @@ impl Engine {
         cancellation: &CancellationToken,
         policy: &FrozenRunPolicy,
         sticky_entry: &mut usize,
-        prompt_events: Arc<[StoredEvent]>,
+        prompt_events: super::producer_claims::ClaimedPrompt,
         tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
         let chain = &policy.selected_suffix;
@@ -1271,7 +1321,7 @@ impl Engine {
         let prompt_fingerprint = &policy.agent.prompt_fingerprint;
         let mut entry = *sticky_entry;
         let mut last_error = ModelError::invalid_request("model fallback chain is empty");
-        let mut first_request = true;
+        let mut first_request = Some(prompt_events);
         while entry < chain.len() {
             let binding = &chain[entry];
             let model = policy::resolve_model(binding, &policy.runtime)?;
@@ -1307,12 +1357,12 @@ impl Engine {
                     },
                 )
                 .await?;
-                let request_events = if first_request {
-                    first_request = false;
-                    Arc::clone(&prompt_events)
+                let mut request_claim = if let Some(snapshot) = first_request.take() {
+                    snapshot
                 } else {
                     self.prompt_events(session, run).await?
                 };
+                let request_events = Arc::clone(&request_claim.events);
                 let compaction_policy = self.internal_agent_policy(
                     InternalAgentKind::ContextCompaction,
                     policy,
@@ -1656,6 +1706,9 @@ impl Engine {
                     }
                     Err(error) => (Err(Box::new(error)), false),
                 };
+                if result.is_err() {
+                    request_claim.release().await?;
+                }
                 match result {
                     Ok(turn) => {
                         let (mut turn, warnings) =
@@ -1712,6 +1765,7 @@ impl Engine {
                             },
                         )
                         .await?;
+                        request_claim.release().await?;
                         self.append(
                             session,
                             Some(run),
@@ -1799,7 +1853,7 @@ impl Engine {
                         .await?;
                         context_recovery_attempted = true;
                         let before = self.inner.store.get(session)?.log.latest_checkpoint_seq();
-                        let recovery_events = self.prompt_events(session, run).await?;
+                        let mut recovery_claim = self.prompt_events(session, run).await?;
                         let recovery_policy = self.internal_agent_policy(
                             InternalAgentKind::ContextCompaction,
                             policy,
@@ -1814,7 +1868,7 @@ impl Engine {
                                 owner_policy: policy,
                                 internal_policy: &recovery_policy,
                                 tools: &tools,
-                                events: recovery_events,
+                                events: Arc::clone(&recovery_claim.events),
                                 force: true,
                                 overflow_recovery: true,
                                 focus: None,
@@ -1826,6 +1880,7 @@ impl Engine {
                             Ok(_) | Err(EngineError::CompactionCancelled(_)) => {}
                             Err(error) => return Err(error),
                         }
+                        recovery_claim.release().await?;
                         let after = self.inner.store.get(session)?.log.latest_checkpoint_seq();
                         if after > before {
                             continue;

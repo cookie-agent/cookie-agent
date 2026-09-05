@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionProducersResult",
+  "type": "object",
+  "properties": {
+    "plugin_recovery": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PluginRecoveryState"
+      }
+    },
+    "producers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProducerRegistration"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "producers",
+    "plugin_recovery"
+  ],
+  "$defs": {
+    "PluginRecoveryState": {
+      "description": "Runtime startup readiness, not a durable producer record or recovery blob.\nFailed/disabled means external work is unknown, not that work is complete.",
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/PluginRecoveryStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "plugin",
+        "status"
+      ]
+    },
+    "PluginRecoveryStatus": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "ready",
+        "failed",
+        "disabled"
+      ]
+    },
+    "ProducerOwner": {
+      "description": "Stable identity used with session + idempotency key for durable deduplication.\nPlugin connection authorization is runtime-only; the engine derives `plugin`\nfrom the authenticated configured plugin name, never from send parameters.\nThe transport supplies name + connection epoch for live authority separately;\nthe epoch is never part of this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "plugin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "plugin"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "goal"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "goal_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "goal_control"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "goal_id"
+          ]
+        }
+      ]
+    },
+    "ProducerRegistration": {
+      "description": "Read-only runtime record. Never persist or restore a registration ID.\nA fresh registration is required on each process start, even for retries.",
+      "type": "object",
+      "properties": {
+        "age_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "producer_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "producer_owner": {
+          "$ref": "#/$defs/ProducerOwner"
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "producer_id",
+        "producer_owner",
+        "session_id",
+        "age_ms"
+      ]
+    }
+  }
+}

@@ -212,6 +212,16 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             message: "session is owned by another cookie process",
             data: None,
         },
+        EngineError::Goal(reason) => RpcFault {
+            code: -32602,
+            message: "goal operation rejected",
+            data: Some(json!({"reason": reason})),
+        },
+        EngineError::Producer(reason) => RpcFault {
+            code: -32602,
+            message: "producer operation rejected",
+            data: Some(json!({"reason": reason})),
+        },
         _ => RpcFault::engine(),
     }
 }
@@ -275,6 +285,8 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Mcp(_) => "mcp",
         EngineError::CacheStrategy(_) => "cache_strategy",
         EngineError::Permission(_) => "permission",
+        EngineError::Goal(_) => "goal",
+        EngineError::Producer(_) => "producer",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",
         EngineError::SnapshotRehydration(_) => "snapshot_rehydration",

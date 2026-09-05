@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExtensionEmitParams",
+  "description": "Non-model publication only. Model-bound content must use producer.send with\nan explicitly registered producer; emit must never implicitly register one.",
   "type": "object",
   "properties": {
     "context_id": {

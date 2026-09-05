@@ -445,6 +445,15 @@ impl Engine {
             }
         }
         let forked = self.inner.store.fork(session_id, through_seq, origin)?;
+        let producer_state = self.goal_producer_projection(forked)?;
+        if producer_state.goal.is_some()
+            || producer_state
+                .messages
+                .iter()
+                .any(|message| !message.consumed && !message.discarded)
+        {
+            self.reconcile_producers(forked).await?;
+        }
         Ok(SessionForkResult { session_id: forked })
     }
     pub fn set_permission_mode(

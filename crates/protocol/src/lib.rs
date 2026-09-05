@@ -93,10 +93,12 @@ mod approval;
 mod bindings;
 mod event;
 mod extension;
+mod goal;
 mod identity;
 mod manifest;
 mod model;
 pub mod paths;
+mod producer;
 mod provider;
 mod rpc;
 mod runtime;
@@ -116,9 +118,11 @@ pub use cookie_agent_identity::{
 };
 pub use event::*;
 pub use extension::*;
+pub use goal::*;
 pub use identity::*;
 pub use manifest::*;
 pub use model::*;
+pub use producer::*;
 pub use provider::*;
 pub use rpc::*;
 pub use runtime::*;
@@ -210,5 +214,7 @@ exact_numeric_wire_type!(
     "The exact coherent runtime snapshot schema version."
 );
 
+#[cfg(test)]
+mod goal_producer_tests;
 #[cfg(test)]
 mod tests;

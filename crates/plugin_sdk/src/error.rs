@@ -22,6 +22,22 @@ pub enum PluginError {
     /// Publishing to the requested target was not enabled on the server builder.
     #[error("{0} publishing is not enabled")]
     PublishingNotEnabled(&'static str),
+    /// Producer messaging was not enabled on the server builder.
+    #[error("producer messaging is not enabled")]
+    ProducerMessagingNotEnabled,
+    /// The SDK's bounded pending-request table is full.
+    #[error("too many plugin requests are awaiting engine replies")]
+    TooManyPendingRequests,
+    /// The engine rejected a plugin request.
+    #[error("engine rejected plugin request ({code}): {message}")]
+    EngineRequest {
+        /// The JSON-RPC error code returned by the engine.
+        code: i32,
+        /// The JSON-RPC error message returned by the engine.
+        message: String,
+        /// Optional structured error data returned by the engine.
+        data: Option<Value>,
+    },
     /// A registered handler panicked.
     #[error("plugin handler panicked")]
     HandlerPanic,

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionProducerRegisterParams",
+  "description": "Plugin-to-engine request; the connection supplies the stable plugin owner.\nRegistration is allowed during recovery and does not wait for goal readiness.",
+  "type": "object",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id"
+  ]
+}

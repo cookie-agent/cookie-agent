@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionGoalLifecycleParams",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/GoalLifecycleAction"
+    },
+    "expected_revision": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "selection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunSelection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "goal_id",
+    "expected_revision",
+    "action"
+  ],
+  "$defs": {
+    "GoalLifecycleAction": {
+      "description": "User-only transitions. Completion is derived from a nonempty finished checklist.",
+      "type": "string",
+      "enum": [
+        "pause",
+        "resume",
+        "cancel"
+      ]
+    },
+    "RunSelection": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$"
+        },
+        "model": {
+          "description": "One exact base or named-variant model selection.",
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 512,
+              "minLength": 3,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+            },
+            "variant": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "variant"
+          ]
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "model"
+      ]
+    }
+  }
+}

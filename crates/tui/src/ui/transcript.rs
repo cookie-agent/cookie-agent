@@ -7,7 +7,9 @@ use std::{
     time::Duration,
 };
 
-use cookie_agent_protocol::{AgentId, SessionId};
+use cookie_agent_protocol::{
+    AgentId, GoalState, GoalStatus, ProducerDeliveryMode, ProducerOwner, SessionId,
+};
 use ratatui::{
     layout::Rect,
     style::Style,
@@ -573,7 +575,14 @@ impl App {
         descendant_warnings: &[String],
     ) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
-        for notice in &self.transient_notices {
+        let goal_notices = self
+            .selected
+            .and_then(|session_id| self.goal_notices.get(&session_id));
+        for notice in self
+            .transient_notices
+            .iter()
+            .chain(goal_notices.into_iter().flatten())
+        {
             // Multiline notices (e.g. /help) keep their structure: the
             // NOTICE badge leads, continuation lines align beneath it.
             let lines = notice
@@ -687,6 +696,11 @@ impl App {
                 .get(&session_id)
                 .is_some_and(|state| !state.transcript.is_empty() || state.run_snapshot.is_some())
         }) || !self.transient_notices.is_empty()
+            || self.selected.is_some_and(|session_id| {
+                self.goal_notices
+                    .get(&session_id)
+                    .is_some_and(|notices| !notices.is_empty())
+            })
             || !descendant_warnings.is_empty();
         let width = area
             .width
@@ -992,6 +1006,8 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
 #[derive(Clone, Copy)]
 enum Role {
     User,
+    Goal,
+    Producer,
     ToolRunning,
     ToolSuccess,
     ToolFailure,
@@ -1042,7 +1058,10 @@ fn for_each_item_block_id(item: &TranscriptItem, mut visit: impl FnMut(BlockId) 
         }
         TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
-        TranscriptItem::User { .. } | TranscriptItem::Event { .. } => true,
+        TranscriptItem::User { .. }
+        | TranscriptItem::Event { .. }
+        | TranscriptItem::Goal { .. }
+        | TranscriptItem::ProducerMessage { .. } => true,
     }
 }
 
@@ -1104,7 +1123,9 @@ fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool {
         TranscriptItem::User { .. }
         | TranscriptItem::Event { .. }
         | TranscriptItem::Compaction { .. }
-        | TranscriptItem::PluginMessage { .. } => false,
+        | TranscriptItem::PluginMessage { .. }
+        | TranscriptItem::Goal { .. }
+        | TranscriptItem::ProducerMessage { .. } => false,
     }
 }
 
@@ -1159,6 +1180,143 @@ fn transcript_item_layout(
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),
+        TranscriptItem::Goal { goal, .. } => ItemLayout {
+            lines: goal_layout(goal, context.width, context.theme),
+            regions: Vec::new(),
+            user_seq: None,
+        },
+        TranscriptItem::ProducerMessage {
+            producer_owner,
+            mode,
+            body,
+            reminder,
+            status,
+            ..
+        } => match status {
+            crate::state::ProducerMessageStatus::Pending
+            | crate::state::ProducerMessageStatus::Admitted
+            | crate::state::ProducerMessageStatus::Claimed => ItemLayout::default(),
+            crate::state::ProducerMessageStatus::Consumed => producer_message_layout(
+                producer_owner,
+                *mode,
+                body,
+                reminder.as_ref(),
+                context.width,
+                context.theme,
+            ),
+            crate::state::ProducerMessageStatus::Discarded
+                if context.minimum_event_level == crate::state::EventLevel::Debug =>
+            {
+                discarded_producer_message_layout(
+                    producer_owner,
+                    *mode,
+                    context.width,
+                    context.theme,
+                )
+            }
+            crate::state::ProducerMessageStatus::Discarded => ItemLayout::default(),
+        },
+    }
+}
+
+fn goal_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let finished = goal.items.iter().filter(|item| item.finished).count();
+    let mut body = vec![
+        Line::styled(goal.objective.clone(), theme.assistant()),
+        Line::styled(
+            format!(
+                "status: {} · {finished}/{} finished",
+                goal_status_label(goal.status),
+                goal.items.len()
+            ),
+            theme.internal(),
+        ),
+    ];
+    if goal.items.is_empty() {
+        body.push(Line::styled("checklist: empty", theme.muted()));
+    } else {
+        body.extend(goal.items.iter().map(|item| {
+            let marker = if item.finished { "[x]" } else { "[ ]" };
+            Line::styled(format!("{marker} {}", item.description), theme.internal())
+        }));
+    }
+    role_block(Role::Goal, body, width, theme)
+}
+
+fn producer_message_layout(
+    owner: &ProducerOwner,
+    mode: ProducerDeliveryMode,
+    body: &str,
+    reminder: Option<&cookie_agent_protocol::GoalReminderIdentity>,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let (owner, content) = match owner {
+        ProducerOwner::Plugin { plugin } => (format!("plugin {plugin}"), Some(body.to_owned())),
+        ProducerOwner::Delegation { invocation_id } => {
+            (format!("delegation {invocation_id}"), Some(body.to_owned()))
+        }
+        ProducerOwner::Goal { .. } if reminder.is_some() => (
+            "goal controller".to_owned(),
+            Some("Goal continuation reminder".to_owned()),
+        ),
+        ProducerOwner::Goal { .. } => ("goal controller".to_owned(), Some(body.to_owned())),
+        ProducerOwner::GoalControl { .. } => ("goal control".to_owned(), Some(body.to_owned())),
+    };
+    let mut lines = vec![Line::styled(
+        format!("{owner} · {} · consumed", producer_mode_label(mode)),
+        theme.internal(),
+    )];
+    if let Some(content) = content {
+        lines.extend(content.lines().map(|line| Line::from(line.to_owned())));
+    }
+    ItemLayout {
+        lines: role_block(Role::Producer, lines, width, theme),
+        regions: Vec::new(),
+        user_seq: None,
+    }
+}
+
+fn discarded_producer_message_layout(
+    owner: &ProducerOwner,
+    mode: ProducerDeliveryMode,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    let owner = match owner {
+        ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
+        ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
+        ProducerOwner::Goal { .. } => "goal controller".to_owned(),
+        ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
+    };
+    ItemLayout {
+        lines: role_block(
+            Role::Debug,
+            vec![Line::from(format!(
+                "producer message discarded · {owner} · {}",
+                producer_mode_label(mode)
+            ))],
+            width,
+            theme,
+        ),
+        regions: Vec::new(),
+        user_seq: None,
+    }
+}
+
+fn producer_mode_label(mode: ProducerDeliveryMode) -> &'static str {
+    match mode {
+        ProducerDeliveryMode::Steer => "steer",
+        ProducerDeliveryMode::Queue => "queue",
+    }
+}
+
+fn goal_status_label(status: GoalStatus) -> &'static str {
+    match status {
+        GoalStatus::Active => "active",
+        GoalStatus::Paused => "paused",
+        GoalStatus::Completed => "completed",
+        GoalStatus::Cancelled => "cancelled",
     }
 }
 
@@ -3229,6 +3387,8 @@ fn role_block_lines(
 ) -> Vec<Line<'static>> {
     let (label, marker, gutter, style) = match role {
         Role::User => ("USER", "┌─", "│ ", theme.user()),
+        Role::Goal => ("GOAL", "◆─", "│ ", theme.assistant()),
+        Role::Producer => ("PRODUCER", "◇─", "│ ", theme.internal()),
         Role::ToolRunning => ("TOOL RUNNING", "┏…", "┃ ", theme.tool_running()),
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
@@ -3237,9 +3397,30 @@ fn role_block_lines(
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
+    if matches!(role, Role::Goal | Role::Producer) {
+        if width == 0 {
+            return Vec::new();
+        }
+        let header = if width < 8 {
+            format!("[{}]", if matches!(role, Role::Goal) { "G" } else { "P" })
+        } else {
+            format!("{marker} {label}")
+        };
+        let mut lines = wrapped_line(Line::styled(header, style), width);
+        for line in body {
+            lines.extend(repeated_prefixed_wrapped_line(
+                vec![Span::styled(gutter, style)],
+                line,
+                width,
+            ));
+        }
+        return lines;
+    }
     if width < 8 {
         let short = match role {
             Role::User => "U",
+            Role::Goal => "G",
+            Role::Producer => "P",
             Role::ToolRunning => "T…",
             Role::ToolSuccess => "T✓",
             Role::ToolFailure => "T!",
@@ -3491,6 +3672,8 @@ const FIRST_SPAN_GUTTERS: &[&str] = &[
     "  ",
     "    ",
     "[U] ",
+    "[G] ",
+    "[P] ",
     "[T\u{2026}] ",
     "[T\u{2713}] ",
     "[T!] ",
@@ -3505,7 +3688,9 @@ const FIRST_SPAN_GUTTERS: &[&str] = &[
 /// assistant attribution and footer, code fences, table grids). Such rows
 /// are chrome-only: they vanish from an extraction rather than leaking
 /// border glyphs into copied text.
-const CHROME_ROW_PREFIXES: &[&str] = &["┌", "└", "┏", "╭", "╰", "├", "··", "!!", "⚠", "--"];
+const CHROME_ROW_PREFIXES: &[&str] = &[
+    "┌", "└", "┏", "╭", "╰", "├", "··", "!!", "⚠", "--", "◆", "◇",
+];
 
 /// Extract the copyable text of one rendered line inside the display-column
 /// window `[col_start, col_end)`: gutter spans are stripped, chrome-only
@@ -3653,13 +3838,13 @@ mod tests {
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
         ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, DecisionTrace,
-        EventPayload, EventSubscriptionMessage, ModelCallId, ModelKey, ModelSelection,
-        OperationFingerprint, OutputDelta, OutputStream, PermissionAction, PermissionEffect,
-        PreparedApprovalResource, PreparedBindingLifetime, PreparedCapabilityOperation,
-        PreparedOperationIdentity, PreparedResourceDigest, PreparedResourceIdentity, ProviderId,
-        RunId, RunSelection, SafeCode, SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta,
-        SessionOrigin, SessionStatus, SessionTitle, SessionTree, Sha256Digest, StoredEvent,
-        ToolCallId, ToolCallStart, Usage,
+        EventPayload, EventSubscriptionMessage, GoalId, GoalItem, InvocationId, ModelCallId,
+        ModelKey, ModelSelection, OperationFingerprint, OutputDelta, OutputStream,
+        PermissionAction, PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
+        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
+        PreparedResourceIdentity, ProducerMessageId, ProviderId, RunId, RunSelection, SafeCode,
+        SafeDisplayText, SafeErrorMessage, SessionId, SessionMeta, SessionOrigin, SessionStatus,
+        SessionTitle, SessionTree, Sha256Digest, StoredEvent, ToolCallId, ToolCallStart, Usage,
     };
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -3681,7 +3866,7 @@ mod tests {
     use crate::ui::pickers::SearchPickerFocus;
     use crate::ui::provider::{ProviderAction, ProviderForm, ProviderFormFocus, ProviderOperation};
     use crate::ui::slash::{
-        SlashCommand, Submission, command_help, command_spec, parse_submission,
+        GoalCommand, SlashCommand, Submission, command_help, command_spec, parse_submission,
     };
     use crate::ui::terminal_layout_with_tree_rows;
 
@@ -4271,6 +4456,356 @@ mod tests {
                 estimated_cost_pico_usd,
             },
         )
+    }
+
+    fn test_goal(status: GoalStatus, items: Vec<GoalItem>) -> GoalState {
+        GoalState {
+            goal_id: GoalId::new_v7(),
+            objective: "Ship transcript rendering without regressions".to_owned(),
+            status,
+            items,
+            revision: 3,
+        }
+    }
+
+    fn goal_item(description: &str, finished: bool) -> GoalItem {
+        GoalItem {
+            description: description.to_owned(),
+            finished,
+        }
+    }
+
+    #[test]
+    fn goal_rows_are_always_visible_with_progress_and_checklist() {
+        let goal = test_goal(
+            GoalStatus::Active,
+            vec![
+                goal_item("Render the objective", true),
+                goal_item("Verify narrow panes", false),
+            ],
+        );
+        let state = SessionState {
+            transcript: vec![TranscriptItem::Goal {
+                id: 1,
+                seq: 7,
+                goal: goal.clone(),
+            }],
+            ..SessionState::default()
+        };
+        let layout = transcript_layout_with_level(
+            &state,
+            None,
+            48,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Error,
+        );
+        let rendered = snapshot_lines(&layout.lines);
+        assert!(rendered.contains("GOAL"));
+        assert!(rendered.contains(&goal.objective));
+        assert!(rendered.contains("status: active · 1/2 finished"));
+        assert!(rendered.contains("[x] Render the objective"));
+        assert!(rendered.contains("[ ] Verify narrow panes"));
+    }
+
+    #[test]
+    fn goal_rows_preserve_duplicate_descriptions_and_finished_marker_order() {
+        let goal = test_goal(
+            GoalStatus::Active,
+            vec![
+                goal_item("Repeat verification", false),
+                goal_item("Repeat verification", true),
+            ],
+        );
+        let rendered = snapshot_lines(&goal_layout(&goal, 60, &Theme::default()));
+        assert!(rendered.contains("1/2 finished"));
+        assert_eq!(rendered.matches("Repeat verification").count(), 2);
+        let unfinished = rendered
+            .find("[ ] Repeat verification")
+            .expect("unfinished item");
+        let finished = rendered
+            .find("[x] Repeat verification")
+            .expect("finished item");
+        assert!(unfinished < finished);
+    }
+
+    #[test]
+    fn goal_rows_render_empty_and_terminal_states_cleanly() {
+        for status in [
+            GoalStatus::Paused,
+            GoalStatus::Completed,
+            GoalStatus::Cancelled,
+        ] {
+            let rendered = snapshot_lines(&goal_layout(
+                &test_goal(status, Vec::new()),
+                40,
+                &Theme::default(),
+            ));
+            assert!(rendered.contains(&format!(
+                "status: {} · 0/0 finished",
+                goal_status_label(status)
+            )));
+            assert!(rendered.contains("checklist: empty"));
+            assert!(!rendered.contains("[ ] "));
+        }
+    }
+
+    #[test]
+    fn goal_and_producer_rows_fit_narrow_viewports() {
+        let goal = test_goal(
+            GoalStatus::Active,
+            vec![goal_item(
+                "A checklist description that must wrap safely",
+                false,
+            )],
+        );
+        let mut state = SessionState {
+            goal: Some(goal.clone()),
+            ..SessionState::default()
+        };
+        state.transcript = vec![
+            TranscriptItem::Goal {
+                id: 1,
+                seq: 1,
+                goal,
+            },
+            TranscriptItem::ProducerMessage {
+                id: 2,
+                seq: 2,
+                accepted_at: Timestamp::now(),
+                message_id: ProducerMessageId::new_v7(),
+                producer_owner: ProducerOwner::Plugin {
+                    plugin: "build-monitor".to_owned(),
+                },
+                mode: ProducerDeliveryMode::Queue,
+                body: "A producer body that wraps instead of widening the pane".to_owned(),
+                reminder: None,
+                status: crate::state::ProducerMessageStatus::Consumed,
+            },
+        ];
+        for width in [1, 3, 7, 8, 20, 40, 80] {
+            let layout = transcript_layout(&state, None, width);
+            assert!(
+                layout
+                    .lines
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width)),
+                "width {width}: {}",
+                snapshot_lines(&layout.lines)
+            );
+            assert!(layout.user_regions.is_empty());
+        }
+    }
+
+    #[test]
+    fn goal_control_messages_move_from_queue_to_transcript_when_consumed() {
+        for body in [
+            "Goal paused. Stop pursuing the objective.",
+            "Goal cancelled. Stop pursuing the objective.",
+        ] {
+            let session_id = SessionId::new_v7();
+            let message_id = ProducerMessageId::new_v7();
+            let mut store = StateStore::default();
+            let accepted = StoredEvent {
+                engine_version: None,
+                origin: None,
+                session_id,
+                run_id: None,
+                seq: 1,
+                timestamp: jiff::Timestamp::now(),
+                payload: EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::GoalControl {
+                        goal_id: GoalId::new_v7(),
+                    },
+                    mode: ProducerDeliveryMode::Steer,
+                    idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new("control")
+                        .unwrap(),
+                    body: body.into(),
+                    reminder: None,
+                },
+            };
+            assert!(store.apply_event(accepted.clone()));
+            for status in [
+                crate::state::ProducerMessageStatus::Pending,
+                crate::state::ProducerMessageStatus::Admitted,
+            ] {
+                if status == crate::state::ProducerMessageStatus::Admitted {
+                    assert!(store.apply_event(StoredEvent {
+                        run_id: Some(RunId::new_v7()),
+                        seq: 2,
+                        payload: EventPayload::ProducerMessageAdmitted { message_id },
+                        ..accepted.clone()
+                    }));
+                }
+                let state = &store.sessions[&session_id];
+                let layout = transcript_layout_with_level(
+                    state,
+                    None,
+                    80,
+                    &Theme::default(),
+                    &PlainHighlighter,
+                    crate::state::EventLevel::Error,
+                );
+                let rendered = snapshot_lines(&layout.lines);
+                assert!(rendered.is_empty(), "{status:?}: {rendered}");
+                assert_eq!(state.transcript.len(), 1);
+                assert!(layout.user_regions.is_empty());
+            }
+            let state = store.sessions.get_mut(&session_id).expect("session");
+            let TranscriptItem::ProducerMessage { status, .. } = &mut state.transcript[0] else {
+                panic!("producer transcript item")
+            };
+            *status = crate::state::ProducerMessageStatus::Consumed;
+            let rendered = snapshot_lines(
+                &transcript_layout_with_level(
+                    state,
+                    None,
+                    80,
+                    &Theme::default(),
+                    &PlainHighlighter,
+                    crate::state::EventLevel::Error,
+                )
+                .lines,
+            );
+            assert_eq!(rendered.matches(body).count(), 1, "{rendered}");
+            assert!(rendered.contains("goal control · steer · consumed"));
+            assert!(!rendered.contains("Goal continuation reminder"));
+        }
+    }
+
+    #[test]
+    fn producer_lifecycle_only_renders_consumed_content_and_debug_discard_diagnostic() {
+        let goal = test_goal(GoalStatus::Active, vec![goal_item("Keep going", false)]);
+        for status in [
+            crate::state::ProducerMessageStatus::Pending,
+            crate::state::ProducerMessageStatus::Admitted,
+            crate::state::ProducerMessageStatus::Claimed,
+            crate::state::ProducerMessageStatus::Consumed,
+            crate::state::ProducerMessageStatus::Discarded,
+        ] {
+            let state = SessionState {
+                goal: Some(goal.clone()),
+                transcript: vec![TranscriptItem::ProducerMessage {
+                    id: 1,
+                    seq: 9,
+                    accepted_at: Timestamp::now(),
+                    message_id: ProducerMessageId::new_v7(),
+                    producer_owner: ProducerOwner::Goal {
+                        goal_id: goal.goal_id,
+                    },
+                    mode: ProducerDeliveryMode::Steer,
+                    body: "FULL REMINDER BODY MUST NOT RENDER".to_owned(),
+                    reminder: Some(cookie_agent_protocol::GoalReminderIdentity {
+                        goal_id: goal.goal_id,
+                        revision: goal.revision,
+                    }),
+                    status,
+                }],
+                ..SessionState::default()
+            };
+            let layout = transcript_layout_with_level(
+                &state,
+                None,
+                60,
+                &Theme::default(),
+                &PlainHighlighter,
+                crate::state::EventLevel::Info,
+            );
+            let rendered = snapshot_lines(&layout.lines);
+            if status == crate::state::ProducerMessageStatus::Consumed {
+                assert_eq!(rendered.matches("PRODUCER").count(), 1);
+                assert!(rendered.contains("goal controller · steer · consumed"));
+                assert!(rendered.contains("Goal continuation reminder"));
+            } else {
+                assert!(rendered.is_empty(), "{status:?}: {rendered}");
+            }
+            assert!(!rendered.contains("FULL REMINDER BODY"));
+            assert!(layout.user_regions.is_empty());
+
+            if status == crate::state::ProducerMessageStatus::Discarded {
+                let debug = snapshot_lines(&transcript_layout(&state, None, 60).lines);
+                assert!(debug.contains("producer message discarded"));
+                assert!(debug.contains("goal controller · steer"));
+                assert!(!debug.contains("FULL REMINDER BODY"));
+                assert!(!debug.contains("Goal continuation reminder"));
+            }
+        }
+
+        let plugin = producer_message_layout(
+            &ProducerOwner::Plugin {
+                plugin: "ci".to_owned(),
+            },
+            ProducerDeliveryMode::Steer,
+            "plugin payload",
+            None,
+            60,
+            &Theme::default(),
+        );
+        let delegation = producer_message_layout(
+            &ProducerOwner::Delegation {
+                invocation_id: InvocationId::new_v7(),
+            },
+            ProducerDeliveryMode::Queue,
+            "delegation payload",
+            None,
+            60,
+            &Theme::default(),
+        );
+        assert!(snapshot_lines(&plugin.lines).contains("plugin payload"));
+        assert!(snapshot_lines(&delegation.lines).contains("delegation payload"));
+    }
+
+    #[test]
+    fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
+        let session_id = SessionId::new_v7();
+        let mut state = SessionState {
+            transcript: vec![TranscriptItem::ProducerMessage {
+                id: 41,
+                seq: 9,
+                accepted_at: Timestamp::now(),
+                message_id: ProducerMessageId::new_v7(),
+                producer_owner: ProducerOwner::Plugin {
+                    plugin: "ci".to_owned(),
+                },
+                mode: ProducerDeliveryMode::Queue,
+                body: "cached payload".to_owned(),
+                reminder: None,
+                status: crate::state::ProducerMessageStatus::Pending,
+            }],
+            ..SessionState::default()
+        };
+        let mut cache = LayoutCache::default();
+        let render = |cache: &mut LayoutCache, state: &SessionState| {
+            ensure_cached_transcript_layout(
+                cache,
+                session_id,
+                state,
+                None,
+                None,
+                60,
+                &Theme::default(),
+                &PlainHighlighter,
+                crate::state::EventLevel::Info,
+                0,
+            )
+        };
+
+        assert!(!render(&mut cache, &state));
+        assert!(cache.layout.lines.is_empty());
+        assert!(render(&mut cache, &state));
+        assert_eq!(cache.item_layout_passes, 1);
+
+        let TranscriptItem::ProducerMessage { id, status, .. } = &mut state.transcript[0] else {
+            panic!("producer transcript item")
+        };
+        assert_eq!(*id, 41);
+        *status = crate::state::ProducerMessageStatus::Consumed;
+        assert!(!render(&mut cache, &state));
+        assert!(snapshot_lines(&cache.layout.lines).contains("cached payload"));
+        assert_eq!(cache.item_layout_passes, 2);
+        assert!(render(&mut cache, &state));
+        assert_eq!(cache.item_layout_passes, 2);
     }
 
     #[test]
@@ -5074,7 +5609,8 @@ mod tests {
     #[test]
     fn terminal_layout_has_exact_rects_for_wide_square_tall_and_tiny_terminals() {
         for (width, height) in [(160, 50), (80, 24), (40, 12), (20, 8), (8, 2), (4, 1)] {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 0, 1);
+            let layout =
+                terminal_layout_with_tree_rows(Rect::new(0, 0, width, height), 3, 0, false, 1);
             assert_eq!(layout.agent.y, 0);
             assert_eq!(layout.conversation.y, layout.agent.height);
             assert_eq!(layout.bar.height, 1.min(height));
@@ -5793,12 +6329,14 @@ mod tests {
     async fn agent_panel_text_rows_are_clamped_1_to_8_with_borders_outside() {
         let mut app = test_app().await;
         for sessions in [0usize, 1] {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, 1);
+            let layout =
+                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, 1);
             assert_eq!(layout.agent.height, 0);
             assert_eq!(layout.conversation.y, 0);
         }
         for (sessions, expected_rows) in [(2usize, 4u16), (3, 5), (8, 10), (9, 10)] {
-            let layout = terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, 1);
+            let layout =
+                terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, 1);
             app.tree = Some(SessionTree {
                 session: session_meta(SessionId::new_v7()),
                 children: (1..sessions)
@@ -5822,7 +6360,7 @@ mod tests {
             assert!(bottom, "sessions {sessions}");
             assert!(!below, "sessions {sessions}");
         }
-        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, 1);
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 0, false, 1);
         // The single-row composer is three rows tall, so the eight-row
         // terminal leaves four rows above the bar: one for the status line,
         // one guaranteed conversation row, and the rest for the agent panel
@@ -5888,9 +6426,9 @@ mod tests {
     #[test]
     fn composer_grows_with_text_rows_and_reclaims_conversation() {
         let area = Rect::new(0, 0, 80, 24);
-        let single = terminal_layout_with_tree_rows(area, 3, 0, 1);
+        let single = terminal_layout_with_tree_rows(area, 3, 0, false, 1);
         assert_eq!(single.input.height, 3);
-        let grown = terminal_layout_with_tree_rows(area, 3, 0, 4);
+        let grown = terminal_layout_with_tree_rows(area, 3, 0, false, 4);
         assert_eq!(grown.input.height, 6);
         // Every added composer row comes out of the conversation pane; the
         // agent panel, status line, and bar keep their geometry.
@@ -5902,7 +6440,7 @@ mod tests {
         assert_eq!(grown.bar, single.bar);
         // The ceiling is five text rows plus borders, and the box stays
         // glued to the bar above it.
-        let ceiling = terminal_layout_with_tree_rows(area, 3, 0, 99);
+        let ceiling = terminal_layout_with_tree_rows(area, 3, 0, false, 99);
         assert_eq!(ceiling.input.height, 7);
         assert_eq!(ceiling.input.y + ceiling.input.height, ceiling.bar.y);
     }
@@ -9584,6 +10122,7 @@ mod tests {
                 Rect::new(0, 0, 28, 24),
                 app.tree_entries().len(),
                 0,
+                false,
                 input_text_rows,
             )
             .input
@@ -10337,6 +10876,234 @@ mod tests {
         let rendered = frame_rows(&mut app, 80, 24).join("\n");
         assert!(rendered.contains("primary • gateway/arbitrary-model[default]"));
         assert!(rendered.contains("primary • gateway/arbitrary-model[fast]"));
+    }
+
+    #[tokio::test]
+    async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() {
+        let (client, _requests) = recording_client();
+        let mut app = App::new(client).await.expect("test app");
+        let model_a = model_descriptor();
+        let model_b = catalog_model("other/model-b", &["low", "high"], Some("low"));
+        let mut review_primary = preset_descriptor("review", "primary");
+        review_primary.resolved_fallback = vec![ModelSelection {
+            model: model_b.key.clone(),
+            variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
+        }];
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_a, model_b.clone()],
+            vec![descriptor("primary", true), review_primary],
+        ));
+
+        let session = SessionId::new_v7();
+        let run_a = run_id();
+        let attempt_a = AttemptId::new_v7();
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.sessions.push(session_meta(session));
+        for event in [
+            session_created(session, 1),
+            run_started_with_suffix(session, 2, run_a, vec![resolved_model(None)]),
+            attempt_started(session, 3, run_a, attempt_a, None),
+            turn_committed(
+                session,
+                4,
+                run_a,
+                attempt_a,
+                1,
+                vec![text_part("run A answer")],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(app.store.apply_event(event));
+        }
+        let run_a_projection = assistant_projection(&app.store.sessions[&session]);
+        assert_eq!(run_a_projection.len(), 1);
+        assert_eq!(run_a_projection[0].0, attribution(None).header());
+        assert_eq!(
+            app.store.sessions[&session]
+                .run_snapshot
+                .as_ref()
+                .expect("run A snapshot")
+                .agent,
+            agent_id()
+        );
+
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(1).await;
+        app.set_draft_model(model_b.key.clone());
+        app.set_draft_variant(Some(
+            cookie_agent_protocol::VariantId::new("high").expect("variant"),
+        ));
+        let draft_b = app.draft.clone().expect("run B draft");
+        assert_eq!(draft_b.agent, agent_id());
+        assert_eq!(draft_b.model.model, model_b.key);
+        assert_eq!(
+            draft_b
+                .model
+                .variant
+                .as_ref()
+                .map(|variant| variant.as_str()),
+            Some("high")
+        );
+        assert_eq!(draft_b.preset.as_deref(), Some("review"));
+        let switched = rendered_frame(&mut app, 100, 30);
+        assert!(
+            switched.contains("primary • gateway/arbitrary-model[base]"),
+            "{switched}"
+        );
+        assert!(
+            switched.contains("primary • other/model-b[high]"),
+            "{switched}"
+        );
+
+        app.run_command(SlashCommand::Goal(GoalCommand::Objective(
+            "Continue with model B".into(),
+        )))
+        .await;
+        assert_eq!(app.draft.as_ref(), Some(&draft_b));
+        assert_eq!(
+            assistant_projection(&app.store.sessions[&session]),
+            run_a_projection
+        );
+        assert_eq!(app.store.sessions[&session].active_run, Some(run_a));
+        let activated_goal = GoalState {
+            goal_id: GoalId::new_v7(),
+            objective: "Continue with model B".into(),
+            status: GoalStatus::Active,
+            items: Vec::new(),
+            revision: 0,
+        };
+        assert!(app.store.apply_event(runless_event(
+            session,
+            5,
+            EventPayload::GoalActivated {
+                goal_id: activated_goal.goal_id,
+                objective: activated_goal.objective.clone(),
+                revision: activated_goal.revision,
+                selection: Some(draft_b.clone()),
+            }
+        )));
+        app.handle_rpc_update(RpcUpdate::GoalFinished {
+            session_id: session,
+            result: Box::new(Ok(Some(activated_goal))),
+        });
+        assert_eq!(app.draft.as_ref(), Some(&draft_b));
+        assert_eq!(
+            assistant_projection(&app.store.sessions[&session]),
+            run_a_projection
+        );
+        let after_goal_result = rendered_frame(&mut app, 100, 30);
+        assert!(
+            after_goal_result.contains("primary • gateway/arbitrary-model[base]"),
+            "{after_goal_result}"
+        );
+        assert!(
+            after_goal_result.contains("primary • other/model-b[high]"),
+            "{after_goal_result}"
+        );
+        assert_eq!(
+            app.store.sessions[&session]
+                .run_snapshot
+                .as_ref()
+                .expect("still run A snapshot")
+                .fallback_chain[0]
+                .selection,
+            resolved_model(None).selection
+        );
+
+        let mut resolved_b = resolved_model(Some("high"));
+        resolved_b.provider_id = model_b.key.provider_id();
+        resolved_b.model_id = model_b.key.model_id();
+        resolved_b.selection.model = model_b.key.clone();
+        resolved_b.selection_fingerprint = Sha256Digest::of_bytes(b"run-b-selection");
+        let run_b = run_id();
+        let attempt_b = AttemptId::new_v7();
+        let mut run_b_started =
+            run_started_with_suffix(session, 7, run_b, vec![resolved_b.clone()]);
+        let EventPayload::RunStarted { selection, .. } = &mut run_b_started.payload else {
+            unreachable!("run fixture")
+        };
+        selection.preset = Some("review".into());
+        let mut attempt_b_started = attempt_started(session, 8, run_b, attempt_b, Some("high"));
+        let EventPayload::ModelAttemptStarted { resolved_model, .. } =
+            &mut attempt_b_started.payload
+        else {
+            unreachable!("attempt fixture")
+        };
+        *resolved_model = resolved_b.clone();
+        let mut turn_b_committed = turn_committed(
+            session,
+            9,
+            run_b,
+            attempt_b,
+            2,
+            vec![text_part("run B answer")],
+            Vec::new(),
+            Some("high"),
+        );
+        let EventPayload::ModelTurnCommitted { resolved_model, .. } = &mut turn_b_committed.payload
+        else {
+            unreachable!("turn fixture")
+        };
+        *resolved_model = resolved_b.clone();
+
+        assert!(app.store.apply_event(event(
+            session,
+            6,
+            run_a,
+            EventPayload::RunCompleted { final_text: None },
+        )));
+        assert_eq!(
+            assistant_projection(&app.store.sessions[&session]),
+            run_a_projection
+        );
+        assert!(app.store.apply_event(run_b_started));
+        let state = &app.store.sessions[&session];
+        assert_eq!(assistant_projection(state), run_a_projection);
+        assert_eq!(state.active_run, Some(run_b));
+        assert_eq!(
+            state
+                .run_snapshot
+                .as_ref()
+                .expect("run B snapshot")
+                .fallback_chain[0]
+                .selection,
+            resolved_b.selection
+        );
+        assert_eq!(
+            state.run_selected_suffix.as_ref().expect("run B suffix")[0].selection,
+            resolved_b.selection
+        );
+
+        assert!(app.store.apply_event(attempt_b_started));
+        let expected_b_header = FrozenAssistantAttribution {
+            agent: agent_id(),
+            resolved_model: resolved_b,
+        }
+        .header();
+        let after_attempt = assistant_projection(&app.store.sessions[&session]);
+        assert_eq!(after_attempt.len(), 2);
+        assert_eq!(after_attempt[0], run_a_projection[0]);
+        assert_eq!(after_attempt[1].0, expected_b_header);
+        assert_eq!(after_attempt[1].1, None);
+
+        assert!(app.store.apply_event(turn_b_committed));
+        let after_commit = assistant_projection(&app.store.sessions[&session]);
+        assert_eq!(after_commit.len(), 2);
+        assert_eq!(after_commit[0], run_a_projection[0]);
+        assert_eq!(after_commit[1].0, expected_b_header);
+        assert_eq!(after_commit[1].1, Some(2));
+        assert_eq!(after_commit[1].2, ["text:run B answer"]);
+        let rendered = rendered_frame(&mut app, 100, 34);
+        assert!(rendered.contains("run A answer"), "{rendered}");
+        assert!(rendered.contains("run B answer"), "{rendered}");
+        assert!(
+            rendered.contains("primary • other/model-b[high]"),
+            "{rendered}"
+        );
     }
 
     #[tokio::test]
@@ -11288,6 +12055,61 @@ mod tests {
         )
     }
 
+    fn producer_accepted(
+        session: SessionId,
+        seq: u64,
+        message_id: ProducerMessageId,
+        owner: ProducerOwner,
+        mode: ProducerDeliveryMode,
+        body: &str,
+        reminder: Option<cookie_agent_protocol::GoalReminderIdentity>,
+    ) -> StoredEvent {
+        runless_event(
+            session,
+            seq,
+            EventPayload::ProducerMessageAccepted {
+                message_id,
+                producer_owner: owner,
+                mode,
+                idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new(format!(
+                    "message-{seq}"
+                ))
+                .expect("idempotency key"),
+                body: body.to_owned(),
+                reminder,
+            },
+        )
+    }
+
+    fn set_producer_status(
+        app: &mut App,
+        session: SessionId,
+        message_id: ProducerMessageId,
+        next: crate::state::ProducerMessageStatus,
+    ) {
+        let item = app
+            .store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .transcript
+            .iter_mut()
+            .find(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::ProducerMessage {
+                        message_id: candidate,
+                        ..
+                    } if *candidate == message_id
+                )
+            })
+            .expect("producer transcript item");
+        let TranscriptItem::ProducerMessage { status, .. } = item else {
+            unreachable!("matched producer transcript item")
+        };
+        *status = next;
+    }
+
     fn pending_texts(app: &App, session: SessionId) -> Vec<&str> {
         app.store
             .sessions
@@ -11404,6 +12226,653 @@ mod tests {
             .await;
         assert!(pending_texts(&app, session).is_empty());
         assert_eq!(app.queue_strip_height(), 0);
+    }
+
+    #[tokio::test]
+    async fn producer_started_tool_loop_promotes_steers_without_composer_restore_and_replays() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let message_id = ProducerMessageId::new_v7();
+        let first_attempt = AttemptId::new_v7();
+        let second_attempt = AttemptId::new_v7();
+        let tool_call_id = ToolCallId::new_v7();
+        let producer_owner = ProducerOwner::Plugin {
+            plugin: "goal-scheduler".into(),
+        };
+        let mut first_commit = turn_committed(
+            session,
+            8,
+            run,
+            first_attempt,
+            1,
+            vec![tool_part("continue-goal")],
+            Vec::new(),
+            None,
+        );
+        let EventPayload::ModelTurnCommitted { turn, .. } = &mut first_commit.payload else {
+            unreachable!("turn fixture")
+        };
+        turn.finish_reason = cookie_agent_protocol::ModelFinishReason::ToolCalls;
+        let events = vec![
+            session_created(session, 1),
+            producer_accepted(
+                session,
+                2,
+                message_id,
+                producer_owner.clone(),
+                ProducerDeliveryMode::Queue,
+                "begin scheduled goal",
+                None,
+            ),
+            run_started_with_suffix(session, 3, run, vec![resolved_model(None)]),
+            // This steer is pending before producer admission. The producer
+            // admission, not this lane entry, is the run's initial input.
+            admitted(session, 4, run, "first steer"),
+            event(
+                session,
+                5,
+                run,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            user_input(session, 6, run, "first steer"),
+            attempt_started(session, 7, run, first_attempt, None),
+            first_commit,
+            event(
+                session,
+                9,
+                run,
+                EventPayload::ProducerMessageConsumed {
+                    message_id,
+                    run_id: run,
+                },
+            ),
+            tool_started_at(
+                session,
+                10,
+                run,
+                tool_call_id,
+                1,
+                "continue-goal",
+                0,
+                "bash",
+                Some("continue-goal"),
+            ),
+            tool_terminated(
+                session,
+                11,
+                run,
+                tool_call_id,
+                1,
+                "continue-goal",
+                cookie_agent_protocol::ToolTerminationOutcome::Completed,
+            ),
+            admitted(session, 12, run, "second steer"),
+            user_input(session, 13, run, "second steer"),
+            attempt_started(session, 14, run, second_attempt, None),
+            turn_committed(
+                session,
+                15,
+                run,
+                second_attempt,
+                2,
+                vec![text_part("goal complete")],
+                Vec::new(),
+                None,
+            ),
+            event(
+                session,
+                16,
+                run,
+                EventPayload::RunCompleted {
+                    final_text: Some("goal complete".into()),
+                },
+            ),
+        ];
+        assert!(
+            !events[..5]
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        );
+
+        let mut live = test_app().await;
+        live.selected = Some(session);
+        live.tree_root = Some(session);
+        for event in events.iter().cloned() {
+            let seq = event.seq;
+            live.handle_delivery(live_event(event)).await;
+            if matches!(seq, 6 | 13) {
+                assert!(pending_texts(&live, session).is_empty());
+                assert!(live.input.as_str().is_empty());
+            }
+            if seq == 8 {
+                assert!(live.selected_queue_entries().is_empty());
+                assert_eq!(live.queue_strip_height(), 0);
+            }
+        }
+        assert!(live.input.as_str().is_empty());
+        assert!(!live.status.contains("restored to the composer"));
+
+        let live_state = &live.store.sessions[&session];
+        let producer_rows = live_state
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::ProducerMessage {
+                        message_id: row_id,
+                        producer_owner: row_owner,
+                        mode: ProducerDeliveryMode::Queue,
+                        status: crate::state::ProducerMessageStatus::Consumed,
+                        ..
+                    } if *row_id == message_id && row_owner == &producer_owner
+                )
+            })
+            .count();
+        assert_eq!(producer_rows, 1);
+        assert_eq!(assistant_projection(live_state).len(), 1);
+        assert_eq!(
+            assistant_projection(live_state)[0].0,
+            attribution(None).header()
+        );
+        let live_transcript = snapshot_lines(&transcript_layout(live_state, None, 100).lines);
+
+        let mut replay = test_app().await;
+        replay.selected = Some(session);
+        replay.tree_root = Some(session);
+        replay
+            .handle_delivery(ClientDelivery::ReplayStart {
+                session_id: session,
+                generation: 0,
+                final_seq: 16,
+                rebuild: true,
+            })
+            .await;
+        for event in events {
+            replay
+                .handle_delivery(ClientDelivery::ReplayEvent {
+                    session_id: session,
+                    generation: 0,
+                    final_seq: 16,
+                    event: Box::new(event),
+                })
+                .await;
+        }
+        replay
+            .handle_delivery(ClientDelivery::ReplayEnd {
+                session_id: session,
+                generation: 0,
+                final_seq: 16,
+            })
+            .await;
+
+        let replayed_state = &replay.store.sessions[&session];
+        assert!(replayed_state.pending_inputs.is_empty());
+        assert!(replay.input.as_str().is_empty());
+        assert!(!replay.status.contains("restored to the composer"));
+        assert_eq!(
+            assistant_projection(replayed_state),
+            assistant_projection(live_state)
+        );
+        assert_eq!(
+            snapshot_lines(&transcript_layout(replayed_state, None, 100).lines),
+            live_transcript
+        );
+        assert_eq!(
+            replayed_state
+                .transcript
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    TranscriptItem::ProducerMessage {
+                        message_id: row_id,
+                        status: crate::state::ProducerMessageStatus::Consumed,
+                        ..
+                    } if *row_id == message_id
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_queue_entries_merge_users_and_all_producer_sources_by_sequence() {
+        let (mut app, session, run) = app_with_active_run().await;
+        let plugin_id = ProducerMessageId::new_v7();
+        let delegation_id = ProducerMessageId::new_v7();
+        let reminder_id = ProducerMessageId::new_v7();
+        let control_id = ProducerMessageId::new_v7();
+        let invocation_id = InvocationId::new_v7();
+        let invocation_short = invocation_id
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>();
+        let goal_id = GoalId::new_v7();
+
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, "user first"))
+        );
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            2,
+            plugin_id,
+            ProducerOwner::Plugin {
+                plugin: "watcher".to_owned(),
+            },
+            ProducerDeliveryMode::Steer,
+            "plugin body",
+            None,
+        )));
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            3,
+            delegation_id,
+            ProducerOwner::Delegation { invocation_id },
+            ProducerDeliveryMode::Queue,
+            "delegation body",
+            None,
+        )));
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            4,
+            reminder_id,
+            ProducerOwner::Goal { goal_id },
+            ProducerDeliveryMode::Queue,
+            "NOISY REMINDER BODY",
+            Some(cookie_agent_protocol::GoalReminderIdentity {
+                goal_id,
+                revision: 3,
+            }),
+        )));
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            5,
+            control_id,
+            ProducerOwner::GoalControl { goal_id },
+            ProducerDeliveryMode::Steer,
+            "Goal paused. Stop pursuing the objective.",
+            None,
+        )));
+        assert!(
+            app.store
+                .apply_event(admitted(session, 6, run, "user last"))
+        );
+        assert!(app.store.apply_event(event(
+            session,
+            7,
+            run,
+            EventPayload::ProducerMessageAdmitted {
+                message_id: delegation_id,
+            },
+        )));
+
+        let entries = app.selected_queue_entries();
+        assert_eq!(
+            entries.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(entries[0].kind, QueueEntryKind::User);
+        assert_eq!(entries[1].kind, QueueEntryKind::Producer(plugin_id));
+        assert_eq!(entries[2].kind, QueueEntryKind::Producer(delegation_id));
+        assert_eq!(entries[3].kind, QueueEntryKind::Producer(reminder_id));
+        assert_eq!(entries[4].kind, QueueEntryKind::Producer(control_id));
+        assert_eq!(entries[5].kind, QueueEntryKind::User);
+        assert_eq!(entries[0].preview, "user first");
+        assert_eq!(
+            entries[1].preview,
+            "plugin watcher | steer | pending: plugin body"
+        );
+        assert_eq!(
+            entries[2].preview,
+            format!("delegation {invocation_short} | queue | admitted: delegation body")
+        );
+        assert_eq!(
+            entries[3].preview,
+            "goal | queue | pending: Goal continuation reminder"
+        );
+        assert_eq!(
+            entries[4].preview,
+            "goal control | steer | pending: Goal paused. Stop pursuing the objective."
+        );
+        assert_eq!(entries[5].preview, "user last");
+
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .pending_inputs
+            .clear();
+        set_producer_status(
+            &mut app,
+            session,
+            control_id,
+            crate::state::ProducerMessageStatus::Consumed,
+        );
+        let frame = rendered_frame(&mut app, 120, 24);
+        assert!(frame.contains("plugin watcher | steer | pending: plugin body"));
+        assert!(frame.contains(&format!(
+            "delegation {invocation_short} | queue | admitted: delegation body"
+        )));
+        assert!(frame.contains("goal | queue | pending: Goal continuation reminder"));
+        assert!(!frame.contains("NOISY REMINDER BODY"));
+    }
+
+    #[tokio::test]
+    async fn producer_claims_hide_waiting_rows_and_release_restores_acceptance_order() {
+        let (mut app, session, run) = app_with_active_run().await;
+        let plugin_id = ProducerMessageId::new_v7();
+        let control_id = ProducerMessageId::new_v7();
+        let plugin = ProducerOwner::Plugin {
+            plugin: "claim-test".into(),
+        };
+        let cancelled = test_goal(GoalStatus::Cancelled, Vec::new());
+        let control = ProducerOwner::GoalControl {
+            goal_id: cancelled.goal_id,
+        };
+        app.store.sessions.get_mut(&session).unwrap().goal = Some(cancelled);
+        for accepted in [
+            producer_accepted(
+                session,
+                1,
+                plugin_id,
+                plugin.clone(),
+                ProducerDeliveryMode::Queue,
+                "plugin pending body",
+                None,
+            ),
+            producer_accepted(
+                session,
+                3,
+                control_id,
+                control.clone(),
+                ProducerDeliveryMode::Steer,
+                "Goal cancelled. Stop pursuing the objective.",
+                None,
+            ),
+        ] {
+            if accepted.seq == 3 {
+                assert!(
+                    app.store
+                        .apply_event(admitted(session, 2, run, "user waiting"))
+                );
+            }
+            assert!(app.store.apply_event(accepted));
+        }
+        for (seq, message_id) in [(4, plugin_id), (5, control_id)] {
+            assert!(app.store.apply_event(event(
+                session,
+                seq,
+                run,
+                EventPayload::ProducerMessageAdmitted { message_id }
+            )));
+        }
+        assert!(app.store.apply_event(event(
+            session,
+            6,
+            run,
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![plugin_id, control_id],
+            }
+        )));
+        assert_eq!(
+            app.selected_queue_entries()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        let transcript =
+            snapshot_lines(&transcript_layout(&app.store.sessions[&session], None, 100).lines);
+        assert!(!transcript.contains("plugin pending body"));
+        assert!(!transcript.contains("Goal cancelled. Stop pursuing the objective."));
+        assert!(app.store.apply_event(event(
+            session,
+            7,
+            RunId::new_v7(),
+            EventPayload::ProducerMessagesReleased { claim_seq: 6 }
+        )));
+        assert_eq!(app.selected_queue_entries().len(), 1);
+        assert!(app.store.apply_event(event(
+            session,
+            8,
+            run,
+            EventPayload::ProducerMessagesReleased { claim_seq: 6 }
+        )));
+        let entries = app.selected_queue_entries();
+        assert_eq!(
+            entries.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(entries[0].preview.contains("queue | admitted"));
+        assert!(
+            entries[2]
+                .preview
+                .contains("goal control | steer | admitted: Goal cancelled.")
+        );
+
+        assert!(app.store.apply_event(runless_event(
+            session,
+            9,
+            EventPayload::ProducerMessageDiscarded {
+                message_id: plugin_id,
+                producer_owner: Some(plugin),
+                reminder: None,
+            }
+        )));
+        assert_eq!(
+            app.selected_queue_entries()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert!(app.store.apply_event(event(
+            session,
+            10,
+            run,
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![control_id]
+            }
+        )));
+        assert!(app.store.apply_event(turn_committed(
+            session,
+            11,
+            run,
+            AttemptId::new_v7(),
+            1,
+            Vec::new(),
+            Vec::new(),
+            None
+        )));
+        assert!(app.store.apply_event(event(
+            session,
+            12,
+            run,
+            EventPayload::ProducerMessagesReleased { claim_seq: 10 }
+        )));
+        assert!(app.store.apply_event(runless_event(
+            session,
+            13,
+            EventPayload::ProducerMessageDiscarded {
+                message_id: control_id,
+                producer_owner: Some(control),
+                reminder: None,
+            }
+        )));
+        assert_eq!(
+            app.selected_queue_entries()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        let history =
+            snapshot_lines(&transcript_layout(&app.store.sessions[&session], None, 100).lines);
+        assert_eq!(
+            history
+                .matches("Goal cancelled. Stop pursuing the objective.")
+                .count(),
+            1
+        );
+        assert!(history.contains("goal control"));
+        assert!(!history.contains("Goal continuation reminder"));
+        assert!(!history.contains("plugin pending body"));
+        assert!(app.input.as_str().is_empty());
+    }
+
+    #[tokio::test]
+    async fn consumed_and_discarded_producers_leave_the_queue_and_producer_only_strip_hides() {
+        let (mut app, session, run) = app_with_active_run().await;
+        let consumed = ProducerMessageId::new_v7();
+        let discarded = ProducerMessageId::new_v7();
+        for (seq, message_id, body) in [(1, consumed, "consume me"), (2, discarded, "discard me")] {
+            assert!(app.store.apply_event(producer_accepted(
+                session,
+                seq,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "queue-test".to_owned(),
+                },
+                ProducerDeliveryMode::Queue,
+                body,
+                None,
+            )));
+        }
+        assert_eq!(app.selected_queue_entries().len(), 2);
+        assert_eq!(app.queue_strip_height(), 4);
+
+        assert!(app.store.apply_event(event(
+            session,
+            3,
+            run,
+            EventPayload::ProducerMessageAdmitted {
+                message_id: consumed
+            }
+        )));
+        assert!(app.store.apply_event(turn_committed(
+            session,
+            4,
+            run,
+            AttemptId::new_v7(),
+            1,
+            Vec::new(),
+            Vec::new(),
+            None
+        )));
+        assert!(app.store.apply_event(runless_event(
+            session,
+            5,
+            EventPayload::ProducerMessageDiscarded {
+                message_id: discarded,
+                producer_owner: Some(ProducerOwner::Plugin {
+                    plugin: "queue-test".into()
+                }),
+                reminder: None,
+            }
+        )));
+        assert!(app.selected_queue_entries().is_empty());
+        assert_eq!(app.queue_strip_height(), 0);
+        assert!(!rendered_frame(&mut app, 80, 24).contains("Pending"));
+    }
+
+    #[tokio::test]
+    async fn producer_queue_rows_are_passive_with_a_real_user_entry_present() {
+        let (startup_client, _startup) = recording_client();
+        let mut app = App::new(startup_client).await.expect("test app");
+        let (client, recorded, _incoming) = live_recording_client();
+        app.client = client;
+        app.install_initial_runtime(runtime_snapshot(
+            "1",
+            Vec::new(),
+            vec![model_descriptor()],
+            vec![descriptor("primary", true)],
+        ));
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let producer_id = ProducerMessageId::new_v7();
+        app.selected = Some(session);
+        app.store.sessions.insert(
+            session,
+            SessionState {
+                active_run: Some(run),
+                run_agent: Some(agent_id()),
+                ..SessionState::default()
+            },
+        );
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            1,
+            producer_id,
+            ProducerOwner::Plugin {
+                plugin: "watcher".to_owned(),
+            },
+            ProducerDeliveryMode::Steer,
+            "do not recall",
+            None,
+        )));
+        assert!(
+            app.store
+                .apply_event(admitted(session, 2, run, "recallable user"))
+        );
+        app.input.set_buffer("draft stays".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let producer_hit = app
+            .hit_map
+            .queue_entries
+            .iter()
+            .find(|hit| hit.kind == QueueEntryKind::Producer(producer_id))
+            .copied()
+            .expect("producer hit row");
+        assert!(
+            app.hover_target_at(producer_hit.rect.x, producer_hit.rect.y)
+                .is_none()
+        );
+        app.handle_click(producer_hit.rect.x, producer_hit.rect.y)
+            .await;
+        settle_recording().await;
+        assert_eq!(recorded_method_count(&recorded, "run.recall_steer"), 0);
+        assert_eq!(app.input.as_str(), "draft stays");
+        assert_eq!(pending_texts(&app, session), ["recallable user"]);
+    }
+
+    #[tokio::test]
+    async fn pending_producer_survives_run_terminal_and_cramped_frames_do_not_overlap_composer() {
+        let (mut app, session, run) = app_with_active_run().await;
+        let producer_id = ProducerMessageId::new_v7();
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            1,
+            producer_id,
+            ProducerOwner::Plugin {
+                plugin: "terminal".to_owned(),
+            },
+            ProducerDeliveryMode::Queue,
+            "survives terminal",
+            None,
+        )));
+        assert!(app.store.apply_event(event(
+            session,
+            2,
+            run,
+            EventPayload::RunCompleted { final_text: None },
+        )));
+        assert_eq!(
+            app.selected_queue_entries()[0].kind,
+            QueueEntryKind::Producer(producer_id)
+        );
+
+        for (width, height) in [(12, 8), (20, 9), (28, 10)] {
+            let frame = rendered_frame(&mut app, width, height);
+            assert!(!frame.is_empty());
+            if let Some(input) = app.hit_map.input {
+                assert!(app.hit_map.queue_entries.iter().all(|hit| {
+                    hit.rect.y.saturating_add(hit.rect.height) <= input.rect.y
+                        || input.rect.y.saturating_add(input.rect.height) <= hit.rect.y
+                }));
+            }
+        }
     }
 
     #[tokio::test]
@@ -11753,8 +13222,8 @@ mod tests {
     #[test]
     fn queue_strip_reclaims_conversation_rows_and_keeps_status_pinned() {
         let area = Rect::new(0, 0, 80, 24);
-        let plain = terminal_layout_with_tree_rows(area, 3, 0, 1);
-        let queued = terminal_layout_with_tree_rows(area, 3, 5, 1);
+        let plain = terminal_layout_with_tree_rows(area, 3, 0, false, 1);
+        let queued = terminal_layout_with_tree_rows(area, 3, 5, false, 1);
         assert_eq!(queued.queue.height, 5);
         assert_eq!(plain.conversation.height - queued.conversation.height, 5);
         // Status line, composer, bar, and the agent panel never move.
@@ -11770,7 +13239,7 @@ mod tests {
         assert_eq!(queued.queue.y + queued.queue.height, queued.status.y);
         // On a cramped terminal the strip shrinks away rather than taking
         // the conversation's last row.
-        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 5, 1);
+        let tiny = terminal_layout_with_tree_rows(Rect::new(0, 0, 20, 8), 20, 5, false, 1);
         assert!(tiny.conversation.height >= 1);
         assert!(tiny.queue.height < 5);
         // Zero demand reserves nothing.
@@ -11843,6 +13312,167 @@ mod tests {
         assert_eq!(queue_age_label(3599), "59m");
         assert_eq!(queue_age_label(3600), "1h");
         assert_eq!(queue_age_label(9000), "2h");
+    }
+
+    #[tokio::test]
+    async fn goal_bar_opens_details_by_mouse_and_keyboard_without_touching_draft() {
+        let (mut app, session, _) = app_with_active_run().await;
+        app.store.sessions.get_mut(&session).unwrap().goal = Some(test_goal(
+            GoalStatus::Active,
+            vec![goal_item("Verify the persistent goal bar", false)],
+        ));
+        app.input.set_buffer("draft remains intact".into());
+        rendered_frame(&mut app, 80, 24);
+        let (description, _) = app
+            .hit_map
+            .goal_actions
+            .iter()
+            .find(|(_, action)| *action == super::super::app::GoalBarAction::Details)
+            .copied()
+            .expect("description hit");
+        assert_eq!(
+            app.hover_target_at(description.x, description.y),
+            Some(HoverTarget::GoalAction(
+                super::super::app::GoalBarAction::Details
+            ))
+        );
+        app.handle_click(description.x, description.y).await;
+        assert_eq!(app.modal, Modal::GoalDetail);
+        let frame = rendered_frame(&mut app, 80, 24);
+        assert!(frame.contains("Verify the persistent goal bar"), "{frame}");
+        let close = app.hit_map.goal_close.expect("close goal details");
+        assert_eq!(
+            app.hover_target_at(close.x, close.y),
+            Some(HoverTarget::GoalClose)
+        );
+        app.handle_click(close.x, close.y).await;
+        assert_eq!(app.modal, Modal::None);
+        app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE))
+            .await;
+        assert_eq!(
+            app.goal_focus,
+            Some(super::super::app::GoalBarAction::Details)
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::GoalDetail);
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.modal, Modal::None);
+        assert_eq!(app.input.as_str(), "draft remains intact");
+    }
+
+    #[tokio::test]
+    async fn goal_bar_and_waiting_queue_coexist_without_blank_rows_when_hidden() {
+        let (mut app, session, run) = app_with_active_run().await;
+        let goal = test_goal(
+            GoalStatus::Paused,
+            vec![goal_item("Queued verification", false)],
+        );
+        app.store.sessions.get_mut(&session).unwrap().goal = Some(goal);
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, "waiting user message"))
+        );
+        app.input.set_buffer("USER DRAFT".into());
+        for (width, height) in [
+            (1, 8),
+            (3, 8),
+            (7, 9),
+            (8, 10),
+            (20, 18),
+            (40, 24),
+            (80, 24),
+        ] {
+            let frame = rendered_frame(&mut app, width, height);
+            let input_rect = app.hit_map.input.expect("composer").rect;
+            for (rect, _) in &app.hit_map.goal_actions {
+                assert_eq!(rect.height, 1);
+                assert_eq!(rect.bottom(), input_rect.y);
+                assert!(rect.right() <= width);
+            }
+            for hit in &app.hit_map.queue_entries {
+                assert!(hit.rect.bottom() <= input_rect.y.saturating_sub(1));
+            }
+            if width >= 40 {
+                assert!(frame.contains("waiting user message"), "{frame}");
+                assert!(frame.contains("USER DRAFT"), "{frame}");
+                assert!(frame.contains("Resume"), "{frame}");
+                assert!(frame.contains("Cancel"), "{frame}");
+            }
+            if width == 80 {
+                let goal_row = app.hit_map.goal_actions[0].0.y;
+                let bar = rendered_row(&mut app, width, height, goal_row)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                insta::assert_snapshot!(bar, @"Ship transcript rendering without regressions | paused 0/1 [Resume] [Cancel]");
+            }
+        }
+        app.store.sessions.get_mut(&session).unwrap().goal = None;
+        app.store
+            .sessions
+            .get_mut(&session)
+            .unwrap()
+            .pending_inputs
+            .clear();
+        rendered_frame(&mut app, 80, 24);
+        assert!(app.hit_map.goal_actions.is_empty());
+        assert!(app.hit_map.queue_entries.is_empty());
+        assert_eq!(app.queue_strip_height(), 0);
+        let layout = terminal_layout_with_tree_rows(
+            Rect::new(0, 0, 80, 24),
+            app.tree_entries().len(),
+            0,
+            false,
+            1,
+        );
+        assert_eq!(layout.goal.height, 0);
+        assert_eq!(layout.status.bottom(), layout.input.y);
+    }
+
+    #[tokio::test]
+    async fn queue_strip_renders_mixed_sources() {
+        let (mut app, session, run) = app_with_active_run().await;
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, "User follow-up"))
+        );
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            2,
+            ProducerMessageId::new_v7(),
+            ProducerOwner::Plugin {
+                plugin: "build".into()
+            },
+            ProducerDeliveryMode::Queue,
+            "Build finished successfully",
+            None,
+        )));
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            3,
+            ProducerMessageId::new_v7(),
+            ProducerOwner::GoalControl {
+                goal_id: GoalId::new_v7()
+            },
+            ProducerDeliveryMode::Steer,
+            "Goal paused. Stop pursuing the objective.",
+            None,
+        )));
+        let frame = rendered_frame(&mut app, 100, 24);
+        let entries = app.selected_queue_entries();
+        for entry in &entries {
+            assert!(frame.contains(&entry.preview), "{frame}");
+        }
+        insta::assert_snapshot!(
+            entries.iter().map(|entry| entry.preview.as_str()).collect::<Vec<_>>().join("\n"),
+            @r"
+        User follow-up
+        plugin build | queue | pending: Build finished successfully
+        goal control | steer | pending: Goal paused. Stop pursuing the objective.
+        "
+        );
     }
 
     #[tokio::test]

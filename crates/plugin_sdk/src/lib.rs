@@ -28,10 +28,13 @@ pub use cookie_agent_protocol::{
     ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
     ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
-    SessionId,
+    ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, SessionId,
 };
 pub use error::{PluginError, ToolFailure};
-pub use server::{PluginContext, PluginServer, PluginServerBuilder};
+pub use server::{
+    PluginContext, PluginServer, PluginServerBuilder, ProducerHandle, RecoveryFailure,
+    RecoveryResult,
+};
 
 /// A tool declaration sent to the engine during initialization.
 pub type ToolDecl = cookie_agent_protocol::ExtensionToolDeclaration;

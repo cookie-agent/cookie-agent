@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.4"
+      "const": "0.0.5"
     }
   },
   "additionalProperties": false,
@@ -36,6 +36,9 @@
         "ping": {
           "type": "boolean"
         },
+        "producer_messaging": {
+          "type": "boolean"
+        },
         "shutdown": {
           "type": "boolean"
         },
@@ -45,6 +48,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "producer_messaging",
         "ping",
         "shutdown",
         "tools",

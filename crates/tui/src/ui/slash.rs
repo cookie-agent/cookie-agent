@@ -8,6 +8,14 @@ use ratatui::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum GoalCommand {
+    Objective(String),
+    Pause,
+    Resume,
+    Cancel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SlashCommand {
     Quit,
     ShowAgentPanel,
@@ -22,6 +30,7 @@ pub(crate) enum SlashCommand {
     Usage,
     Sessions,
     Cancel,
+    Goal(GoalCommand),
     Compact(Option<String>),
     Approve(ApprovalUserDecision),
     Events(crate::state::EventLevel),
@@ -120,6 +129,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         usage: "/cancel",
         description: "cancel the active run",
         requires_arguments: false,
+    },
+    CommandSpec {
+        name: "goal",
+        aliases: &[],
+        usage: "/goal <objective|pause|resume|cancel>",
+        description: "set a root-session goal, or pause, resume, or cancel it",
+        requires_arguments: true,
     },
     CommandSpec {
         name: "compact",
@@ -223,6 +239,20 @@ pub(crate) fn parse_submission_with_skills(
     };
     let command = if let Some(command) = exact_builtin {
         command
+    } else if parts.first() == Some(&"goal") {
+        let remainder = command_line
+            .trim_start()
+            .strip_prefix("goal")
+            .map(str::trim)
+            .unwrap_or_default();
+        SlashCommand::Goal(match remainder {
+            "" => return Err("usage: /goal <objective|pause|resume|cancel>".to_owned()),
+            "status" => return Err("goal status is shown in the goal bar".to_owned()),
+            "pause" => GoalCommand::Pause,
+            "resume" => GoalCommand::Resume,
+            "cancel" => GoalCommand::Cancel,
+            objective => GoalCommand::Objective(objective.to_owned()),
+        })
     } else if parts.first() == Some(&"compact") {
         let focus = command_line
             .strip_prefix("compact")
@@ -273,7 +303,143 @@ pub(crate) fn command_help() -> String {
 
 #[cfg(test)]
 mod parse_tests {
-    use super::{SlashCommand, Submission, parse_submission, parse_submission_with_skills};
+    use super::{
+        GoalCommand, SlashCommand, Submission, command_help, command_spec, entries,
+        parse_submission, parse_submission_with_skills,
+    };
+
+    #[test]
+    fn goal_parses_exact_controls() {
+        for (input, expected) in [
+            ("/goal pause", GoalCommand::Pause),
+            ("/goal resume", GoalCommand::Resume),
+            ("/goal cancel", GoalCommand::Cancel),
+            ("/goal \t pause \t", GoalCommand::Pause),
+        ] {
+            assert_eq!(
+                parse_submission(input).unwrap(),
+                Submission::Command(SlashCommand::Goal(expected)),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn goal_requires_an_argument_and_directs_status_to_the_goal_bar() {
+        for input in ["/goal", "/goal \t ", "/  goal \t "] {
+            assert_eq!(
+                parse_submission(input).unwrap_err(),
+                "usage: /goal <objective|pause|resume|cancel>",
+                "{input:?}"
+            );
+        }
+        assert_eq!(
+            parse_submission("/goal status").unwrap_err(),
+            "goal status is shown in the goal bar"
+        );
+    }
+
+    #[test]
+    fn goal_accepts_arbitrary_nonempty_objectives() {
+        for objective in [
+            "finish the parser",
+            "pause this project",
+            "resume this project",
+            "cancel this project",
+            "status of this project",
+            "activate",
+            "stop",
+            "Pause",
+        ] {
+            assert_eq!(
+                parse_submission(&format!("/goal {objective}")).unwrap(),
+                Submission::Command(SlashCommand::Goal(GoalCommand::Objective(objective.into()))),
+                "{objective:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn goal_preserves_internal_objective_whitespace() {
+        for input in [
+            "/goal \t finish  the\tparser \t ",
+            "/  goal \t finish  the\tparser \t ",
+        ] {
+            assert_eq!(
+                parse_submission(input).unwrap(),
+                Submission::Command(SlashCommand::Goal(GoalCommand::Objective(
+                    "finish  the\tparser".into()
+                )))
+            );
+        }
+    }
+
+    #[test]
+    fn goal_respects_literal_and_multiline_prompt_rules() {
+        assert_eq!(
+            parse_submission("//goal pause").unwrap(),
+            Submission::Prompt("/goal pause".into())
+        );
+        let multiline = "/goal finish\nthe parser";
+        assert_eq!(
+            parse_submission(multiline).unwrap(),
+            Submission::Prompt(multiline.into())
+        );
+        assert!(parse_submission("/goals").is_err());
+    }
+
+    #[test]
+    fn goal_help_and_palette_require_an_argument_without_a_status_route() {
+        let spec = command_spec("goal").expect("goal command");
+        assert_eq!(spec.usage, "/goal <objective|pause|resume|cancel>");
+        assert!(spec.aliases.is_empty());
+        assert!(spec.requires_arguments);
+        assert!(!spec.usage.contains("status"));
+        assert!(!spec.description.contains("status"));
+        assert!(command_help().contains(&format!("{} — {}", spec.usage, spec.description)));
+        for query in ["/", "/go", "/goal", "/goal pause"] {
+            assert_eq!(
+                entries(query)
+                    .iter()
+                    .filter(|entry| entry.name == "goal")
+                    .count(),
+                1,
+                "{query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn goal_builtin_takes_precedence_over_a_colliding_skill() {
+        let skills = ["goal".into()];
+        for (input, expected) in [
+            ("/goal pause", GoalCommand::Pause),
+            ("/goal resume", GoalCommand::Resume),
+            ("/goal cancel", GoalCommand::Cancel),
+            (
+                "/goal pause this project",
+                GoalCommand::Objective("pause this project".into()),
+            ),
+            (
+                "/goal finish  the\tparser",
+                GoalCommand::Objective("finish  the\tparser".into()),
+            ),
+        ] {
+            assert_eq!(
+                parse_submission_with_skills(input, &skills).unwrap(),
+                Submission::Command(SlashCommand::Goal(expected)),
+                "{input:?}"
+            );
+        }
+        assert_eq!(
+            parse_submission_with_skills("/goal", &skills).unwrap_err(),
+            "usage: /goal <objective|pause|resume|cancel>"
+        );
+        assert_eq!(
+            parse_submission_with_skills("/goal status", &skills).unwrap_err(),
+            "goal status is shown in the goal bar"
+        );
+    }
 
     #[test]
     fn compact_accepts_an_optional_focus() {

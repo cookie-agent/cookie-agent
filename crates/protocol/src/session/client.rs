@@ -26,11 +26,13 @@ use crate::{
     RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
     RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
     SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
-    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
-    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionSetParams, SessionProducersParams,
+    SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
+    SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
     SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
     SkillsListResult, StoredEvent, ToolCallId, Transport, TransportError,
@@ -102,6 +104,22 @@ pub trait ClientProtocol: Send + Sync {
         params: SessionListParams,
     ) -> Result<SessionListResult, ClientError>;
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult, ClientError>;
+    async fn get_session_goal(
+        &self,
+        params: SessionGoalGetParams,
+    ) -> Result<SessionGoalGetResult, ClientError>;
+    async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+    ) -> Result<SessionGoalSetResult, ClientError>;
+    async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult, ClientError>;
+    async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult, ClientError>;
     async fn session_usage(
         &self,
         params: SessionUsageParams,
@@ -541,6 +559,35 @@ impl Client {
         self.call("session.get", &params).await
     }
 
+    pub async fn get_session_goal(
+        &self,
+        params: SessionGoalGetParams,
+    ) -> Result<SessionGoalGetResult, ClientError> {
+        self.call(crate::SESSION_GOAL_GET_METHOD, &params).await
+    }
+
+    pub async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+    ) -> Result<SessionGoalSetResult, ClientError> {
+        self.call(crate::SESSION_GOAL_SET_METHOD, &params).await
+    }
+
+    pub async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult, ClientError> {
+        self.call(crate::SESSION_GOAL_LIFECYCLE_METHOD, &params)
+            .await
+    }
+
+    pub async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult, ClientError> {
+        self.call(crate::SESSION_PRODUCERS_METHOD, &params).await
+    }
+
     pub async fn session_usage(
         &self,
         params: SessionUsageParams,
@@ -874,6 +921,30 @@ impl ClientProtocol for Client {
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult, ClientError> {
         Client::get_session(self, params).await
     }
+    async fn get_session_goal(
+        &self,
+        params: SessionGoalGetParams,
+    ) -> Result<SessionGoalGetResult, ClientError> {
+        Client::get_session_goal(self, params).await
+    }
+    async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+    ) -> Result<SessionGoalSetResult, ClientError> {
+        Client::set_session_goal(self, params).await
+    }
+    async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult, ClientError> {
+        Client::change_session_goal_lifecycle(self, params).await
+    }
+    async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult, ClientError> {
+        Client::session_producers(self, params).await
+    }
     async fn session_usage(
         &self,
         params: SessionUsageParams,
@@ -1102,6 +1173,30 @@ where
     }
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult, ClientError> {
         self.deref().get_session(params).await
+    }
+    async fn get_session_goal(
+        &self,
+        params: SessionGoalGetParams,
+    ) -> Result<SessionGoalGetResult, ClientError> {
+        self.deref().get_session_goal(params).await
+    }
+    async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+    ) -> Result<SessionGoalSetResult, ClientError> {
+        self.deref().set_session_goal(params).await
+    }
+    async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult, ClientError> {
+        self.deref().change_session_goal_lifecycle(params).await
+    }
+    async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult, ClientError> {
+        self.deref().session_producers(params).await
     }
     async fn session_usage(
         &self,
@@ -2227,6 +2322,177 @@ mod tests {
         async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
             Ok(self.incoming.recv().await)
         }
+    }
+
+    #[tokio::test]
+    async fn goal_and_producer_calls_use_the_public_wire_contracts() {
+        let session_id = SessionId::new_v7();
+        let goal_id = crate::GoalId::new_v7();
+        let (incoming, incoming_rx) = mpsc::unbounded_channel();
+        let (sent, mut sent_rx) = mpsc::unbounded_channel();
+        let client = Client::connect_stream(ScriptedStream {
+            incoming: incoming_rx,
+            sent,
+        });
+
+        let get = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .get_session_goal(SessionGoalGetParams { session_id })
+                    .await
+            }
+        });
+        let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal get request") else {
+            panic!("expected value request");
+        };
+        assert_eq!(request["method"], crate::SESSION_GOAL_GET_METHOD);
+        assert_eq!(
+            request["params"],
+            serde_json::json!({ "session_id": session_id })
+        );
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "goal": null },
+            })))
+            .expect("goal get response");
+        assert_eq!(
+            get.await.expect("goal get task").expect("goal get").goal,
+            None
+        );
+
+        let set = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .set_session_goal(SessionGoalSetParams {
+                        session_id,
+                        objective: "ship phase one".into(),
+                        selection: None,
+                    })
+                    .await
+            }
+        });
+        let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal set request") else {
+            panic!("expected value request");
+        };
+        assert_eq!(request["method"], crate::SESSION_GOAL_SET_METHOD);
+        assert_eq!(
+            request["params"],
+            serde_json::json!({
+                "session_id": session_id,
+                "objective": "ship phase one",
+            })
+        );
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "goal": {
+                        "goal_id": goal_id,
+                        "objective": "ship phase one",
+                        "status": "active",
+                        "items": [],
+                        "revision": 7,
+                    }
+                },
+            })))
+            .expect("goal set response");
+        assert_eq!(
+            set.await
+                .expect("goal set task")
+                .expect("goal set")
+                .goal
+                .goal_id,
+            goal_id
+        );
+
+        let lifecycle = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .change_session_goal_lifecycle(SessionGoalLifecycleParams {
+                        session_id,
+                        goal_id,
+                        expected_revision: 7,
+                        action: crate::GoalLifecycleAction::Pause,
+                        selection: None,
+                    })
+                    .await
+            }
+        });
+        let MessageFrame::Value(request) = sent_rx.recv().await.expect("goal lifecycle request")
+        else {
+            panic!("expected value request");
+        };
+        assert_eq!(request["method"], crate::SESSION_GOAL_LIFECYCLE_METHOD);
+        assert_eq!(
+            request["params"],
+            serde_json::json!({
+                "session_id": session_id,
+                "goal_id": goal_id,
+                "expected_revision": 7,
+                "action": "pause",
+            })
+        );
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "goal": {
+                        "goal_id": goal_id,
+                        "objective": "ship phase one",
+                        "status": "paused",
+                        "items": [],
+                        "revision": 8,
+                    }
+                },
+            })))
+            .expect("goal lifecycle response");
+        assert_eq!(
+            lifecycle
+                .await
+                .expect("goal lifecycle task")
+                .expect("goal lifecycle")
+                .goal
+                .revision,
+            8
+        );
+
+        let producers = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .session_producers(SessionProducersParams { session_id })
+                    .await
+            }
+        });
+        let MessageFrame::Value(request) = sent_rx.recv().await.expect("session producers request")
+        else {
+            panic!("expected value request");
+        };
+        assert_eq!(request["method"], crate::SESSION_PRODUCERS_METHOD);
+        assert_eq!(
+            request["params"],
+            serde_json::json!({ "session_id": session_id })
+        );
+        incoming
+            .send(MessageFrame::Value(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": { "producers": [], "plugin_recovery": [] },
+            })))
+            .expect("session producers response");
+        let result = producers
+            .await
+            .expect("session producers task")
+            .expect("session producers");
+        assert!(result.producers.is_empty());
+        assert!(result.plugin_recovery.is_empty());
     }
 
     #[tokio::test]

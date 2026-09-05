@@ -378,6 +378,7 @@ runtime behavior. Plugin authors can use the
 | `env` | map of strings | empty | Complete child environment; inherited variables are cleared. |
 | `cwd` | string | *(none)* | Child working directory. |
 | `enabled` | boolean | `true` | Whether the plugin starts with the engine. |
+| `producer_messaging` | boolean | `false` | Opt in to the producer messaging protocol capability, allowing the plugin to register producers and send model-bound messages. |
 | `interception_timeout_ms` | integer | `2000` | Positive timeout for interception requests. |
 | `startup_timeout_ms` | integer | `10000` | Positive timeout for initialization. |
 | `shutdown_grace_ms` | integer | `3000` | Positive graceful shutdown period before termination. |
@@ -401,6 +402,7 @@ args = ["--stdio"]                            # Optional arguments.
 env = { PATH = "/usr/bin:/bin", MODE = "local" } # Complete child environment.
 cwd = "/workspace"                           # Optional child working directory.
 enabled = true                                # Start when the engine opens.
+producer_messaging = false                    # Opt in to model-bound producer messaging.
 interception_timeout_ms = 2000                # Per interception hook.
 startup_timeout_ms = 10000                    # Initialization handshake.
 shutdown_grace_ms = 3000                      # Grace before termination.

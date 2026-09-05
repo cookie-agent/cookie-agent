@@ -52,12 +52,12 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.4"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.5"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": json.loads(os.environ.get(
                     "FIXTURE_CAPABILITIES",
-                    '{"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}',
+                    '{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":[]}',
                 )),
                 "tools": json.loads(os.environ.get("FIXTURE_TOOLS", "[]")),
             },

@@ -412,6 +412,48 @@ impl DelegationEventStore {
             .filter_map(|invocation_id| state.entries.get(invocation_id).cloned())
             .collect()
     }
+
+    pub fn reconcile_parent(
+        &self,
+        parent_session_id: SessionId,
+    ) -> Result<(), DelegationEventError> {
+        let parent = self.sessions.get(parent_session_id)?;
+        let mut rebuilt = DelegationState::default();
+        for envelope in parent.log.event_snapshot().iter() {
+            if parent.log.delegation_event_tainted(envelope) {
+                continue;
+            }
+            apply_event(
+                &mut rebuilt,
+                parent_session_id,
+                envelope.run_id,
+                envelope.payload.clone(),
+            )?;
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .entries
+            .retain(|_, entry| entry.reservation.parent_session_id != parent_session_id);
+        let retained = state
+            .entries
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        state
+            .order
+            .retain(|invocation_id| retained.contains(invocation_id));
+        for invocation_id in rebuilt.order {
+            if let Some(entry) = rebuilt.entries.remove(&invocation_id) {
+                state.entries.insert(invocation_id, entry);
+                state.order.push(invocation_id);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn apply_event(

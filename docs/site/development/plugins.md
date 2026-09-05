@@ -54,17 +54,66 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
 
 Event and bus handlers are registered with `on_event` and `on_bus_event`. A handler can publish
 once from its automatically tracked context grant with
-`ctx.emit_bus(event.session_id, "name", payload)` or
-`ctx.emit_session(event.session_id, "name", payload)`. Bus and durable session publishing are off
-by default and are enabled explicitly with `enable_bus_publishing` and
-`enable_session_publishing`, respectively. These set process-lifetime protocol capabilities. When
-both are enabled, every emitted event is offered to both routes; `emit_bus` and `emit_session`
-return the selected route's status. Each handler context is scoped to its triggering token, so
+`ctx.emit_bus(event.session_id, "name", payload)`. Bus publishing is off by default
+and is enabled explicitly with `enable_bus_publishing`; it is non-model traffic.
+The SDK no longer exposes `enable_session_publishing` or `emit_session`. Model
+messages use the explicit producer API below. Each bus handler context is scoped to its triggering token, so
 concurrent callbacks for one session cannot consume each other's grants. Notification grants expire
 four seconds after the SDK reader decodes the frame, so inbound queue delay consumes the local
 window. The one-second safety margin assumes the engine-to-SDK delivery interval is under one
 second; the engine remains authoritative, and a timing rejection is surfaced as
 `ExtensionEmitStatus::Rejected`.
+
+### Producer SDK
+
+Opt in with `PluginServer::builder(...).enable_producers()`. From a tool, event,
+or recovery callback, call `ctx.register_producer(session_id).await` to obtain a
+`ProducerHandle`. Keep the handle for the lifetime of external work; it is not a
+one-shot context grant and remains usable after the triggering callback or turn.
+
+- `handle.send(message, ProducerDeliveryMode::{Steer, Queue}, key).await` returns
+  the durable `ProducerMessageId` receipt.
+- `handle.steer(message, key).await` and `handle.queue(message, key).await` are
+  per-send conveniences. Construct a validated key with
+  `ProducerIdempotencyKey::new(stable_message_key)`.
+- `handle.id()` and `handle.session_id()` expose the runtime registration and
+  destination. Do not persist registration IDs for reuse after reconnect.
+- `handle.unregister().await` explicitly closes the registration. Zero-send
+  unregistration is valid. Dropping a handle does not unregister it, and
+  unregistration never removes already accepted messages. The method borrows the
+  handle, so a rejected close can be retried; the engine rejects sends after close.
+- `handle.discard(message_id).await` discards a waiting message in the handle's
+  session and remains usable after `handle.unregister().await`. Discard does not
+  unregister the producer, and dropping a handle never discards messages.
+- `ctx.discard_producer_message(session_id, message_id).await` discards by durable
+  receipt without a registration, including during recovery on a new connection
+  with the same configured plugin name.
+
+Use `.on_recovery(|ctx| async move { ... })` to restore from plugin-owned storage
+or external services. The callback returns `RecoveryResult`: `Ok(())` reports
+ready; `Err(RecoveryFailure)` reports failed. `PluginError` converts into
+`RecoveryFailure`, so producer calls can use `?`. The SDK sends a separate
+`plugin/recovery/complete` request after the callback returns, without a deadline.
+The callback can await registrations and sends while restoring. Producer-capable
+plugins without a recovery callback immediately report ready when recovery starts.
+
+The SDK services responses independently of callbacks. It bounds ordinary
+callbacks at 64 concurrent handlers, producer requests at 128 pending replies,
+the inbound queue at 32 frames, and the outbound queue at 128 frames. Recovery
+has its own single callback slot. Callback saturation rejects requests explicitly
+and drops observational notifications with a stderr diagnostic; it never drops a
+producer ACK. Disconnect fails pending producer calls with `TransportClosed`.
+Missing send ACKs remain commit-uncertain: register again after reconnect and
+retry the same body, mode, and stable key.
+
+The workspace example `crates/plugin_sdk/examples/producer_plugin.rs` compiles
+with `cargo check --locked -p cookie_agent_plugin_sdk --example producer_plugin`.
+It reads an optional `COOKIE_SESSION_ID` from its configured environment and shows
+registration, a stable-key steer, explicit unregister, and recovery completion.
+With `COOKIE_DISCARD_MESSAGE_ID` also set to a saved message receipt, it instead
+discards that owned waiting message during recovery without registering a producer.
+Consumed or currently claimed receipts fail recovery visibly rather than reporting a
+successful discard.
 
 Interception handlers use builder methods named after every hook, including `user_before_input`,
 `model_before_request`, `provider_before_headers`, `provider_before_request`,
@@ -77,10 +126,15 @@ and hook-chaining details.
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.4`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.5`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
+
+The host advertises `producer_messaging: true` on a connection only when its
+configuration opts in and the runtime producer handler is installed. The session
+protocol remains 16, and the crate/package version is unchanged. Event history
+remains additive and versionless.
 
 The engine sends `plugin/initialize` with the protocol version, engine version, and engine
 capabilities. The plugin returns its exact protocol version, configured plugin name, plugin
@@ -103,8 +157,156 @@ The protocol also supports `plugin/ping` for liveness and sends the `plugin/shut
 notification during engine shutdown.
 
 The initialize result declares `subscribe_events`, `subscribe_bus`, `publish_bus`,
-`publish_session_events`, and an `intercept` hook-name array in addition to tool and resource
+`publish_session_events`, `producer_messaging`, and an `intercept` hook-name array in addition to tool and resource
 capabilities. Capabilities are fixed for the process lifetime.
+
+## Producer messaging contracts
+
+Producer messaging requires explicit plugin capability opt-in and
+`plugins.<name>.producer_messaging = true` in configuration, both off by default.
+The engine derives the stable owner from the configured plugin name and checks
+the live connection's ownership; senders cannot choose or impersonate an owner.
+
+| Wire method | Direction | Parameters | Result |
+|---|---|---|---|
+| `plugin/producer/register` | Plugin to engine | `ExtensionProducerRegisterParams { session_id }` | `ExtensionProducerRegisterResult { producer_id }` |
+| `plugin/producer/send` | Plugin to engine | `ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, body }` | `ExtensionProducerSendResult { message_id }` |
+| `plugin/producer/unregister` | Plugin to engine | `ExtensionProducerUnregisterParams { session_id, producer_id }` | `ExtensionProducerUnregisterResult {}` |
+| `plugin/producer/discard` | Plugin to engine | `ExtensionProducerDiscardParams { session_id, message_id }` | `ExtensionProducerDiscardResult {}` |
+| `plugin/recovery/start` | Engine to plugin notification | `ExtensionRecoveryStartParams {}` | None; no request ID or response |
+| `plugin/recovery/complete` | Plugin to engine | `ExtensionRecoveryCompleteParams { outcome }` | `ExtensionRecoveryCompleteResult {}` |
+
+Producer operations and recovery completion are JSON-RPC requests with strict
+parameters/results. Recovery start is a notification created by
+`extension_recovery_start_notification()` using `PLUGIN_RECOVERY_START_METHOD`.
+It never enters the engine's deadlineful `PendingRequest` map. `outcome` is
+`{ "status": "ready" }` or `{ "status": "failed", "message": "..." }`.
+The SDK starts restoration asynchronously without blocking its reader; completion
+is a separate explicit request on that connection after restoration from
+plugin-owned storage/services. There is no recovery deadline or start ACK.
+Registration during restoration must not wait for goal readiness or eager session
+adoption. There are no timers, replay methods, or engine-owned recovery blobs.
+
+`ProducerId` is a fresh runtime UUID, never a durable identity. Each send chooses
+`ProducerDeliveryMode` (`steer` or `queue`). Its sender-chosen
+`ProducerIdempotencyKey` is 1-256 control-free bytes. A live, owned registration is
+required even for retries; closed/foreign registrations and closing sessions reject
+sends. Zero-send unregister is valid and unregister never removes accepted messages.
+
+Discard addresses a message receipt, not a registration. It requires a live,
+producer-capable connection, but the message belongs to the stable plugin owner
+in that session. The original registration may already be closed, and the current
+connection epoch need not match the epoch that accepted the message. Runtime
+rejects foreign-owner or wrong-session receipts and consumed messages. A durable
+claim by the session actor reserves a message and removes it from waiting before
+request preparation and hooks. Discard rejects while that claim is held, even
+before any network request is sent; the claim is not proof that a provider received
+or executed the request. If preparation fails or the attempt is cancelled, releasing
+the claim may return an unconsumed message to waiting, where discard is available
+again. Consumed messages do not return to waiting. Repeating a discard of an
+already-discarded owned message succeeds. Discard never cancels a model request
+or undoes model execution or external effects.
+
+The ACK follows durable acceptance only. Identical retries scoped to
+`(session, stable producer owner, idempotency_key)` return the original message ID;
+different body or mode rejects key reuse. Missing ACKs are commit-uncertain. These
+contracts make no exactly-once claim about model calls or external effects.
+
+`PluginRecoveryStatus` has exactly `starting`, `ready`, `failed`, `disabled`.
+Readiness inspection is runtime-only through `session.producers`. Failed/disabled
+plugins require `plugin_diagnostic` (`recovery_failed`/`recovery_disabled`) and a
+TUI notice; unrecovered external work remains unknown, not completed. Accepted
+messages recover independently of registration or plugin readiness. The engine
+cannot distinguish no pending work from lost plugin state.
+
+Model-bound messages require explicit producer sends. `plugin/emit` is for
+non-model publication; the runtime rejects the legacy durable model-history route.
+No implicit registration authorizes an emission. Pure bus publication is unchanged.
+
+### Transport/runtime worker boundary
+
+The plugin transport exposes the following crate-private Rust callback boundary in
+`engine::plugin`, following the existing `PluginEmitHandler` pattern. These are
+runtime handoff signatures, not additional protocol wire types. The core runtime
+installs the callback before starting plugins.
+
+```rust
+use std::{future::Future, pin::Pin, sync::Arc};
+use cookie_agent_protocol::*;
+
+pub(crate) struct PluginConnectionAuthority {
+    pub plugin: String,
+    pub connection_epoch: u64,
+}
+
+pub(crate) enum PluginProducerRequest {
+    Register(ExtensionProducerRegisterParams),
+    Send(ExtensionProducerSendParams),
+    Unregister(ExtensionProducerUnregisterParams),
+    Discard(ExtensionProducerDiscardParams),
+    RecoveryComplete(ExtensionRecoveryCompleteParams),
+}
+
+pub(crate) enum PluginProducerResponse {
+    Register(ExtensionProducerRegisterResult),
+    Send(ExtensionProducerSendResult),
+    Unregister(ExtensionProducerUnregisterResult),
+    Discard(ExtensionProducerDiscardResult),
+    RecoveryComplete(ExtensionRecoveryCompleteResult),
+}
+
+pub(crate) type PluginProducerHandler = Arc<
+    dyn Fn(PluginConnectionAuthority, PluginProducerRequest)
+        -> Pin<Box<dyn Future<Output = Result<PluginProducerResponse, JsonRpcError>> + Send>>
+        + Send + Sync,
+>;
+```
+
+The host derives `plugin` from the authenticated configured name and assigns a
+fresh, non-reused epoch per connection within its lifetime. Neither value is
+accepted from request parameters. Bind registrations and recovery readiness to
+name + epoch; reject stale-connection sends/completions. A disconnect must revoke
+only that epoch's registrations, not a replacement connection's registrations.
+Durable deduplication uses `ProducerOwner::Plugin { plugin }` with session and
+idempotency key, never the connection epoch. Mode remains per send.
+For `Discard`, runtime checks the current authenticated epoch and the message's
+stable owner and session, not an active producer registration or its original epoch.
+
+Decode each method into its exact protocol parameters, invoke the handler without
+blocking the transport reader, and correlate the matching typed response with the
+original JSON-RPC ID. Serialize only the response's inner protocol result, never
+the private enum. The runtime returns `Send` success only after durable acceptance.
+Recovery start uses the control notification path, not the lossy event stream or
+`PendingRequest`; restoration is not wrapped in a timeout. Registration during
+restoration must remain serviceable. Do not implement protocol aliases or implicit
+producer registration to authorize `emit`.
+
+Runtime integration helpers in `PluginRegistry` (transport implementation):
+
+- `set_producer_handler(PluginProducerHandler)` installs the exact callback above;
+  absent handlers reject requests, including recovery completion.
+- `producer_recovery_states() -> Vec<PluginRecoveryState>` returns configured or
+  declared producer plugins, including disabled/failed entries.
+- `producer_connection_is_current(plugin: &str, epoch: &u64) -> bool` checks live
+  capability-authorized connection ownership. Check it inside actor operations,
+  including register, send, unregister, discard, and recovery completion.
+- `complete_producer_recovery(&PluginConnectionAuthority,
+  &ExtensionRecoveryOutcome) -> Result<(), JsonRpcError>` is called by the runtime
+  `RecoveryComplete` handler before actor reconciliation and its typed ACK. Exact
+  repeated outcomes are idempotent; stale epochs and changed outcomes reject.
+- `subscribe_producer_changes() -> tokio::sync::watch::Receiver<u64>` provides
+  coalescing wakeups on handshake, completion, and disconnect, including supervisor
+  cancellation. Subscribe before starting plugins and reconcile the initial snapshot
+  as well as every change. Runtime must inspect current recovery states, revoke
+  registrations whose owner name/epoch is no longer current, reconcile loaded
+  sessions, and emit `recovery_failed`/`recovery_disabled` diagnostics. This is a
+  state watch, not an event log; no engine event enum or callback variants change.
+
+Producer handlers run in at most 32 concurrent tasks per connection. Overload
+returns an explicit JSON-RPC error. Accepted handler tasks await the bounded control
+queue for `Control::ReplyFrame`; ACKs are never silently dropped. The single host
+loop remains the stdin writer. Recovery start is written once immediately after
+the successful handshake on this same reliable writer, outside `PendingRequest`.
 
 ## Event streaming
 
@@ -128,7 +330,7 @@ by chunk, ordinary, or terminal class in their diagnostic message.
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.4; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.5; replay and filtered subscriptions remain
 future work.
 
 Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
@@ -149,11 +351,11 @@ spent and prevents later activation. Unknown tokens never use the plugin-supplie
 session as a diagnostic target; only a known triggering session may receive a durable diagnostic.
 With `publish_bus`, the
 engine emits an `EngineEvent::PluginEvent`, forwards it to other subscribed plugins, and sends an
-`events.plugin` notification only to RPC connections subscribed to that session. With
-`publish_session_events`, it also appends
-`plugin_event_added` to the session log. The durable event is ordinary branch data: it survives
-reopen, enters model history and compaction, and is removed from the visible branch by revert in
-the same way as other events.
+`events.plugin` notification only to RPC connections subscribed to that session.
+The legacy `publish_session_events` model-history route is rejected; use
+`plugin/producer/send` with a live registration for model-bound messages. Existing
+`plugin_event_added` history retains its replay semantics, but new `plugin/emit`
+calls do not authorize model messages.
 
 Payload JSON is limited to 256 KiB, names to 128 control-free characters, and the complete
 serialized event to 272 KiB. Each plugin/session pair may publish 40 events per second and 4 MiB
@@ -174,7 +376,7 @@ receive it normally.
 
 ## Interception
 
-Plugins register hook names in `capabilities.intercept`. The complete 0.0.4 set is
+Plugins register hook names in `capabilities.intercept`. The complete 0.0.5 set is
 `tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
 `user_before_input`, `model_before_request`, `provider_before_headers`,
 `provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
@@ -218,7 +420,7 @@ validation before later plugins see them. Parameter adjustments apply with eithe
 `replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
 the final validated model-hook result.
 
-Pinned Oven adapters in 0.0.4 do not expose their adapter-assembled HTTP headers or raw provider
+Pinned Oven adapters in 0.0.5 do not expose their adapter-assembled HTTP headers or raw provider
 JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
 `delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
 request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
@@ -292,5 +494,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods remain deferred. Protocol 0.0.4 event subscriptions have no replay or
+Plugin resource methods remain deferred. Protocol 0.0.5 event subscriptions have no replay or
 per-event-type filters.

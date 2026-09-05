@@ -142,7 +142,7 @@ impl Engine {
 
     pub(super) async fn maybe_compact_context(
         &self,
-        input: CompactionInput<'_>,
+        mut input: CompactionInput<'_>,
     ) -> Result<Arc<[StoredEvent]>, EngineError> {
         let Some(context_limit) = input.binding.descriptor.capabilities.limits.context else {
             return Ok(input.events);
@@ -174,6 +174,29 @@ impl Engine {
             .checkpoint_covers_input(requested_input_through_seq)
         {
             return Ok(current_events);
+        }
+
+        let has_producer_input =
+            crate::goal_projection::GoalProducerProjection::from_events(&input.events)
+                .messages
+                .iter()
+                .any(|message| {
+                    !message.consumed
+                        && !message.discarded
+                        && message.admission.is_some_and(|(run, _)| run == input.run)
+                });
+        let producer_claim = if !has_producer_input {
+            None
+        } else if input.actor_direct {
+            Some(self.claim_producer_snapshot_direct(input.session, input.run)?)
+        } else {
+            Some(
+                self.claim_existing_producer_inputs(input.session, input.run)
+                    .await?,
+            )
+        };
+        if let Some(claim) = &producer_claim {
+            input.events = Arc::clone(&claim.events);
         }
 
         let mut compaction_focus = input.focus.map(str::to_owned);

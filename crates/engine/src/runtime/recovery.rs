@@ -19,6 +19,9 @@ use crate::delegation_api::DelegateHandle;
 
 impl Engine {
     pub(super) fn reconcile_session(&self, session_id: SessionId) -> Result<(), EngineError> {
+        self.release_recovered_producer_claims(session_id)?;
+        self.reconcile_consumed_producers(session_id, true)?;
+        self.repair_goal_completion(session_id, true)?;
         let session = self.inner.store.get(session_id)?;
         let events = session.log.event_snapshot();
         let interrupted_runs = session

@@ -70,6 +70,10 @@ and the CLI share one implementation of the protocol mechanics.
 | `session.create` | Run selection | Session metadata with skipped-event diagnostics |
 | `session.list` | Optional cwd identity | Session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics |
+| `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
+| `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
+| `session.goal.lifecycle` | Session ID, goal ID, expected revision, pause/resume/cancel action, optional `selection` for resume only | Updated `goal: GoalState` |
+| `session.producers` | Session ID | Runtime `producers` and `plugin_recovery` inspection |
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
 | `agent.usage` | Agent ID | Rollup across turns attributed to that agent |
 | `usage.global` | Empty object | Rollup across all project sessions |
@@ -97,6 +101,62 @@ session-aware `skills.list` and `skills.get` methods because visibility depends
 on the governing run policy and session overlay.
 
 ## Steering
+
+### Goal/producer integration handoff
+
+The engine implements these methods through its per-session actor. Goal mutations
+are root-only; producer inspection is available for any owned session.
+The session wire remains 16: these additive methods do not alter the
+handshake or existing required request/result fields. The independently versioned
+plugin extension advances to `0.0.5`; package versions are unchanged.
+
+| Surface | Public contract | Implementation owner |
+|---|---|---|
+| Goal projection | `GoalState`, `GoalItem`, `GoalStatus`, `GoalId` | Engine; TUI renders durable events |
+| Goal read | `SessionGoalGetParams/Result`, `get_session_goal` | Engine; TUI/clients call async API |
+| Activation | `SessionGoalSetParams/Result`, `set_session_goal` | User-only root command, rejects active/paused goal |
+| Lifecycle | `SessionGoalLifecycleParams/Result`, `change_session_goal_lifecycle`, `GoalLifecycleAction` | User-only root pause/resume/cancel; reject stale/terminal goal |
+| Model tools | `GoalGetParams/Result`, `GoalUpdateParams/Result` | Root-only `goal_get`/`goal_update`, frozen at run admission |
+| Runtime inspection | `SessionProducersParams/Result`, `session_producers`, `ProducerRegistration`, `PluginRecoveryState` | Session runtime snapshot, not global catalog snapshot or persistence |
+| Plugin messaging | `ExtensionProducer{Register,Send,Discard,Unregister}Params/Result` | Engine request handlers; SDK mirrors register/send/discard/unregister |
+| Recovery handshake | `ExtensionRecoveryStartParams`, `ExtensionRecoveryCompleteParams/Result`, `ExtensionRecoveryOutcome` | `plugin/recovery/start` engine notification (no deadline/response); plugin completion request |
+
+Goal activation accepts an optional `selection: RunSelection`, including agent,
+model, variant, and preset. The engine validates and persists this selection
+before scheduling a wake, so it survives waiting for producers and restarting.
+Lifecycle requests accept `selection` only with `action: "resume"`; pause and
+cancel reject a supplied selection. Resuming without it preserves the goal's
+previous selection. If activation omitted it and no later resume supplied one,
+automatic runs use the latest persisted run selection, falling back to the
+session's creation selection. None of these changes mutate an already-running
+turn's frozen selection or attribution.
+
+`GoalItem { description, finished }` has no item ID.
+`GoalUpdateParams { items }` replaces the entire ordered checklist through the
+session actor: the last accepted update wins for the current/latest session goal
+at actor acceptance. Model updates have no `goal_id`, `expected_revision`, or
+lost-update protection. An older run's update can intentionally affect a newly
+activated active or paused goal; updates reject if the current goal is absent or
+terminal. Internal `GoalId` and engine-owned `GoalState.revision` remain for durable
+state and reminder identity. User lifecycle RPC controls retain
+`SessionGoalLifecycleParams.goal_id` and `expected_revision` and reject stale
+identities and revisions; no
+model tool can set an objective or issue lifecycle commands. Empty lists preserve
+the active/paused lifecycle and can bootstrap an active goal without completion.
+The engine decides existing tool permission mapping: `goal_get` uses `read`,
+and `goal_update` uses `write`, both with resource `goal:current`. Ordinary
+permission rules still apply. There is no new permission action or goal configuration.
+
+To preserve strictly increasing event revisions, an all-finished update appends
+checklist revision `r+1`, then completion revision `r+2`, and returns the final
+state. Recovery repairs a missing completion event after a committed all-finished
+checklist. Empty checklists never complete through this rule.
+
+See [Events](events.md#goal-and-producer-contracts) for admission/commit
+coverage and owned-message discard, and [Plugins](../development/plugins.md#producer-messaging-contracts)
+for method names, idempotency, recovery, and the no-implicit-registration requirement.
+
+### User steering
 
 `run.steer` requires an active target run. It immediately appends
 `user_input_admitted` and returns `{ "accepted": true }`; admission does not

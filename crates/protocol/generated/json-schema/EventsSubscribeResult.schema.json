@@ -1191,6 +1191,278 @@
         {
           "type": "object",
           "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "objective": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "goal_activated"
+            }
+          },
+          "required": [
+            "type",
+            "goal_id",
+            "objective",
+            "revision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GoalItem"
+              }
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "goal_checklist_revised"
+            }
+          },
+          "required": [
+            "type",
+            "goal_id",
+            "items",
+            "revision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "$ref": "#/$defs/GoalStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "goal_lifecycle_changed"
+            }
+          },
+          "required": [
+            "type",
+            "goal_id",
+            "status",
+            "revision"
+          ]
+        },
+        {
+          "description": "Sole durable message body and per-send delivery mode. Acceptance is valid\nduring an active run without creating a runless UserInputAdmitted.",
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "idempotency_key": {
+              "description": "Sender-chosen idempotency key scoped to a session and stable producer owner.",
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "mode": {
+              "$ref": "#/$defs/ProducerDeliveryMode"
+            },
+            "producer_owner": {
+              "$ref": "#/$defs/ProducerOwner"
+            },
+            "reminder": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GoalReminderIdentity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_message_accepted"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "producer_owner",
+            "mode",
+            "idempotency_key",
+            "body"
+          ]
+        },
+        {
+          "description": "Run-scoped reference, not a second body or consumption marker. Its event\nsequence participates in ModelTurnCommitted.input_through_seq coverage.",
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_message_admitted"
+            }
+          },
+          "required": [
+            "type",
+            "message_id"
+          ]
+        },
+        {
+          "description": "Run-scoped reservation of pending admitted messages. The envelope\nsequence is the claim token, not proof that provider dispatch occurred.",
+          "type": "object",
+          "properties": {
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_messages_claimed"
+            }
+          },
+          "required": [
+            "type",
+            "message_ids"
+          ]
+        },
+        {
+          "description": "Releases the claim identified by a ProducerMessagesClaimed envelope.",
+          "type": "object",
+          "properties": {
+            "claim_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 1
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_messages_released"
+            }
+          },
+          "required": [
+            "type",
+            "claim_seq"
+          ]
+        },
+        {
+          "description": "Append only after committed model input coverage includes the admission.\nRecovery repairs missing markers from that commit, never from API selection.",
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "run_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_message_consumed"
+            }
+          },
+          "required": [
+            "type",
+            "message_id",
+            "run_id"
+          ]
+        },
+        {
+          "description": "Pending messages may be discarded by stable owner identity. Historical\ngoal reminder discards omitted producer_owner and remain readable.",
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "producer_owner": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ProducerOwner"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reminder": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GoalReminderIdentity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "producer_message_discarded"
+            }
+          },
+          "required": [
+            "type",
+            "message_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "agent": {
               "$ref": "#/$defs/AgentSnapshot"
             },
@@ -3752,6 +4024,51 @@
         "setup_fingerprint"
       ]
     },
+    "GoalItem": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "finished": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "finished"
+      ]
+    },
+    "GoalReminderIdentity": {
+      "description": "Pending reminder coalescing identity, NOT a durable send idempotency key.\nAfter consumption another continuation at the same revision uses a fresh send.",
+      "type": "object",
+      "properties": {
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "goal_id",
+        "revision"
+      ]
+    },
+    "GoalStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "paused",
+        "completed",
+        "cancelled"
+      ]
+    },
     "InternalAgentBackend": {
       "oneOf": [
         {
@@ -4849,7 +5166,9 @@
         "invalid_modification",
         "unsupported_capability",
         "context_mismatch",
-        "rate_limited"
+        "rate_limited",
+        "recovery_failed",
+        "recovery_disabled"
       ]
     },
     "PreparedApprovalResource": {
@@ -4957,6 +5276,90 @@
       "additionalProperties": false,
       "required": [
         "digest"
+      ]
+    },
+    "ProducerDeliveryMode": {
+      "description": "Per-send mode. Queue remains accepted-but-deferred during an active run;\nsteer joins the next safe request without interrupting an in-flight request.",
+      "type": "string",
+      "enum": [
+        "steer",
+        "queue"
+      ]
+    },
+    "ProducerOwner": {
+      "description": "Stable identity used with session + idempotency key for durable deduplication.\nPlugin connection authorization is runtime-only; the engine derives `plugin`\nfrom the authenticated configured plugin name, never from send parameters.\nThe transport supplies name + connection epoch for live authority separately;\nthe epoch is never part of this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "plugin": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "plugin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "plugin"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "invocation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "invocation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "goal"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "goal_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "goal_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "goal_control"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "goal_id"
+          ]
+        }
       ]
     },
     "ProviderOptions": {

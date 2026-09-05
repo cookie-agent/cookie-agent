@@ -23,15 +23,18 @@ use crate::{
     RunSteerResult, RunToolStdinParams, RunToolStdinResult, RuntimeSnapshotGetParams,
     RuntimeSnapshotResult, ServerHello, SessionChildrenParams, SessionChildrenResult,
     SessionCompactParams, SessionCompactResult, SessionCreateParams, SessionCreateResult,
-    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionId,
-    SessionListParams, SessionListResult, SessionPermissionClearParams, SessionPermissionGetParams,
-    SessionPermissionGetResult, SessionPermissionMutationResult, SessionPermissionSetParams,
-    SessionRenameChange, SessionRenameError, SessionRenameErrorCode, SessionRenameParams,
-    SessionRenameResult, SessionResumeParams, SessionResumeResult, SessionRevertParams,
-    SessionRevertResult, SessionSetPermissionModeParams, SessionSetPermissionModeResult,
-    SessionTitle, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult, SessionUsageParams,
-    SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams, SkillsListResult,
-    SuccessResponse, Transport, TransportError,
+    SessionForkParams, SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
+    SessionPermissionMutationResult, SessionPermissionSetParams, SessionProducersParams,
+    SessionProducersResult, SessionRenameChange, SessionRenameError, SessionRenameErrorCode,
+    SessionRenameParams, SessionRenameResult, SessionResumeParams, SessionResumeResult,
+    SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
+    SessionSetPermissionModeResult, SessionTitle, SessionTreeParams, SessionTreeResult,
+    SessionTreeUsageResult, SessionUsageParams, SessionUsageResult, SkillsGetParams,
+    SkillsGetResult, SkillsListParams, SkillsListResult, SuccessResponse, Transport,
+    TransportError,
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
@@ -114,6 +117,37 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: SessionListParams,
     ) -> Result<SessionListResult, ServerFault>;
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult, ServerFault>;
+    /// Returns the root session's current goal, if any.
+    ///
+    /// Implementations must reject child sessions. Goal access is root-only and
+    /// is not a configurable permission surface.
+    async fn get_session_goal(
+        &self,
+        params: SessionGoalGetParams,
+    ) -> Result<SessionGoalGetResult, ServerFault>;
+    /// Activates a user-owned goal on a root session.
+    ///
+    /// Implementations must reject child sessions and must reject activation
+    /// while the current goal is active or paused. This user RPC must not be
+    /// reused as a model/tool mutation path.
+    async fn set_session_goal(
+        &self,
+        params: SessionGoalSetParams,
+    ) -> Result<SessionGoalSetResult, ServerFault>;
+    /// Applies a user-owned lifecycle transition to a root session goal.
+    ///
+    /// Implementations must reject child sessions, terminal goals, mismatched
+    /// goal IDs, and stale `expected_revision` values. This user RPC must not be
+    /// exposed to model tools.
+    async fn change_session_goal_lifecycle(
+        &self,
+        params: SessionGoalLifecycleParams,
+    ) -> Result<SessionGoalLifecycleResult, ServerFault>;
+    /// Returns the runtime-only producer registry for the requested session.
+    async fn session_producers(
+        &self,
+        params: SessionProducersParams,
+    ) -> Result<SessionProducersResult, ServerFault>;
     async fn session_usage(
         &self,
         params: SessionUsageParams,
@@ -383,6 +417,14 @@ async fn dispatch<S: ServerProtocol>(
         "session.create" => value(server.create_session(decode(params)?).await?),
         "session.list" => value(server.list_sessions(decode_default(params)?).await?),
         "session.get" => value(server.get_session(decode(params)?).await?),
+        crate::SESSION_GOAL_GET_METHOD => value(server.get_session_goal(decode(params)?).await?),
+        crate::SESSION_GOAL_SET_METHOD => value(server.set_session_goal(decode(params)?).await?),
+        crate::SESSION_GOAL_LIFECYCLE_METHOD => value(
+            server
+                .change_session_goal_lifecycle(decode(params)?)
+                .await?,
+        ),
+        crate::SESSION_PRODUCERS_METHOD => value(server.session_producers(decode(params)?).await?),
         "session.usage" => value(server.session_usage(decode(params)?).await?),
         "session.tree_usage" => value(server.session_tree_usage(decode(params)?).await?),
         "agent.usage" => value(server.agent_usage(decode(params)?).await?),

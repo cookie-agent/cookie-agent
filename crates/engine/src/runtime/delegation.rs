@@ -2,8 +2,9 @@ use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
     DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, InvocationId,
-    PersistedToolResult as ToolResult, RunId, RunStartParams, SafeToolError, SessionId,
-    SessionOrigin, SessionStatus, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+    PersistedToolResult as ToolResult, ProducerId, ProducerOwner, RunId, RunStartParams,
+    SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome,
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -13,6 +14,7 @@ use super::{
     Engine, EngineError, Event, SessionCommand,
     admission::AdmissionGuard,
     helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
+    producers::ProducerAuthority,
 };
 use crate::{
     EngineHistoryView,
@@ -277,6 +279,40 @@ impl Engine {
                 .get(&existing.reservation.child_session_id)
                 .is_some_and(|record| record.invocation_id == invocation_id);
             if existing.run_attached || registry_owns_invocation {
+                if existing.request.background && registry_owns_invocation {
+                    let producer_missing = self
+                        .inner
+                        .delegations_by_session
+                        .lock()
+                        .map_err(|_| EngineError::ActorStopped)?
+                        .get(&existing.reservation.child_session_id)
+                        .is_some_and(|record| {
+                            !record.notification_sent && record.producer_id.is_none()
+                        });
+                    if producer_missing {
+                        let mut guard = self
+                            .register_background_delegation_producer(
+                                existing.reservation.parent_session_id,
+                                invocation_id,
+                            )
+                            .await?;
+                        let mut records = self
+                            .inner
+                            .delegations_by_session
+                            .lock()
+                            .map_err(|_| EngineError::ActorStopped)?;
+                        if let Some(record) = records
+                            .get_mut(&existing.reservation.child_session_id)
+                            .filter(|record| {
+                                record.invocation_id == invocation_id
+                                    && record.producer_id.is_none()
+                            })
+                        {
+                            record.producer_id = Some(guard.producer_id);
+                            guard.handoff();
+                        }
+                    }
+                }
                 return Ok(DelegateHandle {
                     invocation_id,
                     child_session_id: existing.reservation.child_session_id,
@@ -464,6 +500,17 @@ impl Engine {
                     .unwrap_or(4)
             )));
         }
+        let mut producer_guard = if invocation.background {
+            Some(
+                self.register_background_delegation_producer(
+                    invocation.parent_session_id,
+                    invocation_id,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let child = match self
             .create_child(
                 invocation.parent_session_id,
@@ -500,6 +547,19 @@ impl Engine {
             .delegation_event_get(invocation_id)
             .await?
             .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
+        if let Some(guard) = producer_guard.as_mut() {
+            let mut records = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            if let Some(record) = records.get_mut(&child.session_id).filter(|record| {
+                record.invocation_id == invocation_id && record.producer_id.is_none()
+            }) {
+                record.producer_id = Some(guard.producer_id);
+                guard.handoff();
+            }
+        }
         #[cfg(test)]
         let skill_fork_hook = if entry.request.staged_skill.is_some() {
             self.inner
@@ -692,6 +752,8 @@ impl Engine {
                                 background: invocation.background,
                                 counts_slot,
                                 notification_sent: false,
+                                producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
+                                monitor_started: monitor_release.is_some(),
                             },
                         );
                         false
@@ -740,6 +802,9 @@ impl Engine {
                     "delegate admission was abandoned".into(),
                 ));
             }
+            if let Some(guard) = producer_guard.as_mut() {
+                guard.handoff();
+            }
             return Ok(handle);
         }
         self.inner
@@ -763,8 +828,13 @@ impl Engine {
                     background: invocation.background,
                     counts_slot,
                     notification_sent: false,
+                    producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
+                    monitor_started: false,
                 },
             );
+        if let Some(guard) = producer_guard.as_mut() {
+            guard.handoff();
+        }
         if queued {
             let position = {
                 let mut queue = self
@@ -892,6 +962,7 @@ impl Engine {
         {
             record.child_run_id = Some(child_run_id);
             record.state = DelegationState::Running;
+            record.monitor_started = invocation.background;
         }
         let handle = DelegateHandle {
             invocation_id,
@@ -901,6 +972,7 @@ impl Engine {
         if invocation.background
             && let Err(error) = self.spawn_background_monitor(handle)
         {
+            self.release_recovered_monitor(child.session_id, invocation_id);
             let _ = self.cancel_run_durably(
                 child_run_id,
                 Some("background delegate monitor failed to start".into()),
@@ -1388,6 +1460,27 @@ impl Engine {
         Ok(())
     }
 
+    async fn register_background_delegation_producer(
+        &self,
+        parent_session_id: SessionId,
+        invocation_id: InvocationId,
+    ) -> Result<BackgroundProducerGuard, EngineError> {
+        let producer_id = self
+            .register_producer(
+                parent_session_id,
+                delegation_producer_authority(invocation_id),
+            )
+            .await?;
+        Ok(BackgroundProducerGuard {
+            engine: self.clone(),
+            runtime: self.inner.runtime.clone(),
+            parent_session_id,
+            invocation_id,
+            producer_id,
+            active: true,
+        })
+    }
+
     fn spawn_background_monitor_gated(
         &self,
         handle: DelegateHandle,
@@ -1544,19 +1637,16 @@ impl Engine {
         invocation_id: InvocationId,
     ) -> Result<(), EngineError> {
         let child = self.inner.store.get(child_session_id)?;
-        let entry = self
-            .delegation_event_get(invocation_id)
-            .await?
-            .ok_or_else(|| {
-                EngineError::MissingTool("delegate reservation event is missing".into())
-            })?;
+        // A revert can remove the reservation while its child monitor finishes.
+        let Some(entry) = self.delegation_event_get(invocation_id).await? else {
+            return Ok(());
+        };
         if entry.reservation.child_session_id != child_session_id {
             return Err(EngineError::MissingTool(
                 "delegate reservation child does not match completion monitor".into(),
             ));
         }
         let parent_session_id = entry.reservation.parent_session_id;
-        let parent_run_id = entry.reservation.parent_run_id;
         let parent = self.inner.store.get(parent_session_id)?;
         let root_session_id = match parent.meta.origin {
             SessionOrigin::Delegated {
@@ -1586,7 +1676,7 @@ impl Engine {
                 "delegate child run is not terminal".into(),
             ));
         }
-        let (owns_registry, registry_background, already_sent) = {
+        let (owns_registry, registry_background, mut producer_id) = {
             let mut records = self
                 .inner
                 .delegations_by_session
@@ -1596,17 +1686,17 @@ impl Engine {
                 .get_mut(&child_session_id)
                 .filter(|record| record.invocation_id == invocation_id)
             {
-                let already_sent = record.notification_sent;
                 record.state = DelegationState::Finished(exact_status);
-                (true, record.background, already_sent)
+                (true, record.background, record.producer_id)
             } else {
-                (false, false, false)
+                (false, false, None)
             }
         };
         let parent_events = parent.log.event_snapshot();
         let child_session_value = serde_json::json!(child_session_id);
         let mut background_return = false;
         let mut already_logged = false;
+        let mut already_accepted = false;
         for event in parent_events.iter() {
             match &event.payload {
                 Event::ToolCallTerminated { termination }
@@ -1624,13 +1714,107 @@ impl Engine {
                 } if *logged_invocation == invocation_id && *session_id == child_session_id => {
                     already_logged = true;
                 }
+                Event::ProducerMessageAccepted {
+                    producer_owner:
+                        ProducerOwner::Delegation {
+                            invocation_id: accepted_invocation,
+                        },
+                    ..
+                } if *accepted_invocation == invocation_id => {
+                    already_accepted = true;
+                }
                 _ => {}
             }
         }
-        let background = registry_background || background_return;
-        let already_logged = background && already_logged;
+        let background = entry.request.background || registry_background || background_return;
+        let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
+            DelegateTeaser {
+                session_id: child_session_id,
+                status: SessionStatus::Cancelled,
+                preview: String::new(),
+                total_lines: 0,
+            }
+        } else {
+            delegate_teaser(&child, child_session_id, exact_status, entry.child_run_id)
+        };
+        // Historical V2-only completions have already been model-visible. New
+        // completions durably accept the producer message before the V2 teaser.
+        let mut transient_guard = None;
+        if background && !already_accepted && !already_logged && producer_id.is_none() {
+            let mut guard = self
+                .register_background_delegation_producer(parent_session_id, invocation_id)
+                .await?;
+            let registered_id = guard.producer_id;
+            producer_id = Some(registered_id);
+            if owns_registry {
+                let mut records = self
+                    .inner
+                    .delegations_by_session
+                    .lock()
+                    .map_err(|_| EngineError::ActorStopped)?;
+                if let Some(record) = records
+                    .get_mut(&child_session_id)
+                    .filter(|record| record.invocation_id == invocation_id)
+                {
+                    if record.producer_id.is_none() {
+                        record.producer_id = Some(registered_id);
+                        guard.handoff();
+                    }
+                    producer_id = record.producer_id;
+                }
+            }
+            transient_guard = Some(guard);
+        }
+        if background && !already_logged {
+            let send = self
+                .commit_background_delegation_completion(
+                    entry.reservation.clone(),
+                    producer_id,
+                    teaser.clone(),
+                )
+                .await;
+            let committed = if let Err(EngineError::Producer(_)) = send {
+                let failed_id = producer_id;
+                let mut guard = self
+                    .register_background_delegation_producer(parent_session_id, invocation_id)
+                    .await?;
+                let registered_id = guard.producer_id;
+                producer_id = Some(registered_id);
+                if owns_registry {
+                    let mut records = self
+                        .inner
+                        .delegations_by_session
+                        .lock()
+                        .map_err(|_| EngineError::ActorStopped)?;
+                    if let Some(record) = records
+                        .get_mut(&child_session_id)
+                        .filter(|record| record.invocation_id == invocation_id)
+                    {
+                        if record.producer_id.is_none() || record.producer_id == failed_id {
+                            record.producer_id = Some(registered_id);
+                            guard.handoff();
+                        }
+                        producer_id = record.producer_id;
+                    }
+                }
+                transient_guard = Some(guard);
+                self.commit_background_delegation_completion(
+                    entry.reservation.clone(),
+                    producer_id,
+                    teaser,
+                )
+                .await?
+            } else {
+                send?
+            };
+            if !committed {
+                return Ok(());
+            }
+            already_accepted = true;
+            already_logged = true;
+        }
         if owns_registry
-            && already_logged
+            && (already_accepted || already_logged)
             && let Some(record) = self
                 .inner
                 .delegations_by_session
@@ -1640,58 +1824,64 @@ impl Engine {
         {
             record.notification_sent = true;
         }
-        let notification_result = if background && !already_sent && !already_logged {
-            let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
-                DelegateTeaser {
-                    session_id: child_session_id,
-                    status: SessionStatus::Cancelled,
-                    preview: String::new(),
-                    total_lines: 0,
-                }
-            } else {
-                delegate_teaser(&child, child_session_id, exact_status, entry.child_run_id)
-            };
-            let result = self
-                .append(
+        if let Some(id) = producer_id {
+            match self
+                .unregister_producer(
                     parent_session_id,
-                    Some(parent_run_id),
-                    super::event_origin("engine:delegation"),
-                    Event::DelegateFinishedV2 {
-                        invocation_id,
-                        session_id: child_session_id,
-                        status: exact_status,
-                        preview: teaser.preview,
-                        total_lines: teaser.total_lines,
-                    },
+                    delegation_producer_authority(invocation_id),
+                    id,
                 )
-                .await;
-            if result.is_ok()
-                && owns_registry
-                && let Some(record) = self
-                    .inner
-                    .delegations_by_session
-                    .lock()
-                    .map_err(|_| EngineError::ActorStopped)?
-                    .get_mut(&child_session_id)
+                .await
             {
-                record.notification_sent = true;
+                Ok(()) | Err(EngineError::Producer(_)) => {
+                    if let Some(guard) = transient_guard.as_mut() {
+                        guard.handoff();
+                    }
+                    if owns_registry
+                        && let Some(record) = self
+                            .inner
+                            .delegations_by_session
+                            .lock()
+                            .map_err(|_| EngineError::ActorStopped)?
+                            .get_mut(&child_session_id)
+                    {
+                        record.producer_id = None;
+                    }
+                }
+                Err(error) => return Err(error),
             }
-            result
-        } else {
-            Ok(())
-        };
+        }
         let drain_result = if owns_registry {
             self.start_queued_delegation(root_session_id).await
         } else {
             Ok(())
         };
-        let completion = notification_result.and(drain_result);
+        let completion = drain_result;
         if completion.is_ok()
             && let Err(error) = self.evict_idle_subagents().await
         {
             eprintln!("subagent session completion eviction failed: {error}");
         }
         completion
+    }
+
+    async fn commit_background_delegation_completion(
+        &self,
+        reservation: cookie_agent_protocol::DelegationReservation,
+        producer_id: Option<ProducerId>,
+        teaser: DelegateTeaser,
+    ) -> Result<bool, EngineError> {
+        self.request(reservation.parent_session_id, |reply| {
+            SessionCommand::Producer(
+                super::producers::ProducerCommand::CommitDelegationCompletion {
+                    reservation,
+                    producer_id,
+                    teaser,
+                    reply,
+                },
+            )
+        })
+        .await
     }
 
     async fn terminalize_child_without_run(
@@ -1827,6 +2017,7 @@ impl Engine {
             })?;
             record.child_run_id = Some(child_run_id);
             record.state = DelegationState::Running;
+            record.monitor_started = true;
             let mut queue = self
                 .inner
                 .delegation_queue
@@ -1854,6 +2045,7 @@ impl Engine {
             child_run_id: Some(child_run_id),
         };
         if let Err(error) = self.spawn_background_monitor(handle) {
+            self.release_recovered_monitor(child_session_id, invocation_id);
             let _ = self.cancel_run_durably(
                 child_run_id,
                 Some("background delegate monitor failed to start".into()),
@@ -2332,97 +2524,41 @@ impl Engine {
         entries: &[delegation_events::DelegationEntry],
         recover: bool,
     ) -> Result<(), EngineError> {
-        let mut queued_roots = Vec::new();
-        for entry in entries {
-            let Ok(child) = self.inner.store.get(entry.reservation.child_session_id) else {
-                continue;
-            };
-            let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
-            let parent_events = parent.log.event_snapshot();
-            let child_session_value = serde_json::json!(child.meta.session_id);
-            let mut background = false;
-            let mut notification_sent = false;
-            for event in parent_events.iter() {
-                match &event.payload {
-                    Event::ToolCallTerminated { termination }
-                        if termination.tool_call_id == entry.reservation.parent_tool_call_id
-                            && termination.result.as_ref().is_some_and(|result| {
-                                result.metadata.get("session_id") == Some(&child_session_value)
-                            }) =>
-                    {
-                        background = true;
-                    }
-                    Event::DelegateFinishedV2 {
-                        invocation_id,
-                        session_id,
-                        ..
-                    } if *invocation_id == entry.reservation.invocation_id
-                        && *session_id == child.meta.session_id =>
-                    {
-                        notification_sent = true;
-                    }
-                    _ => {}
-                }
-            }
-            let exact_status = entry
-                .terminal_status
-                .or_else(|| {
-                    entry
-                        .child_run_id
-                        .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
-                })
-                .or_else(|| {
-                    (entry.request.resume_session_id.is_none()
-                        && matches!(
-                            child.status,
-                            SessionStatus::Failed | SessionStatus::Cancelled
-                        ))
-                    .then_some(child.status)
-                });
-            if recover
-                && self
-                    .inner
-                    .store
-                    .is_owned(entry.reservation.parent_session_id)
-                && background
-                && !notification_sent
-                && let Some(status) = exact_status
-                && matches!(
-                    status,
-                    SessionStatus::Completed
-                        | SessionStatus::Failed
-                        | SessionStatus::Interrupted
-                        | SessionStatus::Cancelled
-                )
-            {
-                let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
-                    DelegateTeaser {
-                        session_id: child.meta.session_id,
-                        status,
-                        preview: String::new(),
-                        total_lines: 0,
-                    }
-                } else {
-                    delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
-                };
-                self.append_direct(
-                    entry.reservation.parent_session_id,
-                    Some(entry.reservation.parent_run_id),
-                    super::event_origin("engine:delegation"),
-                    Event::DelegateFinishedV2 {
-                        invocation_id: entry.reservation.invocation_id,
-                        session_id: child.meta.session_id,
-                        status,
-                        preview: teaser.preview,
-                        total_lines: teaser.total_lines,
-                    },
-                )?;
-            }
-        }
         let mut latest = std::collections::HashMap::new();
         for entry in entries {
             latest.insert(entry.reservation.child_session_id, entry);
         }
+        let stale_producers = {
+            let mut records = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            let stale = records
+                .iter()
+                .filter(|(child_session_id, record)| {
+                    latest
+                        .get(child_session_id)
+                        .is_none_or(|entry| entry.reservation.invocation_id != record.invocation_id)
+                })
+                .filter_map(|(_, record)| {
+                    record.producer_id.map(|producer_id| {
+                        (record.parent_session_id, record.invocation_id, producer_id)
+                    })
+                })
+                .collect::<Vec<_>>();
+            records.retain(|child_session_id, record| {
+                latest
+                    .get(child_session_id)
+                    .is_some_and(|entry| entry.reservation.invocation_id == record.invocation_id)
+            });
+            stale
+        };
+        self.inner
+            .delegation_queue
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .retain(|child_session_id| latest.contains_key(child_session_id));
         for entry in latest.into_values() {
             let child = match self.inner.store.get(entry.reservation.child_session_id) {
                 Ok(child) => child,
@@ -2457,6 +2593,12 @@ impl Engine {
                     {
                         notification_sent = true;
                     }
+                    Event::ProducerMessageAccepted {
+                        producer_owner: ProducerOwner::Delegation { invocation_id },
+                        ..
+                    } if *invocation_id == entry.reservation.invocation_id => {
+                        notification_sent = true;
+                    }
                     Event::ToolCallTerminated { termination }
                         if termination.tool_call_id == entry.reservation.parent_tool_call_id
                             && termination.result.as_ref().is_some_and(|result| {
@@ -2468,7 +2610,7 @@ impl Engine {
                     _ => {}
                 }
             }
-            let background = queued_event || background_return;
+            let background = entry.request.background || queued_event || background_return;
             let exact_run_status = entry
                 .child_run_id
                 .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status));
@@ -2497,6 +2639,16 @@ impl Engine {
             };
             let counts_slot =
                 background && !matches!(parent.meta.origin, SessionOrigin::Delegated { .. });
+            let (producer_id, monitor_started) = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?
+                .get(&child.meta.session_id)
+                .filter(|record| record.invocation_id == entry.reservation.invocation_id)
+                .map_or((None, false), |record| {
+                    (record.producer_id, record.monitor_started)
+                });
             self.inner
                 .delegations_by_session
                 .lock()
@@ -2514,63 +2666,292 @@ impl Engine {
                         background,
                         counts_slot,
                         notification_sent,
+                        producer_id,
+                        monitor_started,
                     },
                 );
             if state == DelegationState::Queued {
-                self.inner
+                let mut queue = self
+                    .inner
                     .delegation_queue
                     .lock()
-                    .map_err(|_| EngineError::ActorStopped)?
-                    .push_back(child.meta.session_id);
-                if self.inner.store.is_owned(root_session_id) {
-                    queued_roots.push(root_session_id);
+                    .map_err(|_| EngineError::ActorStopped)?;
+                if !queue.contains(&child.meta.session_id) {
+                    queue.push_back(child.meta.session_id);
                 }
-            } else if recover
-                && self
-                    .inner
-                    .store
-                    .is_owned(entry.reservation.parent_session_id)
-                && background
-                && let DelegationState::Finished(status) = state
-                && !notification_sent
-            {
-                let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
-                    DelegateTeaser {
-                        session_id: child.meta.session_id,
-                        status,
-                        preview: String::new(),
-                        total_lines: 0,
-                    }
-                } else {
-                    delegate_teaser(&child, child.meta.session_id, status, entry.child_run_id)
-                };
-                self.append_direct(
-                    entry.reservation.parent_session_id,
-                    Some(entry.reservation.parent_run_id),
-                    super::event_origin("engine:delegation"),
-                    Event::DelegateFinishedV2 {
-                        invocation_id: entry.reservation.invocation_id,
-                        session_id: child.meta.session_id,
-                        status,
-                        preview: teaser.preview,
-                        total_lines: teaser.total_lines,
-                    },
-                )?;
             }
+        }
+        if recover
+            && let Some(runtime) = self
+                .inner
+                .runtime
+                .clone()
+                .or_else(|| tokio::runtime::Handle::try_current().ok())
+        {
+            self.schedule_delegation_reconciliation(&runtime, stale_producers)?;
+        }
+        Ok(())
+    }
+
+    fn schedule_delegation_reconciliation(
+        &self,
+        runtime: &tokio::runtime::Handle,
+        stale_producers: Vec<(SessionId, InvocationId, ProducerId)>,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .delegation_recovery_stale_producers
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .extend(stale_producers);
+        self.inner
+            .delegation_reconciliation_requested
+            .store(true, Ordering::Release);
+        if self
+            .inner
+            .delegation_reconciliation_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let engine = self.clone();
+        let reconcile = engine.clone();
+        if !self.spawn_admission_task(runtime, async move {
+            reconcile.run_delegation_reconciliation().await;
+        }) {
+            self.inner
+                .delegation_reconciliation_running
+                .store(false, Ordering::Release);
+            return Err(EngineError::ActorStopped);
+        }
+        Ok(())
+    }
+
+    async fn run_delegation_reconciliation(&self) {
+        loop {
+            self.inner
+                .delegation_reconciliation_requested
+                .store(false, Ordering::Release);
+            let stale_producers = std::mem::take(
+                &mut *self
+                    .inner
+                    .delegation_recovery_stale_producers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            if let Err(error) = self.reconcile_delegation_producers(stale_producers).await {
+                eprintln!("delegation producer recovery deferred: {error}");
+            }
+            if self
+                .inner
+                .delegation_reconciliation_requested
+                .load(Ordering::Acquire)
+            {
+                continue;
+            }
+            self.inner
+                .delegation_reconciliation_running
+                .store(false, Ordering::Release);
+            if !self
+                .inner
+                .delegation_reconciliation_requested
+                .load(Ordering::Acquire)
+                || self
+                    .inner
+                    .delegation_reconciliation_running
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    /// Recreates volatile delegation registrations before recovered work is
+    /// monitored or dequeued.
+    async fn reconcile_delegation_producers(
+        &self,
+        stale_producers: Vec<(SessionId, InvocationId, ProducerId)>,
+    ) -> Result<(), EngineError> {
+        for (parent_session_id, invocation_id, producer_id) in stale_producers {
+            if !self.inner.store.is_owned(parent_session_id) {
+                continue;
+            }
+            match self
+                .unregister_producer(
+                    parent_session_id,
+                    delegation_producer_authority(invocation_id),
+                    producer_id,
+                )
+                .await
+            {
+                Ok(()) | Err(EngineError::Producer(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let records = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .iter()
+            .map(|(session_id, record)| (*session_id, *record))
+            .collect::<Vec<_>>();
+
+        for (child_session_id, record) in &records {
+            if !record.background
+                || record.notification_sent
+                || record.producer_id.is_some()
+                || !self.inner.store.is_owned(record.parent_session_id)
+            {
+                continue;
+            }
+            let mut guard = self
+                .register_background_delegation_producer(
+                    record.parent_session_id,
+                    record.invocation_id,
+                )
+                .await?;
+            let mut current = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            if let Some(current_record) = current.get_mut(child_session_id).filter(|current| {
+                current.invocation_id == record.invocation_id && current.producer_id.is_none()
+            }) {
+                current_record.producer_id = Some(guard.producer_id);
+                guard.handoff();
+            }
+        }
+
+        let records = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .iter()
+            .map(|(session_id, record)| (*session_id, *record))
+            .collect::<Vec<_>>();
+        let mut queued_roots = Vec::new();
+        let mut finished = Vec::new();
+        for (child_session_id, record) in records {
+            if !record.background || !self.inner.store.is_owned(record.parent_session_id) {
+                continue;
+            }
+            match record.state {
+                DelegationState::Finished(_) => {
+                    finished.push((child_session_id, record.invocation_id));
+                }
+                DelegationState::Queued => queued_roots.push(record.root_session_id),
+                DelegationState::Running if record.child_run_id.is_some() => {
+                    if !self.claim_recovered_monitor(child_session_id, record.invocation_id)? {
+                        continue;
+                    }
+                    if let Err(error) = self.spawn_background_monitor(DelegateHandle {
+                        invocation_id: record.invocation_id,
+                        child_session_id,
+                        child_run_id: record.child_run_id,
+                    }) {
+                        self.release_recovered_monitor(child_session_id, record.invocation_id);
+                        return Err(error);
+                    }
+                }
+                DelegationState::Running | DelegationState::Starting => {
+                    if !self.claim_recovered_monitor(child_session_id, record.invocation_id)? {
+                        continue;
+                    }
+                    let entry = self
+                        .delegation_event_get(record.invocation_id)
+                        .await
+                        .inspect_err(|_| {
+                            self.release_recovered_monitor(child_session_id, record.invocation_id);
+                        })?
+                        .ok_or_else(|| {
+                            self.release_recovered_monitor(child_session_id, record.invocation_id);
+                            EngineError::MissingTool(
+                                "recovered subagent reservation is missing".into(),
+                            )
+                        })?;
+                    let child_run_id =
+                        self.ensure_delegate_run(&entry, None)
+                            .await
+                            .inspect_err(|_| {
+                                self.release_recovered_monitor(
+                                    child_session_id,
+                                    record.invocation_id,
+                                );
+                            })?;
+                    if let Some(current) = self
+                        .inner
+                        .delegations_by_session
+                        .lock()
+                        .map_err(|_| EngineError::ActorStopped)?
+                        .get_mut(&child_session_id)
+                        .filter(|current| current.invocation_id == record.invocation_id)
+                    {
+                        current.child_run_id = Some(child_run_id);
+                        current.state = DelegationState::Running;
+                    }
+                    if let Err(error) = self.spawn_background_monitor(DelegateHandle {
+                        invocation_id: record.invocation_id,
+                        child_session_id,
+                        child_run_id: Some(child_run_id),
+                    }) {
+                        self.release_recovered_monitor(child_session_id, record.invocation_id);
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        for (child_session_id, invocation_id) in finished {
+            self.finish_background_or_retry(child_session_id, invocation_id)
+                .await;
         }
         queued_roots.sort_unstable();
         queued_roots.dedup();
-        if recover && let Some(runtime) = self.inner.runtime.clone() {
-            for root_session_id in queued_roots {
-                let engine = self.clone();
-                runtime.spawn(async move {
-                    if let Err(error) = engine.start_queued_delegation(root_session_id).await {
-                        eprintln!("queued delegate recovery failed: {error}");
-                    }
-                });
-            }
+        for root_session_id in queued_roots {
+            self.start_queued_delegation(root_session_id).await?;
         }
         Ok(())
+    }
+
+    fn claim_recovered_monitor(
+        &self,
+        child_session_id: SessionId,
+        invocation_id: InvocationId,
+    ) -> Result<bool, EngineError> {
+        let mut records = self
+            .inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?;
+        let Some(record) = records
+            .get_mut(&child_session_id)
+            .filter(|record| record.invocation_id == invocation_id)
+        else {
+            return Ok(false);
+        };
+        if record.monitor_started
+            || !matches!(
+                record.state,
+                DelegationState::Running | DelegationState::Starting
+            )
+        {
+            return Ok(false);
+        }
+        record.monitor_started = true;
+        Ok(true)
+    }
+
+    fn release_recovered_monitor(&self, child_session_id: SessionId, invocation_id: InvocationId) {
+        if let Ok(mut records) = self.inner.delegations_by_session.lock()
+            && let Some(record) = records
+                .get_mut(&child_session_id)
+                .filter(|record| record.invocation_id == invocation_id)
+        {
+            record.monitor_started = false;
+        }
     }
 }
 
@@ -2594,6 +2975,67 @@ pub(super) struct DelegationRecord {
     pub(super) background: bool,
     pub(super) counts_slot: bool,
     pub(super) notification_sent: bool,
+    pub(super) producer_id: Option<ProducerId>,
+    pub(super) monitor_started: bool,
+}
+
+struct BackgroundProducerGuard {
+    engine: Engine,
+    runtime: Option<tokio::runtime::Handle>,
+    parent_session_id: SessionId,
+    invocation_id: InvocationId,
+    producer_id: ProducerId,
+    active: bool,
+}
+
+impl BackgroundProducerGuard {
+    fn handoff(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for BackgroundProducerGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let Some(runtime) = self
+            .runtime
+            .clone()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+        else {
+            return;
+        };
+        let engine = self.engine.clone();
+        let unregister_engine = engine.clone();
+        let session_id = self.parent_session_id;
+        let authority = delegation_producer_authority(self.invocation_id);
+        let producer_id = self.producer_id;
+        let _ = engine.spawn_admission_task(&runtime, async move {
+            let _ = unregister_engine
+                .unregister_producer(session_id, authority, producer_id)
+                .await;
+        });
+    }
+}
+
+fn delegation_producer_authority(invocation_id: InvocationId) -> ProducerAuthority {
+    ProducerAuthority {
+        owner: ProducerOwner::Delegation { invocation_id },
+        connection_epoch: None,
+    }
+}
+
+pub(super) fn render_background_completion(teaser: &DelegateTeaser) -> String {
+    format!(
+        "<subagent_notification>{}</subagent_notification>",
+        serde_json::json!({
+            "session_id": teaser.session_id,
+            "status": session_status_name(teaser.status),
+            "preview": teaser.preview,
+            "total_lines": teaser.total_lines,
+        })
+    )
 }
 
 pub(crate) fn freeze_delegated_child_policy(
@@ -2696,11 +3138,12 @@ fn context_seed_from_history(history: Vec<oven_sdk::HistoryTurn>) -> Vec<Delegat
     turns
 }
 
-struct DelegateTeaser {
-    session_id: SessionId,
-    status: SessionStatus,
-    preview: String,
-    total_lines: u64,
+#[derive(Clone)]
+pub(super) struct DelegateTeaser {
+    pub(super) session_id: SessionId,
+    pub(super) status: SessionStatus,
+    pub(super) preview: String,
+    pub(super) total_lines: u64,
 }
 
 fn delegate_teaser(

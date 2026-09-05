@@ -22,7 +22,7 @@ use oven_sdk::{
 };
 use thiserror::Error;
 
-use crate::ArtifactStore;
+use crate::{ArtifactStore, goal_projection::GoalProducerProjection};
 
 pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
@@ -434,17 +434,34 @@ fn is_pinned_event(
             || latest_agent_md_seq == Some(event.seq))
 }
 
+#[derive(Clone, Copy)]
+enum CheckpointSelectionMode {
+    InternalSummary,
+    NativeWindow,
+}
+
 fn selected_checkpoint_events(
     events: &[StoredEvent],
     source_through_seq: u64,
     recent_from_seq: Option<u64>,
     close_dependencies: bool,
+    mode: CheckpointSelectionMode,
 ) -> Vec<StoredEvent> {
     let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
+    let pending_producer_admissions = match mode {
+        CheckpointSelectionMode::InternalSummary => GoalProducerProjection::from_events(events)
+            .messages
+            .into_iter()
+            .filter(|message| !message.consumed && !message.discarded)
+            .filter_map(|message| message.admission.map(|(_, seq)| seq))
+            .collect::<HashSet<_>>(),
+        CheckpointSelectionMode::NativeWindow => HashSet::new(),
+    };
     let mut selected = events
         .iter()
         .filter(|event| {
             is_pinned_event(event, latest_agent_md_seq, source_through_seq)
+                || pending_producer_admissions.contains(&event.seq)
                 || recent_from_seq
                     .is_some_and(|from| (from..=source_through_seq).contains(&event.seq))
                 || event.seq > source_through_seq
@@ -544,7 +561,13 @@ pub(crate) fn project_summary_context(
     recent_from_seq: Option<u64>,
     summary: &str,
 ) -> Result<ModelContext, HistoryError> {
-    let selected = selected_checkpoint_events(events, source_through_seq, recent_from_seq, true);
+    let selected = selected_checkpoint_events(
+        events,
+        source_through_seq,
+        recent_from_seq,
+        true,
+        CheckpointSelectionMode::InternalSummary,
+    );
     let mut assembled =
         assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
     insert_summary(&mut assembled, events, summary);
@@ -566,13 +589,15 @@ pub(crate) fn compaction_prefix_history(
         return Ok(assemble_model_context(events, store, binding, composed_prompt)?.history);
     };
     let (mut visible, prior_summary) = if let Some(commit) = latest_checkpoint(events) {
-        let retained_from = match commit.checkpoint {
-            ContextCheckpoint::InternalSummary { .. } => commit.boundaries.recent_from_seq,
-            ContextCheckpoint::NativeWindow { .. } => None,
-        };
-        let summary = match &commit.checkpoint {
-            ContextCheckpoint::InternalSummary { checkpoint } => Some(checkpoint.summary()),
-            ContextCheckpoint::NativeWindow { .. } => None,
+        let (retained_from, summary, mode) = match &commit.checkpoint {
+            ContextCheckpoint::InternalSummary { checkpoint } => (
+                commit.boundaries.recent_from_seq,
+                Some(checkpoint.summary()),
+                CheckpointSelectionMode::InternalSummary,
+            ),
+            ContextCheckpoint::NativeWindow { .. } => {
+                (None, None, CheckpointSelectionMode::NativeWindow)
+            }
         };
         (
             selected_checkpoint_events(
@@ -580,6 +605,7 @@ pub(crate) fn compaction_prefix_history(
                 commit.boundaries.source_through_seq,
                 retained_from,
                 true,
+                mode,
             ),
             summary,
         )
@@ -610,15 +636,19 @@ pub(crate) fn compaction_tail_candidates(events: &[StoredEvent]) -> Vec<u64> {
     }
 
     let visible = if let Some(commit) = latest_checkpoint(events) {
-        let recent_from = match &commit.checkpoint {
-            ContextCheckpoint::InternalSummary { .. } => commit.boundaries.recent_from_seq,
-            ContextCheckpoint::NativeWindow { .. } => None,
+        let (recent_from, mode) = match &commit.checkpoint {
+            ContextCheckpoint::InternalSummary { .. } => (
+                commit.boundaries.recent_from_seq,
+                CheckpointSelectionMode::InternalSummary,
+            ),
+            ContextCheckpoint::NativeWindow { .. } => (None, CheckpointSelectionMode::NativeWindow),
         };
         selected_checkpoint_events(
             events,
             commit.boundaries.source_through_seq,
             recent_from,
             true,
+            mode,
         )
     } else {
         events.to_vec()
@@ -626,6 +656,12 @@ pub(crate) fn compaction_tail_candidates(events: &[StoredEvent]) -> Vec<u64> {
     let visible_seqs = visible
         .iter()
         .map(|event| event.seq)
+        .collect::<HashSet<_>>();
+    let producer_admissions = GoalProducerProjection::from_events(events)
+        .messages
+        .into_iter()
+        .filter(|message| !message.discarded)
+        .filter_map(|message| message.admission.map(|(_, seq)| seq))
         .collect::<HashSet<_>>();
     let submitted = events
         .iter()
@@ -658,6 +694,15 @@ pub(crate) fn compaction_tail_candidates(events: &[StoredEvent]) -> Vec<u64> {
             }
             EventPayload::MessageInjected { role, .. }
                 if *role != cookie_agent_protocol::ExtensionMessageRole::Tool =>
+            {
+                groups.push(Group {
+                    start: event.seq,
+                    end: event.seq,
+                    ..Group::default()
+                });
+            }
+            EventPayload::ProducerMessageAdmitted { .. }
+                if producer_admissions.contains(&event.seq) =>
             {
                 groups.push(Group {
                     start: event.seq,
@@ -804,6 +849,7 @@ pub(crate) fn assemble_model_context(
                 commit.boundaries.source_through_seq,
                 None,
                 false,
+                CheckpointSelectionMode::NativeWindow,
             );
             let assembled =
                 assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
@@ -835,6 +881,35 @@ fn assemble_history_with_replay(
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
     let rejected_unsigned_replays = rejected_unsigned_replay_fingerprints(context_events);
+    let producer_projection = GoalProducerProjection::from_events(context_events);
+    let current_run = context_events.iter().rev().find_map(|event| {
+        matches!(event.payload, EventPayload::RunStarted { .. })
+            .then_some(event.run_id)
+            .flatten()
+    });
+    let producer_admissions = producer_projection
+        .messages
+        .iter()
+        .filter(|message| !message.discarded)
+        .filter_map(|message| {
+            message
+                .admission
+                .and_then(|(admission_run, admission_seq)| {
+                    (message.consumed || current_run.is_none_or(|run| admission_run == run))
+                        .then_some((admission_seq, message.body.as_str()))
+                })
+        })
+        .collect::<HashMap<_, _>>();
+    let producer_delegations = producer_projection
+        .messages
+        .iter()
+        .filter_map(|message| match &message.producer_owner {
+            cookie_agent_protocol::ProducerOwner::Delegation { invocation_id } => {
+                Some(*invocation_id)
+            }
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     let loaded_skills = context_events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -899,6 +974,11 @@ fn assemble_history_with_replay(
             EventPayload::UserInputApplied { user_input_seq } => {
                 if let Some(input) = submitted.remove(user_input_seq) {
                     logical.push(LogicalTurn::User(user_text(&input)));
+                }
+            }
+            EventPayload::ProducerMessageAdmitted { .. } => {
+                if let Some(body) = producer_admissions.get(&envelope.seq) {
+                    logical.push(LogicalTurn::User(user_text(body)));
                 }
             }
             EventPayload::ModelTurnCommitted {
@@ -1073,14 +1153,25 @@ fn assemble_history_with_replay(
                 status,
                 preview,
                 total_lines,
+            } => {
+                logical.push(LogicalTurn::User(user_text(&format!(
+                    "<subagent_notification>{}</subagent_notification>",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "status": format!("{status:?}").to_ascii_lowercase(),
+                        "preview": preview,
+                        "total_lines": total_lines,
+                    })
+                ))));
             }
-            | EventPayload::DelegateFinishedV2 {
+            EventPayload::DelegateFinishedV2 {
+                invocation_id,
                 session_id,
                 status,
                 preview,
                 total_lines,
                 ..
-            } => {
+            } if !producer_delegations.contains(invocation_id) => {
                 logical.push(LogicalTurn::User(user_text(&format!(
                     "<subagent_notification>{}</subagent_notification>",
                     serde_json::json!({
@@ -2014,7 +2105,7 @@ fn sanitize_control_free(value: &str, maximum: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
 
     use cookie_agent_protocol::{
         AgentMdEntry, ArtifactReference, AssistantToolCallRef, ContextCheckpoint,
@@ -2025,9 +2116,10 @@ mod tests {
         OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
         PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
-        SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolCallId,
-        ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
+        PreparedResourceIdentity, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId,
+        ProducerOwner, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
+        SafeDisplayText, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit,
+        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
         ToolEmittedMessage, ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome,
         Usage,
     };
@@ -2037,6 +2129,8 @@ mod tests {
         ReplayDisposition as OvenReplayDisposition, ResourceId, SystemMessage, SystemPart,
         TextPart,
     };
+
+    use crate::goal_projection::GoalProducerProjection;
 
     use super::{
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
@@ -2297,6 +2391,391 @@ mod tests {
             timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
             payload,
         }
+    }
+
+    fn producer_accepted_event(
+        seq: u64,
+        message_id: ProducerMessageId,
+        owner: ProducerOwner,
+        key: &str,
+        body: &str,
+    ) -> StoredEvent {
+        let mut event = event(
+            seq,
+            RunId::new_v7(),
+            EventPayload::ProducerMessageAccepted {
+                message_id,
+                producer_owner: owner,
+                mode: ProducerDeliveryMode::Steer,
+                idempotency_key: ProducerIdempotencyKey::new(key).unwrap(),
+                body: body.into(),
+                reminder: None,
+            },
+        );
+        event.run_id = None;
+        event
+    }
+
+    fn run_started_event(seq: u64, run: RunId, binding: &FrozenModelBinding) -> StoredEvent {
+        let agent =
+            crate::test_support::agent_snapshot("test", cookie_agent_protocol::AgentMode::Primary);
+        let revision = format!("sha256:{}", "0".repeat(64));
+        event(
+            seq,
+            run,
+            EventPayload::RunStarted {
+                client_run_id: cookie_agent_protocol::ClientRunId::new(format!("run-{seq}"))
+                    .unwrap(),
+                selection: crate::test_support::run_selection("test"),
+                runtime_revision: cookie_agent_protocol::RuntimeRevision::new(revision.clone())
+                    .unwrap(),
+                catalog_revision: cookie_agent_protocol::CatalogRevision::new(revision.clone())
+                    .unwrap(),
+                provider_state_revision: cookie_agent_protocol::ProviderStateRevision::new(
+                    revision.clone(),
+                )
+                .unwrap(),
+                model_revision: cookie_agent_protocol::ModelRevision::new(revision.clone())
+                    .unwrap(),
+                agent_revision: cookie_agent_protocol::AgentRevision::new(revision.clone())
+                    .unwrap(),
+                recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(
+                    revision,
+                )
+                .unwrap(),
+                manifest_revision: binding.manifest_revision.clone(),
+                selected_suffix: agent.fallback_chain.clone(),
+                internal_agents: Vec::new(),
+                agent: Box::new(agent),
+                input_through_seq: seq,
+            },
+        )
+    }
+
+    #[test]
+    fn producer_body_materializes_only_at_the_effective_admission() {
+        let message_id = ProducerMessageId::new_v7();
+        let first_run = RunId::new_v7();
+        let retry_run = RunId::new_v7();
+        let accepted = producer_accepted_event(
+            1,
+            message_id,
+            ProducerOwner::Plugin {
+                plugin: "jobs".into(),
+            },
+            "job:7",
+            "durable producer result",
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let current_binding = binding();
+
+        let accepted_history = assemble_full_history(
+            std::slice::from_ref(&accepted),
+            &store,
+            &current_binding,
+            "system",
+        )
+        .unwrap();
+        assert_eq!(accepted_history.len(), 1);
+
+        let events = vec![
+            accepted,
+            event(
+                2,
+                first_run,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            event(3, first_run, EventPayload::RunInterrupted { reason: None }),
+            event(
+                4,
+                retry_run,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+        ];
+        let history = assemble_full_history(&events, &store, &current_binding, "system").unwrap();
+        assert_eq!(history.len(), 2);
+        let rendered = serde_json::to_string(&history).unwrap();
+        assert_eq!(rendered.matches("durable producer result").count(), 1);
+    }
+
+    #[test]
+    fn pending_producer_body_requires_admission_to_the_current_run() {
+        let message_id = ProducerMessageId::new_v7();
+        let run_a = RunId::new_v7();
+        let run_b = RunId::new_v7();
+        let current_binding = binding();
+        let mut events = vec![
+            producer_accepted_event(
+                1,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "jobs".into(),
+                },
+                "job:run-boundary",
+                "pending producer body",
+            ),
+            run_started_event(2, run_a, &current_binding),
+            event(
+                3,
+                run_a,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            event(4, run_a, EventPayload::RunCancelled { reason: None }),
+            run_started_event(5, run_b, &current_binding),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+
+        let old_admission_history =
+            assemble_full_history(&events, &store, &current_binding, "system").unwrap();
+        assert!(
+            !serde_json::to_string(&old_admission_history)
+                .unwrap()
+                .contains("pending producer body")
+        );
+
+        events.push(event(
+            6,
+            run_b,
+            EventPayload::ProducerMessageAdmitted { message_id },
+        ));
+        let readmitted_history =
+            assemble_full_history(&events, &store, &current_binding, "system").unwrap();
+        assert_eq!(
+            serde_json::to_string(&readmitted_history)
+                .unwrap()
+                .matches("pending producer body")
+                .count(),
+            1
+        );
+        let projection = crate::goal_projection::GoalProducerProjection::from_events(&events);
+        assert_eq!(projection.messages[0].admission, Some((run_b, 6)));
+        assert!(!projection.messages[0].consumed);
+    }
+
+    #[test]
+    fn discarded_producer_body_is_absent_from_history() {
+        let message_id = ProducerMessageId::new_v7();
+        let run = RunId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "jobs".into(),
+        };
+        let accepted = producer_accepted_event(
+            1,
+            message_id,
+            owner.clone(),
+            "job:discarded",
+            "discarded producer body",
+        );
+        let mut discarded = event(
+            3,
+            run,
+            EventPayload::ProducerMessageDiscarded {
+                message_id,
+                reminder: None,
+                producer_owner: Some(owner),
+            },
+        );
+        discarded.run_id = None;
+        let events = vec![
+            accepted,
+            event(2, run, EventPayload::ProducerMessageAdmitted { message_id }),
+            discarded,
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+
+        let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
+        assert!(
+            !serde_json::to_string(&history)
+                .unwrap()
+                .contains("discarded producer body")
+        );
+    }
+
+    #[test]
+    fn claimed_snapshot_retains_covered_producer_input() {
+        let message_id = ProducerMessageId::new_v7();
+        let run = RunId::new_v7();
+        let current_binding = binding();
+        let events = vec![
+            producer_accepted_event(
+                1,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "jobs".into(),
+                },
+                "job:claimed",
+                "claimed producer body",
+            ),
+            event(2, run, EventPayload::ProducerMessageAdmitted { message_id }),
+            event(
+                3,
+                run,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+            event(
+                4,
+                run,
+                EventPayload::ModelTurnCommitted {
+                    attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                    model_turn_seq: 1,
+                    resolved_model: wire_model(&current_binding),
+                    input_through_seq: 2,
+                    turn: PersistedModelTurn {
+                        content: Vec::new(),
+                        provider_options: BTreeMap::new(),
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: Usage::default(),
+                        response_metadata: BTreeMap::new(),
+                        provider_metadata: BTreeMap::new(),
+                        native_replay: None,
+                    },
+                    warnings: Vec::new(),
+                },
+            ),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+
+        let history = assemble_full_history(&events, &store, &current_binding, "system").unwrap();
+        assert!(
+            serde_json::to_string(&history)
+                .unwrap()
+                .contains("claimed producer body")
+        );
+        let projection = crate::goal_projection::GoalProducerProjection::from_events(&events);
+        assert!(projection.messages[0].consumed);
+        assert_eq!(
+            projection.messages[0].claims,
+            std::collections::HashSet::from([3])
+        );
+        assert_eq!(projection.claims[&3].message_ids, vec![message_id]);
+    }
+
+    #[test]
+    fn delegation_v2_notification_is_suppressed_only_for_producer_owned_invocation() {
+        let producer_invocation = cookie_agent_protocol::InvocationId::new_v7();
+        let legacy_invocation = cookie_agent_protocol::InvocationId::new_v7();
+        let child = SessionId::new_v7();
+        let events = vec![
+            producer_accepted_event(
+                1,
+                ProducerMessageId::new_v7(),
+                ProducerOwner::Delegation {
+                    invocation_id: producer_invocation,
+                },
+                "delegate-result",
+                "producer result",
+            ),
+            event(
+                2,
+                RunId::new_v7(),
+                EventPayload::DelegateFinishedV2 {
+                    invocation_id: producer_invocation,
+                    session_id: child,
+                    status: SessionStatus::Completed,
+                    preview: "duplicate".into(),
+                    total_lines: 1,
+                },
+            ),
+            event(
+                3,
+                RunId::new_v7(),
+                EventPayload::DelegateFinishedV2 {
+                    invocation_id: legacy_invocation,
+                    session_id: child,
+                    status: SessionStatus::Completed,
+                    preview: "legacy result".into(),
+                    total_lines: 1,
+                },
+            ),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
+        let rendered = serde_json::to_string(&history).unwrap();
+        assert!(!rendered.contains("duplicate"));
+        assert!(rendered.contains("legacy result"));
+    }
+
+    #[test]
+    fn compaction_preserves_goal_projection_and_unconsumed_producer_input() {
+        let run = RunId::new_v7();
+        let goal_id = cookie_agent_protocol::GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let items = vec![cookie_agent_protocol::GoalItem {
+            description: "Verify retained evidence".into(),
+            finished: false,
+        }];
+        let events = vec![
+            event(
+                1,
+                run,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "Keep the durable goal".into(),
+                    revision: 0,
+                    selection: None,
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::GoalChecklistRevised {
+                    goal_id,
+                    items: items.clone(),
+                    revision: 1,
+                },
+            ),
+            producer_accepted_event(
+                3,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "jobs".into(),
+                },
+                "pending-before-checkpoint",
+                "Exact unconsumed producer evidence",
+            ),
+            event(4, run, EventPayload::ProducerMessageAdmitted { message_id }),
+            event(
+                5,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: summary_commit(
+                        "Summary does not contain the goal or evidence",
+                        1,
+                        4,
+                        None,
+                        None,
+                    ),
+                },
+            ),
+        ];
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let context = assemble_model_context(&events, &store, &binding(), "frozen system").unwrap();
+        let rendered = serde_json::to_string(&context.history).unwrap();
+        assert!(rendered.contains("Summary does not contain"));
+        assert_eq!(
+            rendered
+                .matches("Exact unconsumed producer evidence")
+                .count(),
+            1
+        );
+        let projection = crate::goal_projection::GoalProducerProjection::from_events(&events);
+        let goal = projection.goal.unwrap();
+        assert_eq!(goal.goal_id, goal_id);
+        assert_eq!(goal.objective, "Keep the durable goal");
+        assert_eq!(goal.items, items);
+        assert_eq!(goal.revision, 1);
+        assert!(
+            !projection.messages[0].consumed,
+            "a checkpoint is not committed model input coverage"
+        );
     }
 
     fn user_events(seq: u64, run: RunId, input: &str) -> [StoredEvent; 2] {
@@ -3134,6 +3613,153 @@ mod tests {
     }
 
     #[test]
+    fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let mut binding = binding();
+        binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
+        let run = RunId::new_v7();
+        let covered_id = ProducerMessageId::new_v7();
+        let post_boundary_id = ProducerMessageId::new_v7();
+        let sdk_window = OvenNativeContextWindow::new(
+            AdapterId::new(binding.descriptor.adapter_id.as_str()),
+            OvenNativeContextScope::new(
+                oven_sdk::ProviderId::new(binding.selection.model.provider_id().as_str()),
+                oven_sdk::ModelId::new(binding.selection.model.model_id().as_str()),
+                ResourceId::new("native-producer-window").expect("resource"),
+            )
+            .expect("scope"),
+            serde_json::json!({"type": "compaction", "id": "cmp_producer"}),
+        )
+        .expect("SDK window");
+        let window =
+            super::persist_native_context(sdk_window.clone(), &binding).expect("persisted window");
+        let summary_limit = SummaryByteLimit::new(1024).expect("limit");
+        let mut events = vec![
+            run_started_event(1, run, &binding),
+            producer_accepted_event(
+                2,
+                covered_id,
+                ProducerOwner::Plugin {
+                    plugin: "jobs".into(),
+                },
+                "covered",
+                "producer body covered by native window",
+            ),
+            event(
+                3,
+                run,
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: covered_id,
+                },
+            ),
+            event(
+                4,
+                run,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![covered_id],
+                },
+            ),
+        ];
+        let pre_checkpoint = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("pre-checkpoint context");
+        let retained = checkpoint_retained_history(&pre_checkpoint.history, &events, None);
+        events.push(event(
+            5,
+            run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: ContextCheckpointCommit {
+                    checkpoint: ContextCheckpoint::NativeWindow { window },
+                    boundaries: ContextCheckpointBoundaries {
+                        source_from_seq: 1,
+                        source_through_seq: 4,
+                        recent_from_seq: None,
+                        input_through_seq: 4,
+                        prior_checkpoint_seq: None,
+                    },
+                    budgets: ContextCheckpointBudgets {
+                        context_limit_tokens: 100,
+                        trigger_tokens: 70,
+                        input_tokens_before: 60,
+                        input_tokens_after: 5,
+                        keep_recent_tokens: 0,
+                        max_summary_bytes: summary_limit,
+                    },
+                },
+            },
+        ));
+
+        let compacted = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("compacted context");
+        assert_eq!(compacted.native_context, Some(sdk_window.clone()));
+        assert_eq!(compacted.history, retained);
+        assert_eq!(
+            crate::runtime::compaction::serialized_fit_request_bytes(&compacted.history, &[])
+                .expect("compacted fit bytes"),
+            crate::runtime::compaction::serialized_fit_request_bytes(&retained, &[])
+                .expect("retained fit bytes")
+        );
+        assert!(
+            !serde_json::to_string(&compacted.history)
+                .unwrap()
+                .contains("producer body covered by native window")
+        );
+
+        events.extend([
+            producer_accepted_event(
+                6,
+                post_boundary_id,
+                ProducerOwner::Plugin {
+                    plugin: "jobs".into(),
+                },
+                "post-boundary",
+                "producer body after native boundary",
+            ),
+            event(
+                7,
+                run,
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: post_boundary_id,
+                },
+            ),
+        ]);
+        let continued = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("continued native context");
+        let rendered = serde_json::to_string(&continued.history).unwrap();
+        assert!(!rendered.contains("producer body covered by native window"));
+        assert_eq!(
+            rendered
+                .matches("producer body after native boundary")
+                .count(),
+            1
+        );
+        assert_eq!(
+            continued
+                .history
+                .iter()
+                .filter(|turn| matches!(turn, HistoryTurn::User(_)))
+                .count(),
+            1
+        );
+
+        let projection = GoalProducerProjection::from_events(&events);
+        assert_eq!(projection.messages.len(), 2);
+        assert_eq!(projection.messages[0].claims, HashSet::from([4]));
+        assert!(!projection.messages[0].consumed);
+        assert!(!projection.messages[0].consumption_recorded);
+        assert_eq!(projection.messages[1].admission, Some((run, 7)));
+        assert!(!projection.messages[1].consumed);
+
+        assert!(compaction_tail_candidates(&events).is_empty());
+        let prefix =
+            compaction_prefix_history(&events, &store, &binding, "System prompt.", Some(7))
+                .expect("native compaction prefix");
+        let prefix = serde_json::to_string(&prefix).unwrap();
+        assert!(!prefix.contains("producer body covered by native window"));
+        assert!(!prefix.contains("producer body after native boundary"));
+    }
+
+    #[test]
     fn revert_voids_checkpoint_beyond_boundary_and_keeps_older_checkpoint() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
@@ -3255,43 +3881,7 @@ mod tests {
         let binding = binding();
         let run_a = RunId::new_v7();
         let run_b = RunId::new_v7();
-        let run_started = |seq, run| {
-            let agent = crate::test_support::agent_snapshot(
-                "test",
-                cookie_agent_protocol::AgentMode::Primary,
-            );
-            let revision = format!("sha256:{}", "0".repeat(64));
-            event(
-                seq,
-                run,
-                EventPayload::RunStarted {
-                    client_run_id: cookie_agent_protocol::ClientRunId::new(format!("run-{seq}"))
-                        .unwrap(),
-                    selection: crate::test_support::run_selection("test"),
-                    runtime_revision: cookie_agent_protocol::RuntimeRevision::new(revision.clone())
-                        .unwrap(),
-                    catalog_revision: cookie_agent_protocol::CatalogRevision::new(revision.clone())
-                        .unwrap(),
-                    provider_state_revision: cookie_agent_protocol::ProviderStateRevision::new(
-                        revision.clone(),
-                    )
-                    .unwrap(),
-                    model_revision: cookie_agent_protocol::ModelRevision::new(revision.clone())
-                        .unwrap(),
-                    agent_revision: cookie_agent_protocol::AgentRevision::new(revision.clone())
-                        .unwrap(),
-                    recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(
-                        revision,
-                    )
-                    .unwrap(),
-                    manifest_revision: binding.manifest_revision.clone(),
-                    selected_suffix: agent.fallback_chain.clone(),
-                    internal_agents: Vec::new(),
-                    agent: Box::new(agent),
-                    input_through_seq: seq,
-                },
-            )
-        };
+        let run_started = |seq, run| run_started_event(seq, run, &binding);
         let agent_md = |seq, run, content: &str| {
             event(
                 seq,

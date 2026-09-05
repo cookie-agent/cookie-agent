@@ -19,12 +19,13 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     AgentId, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation, ApprovalFinalOutcome,
     ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus, ApprovalTrigger,
-    AssistantToolCallRef, AttemptId, EventPayload, EventSubscriptionMessage, ModelErrorSummary,
-    OperationFingerprint, OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream,
-    PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ReplayDecision,
-    ReplayDisposition, ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange,
-    Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage,
-    VariantId,
+    AssistantToolCallRef, AttemptId, EventPayload, EventSubscriptionMessage, GoalId,
+    GoalReminderIdentity, GoalState, GoalStatus, ModelErrorSummary, OperationFingerprint,
+    OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream, PersistedModelTurn,
+    PreparedApprovalResource, PreparedCapabilityLifetime, ProducerDeliveryMode,
+    ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, ReplayDecision, ReplayDisposition,
+    ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange, Sha256Digest, StoredEvent,
+    ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage, VariantId,
 };
 use serde::Serialize;
 
@@ -170,6 +171,15 @@ pub struct PendingInput {
     pub admitted_at: jiff::Timestamp,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProducerMessageStatus {
+    Pending,
+    Admitted,
+    Claimed,
+    Consumed,
+    Discarded,
+}
+
 /// One rendered conversation item.
 #[derive(Clone, Debug)]
 pub enum TranscriptItem {
@@ -211,6 +221,24 @@ pub enum TranscriptItem {
         seq: u64,
         role: cookie_agent_protocol::ExtensionMessageRole,
         input: String,
+    },
+    Goal {
+        id: u64,
+        seq: u64,
+        goal: GoalState,
+    },
+    ProducerMessage {
+        id: u64,
+        seq: u64,
+        /// Durable timestamp of the accepting event, retained independently
+        /// from the pruned generation-timing index for stable queue age.
+        accepted_at: jiff::Timestamp,
+        message_id: ProducerMessageId,
+        producer_owner: ProducerOwner,
+        mode: ProducerDeliveryMode,
+        body: String,
+        reminder: Option<GoalReminderIdentity>,
+        status: ProducerMessageStatus,
     },
 }
 
@@ -299,7 +327,9 @@ impl TranscriptItem {
             | Self::Assistant { id, .. }
             | Self::Event { id, .. }
             | Self::Compaction { id, .. }
-            | Self::PluginMessage { id, .. } => *id,
+            | Self::PluginMessage { id, .. }
+            | Self::Goal { id, .. }
+            | Self::ProducerMessage { id, .. } => *id,
         }
     }
 
@@ -310,6 +340,14 @@ impl TranscriptItem {
             | Self::Event { version, .. }
             | Self::Compaction { version, .. }
             | Self::PluginMessage { version, .. } => *version,
+            Self::Goal { .. } => 0,
+            Self::ProducerMessage { status, .. } => match status {
+                ProducerMessageStatus::Pending => 0,
+                ProducerMessageStatus::Admitted => 1,
+                ProducerMessageStatus::Claimed => 2,
+                ProducerMessageStatus::Consumed => 3,
+                ProducerMessageStatus::Discarded => 4,
+            },
         }
     }
 
@@ -417,6 +455,26 @@ pub(crate) enum ReplayContextTransition {
     },
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ProducerMessageProjection {
+    transcript_index: usize,
+    producer_owner: ProducerOwner,
+    reminder: Option<GoalReminderIdentity>,
+    accepted_seq: u64,
+    admission: Option<(RunId, u64)>,
+    claims: HashSet<u64>,
+    status: ProducerMessageStatus,
+    discarded_seq: Option<u64>,
+    consumed_run: Option<RunId>,
+    consumption_recorded: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProducerClaimProjection {
+    pub(crate) run_id: RunId,
+    pub(crate) message_ids: Vec<ProducerMessageId>,
+}
+
 /// Per-session projection of persisted events and live output.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
@@ -451,6 +509,7 @@ pub struct SessionState {
     /// reconstruction from the agent fallback chain — is what attempts and
     /// delegated pickers use.
     pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
+    pub goal: Option<GoalState>,
     pub transcript: Vec<TranscriptItem>,
     /// The engine's pending-input lane for this session, reduced purely
     /// from admission/promotion/recall events: steered messages the model
@@ -490,6 +549,11 @@ pub struct SessionState {
     /// run. Durable replay/reconnect and later tool-loop attempts may repeat
     /// request diagnostics without creating another logical transition.
     pub(crate) replay_context_warnings: HashSet<(RunId, Sha256Digest, ReplayContextTransition)>,
+    pub(crate) goal_revisions: HashMap<GoalId, u64>,
+    pub(crate) producer_messages: HashMap<ProducerMessageId, ProducerMessageProjection>,
+    pub(crate) producer_dedup: HashMap<(ProducerOwner, ProducerIdempotencyKey), ProducerMessageId>,
+    pub(crate) producer_claims: HashMap<u64, ProducerClaimProjection>,
+    pub(crate) terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
     pub output: HashMap<(ToolCallId, bool), OrderedOutput>,
 }
@@ -1179,6 +1243,301 @@ fn reduce_event(
     // its input window — replay-exact, never render-time wall clock.
     state.event_timestamps.insert(sequence, timestamp);
     match payload {
+        EventPayload::GoalActivated {
+            goal_id,
+            objective,
+            revision,
+            // Future-run selection does not change frozen producing attribution.
+            selection: _,
+        } => {
+            let replaceable = state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal_status_is_terminal(goal.status));
+            let distinct = state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal.goal_id != goal_id);
+            let unseen = !state.goal_revisions.contains_key(&goal_id);
+            if objective.trim().is_empty() || !replaceable || !distinct || !unseen {
+                return;
+            }
+            let goal = GoalState {
+                goal_id,
+                objective,
+                status: GoalStatus::Active,
+                items: Vec::new(),
+                revision,
+            };
+            state.goal_revisions.insert(goal_id, revision);
+            state.goal = Some(goal.clone());
+            push_item(state, |id| TranscriptItem::Goal {
+                id,
+                seq: sequence,
+                goal,
+            });
+        }
+        EventPayload::GoalChecklistRevised {
+            goal_id,
+            items,
+            revision,
+        } => {
+            let valid_items = items.iter().all(|item| !item.description.trim().is_empty());
+            let valid = valid_items
+                && state.goal.as_ref().is_some_and(|goal| {
+                    goal.goal_id == goal_id
+                        && !goal_status_is_terminal(goal.status)
+                        && revision > goal.revision
+                });
+            if !valid {
+                return;
+            }
+            let goal = state.goal.as_mut().expect("validated current goal");
+            goal.items = items;
+            goal.revision = revision;
+            state.goal_revisions.insert(goal_id, revision);
+            let snapshot = goal.clone();
+            push_item(state, |id| TranscriptItem::Goal {
+                id,
+                seq: sequence,
+                goal: snapshot,
+            });
+        }
+        EventPayload::GoalLifecycleChanged {
+            goal_id,
+            status,
+            revision,
+            selection,
+        } => {
+            let valid = state.goal.as_ref().is_some_and(|goal| {
+                goal.goal_id == goal_id
+                    && revision > goal.revision
+                    && valid_goal_lifecycle_change(goal, status)
+                    && (selection.is_none() || status == GoalStatus::Active)
+            });
+            if !valid {
+                return;
+            }
+            let goal = state.goal.as_mut().expect("validated current goal");
+            goal.status = status;
+            goal.revision = revision;
+            state.goal_revisions.insert(goal_id, revision);
+            let snapshot = goal.clone();
+            push_item(state, |id| TranscriptItem::Goal {
+                id,
+                seq: sequence,
+                goal: snapshot,
+            });
+        }
+        EventPayload::ProducerMessageAccepted {
+            message_id,
+            producer_owner,
+            mode,
+            idempotency_key,
+            body,
+            reminder,
+        } => {
+            if !valid_producer_reminder_owner(&producer_owner, reminder.as_ref())
+                || state.producer_messages.contains_key(&message_id)
+                || state
+                    .producer_dedup
+                    .contains_key(&(producer_owner.clone(), idempotency_key.clone()))
+            {
+                return;
+            }
+            let transcript_index = state.transcript.len();
+            push_item(state, |id| TranscriptItem::ProducerMessage {
+                id,
+                seq: sequence,
+                accepted_at: timestamp,
+                message_id,
+                producer_owner: producer_owner.clone(),
+                mode,
+                body,
+                reminder,
+                status: ProducerMessageStatus::Pending,
+            });
+            state.producer_messages.insert(
+                message_id,
+                ProducerMessageProjection {
+                    transcript_index,
+                    producer_owner: producer_owner.clone(),
+                    reminder,
+                    accepted_seq: sequence,
+                    admission: None,
+                    claims: HashSet::new(),
+                    status: ProducerMessageStatus::Pending,
+                    discarded_seq: None,
+                    consumed_run: None,
+                    consumption_recorded: false,
+                },
+            );
+            state
+                .producer_dedup
+                .insert((producer_owner, idempotency_key), message_id);
+        }
+        EventPayload::ProducerMessageAdmitted { message_id } => {
+            let Some(run_id) = run_id else {
+                return;
+            };
+            if state.terminal_runs.contains(&run_id) {
+                return;
+            }
+            let Some(message) = state.producer_messages.get(&message_id) else {
+                return;
+            };
+            let replaceable = message.admission.is_some_and(|(prior_run, _)| {
+                prior_run != run_id && state.terminal_runs.contains(&prior_run)
+            });
+            if message.consumed_run.is_some()
+                || message.discarded_seq.is_some()
+                || (message.admission.is_some() && !replaceable)
+            {
+                return;
+            }
+            let message = state
+                .producer_messages
+                .get_mut(&message_id)
+                .expect("validated producer message");
+            message.admission = Some((run_id, sequence));
+            state.initial_input_submitted.insert(run_id);
+            let status = if message.claims.is_empty() {
+                ProducerMessageStatus::Admitted
+            } else {
+                ProducerMessageStatus::Claimed
+            };
+            update_producer_message_status(state, message_id, status);
+        }
+        EventPayload::ProducerMessagesClaimed { message_ids } => {
+            let Some(run_id) = run_id else {
+                return;
+            };
+            let unique = message_ids.iter().copied().collect::<HashSet<_>>();
+            let valid = !message_ids.is_empty()
+                && unique.len() == message_ids.len()
+                && !state.producer_claims.contains_key(&sequence)
+                && message_ids.iter().all(|message_id| {
+                    state
+                        .producer_messages
+                        .get(message_id)
+                        .is_some_and(|message| {
+                            message.accepted_seq < sequence
+                                && message.consumed_run.is_none()
+                                && message.discarded_seq.is_none()
+                                && message.admission.is_some_and(
+                                    |(admission_run, admission_seq)| {
+                                        admission_run == run_id && admission_seq < sequence
+                                    },
+                                )
+                        })
+                });
+            if !valid {
+                return;
+            }
+            for message_id in &message_ids {
+                state
+                    .producer_messages
+                    .get_mut(message_id)
+                    .expect("validated producer message")
+                    .claims
+                    .insert(sequence);
+                update_producer_message_status(state, *message_id, ProducerMessageStatus::Claimed);
+            }
+            state.producer_claims.insert(
+                sequence,
+                ProducerClaimProjection {
+                    run_id,
+                    message_ids,
+                },
+            );
+        }
+        EventPayload::ProducerMessagesReleased { claim_seq } => {
+            let Some(run_id) = run_id else {
+                return;
+            };
+            let Some(claim) = state.producer_claims.get(&claim_seq) else {
+                return;
+            };
+            if claim_seq == 0 || claim.run_id != run_id {
+                return;
+            }
+            let message_ids = claim.message_ids.clone();
+            for message_id in &message_ids {
+                let Some(message) = state.producer_messages.get_mut(message_id) else {
+                    continue;
+                };
+                message.claims.remove(&claim_seq);
+                let status = producer_message_status(message);
+                update_producer_message_status(state, *message_id, status);
+            }
+            state.producer_claims.remove(&claim_seq);
+        }
+        EventPayload::ProducerMessageConsumed {
+            message_id,
+            run_id: consumed_run,
+        } => {
+            let valid = run_id == Some(consumed_run)
+                && state
+                    .producer_messages
+                    .get(&message_id)
+                    .is_some_and(|message| {
+                        message.admission.map(|(run, _)| run) == Some(consumed_run)
+                            && message.consumed_run == Some(consumed_run)
+                            && !message.consumption_recorded
+                    });
+            if valid {
+                state
+                    .producer_messages
+                    .get_mut(&message_id)
+                    .expect("validated producer message")
+                    .consumption_recorded = true;
+            }
+        }
+        EventPayload::ProducerMessageDiscarded {
+            message_id,
+            reminder,
+            producer_owner,
+        } => {
+            let valid = state
+                .producer_messages
+                .get(&message_id)
+                .is_some_and(|message| {
+                    let identity_matches = producer_owner
+                        .as_ref()
+                        .is_some_and(|owner| owner == &message.producer_owner)
+                        && match &message.producer_owner {
+                            ProducerOwner::Goal { .. } => {
+                                reminder.as_ref().is_some_and(|identity| {
+                                    message.reminder.as_ref() == Some(identity)
+                                })
+                            }
+                            _ => reminder
+                                .as_ref()
+                                .is_none_or(|identity| message.reminder.as_ref() == Some(identity)),
+                        };
+                    let legacy_matches = producer_owner.is_none()
+                        && reminder
+                            .as_ref()
+                            .is_some_and(|identity| message.reminder.as_ref() == Some(identity));
+                    (identity_matches || legacy_matches)
+                        && message.consumed_run.is_none()
+                        && message.claims.is_empty()
+                });
+            if valid {
+                let message = state
+                    .producer_messages
+                    .get_mut(&message_id)
+                    .expect("validated producer message");
+                if message.discarded_seq.is_none() {
+                    message.discarded_seq = Some(sequence);
+                    update_producer_message_status(
+                        state,
+                        message_id,
+                        ProducerMessageStatus::Discarded,
+                    );
+                }
+            }
+        }
         EventPayload::RunStarted {
             agent,
             selected_suffix,
@@ -1349,6 +1708,9 @@ fn reduce_event(
             warnings,
             ..
         } => {
+            if let Some(run_id) = run_id {
+                consume_producer_messages_through(state, run_id, input_through_seq);
+            }
             close_open_assistant(state, timestamp);
             // The context the turn left behind: what it consumed plus what
             // it generated. A usage-less turn clears the display.
@@ -1686,6 +2048,9 @@ fn reduce_event(
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
+            if let Some(run_id) = run_id {
+                state.terminal_runs.insert(run_id);
+            }
             push_event(state, EventLevel::Info, "run completed".into());
         }
         EventPayload::RunFailed { error } => {
@@ -1696,6 +2061,9 @@ fn reduce_event(
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
+            if let Some(run_id) = run_id {
+                state.terminal_runs.insert(run_id);
+            }
             push_event(state, EventLevel::Error, format!("run failed: {error}"));
         }
         EventPayload::RunCancelled { reason } => {
@@ -1706,6 +2074,9 @@ fn reduce_event(
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
+            if let Some(run_id) = run_id {
+                state.terminal_runs.insert(run_id);
+            }
             push_event(
                 state,
                 EventLevel::Info,
@@ -1723,6 +2094,9 @@ fn reduce_event(
             state.pending_tool_rows.clear();
             void_pending_inputs(state);
             state.approvals.clear();
+            if let Some(run_id) = run_id {
+                state.terminal_runs.insert(run_id);
+            }
             push_event(
                 state,
                 EventLevel::Error,
@@ -1964,6 +2338,105 @@ fn reduce_session_events(
         );
     }
     state
+}
+
+fn goal_status_is_terminal(status: GoalStatus) -> bool {
+    matches!(status, GoalStatus::Completed | GoalStatus::Cancelled)
+}
+
+fn valid_goal_lifecycle_change(goal: &GoalState, status: GoalStatus) -> bool {
+    match (goal.status, status) {
+        (GoalStatus::Active, GoalStatus::Paused | GoalStatus::Cancelled)
+        | (GoalStatus::Paused, GoalStatus::Active | GoalStatus::Cancelled) => true,
+        (GoalStatus::Active | GoalStatus::Paused, GoalStatus::Completed) => {
+            !goal.items.is_empty() && goal.items.iter().all(|item| item.finished)
+        }
+        _ => false,
+    }
+}
+
+fn valid_producer_reminder_owner(
+    owner: &ProducerOwner,
+    reminder: Option<&GoalReminderIdentity>,
+) -> bool {
+    if matches!(owner, ProducerOwner::Plugin { plugin } if plugin.trim().is_empty()) {
+        return false;
+    }
+    match (owner, reminder) {
+        (ProducerOwner::Goal { goal_id }, Some(reminder)) => *goal_id == reminder.goal_id,
+        (ProducerOwner::Goal { .. }, None) | (_, Some(_)) => false,
+        (_, None) => true,
+    }
+}
+
+fn producer_message_status(message: &ProducerMessageProjection) -> ProducerMessageStatus {
+    if message.consumed_run.is_some() {
+        ProducerMessageStatus::Consumed
+    } else if message.discarded_seq.is_some() {
+        ProducerMessageStatus::Discarded
+    } else if !message.claims.is_empty() {
+        ProducerMessageStatus::Claimed
+    } else if message.admission.is_some() {
+        ProducerMessageStatus::Admitted
+    } else {
+        ProducerMessageStatus::Pending
+    }
+}
+
+fn update_producer_message_status(
+    state: &mut SessionState,
+    message_id: ProducerMessageId,
+    status: ProducerMessageStatus,
+) {
+    let Some(projection) = state.producer_messages.get_mut(&message_id) else {
+        return;
+    };
+    let transcript_index = projection.transcript_index;
+    let Some(TranscriptItem::ProducerMessage {
+        message_id: row_message_id,
+        status: row_status,
+        ..
+    }) = state.transcript.get_mut(transcript_index)
+    else {
+        return;
+    };
+    if *row_message_id != message_id {
+        return;
+    }
+    projection.status = status;
+    *row_status = status;
+}
+
+fn consume_producer_messages_through(
+    state: &mut SessionState,
+    run_id: RunId,
+    input_through_seq: u64,
+) {
+    let consumed = state
+        .producer_messages
+        .iter()
+        .filter_map(|(message_id, message)| {
+            (message.consumed_run.is_none()
+                && message
+                    .admission
+                    .is_some_and(|(admission_run, admission_seq)| {
+                        admission_run == run_id && admission_seq <= input_through_seq
+                    })
+                && message
+                    .discarded_seq
+                    .is_none_or(|discarded_seq| discarded_seq > input_through_seq))
+            .then_some(*message_id)
+        })
+        .collect::<Vec<_>>();
+    for message_id in consumed {
+        let message = state
+            .producer_messages
+            .get_mut(&message_id)
+            .expect("projected producer message");
+        message.discarded_seq = None;
+        message.consumed_run = Some(run_id);
+        update_producer_message_status(state, message_id, ProducerMessageStatus::Consumed);
+    }
 }
 
 /// Open a fresh assistant item for a run or run-less streaming attempt.
@@ -2868,6 +3341,1768 @@ impl OrderedOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn goal_item(description: &str, finished: bool) -> cookie_agent_protocol::GoalItem {
+        cookie_agent_protocol::GoalItem {
+            description: description.into(),
+            finished,
+        }
+    }
+
+    fn resolved_model() -> ResolvedModelRef {
+        serde_json::from_value(serde_json::json!({
+            "provider_id": "test",
+            "model_id": "test",
+            "adapter_id": "openai-compatible",
+            "selection": {"model": "test/test", "variant": null},
+            "selection_fingerprint": "a".repeat(64)
+        }))
+        .expect("resolved model")
+    }
+
+    fn committed_turn(input_through_seq: u64) -> EventPayload {
+        EventPayload::ModelTurnCommitted {
+            attempt_id: AttemptId::new_v7(),
+            model_turn_seq: 1,
+            resolved_model: resolved_model(),
+            input_through_seq,
+            turn: PersistedModelTurn {
+                content: Vec::new(),
+                provider_options: BTreeMap::new(),
+                finish_reason: cookie_agent_protocol::ModelFinishReason::Stop,
+                usage: Usage::default(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    fn stored_event(
+        session_id: SessionId,
+        run_id: Option<RunId>,
+        seq: u64,
+        payload: EventPayload,
+    ) -> StoredEvent {
+        StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id,
+            run_id,
+            seq,
+            timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+            payload,
+        }
+    }
+
+    fn producer_rows(state: &SessionState) -> Vec<&TranscriptItem> {
+        state
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::ProducerMessage { .. }))
+            .collect()
+    }
+
+    fn accepted_message(
+        message_id: ProducerMessageId,
+        producer_owner: ProducerOwner,
+        key: &str,
+        reminder: Option<GoalReminderIdentity>,
+    ) -> EventPayload {
+        EventPayload::ProducerMessageAccepted {
+            message_id,
+            producer_owner,
+            mode: ProducerDeliveryMode::Queue,
+            idempotency_key: ProducerIdempotencyKey::new(key).expect("key"),
+            body: key.into(),
+            reminder,
+        }
+    }
+
+    fn discarded_message(
+        message_id: ProducerMessageId,
+        producer_owner: Option<ProducerOwner>,
+        reminder: Option<GoalReminderIdentity>,
+    ) -> EventPayload {
+        EventPayload::ProducerMessageDiscarded {
+            message_id,
+            reminder,
+            producer_owner,
+        }
+    }
+
+    #[test]
+    fn goal_projection_requires_valid_identity_revision_and_lifecycle() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let replacement_id = GoalId::new_v7();
+        let mut state = SessionState::default();
+        let apply = |state: &mut SessionState, seq, payload| {
+            reduce_event(
+                state,
+                session_id,
+                None,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        };
+
+        apply(
+            &mut state,
+            1,
+            EventPayload::GoalActivated {
+                goal_id,
+                objective: "Ship the reducer".into(),
+                revision: 0,
+                selection: None,
+            },
+        );
+        apply(
+            &mut state,
+            2,
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: Vec::new(),
+                revision: 1,
+            },
+        );
+        apply(
+            &mut state,
+            3,
+            EventPayload::GoalLifecycleChanged {
+                goal_id,
+                status: GoalStatus::Completed,
+                revision: 2,
+                selection: None,
+            },
+        );
+        assert_eq!(
+            state.goal.as_ref().expect("goal").status,
+            GoalStatus::Active
+        );
+
+        apply(
+            &mut state,
+            4,
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: vec![goal_item("Verify replay", true)],
+                revision: 2,
+            },
+        );
+        apply(
+            &mut state,
+            5,
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: vec![goal_item("stale", false)],
+                revision: 2,
+            },
+        );
+        apply(
+            &mut state,
+            6,
+            EventPayload::GoalLifecycleChanged {
+                goal_id,
+                status: GoalStatus::Completed,
+                revision: 3,
+                selection: None,
+            },
+        );
+        apply(
+            &mut state,
+            7,
+            EventPayload::GoalActivated {
+                goal_id: replacement_id,
+                objective: "Replacement".into(),
+                revision: 0,
+                selection: None,
+            },
+        );
+        apply(
+            &mut state,
+            8,
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: Vec::new(),
+                revision: 4,
+            },
+        );
+        apply(
+            &mut state,
+            9,
+            EventPayload::GoalLifecycleChanged {
+                goal_id: replacement_id,
+                status: GoalStatus::Cancelled,
+                revision: 1,
+                selection: None,
+            },
+        );
+        apply(
+            &mut state,
+            10,
+            EventPayload::GoalActivated {
+                goal_id,
+                objective: "Stale reactivation".into(),
+                revision: 100,
+                selection: None,
+            },
+        );
+
+        let goal = state.goal.as_ref().expect("replacement goal");
+        assert_eq!(goal.goal_id, replacement_id);
+        assert_eq!(goal.status, GoalStatus::Cancelled);
+        assert!(goal.items.is_empty());
+        let snapshots = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Goal { goal, .. } => Some(goal),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 6);
+        assert_eq!(snapshots[1].status, GoalStatus::Active);
+        assert!(snapshots[1].items.is_empty());
+        assert_eq!(snapshots[3].status, GoalStatus::Completed);
+    }
+
+    #[test]
+    fn goal_checklist_replacement_preserves_duplicates_and_order() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let replacement = vec![
+            goal_item("Repeat verification", false),
+            goal_item("Repeat verification", true),
+            goal_item("Final review", false),
+        ];
+        let mut store = StateStore::default();
+        for (index, payload) in [
+            EventPayload::GoalActivated {
+                goal_id,
+                objective: "Verify the replacement checklist".into(),
+                revision: 0,
+                selection: None,
+            },
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: vec![goal_item("Old checklist", false)],
+                revision: 1,
+            },
+            EventPayload::GoalChecklistRevised {
+                goal_id,
+                items: replacement.clone(),
+                revision: 2,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(store.apply_event(stored_event(session_id, None, index as u64 + 1, payload,)));
+        }
+        let state = &store.sessions[&session_id];
+        let goal = state.goal.as_ref().expect("goal");
+        assert_eq!(goal.items, replacement);
+        assert_eq!(goal.revision, 2);
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert!(matches!(
+            state.transcript.last(),
+            Some(TranscriptItem::Goal { goal, .. }) if goal.items == replacement
+        ));
+    }
+
+    #[test]
+    fn goal_projection_rebuilds_for_replay_revert_and_fork_like_history() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let item = goal_item("Keep projection durable", false);
+        let events = vec![
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "Durable goal".into(),
+                    revision: 0,
+                    selection: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                None,
+                2,
+                EventPayload::GoalChecklistRevised {
+                    goal_id,
+                    items: vec![item.clone()],
+                    revision: 1,
+                },
+            ),
+            stored_event(
+                session_id,
+                None,
+                3,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Paused,
+                    revision: 2,
+                    selection: None,
+                },
+            ),
+        ];
+
+        let replayed = reduce_session_events(session_id, 4, &events);
+        assert_eq!(replayed.generation, 4);
+        assert_eq!(
+            replayed.goal.as_ref().expect("replayed goal").status,
+            GoalStatus::Paused
+        );
+        assert_eq!(
+            replayed.goal.as_ref().expect("replayed goal").items,
+            vec![item]
+        );
+
+        let forked = reduce_session_events(SessionId::new_v7(), 0, &events);
+        assert_eq!(forked.goal, replayed.goal);
+
+        let mut reverted_events = events;
+        reverted_events.push(stored_event(
+            session_id,
+            None,
+            4,
+            EventPayload::SessionReverted { through_seq: 1 },
+        ));
+        let reverted = reduce_session_events(session_id, 5, &reverted_events);
+        let goal = reverted.goal.expect("reverted goal");
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert!(goal.items.is_empty());
+        assert_eq!(
+            reverted
+                .transcript
+                .iter()
+                .filter(|item| matches!(item, TranscriptItem::Goal { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn producer_queue_survives_terminal_and_consumption_updates_one_non_user_row() {
+        let session_id = SessionId::new_v7();
+        let first_run = RunId::new_v7();
+        let second_run = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "build-monitor".into(),
+        };
+        let mut state = SessionState::default();
+
+        for event in [
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: owner.clone(),
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("build-1").expect("key"),
+                    body: "build finished".into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                None,
+                2,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: owner.clone(),
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("build-1").expect("key"),
+                    body: "build finished".into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(first_run),
+                3,
+                EventPayload::RunCompleted { final_text: None },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                event.run_id,
+                event.seq,
+                event.timestamp,
+                event.payload,
+            );
+        }
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Pending,
+                ..
+            }]
+        ));
+
+        for event in [
+            stored_event(
+                session_id,
+                Some(second_run),
+                4,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            stored_event(session_id, Some(second_run), 5, committed_turn(4)),
+            stored_event(
+                session_id,
+                Some(second_run),
+                6,
+                EventPayload::ProducerMessageConsumed {
+                    message_id,
+                    run_id: second_run,
+                },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                event.run_id,
+                event.seq,
+                event.timestamp,
+                event.payload,
+            );
+        }
+
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Consumed,
+                accepted_at,
+                body,
+                ..
+            }] if body == "build finished"
+                && *accepted_at == jiff::Timestamp::new(1, 0).expect("timestamp")
+        ));
+        assert!(state.pending_inputs.is_empty());
+        assert!(state.voided_inputs.is_empty());
+        assert!(state.producer_messages[&message_id].consumption_recorded);
+        assert!(!state.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::User { .. } | TranscriptItem::Assistant { .. }
+        )));
+    }
+
+    #[test]
+    fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, event_run, payload) in [
+            (
+                1,
+                Some(run_id),
+                EventPayload::UserInputAdmitted {
+                    input: "steer after producer start".into(),
+                },
+            ),
+            (
+                2,
+                None,
+                accepted_message(
+                    message_id,
+                    ProducerOwner::Plugin {
+                        plugin: "scheduler".into(),
+                    },
+                    "initial-producer-input",
+                    None,
+                ),
+            ),
+            (
+                3,
+                Some(run_id),
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                event_run,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+
+        assert!(state.initial_input_submitted.contains(&run_id));
+        assert_eq!(state.pending_inputs.len(), 1);
+        reduce_event(
+            &mut state,
+            session_id,
+            Some(run_id),
+            4,
+            jiff::Timestamp::new(4, 0).expect("timestamp"),
+            EventPayload::UserInputSubmitted {
+                input: "steer after producer start".into(),
+            },
+        );
+        assert!(state.pending_inputs.is_empty());
+    }
+
+    #[test]
+    fn invalid_producer_admissions_do_not_mark_initial_input() {
+        let session_id = SessionId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "scheduler".into(),
+        };
+        let mut state = SessionState::default();
+        let mut seq = 0;
+        let apply = |state: &mut SessionState,
+                     seq: &mut u64,
+                     run_id: Option<RunId>,
+                     payload: EventPayload| {
+            *seq += 1;
+            reduce_event(
+                state,
+                session_id,
+                run_id,
+                *seq,
+                jiff::Timestamp::new(*seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        };
+
+        let runless = ProducerMessageId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(runless, owner.clone(), "runless", None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            EventPayload::ProducerMessageAdmitted {
+                message_id: runless,
+            },
+        );
+        assert!(state.initial_input_submitted.is_empty());
+
+        let unknown_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            Some(unknown_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: ProducerMessageId::new_v7(),
+            },
+        );
+        assert!(!state.initial_input_submitted.contains(&unknown_run));
+
+        let malformed = ProducerMessageId::new_v7();
+        let malformed_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(
+                malformed,
+                ProducerOwner::Goal {
+                    goal_id: GoalId::new_v7(),
+                },
+                "malformed-goal",
+                None,
+            ),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(malformed_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: malformed,
+            },
+        );
+        assert!(!state.initial_input_submitted.contains(&malformed_run));
+
+        let discarded = ProducerMessageId::new_v7();
+        let discarded_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(discarded, owner.clone(), "discarded", None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            discarded_message(discarded, Some(owner.clone()), None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(discarded_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: discarded,
+            },
+        );
+        assert!(!state.initial_input_submitted.contains(&discarded_run));
+
+        let consumed = ProducerMessageId::new_v7();
+        let consuming_run = RunId::new_v7();
+        let consumed_retry_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(consumed, owner.clone(), "consumed", None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(consuming_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: consumed,
+            },
+        );
+        let admission_seq = seq;
+        apply(
+            &mut state,
+            &mut seq,
+            Some(consuming_run),
+            committed_turn(admission_seq),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(consumed_retry_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: consumed,
+            },
+        );
+        assert!(!state.initial_input_submitted.contains(&consumed_retry_run));
+
+        let terminal = ProducerMessageId::new_v7();
+        let terminal_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(terminal, owner.clone(), "terminal", None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(terminal_run),
+            EventPayload::RunCompleted { final_text: None },
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(terminal_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: terminal,
+            },
+        );
+        assert!(!state.initial_input_submitted.contains(&terminal_run));
+
+        let admitted = ProducerMessageId::new_v7();
+        let admitted_run = RunId::new_v7();
+        let conflicting_run = RunId::new_v7();
+        apply(
+            &mut state,
+            &mut seq,
+            None,
+            accepted_message(admitted, owner, "conflicting", None),
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(admitted_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: admitted,
+            },
+        );
+        apply(
+            &mut state,
+            &mut seq,
+            Some(conflicting_run),
+            EventPayload::ProducerMessageAdmitted {
+                message_id: admitted,
+            },
+        );
+        assert!(state.initial_input_submitted.contains(&admitted_run));
+        assert!(!state.initial_input_submitted.contains(&conflicting_run));
+    }
+
+    #[test]
+    fn goal_control_messages_survive_terminal_and_reminder_discard() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let body = "Goal paused. Stop pursuing the objective.";
+        let events = vec![
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::GoalControl { goal_id },
+                    mode: ProducerDeliveryMode::Steer,
+                    idempotency_key: ProducerIdempotencyKey::new("pause-control").unwrap(),
+                    body: body.into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(RunId::new_v7()),
+                2,
+                EventPayload::RunInterrupted { reason: None },
+            ),
+            stored_event(
+                session_id,
+                None,
+                3,
+                EventPayload::ProducerMessageDiscarded {
+                    message_id,
+                    reminder: Some(GoalReminderIdentity {
+                        goal_id,
+                        revision: 1,
+                    }),
+                    producer_owner: None,
+                },
+            ),
+        ];
+        let replayed = reduce_session_events(session_id, 0, &events);
+        assert!(matches!(
+            producer_rows(&replayed).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                body: received,
+                reminder: None,
+                status: ProducerMessageStatus::Pending,
+                ..
+            }] if received == body
+        ));
+        assert!(replayed.pending_inputs.is_empty());
+        assert!(replayed.voided_inputs.is_empty());
+    }
+
+    #[test]
+    fn goal_reminder_discard_updates_one_row_without_entering_composer_lanes() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let reminder = GoalReminderIdentity {
+            goal_id,
+            revision: 7,
+        };
+        let mut state = SessionState::default();
+
+        for (seq, payload) in [
+            (
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::Goal { goal_id },
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("goal-reminder-7").expect("key"),
+                    body: "full internal reminder body".into(),
+                    reminder: Some(reminder),
+                },
+            ),
+            (
+                2,
+                EventPayload::ProducerMessageDiscarded {
+                    message_id,
+                    reminder: Some(GoalReminderIdentity {
+                        revision: 6,
+                        ..reminder
+                    }),
+                    producer_owner: None,
+                },
+            ),
+            (
+                3,
+                EventPayload::ProducerMessageDiscarded {
+                    message_id,
+                    reminder: Some(reminder),
+                    producer_owner: None,
+                },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                None,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                producer_owner: ProducerOwner::Goal { goal_id: row_goal_id },
+                status: ProducerMessageStatus::Discarded,
+                ..
+            }] if *row_goal_id == goal_id
+        ));
+        assert!(state.pending_inputs.is_empty());
+        assert!(state.voided_inputs.is_empty());
+        assert_eq!(producer_rows(&state).len(), 1);
+    }
+
+    #[test]
+    fn discard_inside_committed_input_window_stays_discarded_and_reverts() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let reminder = GoalReminderIdentity {
+            goal_id,
+            revision: 3,
+        };
+        let events = vec![
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::Goal { goal_id },
+                    mode: ProducerDeliveryMode::Steer,
+                    idempotency_key: ProducerIdempotencyKey::new("reminder-attempt").expect("key"),
+                    body: "internal reminder".into(),
+                    reminder: Some(reminder),
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(run_id),
+                2,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            stored_event(
+                session_id,
+                None,
+                3,
+                EventPayload::ProducerMessageDiscarded {
+                    message_id,
+                    reminder: Some(reminder),
+                    producer_owner: None,
+                },
+            ),
+            stored_event(session_id, Some(run_id), 4, committed_turn(3)),
+        ];
+
+        let replayed = reduce_session_events(session_id, 0, &events);
+        assert!(matches!(
+            producer_rows(&replayed).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Discarded,
+                ..
+            }]
+        ));
+        assert!(!replayed.producer_messages[&message_id].consumption_recorded);
+
+        let mut reverted_events = events;
+        reverted_events.push(stored_event(
+            session_id,
+            None,
+            5,
+            EventPayload::SessionReverted { through_seq: 3 },
+        ));
+        let reverted = reduce_session_events(session_id, 0, &reverted_events);
+        assert!(matches!(
+            producer_rows(&reverted).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Discarded,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn discard_after_committed_input_window_is_consumed_and_cleared() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let reminder = GoalReminderIdentity {
+            goal_id,
+            revision: 4,
+        };
+        let state = reduce_session_events(
+            session_id,
+            0,
+            &[
+                stored_event(
+                    session_id,
+                    None,
+                    1,
+                    accepted_message(
+                        message_id,
+                        ProducerOwner::Goal { goal_id },
+                        "covered-reminder",
+                        Some(reminder),
+                    ),
+                ),
+                stored_event(
+                    session_id,
+                    Some(run_id),
+                    2,
+                    EventPayload::ProducerMessageAdmitted { message_id },
+                ),
+                stored_event(
+                    session_id,
+                    None,
+                    3,
+                    discarded_message(message_id, None, Some(reminder)),
+                ),
+                stored_event(session_id, Some(run_id), 4, committed_turn(2)),
+            ],
+        );
+
+        assert_eq!(state.producer_messages[&message_id].discarded_seq, None);
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Consumed,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn claims_validate_atomically_and_support_multiple_tokens_per_message() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let first = ProducerMessageId::new_v7();
+        let second = ProducerMessageId::new_v7();
+        let unknown = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, payload) in [
+            (
+                1,
+                accepted_message(
+                    first,
+                    ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    "first-claim",
+                    None,
+                ),
+            ),
+            (
+                2,
+                accepted_message(
+                    second,
+                    ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    "second-claim",
+                    None,
+                ),
+            ),
+            (
+                3,
+                EventPayload::ProducerMessageAdmitted { message_id: first },
+            ),
+            (
+                4,
+                EventPayload::ProducerMessageAdmitted { message_id: second },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                (seq >= 3).then_some(run_id),
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+
+        for (seq, message_ids) in [
+            (5, vec![]),
+            (6, vec![first, unknown]),
+            (7, vec![first, first]),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                Some(run_id),
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                EventPayload::ProducerMessagesClaimed { message_ids },
+            );
+        }
+        assert!(state.producer_claims.is_empty());
+        assert!(
+            state
+                .producer_messages
+                .values()
+                .all(|message| message.claims.is_empty()
+                    && message.status == ProducerMessageStatus::Admitted)
+        );
+
+        reduce_event(
+            &mut state,
+            session_id,
+            Some(run_id),
+            8,
+            jiff::Timestamp::new(8, 0).expect("timestamp"),
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![first, second],
+            },
+        );
+        reduce_event(
+            &mut state,
+            session_id,
+            Some(run_id),
+            9,
+            jiff::Timestamp::new(9, 0).expect("timestamp"),
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![first],
+            },
+        );
+
+        assert_eq!(
+            state.producer_messages[&first].claims,
+            HashSet::from([8, 9])
+        );
+        assert_eq!(state.producer_messages[&second].claims, HashSet::from([8]));
+        assert!(producer_rows(&state).iter().all(|row| matches!(
+            row,
+            TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Claimed,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn release_requires_claim_owner_and_only_last_release_unclaims_message() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let other_run = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, payload) in [
+            (
+                1,
+                accepted_message(
+                    message_id,
+                    ProducerOwner::Delegation {
+                        invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+                    },
+                    "owned-release",
+                    None,
+                ),
+            ),
+            (2, EventPayload::ProducerMessageAdmitted { message_id }),
+            (
+                3,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+            (
+                4,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                (seq >= 2).then_some(run_id),
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+        for (seq, release_run, claim_seq) in [
+            (5, Some(other_run), 3),
+            (6, Some(run_id), 0),
+            (7, Some(run_id), 99),
+            (8, None, 3),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                release_run,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                EventPayload::ProducerMessagesReleased { claim_seq },
+            );
+        }
+        assert_eq!(
+            state.producer_messages[&message_id].claims,
+            HashSet::from([3, 4])
+        );
+
+        for (seq, claim_seq) in [(9, 3), (10, 4)] {
+            reduce_event(
+                &mut state,
+                session_id,
+                Some(run_id),
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                EventPayload::ProducerMessagesReleased { claim_seq },
+            );
+            assert_eq!(
+                state.producer_messages[&message_id].status,
+                if claim_seq == 3 {
+                    ProducerMessageStatus::Claimed
+                } else {
+                    ProducerMessageStatus::Admitted
+                }
+            );
+        }
+        assert!(state.producer_claims.is_empty());
+    }
+
+    #[test]
+    fn claimed_message_rejects_discard_until_explicit_release() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "jobs".into(),
+        };
+        let message_id = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, event_run, payload) in [
+            (
+                1,
+                None,
+                accepted_message(message_id, owner.clone(), "claimed-discard", None),
+            ),
+            (
+                2,
+                Some(run_id),
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            (
+                3,
+                Some(run_id),
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+            (
+                4,
+                None,
+                discarded_message(message_id, Some(owner.clone()), None),
+            ),
+            (
+                5,
+                Some(run_id),
+                EventPayload::ProducerMessagesReleased { claim_seq: 3 },
+            ),
+            (6, None, discarded_message(message_id, Some(owner), None)),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                event_run,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+            if seq == 4 {
+                assert_eq!(state.producer_messages[&message_id].discarded_seq, None);
+                assert_eq!(
+                    state.producer_messages[&message_id].status,
+                    ProducerMessageStatus::Claimed
+                );
+            }
+        }
+        assert_eq!(
+            state.producer_messages[&message_id].status,
+            ProducerMessageStatus::Discarded
+        );
+    }
+
+    #[test]
+    fn generic_and_legacy_discards_require_exact_durable_identity() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let reminder = GoalReminderIdentity {
+            goal_id,
+            revision: 8,
+        };
+        let plugin = ProducerOwner::Plugin {
+            plugin: "jobs".into(),
+        };
+        let delegation = ProducerOwner::Delegation {
+            invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+        };
+        let control = ProducerOwner::GoalControl { goal_id };
+        let goal = ProducerOwner::Goal { goal_id };
+        let owners = [
+            (plugin, None, "plugin-owner"),
+            (delegation, None, "delegation-owner"),
+            (control, None, "goal-control-owner"),
+            (goal.clone(), Some(reminder), "goal-owner"),
+        ];
+        let mut state = SessionState::default();
+        let mut message_ids = Vec::new();
+        for (index, (owner, accepted_reminder, key)) in owners.into_iter().enumerate() {
+            let message_id = ProducerMessageId::new_v7();
+            message_ids.push(message_id);
+            let seq = index as u64 * 2 + 1;
+            reduce_event(
+                &mut state,
+                session_id,
+                None,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                accepted_message(message_id, owner.clone(), key, accepted_reminder),
+            );
+            reduce_event(
+                &mut state,
+                session_id,
+                None,
+                seq + 1,
+                jiff::Timestamp::new(seq as i64 + 1, 0).expect("timestamp"),
+                discarded_message(message_id, Some(owner), accepted_reminder),
+            );
+        }
+
+        let legacy_id = ProducerMessageId::new_v7();
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            9,
+            jiff::Timestamp::new(9, 0).expect("timestamp"),
+            accepted_message(legacy_id, goal.clone(), "legacy-goal", Some(reminder)),
+        );
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            10,
+            jiff::Timestamp::new(10, 0).expect("timestamp"),
+            discarded_message(legacy_id, None, Some(reminder)),
+        );
+        message_ids.push(legacy_id);
+
+        let invalid_goal = ProducerMessageId::new_v7();
+        let invalid_control = ProducerMessageId::new_v7();
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            11,
+            jiff::Timestamp::new(11, 0).expect("timestamp"),
+            accepted_message(invalid_goal, goal, "goal-without-reminder", None),
+        );
+        reduce_event(
+            &mut state,
+            session_id,
+            None,
+            12,
+            jiff::Timestamp::new(12, 0).expect("timestamp"),
+            accepted_message(
+                invalid_control,
+                ProducerOwner::GoalControl { goal_id },
+                "control-with-reminder",
+                Some(reminder),
+            ),
+        );
+
+        assert!(message_ids.iter().all(|message_id| {
+            state.producer_messages[message_id].status == ProducerMessageStatus::Discarded
+        }));
+        assert!(!state.producer_messages.contains_key(&invalid_goal));
+        assert!(!state.producer_messages.contains_key(&invalid_control));
+    }
+
+    #[test]
+    fn release_does_not_resurrect_consumed_or_discarded_messages() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "jobs".into(),
+        };
+        let consumed = ProducerMessageId::new_v7();
+        let discarded = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, event_run, payload) in [
+            (
+                1,
+                None,
+                accepted_message(consumed, owner.clone(), "consumed-release", None),
+            ),
+            (
+                2,
+                Some(run_id),
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: consumed,
+                },
+            ),
+            (
+                3,
+                Some(run_id),
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![consumed],
+                },
+            ),
+            (4, Some(run_id), committed_turn(2)),
+            (
+                5,
+                Some(run_id),
+                EventPayload::ProducerMessagesReleased { claim_seq: 3 },
+            ),
+            (
+                6,
+                None,
+                accepted_message(discarded, owner.clone(), "discarded-release", None),
+            ),
+            (
+                7,
+                Some(run_id),
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: discarded,
+                },
+            ),
+            (
+                8,
+                Some(run_id),
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![discarded],
+                },
+            ),
+            (
+                9,
+                Some(run_id),
+                EventPayload::ProducerMessagesReleased { claim_seq: 8 },
+            ),
+            (10, None, discarded_message(discarded, Some(owner), None)),
+            (
+                11,
+                Some(run_id),
+                EventPayload::ProducerMessagesReleased { claim_seq: 8 },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                event_run,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+        assert_eq!(
+            state.producer_messages[&consumed].status,
+            ProducerMessageStatus::Consumed
+        );
+        assert_eq!(
+            state.producer_messages[&discarded].status,
+            ProducerMessageStatus::Discarded
+        );
+    }
+
+    #[test]
+    fn replay_and_revert_preserve_terminal_claim_until_explicit_recovery_release() {
+        let session_id = SessionId::new_v7();
+        let interrupted_run = RunId::new_v7();
+        let retry_run = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut events = vec![
+            stored_event(
+                session_id,
+                None,
+                1,
+                accepted_message(
+                    message_id,
+                    ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    "terminal-recovery",
+                    None,
+                ),
+            ),
+            stored_event(
+                session_id,
+                Some(interrupted_run),
+                2,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            stored_event(
+                session_id,
+                Some(interrupted_run),
+                3,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(interrupted_run),
+                4,
+                EventPayload::RunInterrupted { reason: None },
+            ),
+            stored_event(
+                session_id,
+                Some(interrupted_run),
+                5,
+                EventPayload::ProducerMessagesReleased { claim_seq: 3 },
+            ),
+            stored_event(
+                session_id,
+                Some(retry_run),
+                6,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+        ];
+        let replayed = reduce_session_events(session_id, 2, &events);
+        assert!(replayed.producer_claims.is_empty());
+        assert_eq!(
+            replayed.producer_messages[&message_id].admission,
+            Some((retry_run, 6))
+        );
+        assert_eq!(
+            replayed.producer_messages[&message_id].status,
+            ProducerMessageStatus::Admitted
+        );
+
+        events.push(stored_event(
+            session_id,
+            None,
+            7,
+            EventPayload::SessionReverted { through_seq: 4 },
+        ));
+        let reverted = reduce_session_events(session_id, 3, &events);
+        assert_eq!(reverted.producer_claims[&3].run_id, interrupted_run);
+        assert_eq!(
+            reverted.producer_messages[&message_id].claims,
+            HashSet::from([3])
+        );
+        assert_eq!(
+            reverted.producer_messages[&message_id].status,
+            ProducerMessageStatus::Claimed
+        );
+    }
+
+    #[test]
+    fn producer_can_be_readmitted_after_interruption_but_not_to_terminal_run() {
+        let session_id = SessionId::new_v7();
+        let first_run = RunId::new_v7();
+        let second_run = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut state = SessionState::default();
+        let events = [
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("retry").expect("key"),
+                    body: "result".into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(first_run),
+                2,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            stored_event(
+                session_id,
+                Some(first_run),
+                3,
+                EventPayload::RunInterrupted { reason: None },
+            ),
+            stored_event(
+                session_id,
+                Some(first_run),
+                4,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            stored_event(
+                session_id,
+                Some(second_run),
+                5,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+        ];
+        for event in events {
+            reduce_event(
+                &mut state,
+                session_id,
+                event.run_id,
+                event.seq,
+                event.timestamp,
+                event.payload,
+            );
+        }
+
+        assert_eq!(
+            state.producer_messages[&message_id]
+                .admission
+                .map(|(run_id, _)| run_id),
+            Some(second_run)
+        );
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [TranscriptItem::ProducerMessage {
+                status: ProducerMessageStatus::Admitted,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn sequenced_projection_rows_use_transcript_allocator_ids() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut state = SessionState {
+            next_transcript_id: 50,
+            transcript: vec![TranscriptItem::Event {
+                id: 50,
+                version: 0,
+                level: EventLevel::Warning,
+                text: "old diagnostic".into(),
+            }],
+            ..SessionState::default()
+        };
+        for (seq, payload) in [
+            (
+                1,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "Unique rows".into(),
+                    revision: 0,
+                    selection: None,
+                },
+            ),
+            (
+                2,
+                EventPayload::ProducerMessageAccepted {
+                    message_id,
+                    producer_owner: ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("unique-row").expect("key"),
+                    body: "message".into(),
+                    reminder: None,
+                },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                None,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+
+        assert_eq!(
+            state
+                .transcript
+                .iter()
+                .map(TranscriptItem::id)
+                .collect::<Vec<_>>(),
+            vec![50, 51, 52]
+        );
+    }
+
+    #[test]
+    fn producer_acceptance_time_and_order_survive_timing_pruning_and_replay() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let first_message_id = ProducerMessageId::new_v7();
+        let second_message_id = ProducerMessageId::new_v7();
+        let events = vec![
+            stored_event(
+                session_id,
+                None,
+                1,
+                EventPayload::ProducerMessageAccepted {
+                    message_id: first_message_id,
+                    producer_owner: ProducerOwner::Plugin {
+                        plugin: "worker".into(),
+                    },
+                    mode: ProducerDeliveryMode::Queue,
+                    idempotency_key: ProducerIdempotencyKey::new("first").expect("key"),
+                    body: "first".into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                None,
+                2,
+                EventPayload::ProducerMessageAccepted {
+                    message_id: second_message_id,
+                    producer_owner: ProducerOwner::Delegation {
+                        invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+                    },
+                    mode: ProducerDeliveryMode::Steer,
+                    idempotency_key: ProducerIdempotencyKey::new("second").expect("key"),
+                    body: "second".into(),
+                    reminder: None,
+                },
+            ),
+            stored_event(
+                session_id,
+                Some(run_id),
+                3,
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: first_message_id,
+                },
+            ),
+            stored_event(session_id, Some(run_id), 4, committed_turn(3)),
+        ];
+
+        let state = reduce_session_events(session_id, 0, &events);
+        assert!(!state.event_timestamps.contains_key(&1));
+        assert!(!state.event_timestamps.contains_key(&2));
+        assert!(matches!(
+            producer_rows(&state).as_slice(),
+            [
+                TranscriptItem::ProducerMessage {
+                    id: 1,
+                    seq: 1,
+                    accepted_at: first_accepted_at,
+                    message_id: row_first_id,
+                    status: ProducerMessageStatus::Consumed,
+                    ..
+                },
+                TranscriptItem::ProducerMessage {
+                    id: 2,
+                    seq: 2,
+                    accepted_at: second_accepted_at,
+                    message_id: row_second_id,
+                    status: ProducerMessageStatus::Pending,
+                    ..
+                }
+            ] if *row_first_id == first_message_id
+                && *row_second_id == second_message_id
+                && *first_accepted_at == jiff::Timestamp::new(1, 0).expect("timestamp")
+                && *second_accepted_at == jiff::Timestamp::new(2, 0).expect("timestamp")
+        ));
+        assert!(state.pending_inputs.is_empty());
+        assert!(state.voided_inputs.is_empty());
+    }
+
+    #[test]
+    fn paused_goal_accepts_empty_checklist_then_resumes_and_completes() {
+        let session_id = SessionId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let mut state = SessionState::default();
+        for (seq, payload) in [
+            (
+                1,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "Finish lifecycle".into(),
+                    revision: 0,
+                    selection: None,
+                },
+            ),
+            (
+                2,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Paused,
+                    revision: 1,
+                    selection: None,
+                },
+            ),
+            (
+                3,
+                EventPayload::GoalChecklistRevised {
+                    goal_id,
+                    items: Vec::new(),
+                    revision: 2,
+                },
+            ),
+            (
+                4,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Active,
+                    revision: 3,
+                    selection: None,
+                },
+            ),
+            (
+                5,
+                EventPayload::GoalChecklistRevised {
+                    goal_id,
+                    items: vec![goal_item("finish-lifecycle", true)],
+                    revision: 4,
+                },
+            ),
+            (
+                6,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Completed,
+                    revision: 5,
+                    selection: None,
+                },
+            ),
+        ] {
+            reduce_event(
+                &mut state,
+                session_id,
+                None,
+                seq,
+                jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
+                payload,
+            );
+        }
+
+        let statuses = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Goal { goal, .. } => Some(goal.status),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses,
+            vec![
+                GoalStatus::Active,
+                GoalStatus::Paused,
+                GoalStatus::Paused,
+                GoalStatus::Active,
+                GoalStatus::Active,
+                GoalStatus::Completed,
+            ]
+        );
+        assert_eq!(
+            state.goal.as_ref().expect("goal").status,
+            GoalStatus::Completed
+        );
+    }
 
     #[test]
     fn ordered_output_bounded_text_borrows_valid_prefix_and_keeps_full_line_count() {

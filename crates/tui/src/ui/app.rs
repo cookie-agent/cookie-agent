@@ -1,5 +1,8 @@
 //! Application state, event handling, and terminal loop.
 
+#[path = "goal.rs"]
+mod goal;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write as _,
@@ -104,6 +107,15 @@ pub(super) enum Modal {
     Permissions,
     Skills,
     Usage,
+    GoalDetail,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GoalBarAction {
+    Details,
+    Pause,
+    Resume,
+    Cancel,
 }
 
 pub(super) const SESSION_OWNED_BY_ANOTHER_PROCESS_CODE: i32 = -32022;
@@ -263,12 +275,26 @@ pub(super) struct TitleSegmentHit {
     pub(super) segment: TitleSegment,
 }
 
-/// One clickable queue-strip row. The index identifies the row for hover;
-/// clicks recall the newest pending input regardless of the row hit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QueueEntryKind {
+    User,
+    Producer(cookie_agent_protocol::ProducerMessageId),
+    Overflow,
+}
+
+pub(super) struct PendingQueueEntry {
+    pub(super) kind: QueueEntryKind,
+    pub(super) seq: u64,
+    pub(super) accepted_at: jiff::Timestamp,
+    pub(super) preview: String,
+}
+
+/// Only user rows recall the newest user input; producer rows are read-only.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct QueueEntryHit {
     pub(super) rect: Rect,
     pub(super) index: usize,
+    pub(super) kind: QueueEntryKind,
 }
 
 /// The visible rows of one past user message: a click opens the
@@ -321,6 +347,8 @@ pub(super) enum HoverTarget {
     ProviderField(ProviderFormFocus),
     ProviderSubmit,
     ProviderCancel,
+    GoalAction(GoalBarAction),
+    GoalClose,
 }
 
 /// Per-frame hit targets built from the same geometry and transcript layout
@@ -355,6 +383,8 @@ pub(super) struct UiHitMap {
     pub(super) provider_fields: Vec<ProviderFieldHit>,
     pub(super) provider_submit: Option<Rect>,
     pub(super) provider_cancel: Option<Rect>,
+    pub(super) goal_actions: Vec<(Rect, GoalBarAction)>,
+    pub(super) goal_close: Option<Rect>,
 }
 
 impl UiHitMap {
@@ -381,6 +411,8 @@ impl UiHitMap {
         self.provider_fields.clear();
         self.provider_submit = None;
         self.provider_cancel = None;
+        self.goal_actions.clear();
+        self.goal_close = None;
     }
 }
 
@@ -554,6 +586,9 @@ pub struct App {
     /// advanced by the frame tick only while animation is active.
     pub(super) animation_ticks: u64,
     pub(super) transient_notices: Vec<String>,
+    pub(super) goal_notices: HashMap<SessionId, Vec<String>>,
+    goal_detail: goal::GoalDetailState,
+    pub(super) goal_focus: Option<GoalBarAction>,
     pub(super) picker_state: ListState,
     pub(super) session_search: SearchPickerState,
     pub(super) agent_search: SearchPickerState,
@@ -635,6 +670,10 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
 pub(super) enum RpcUpdate {
     Status(String),
     Notice(String),
+    GoalFinished {
+        session_id: SessionId,
+        result: Box<Result<Option<cookie_agent_protocol::GoalState>, String>>,
+    },
     SessionOwnershipClassified {
         session_id: SessionId,
         generation: u64,
@@ -982,6 +1021,9 @@ impl App {
             hover: None,
             animation_ticks: 0,
             transient_notices: Vec::new(),
+            goal_notices: HashMap::new(),
+            goal_detail: goal::GoalDetailState::default(),
+            goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
             session_search: SearchPickerState::default(),
             agent_search: SearchPickerState::default(),
@@ -1663,6 +1705,12 @@ impl App {
         self.draft = Some(draft);
     }
 
+    fn validated_draft_selection(&mut self) -> Option<RunSelection> {
+        self.draft.as_ref()?;
+        self.revalidate_draft();
+        self.draft.clone()
+    }
+
     fn setup_status(&self) -> String {
         if self.runtime.is_empty() {
             return EMPTY_RUNTIME_GUIDANCE.into();
@@ -2309,6 +2357,9 @@ impl App {
                 self.status = status;
             }
             RpcUpdate::Notice(status) => self.status = status,
+            RpcUpdate::GoalFinished { session_id, result } => {
+                self.finish_goal_command(session_id, *result)
+            }
             RpcUpdate::SessionOwnershipClassified {
                 session_id,
                 generation,
@@ -2702,6 +2753,11 @@ impl App {
     pub(super) fn set_selected_session(&mut self, session_id: SessionId) {
         let changed = self.selected != Some(session_id);
         if changed {
+            self.goal_focus = None;
+            self.goal_detail = goal::GoalDetailState::default();
+            if self.modal == Modal::GoalDetail {
+                self.modal = Modal::None;
+            }
             // Watching a different session should begin at its live tail.
             self.conversation_scroll = ConversationScroll::default();
             self.scrollbar_geometry = None;
@@ -2836,6 +2892,24 @@ impl App {
             )
         });
         let title_change = event.and_then(title_change_from_event);
+        let goal_completed = event.and_then(|event| {
+            let EventPayload::GoalLifecycleChanged {
+                goal_id,
+                status: cookie_agent_protocol::GoalStatus::Completed,
+                revision,
+                ..
+            } = &event.payload
+            else {
+                return None;
+            };
+            (matches!(&delivery, ClientDelivery::Live { .. })
+                && self
+                    .store
+                    .sessions
+                    .get(&event.session_id)
+                    .is_none_or(|state| state.last_seq < event.seq))
+            .then_some((event.session_id, *goal_id, *revision))
+        });
         let status_change = event.and_then(status_change_from_event);
         let refresh_skills = event.and_then(|event| {
             (Some(event.session_id) == self.selected
@@ -2892,6 +2966,9 @@ impl App {
             self.selection = None;
         }
         if matches!(outcome, DeliveryOutcome::Applied) {
+            if let Some((session_id, goal_id, revision)) = goal_completed {
+                self.notify_goal_completed(session_id, goal_id, revision);
+            }
             // The pending lane itself is a pure event reduction (admitted,
             // promoted, recalled, replayed identically); only the composer's
             // share needs a hook here: run-end events void pending inputs
@@ -3528,7 +3605,50 @@ impl App {
         if key.code != KeyCode::Esc {
             self.last_escape = None;
         }
+        if self.modal == Modal::None
+            && self.current_approval().is_none()
+            && !self.command_palette_visible()
+        {
+            if !self.goal_bar_visible() {
+                self.goal_focus = None;
+            } else if key.code == KeyCode::F(6) {
+                self.goal_focus = if self.goal_focus.is_some() {
+                    None
+                } else {
+                    self.status = "Goal details".into();
+                    Some(GoalBarAction::Details)
+                };
+                self.input_focused = self.goal_focus.is_none();
+                return;
+            }
+            if let Some(action) = self.goal_focus {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.goal_focus = None;
+                        self.input_focused = true;
+                        self.last_escape = None;
+                        return;
+                    }
+                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                        self.cycle_goal_focus(
+                            matches!(key.code, KeyCode::BackTab | KeyCode::Left)
+                                || key.modifiers.contains(KeyModifiers::SHIFT),
+                        );
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        self.activate_goal_action(action);
+                        return;
+                    }
+                    _ => {
+                        self.goal_focus = None;
+                        self.input_focused = true;
+                    }
+                }
+            }
+        }
         match self.modal {
+            Modal::GoalDetail => self.handle_goal_detail_key(key),
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
@@ -3755,7 +3875,7 @@ impl App {
             Modal::Models => self.filtered_draft_models().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
-            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage => 0,
+            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage | Modal::GoalDetail => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
@@ -4071,6 +4191,13 @@ impl App {
             return false;
         }
         self.hover = next;
+        match next {
+            Some(HoverTarget::GoalAction(action)) => {
+                self.status = format!("Goal: {}", goal::goal_action_label(action));
+            }
+            Some(HoverTarget::GoalClose) => self.status = "Close goal details".into(),
+            _ => {}
+        }
         true
     }
 
@@ -4088,6 +4215,13 @@ impl App {
                 .map(|hit| HoverTarget::PaletteRow(hit.index));
         }
         if self.modal != Modal::None {
+            if self.modal == Modal::GoalDetail {
+                return self
+                    .hit_map
+                    .goal_close
+                    .filter(|rect| over(*rect))
+                    .map(|_| HoverTarget::GoalClose);
+            }
             if self.hit_map.provider_submit.is_some_and(over) {
                 return Some(HoverTarget::ProviderSubmit);
             }
@@ -4117,6 +4251,15 @@ impl App {
                 .find(|hit| over(hit.rect))
                 .map(|hit| HoverTarget::ApprovalAction(hit.decision));
         }
+        if self.goal_bar_visible()
+            && let Some((_, action)) = self
+                .hit_map
+                .goal_actions
+                .iter()
+                .find(|(rect, _)| over(*rect))
+        {
+            return Some(HoverTarget::GoalAction(*action));
+        }
         if self.hit_map.permission_mode.is_some_and(over) {
             return Some(HoverTarget::PermissionMode);
         }
@@ -4134,7 +4277,12 @@ impl App {
         {
             return Some(HoverTarget::TitleSegment(hit.segment));
         }
-        if let Some(hit) = self.hit_map.queue_entries.iter().find(|hit| over(hit.rect)) {
+        if let Some(hit) = self
+            .hit_map
+            .queue_entries
+            .iter()
+            .find(|hit| hit.kind == QueueEntryKind::User && over(hit.rect))
+        {
             return Some(HoverTarget::QueueEntry(hit.index));
         }
         if let Some(hit) = self.hit_map.tree_rows.iter().find(|hit| over(hit.rect)) {
@@ -4217,6 +4365,21 @@ impl App {
             }
         };
         match hover {
+            HoverTarget::GoalAction(action) => {
+                if let Some((rect, _)) = self
+                    .hit_map
+                    .goal_actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                {
+                    patch(frame, *rect, text_style);
+                }
+            }
+            HoverTarget::GoalClose => {
+                if let Some(rect) = self.hit_map.goal_close {
+                    patch(frame, rect, text_style);
+                }
+            }
             HoverTarget::PaletteRow(index) => {
                 if let Some(hit) = self
                     .hit_map
@@ -4297,7 +4460,7 @@ impl App {
                     .hit_map
                     .queue_entries
                     .iter()
-                    .find(|hit| hit.index == index)
+                    .find(|hit| hit.index == index && hit.kind == QueueEntryKind::User)
                 {
                     patch(frame, hit.rect, text_style);
                 }
@@ -4386,6 +4549,16 @@ impl App {
             return;
         }
         if self.modal != Modal::None {
+            if self.modal == Modal::GoalDetail {
+                if self
+                    .hit_map
+                    .goal_close
+                    .is_some_and(|rect| contains(rect, column, row))
+                {
+                    self.handle_goal_detail_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                }
+                return;
+            }
             if let Some(hit) = self
                 .hit_map
                 .picker_input
@@ -4465,6 +4638,17 @@ impl App {
             }
             return;
         }
+        if let Some((_, action)) = self
+            .hit_map
+            .goal_actions
+            .iter()
+            .find(|(rect, _)| contains(*rect, column, row))
+            .copied()
+        {
+            self.activate_goal_action(action);
+            return;
+        }
+        self.goal_focus = None;
         if self
             .hit_map
             .permission_mode
@@ -4541,17 +4725,16 @@ impl App {
             );
             return;
         }
-        // Queue-strip entries are the recall affordance: any row click
-        // withdraws the engine's newest pending input back into the
-        // composer, which also takes focus for the edit.
-        if self
+        if let Some(hit) = self
             .hit_map
             .queue_entries
             .iter()
-            .any(|hit| contains(hit.rect, column, row))
+            .find(|hit| contains(hit.rect, column, row))
         {
-            self.input_focused = true;
-            self.recall_newest_pending();
+            if hit.kind == QueueEntryKind::User {
+                self.input_focused = true;
+                self.recall_newest_pending();
+            }
             return;
         }
         // The scrollbar column is reserved from content and block hit regions;
@@ -4667,6 +4850,10 @@ impl App {
             return;
         }
         if self.modal != Modal::None {
+            if self.modal == Modal::GoalDetail {
+                self.scroll_goal_detail(up);
+                return;
+            }
             if self.modal == Modal::Usage {
                 if up {
                     self.usage_panel.scroll_up(3);
@@ -4705,6 +4892,7 @@ impl App {
                     | Modal::Permissions
                     | Modal::Skills
                     | Modal::Usage
+                    | Modal::GoalDetail
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);
@@ -5784,7 +5972,7 @@ impl App {
             | Modal::DisconnectConfirm => {}
             Modal::UserMessage => self.activate_user_menu_entry(index),
             Modal::RevertConfirm => {}
-            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage => {}
+            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage | Modal::GoalDetail => {}
             Modal::None => {}
         }
     }
@@ -5865,7 +6053,11 @@ impl App {
             .sessions
             .get(&session_id)
             .and_then(|state| state.active_run);
-        let selection = self.draft.clone();
+        let selection = if active_run.is_none() {
+            self.validated_draft_selection()
+        } else {
+            None
+        };
         if active_run.is_none() && selection.is_none() {
             self.status = "select a draft agent/model before submitting".into();
             return;
@@ -5921,33 +6113,109 @@ impl App {
             .filter(|pending| !pending.is_empty())
     }
 
+    pub(super) fn selected_queue_entries(&self) -> Vec<PendingQueueEntry> {
+        use crate::state::ProducerMessageStatus;
+        use cookie_agent_protocol::{ProducerDeliveryMode, ProducerOwner};
+
+        let Some(state) = self.selected.and_then(|id| self.store.sessions.get(&id)) else {
+            return Vec::new();
+        };
+        let mut entries = state
+            .pending_inputs
+            .iter()
+            .map(|input| PendingQueueEntry {
+                kind: QueueEntryKind::User,
+                seq: input.admission_seq,
+                accepted_at: input.admitted_at,
+                preview: input.text.clone(),
+            })
+            .collect::<Vec<_>>();
+        for item in &state.transcript {
+            let TranscriptItem::ProducerMessage {
+                seq,
+                accepted_at,
+                message_id,
+                producer_owner,
+                mode,
+                body,
+                reminder,
+                status,
+                ..
+            } = item
+            else {
+                continue;
+            };
+            let status = match status {
+                ProducerMessageStatus::Pending => "pending",
+                ProducerMessageStatus::Admitted => "admitted",
+                ProducerMessageStatus::Claimed
+                | ProducerMessageStatus::Consumed
+                | ProducerMessageStatus::Discarded => continue,
+            };
+            let owner = match producer_owner {
+                ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
+                ProducerOwner::Delegation { invocation_id } => format!(
+                    "delegation {}",
+                    invocation_id
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                ),
+                ProducerOwner::Goal { .. } => "goal".into(),
+                ProducerOwner::GoalControl { .. } => "goal control".into(),
+            };
+            let mode = match mode {
+                ProducerDeliveryMode::Steer => "steer",
+                ProducerDeliveryMode::Queue => "queue",
+            };
+            let body = if reminder.is_some() {
+                "Goal continuation reminder"
+            } else {
+                body.as_str()
+            };
+            entries.push(PendingQueueEntry {
+                kind: QueueEntryKind::Producer(*message_id),
+                seq: *seq,
+                accepted_at: *accepted_at,
+                preview: format!("{owner} | {mode} | {status}: {body}"),
+            });
+        }
+        entries.sort_by_key(|entry| entry.seq);
+        entries
+    }
+
     /// Strip height in rows for the selected session's pending lane: zero
     /// while empty so the layout never leaves a stray border behind.
     pub(super) fn queue_strip_height(&self) -> u16 {
-        let Some(pending) = self.selected_pending_inputs() else {
+        let pending = self.selected_queue_entries();
+        if pending.is_empty() {
             return 0;
-        };
+        }
         // Visible entries plus block borders; the "+N more" folding row
         // shares the entry budget, so the cap never grows past it.
         (pending.len().min(MAX_VISIBLE_QUEUE_ROWS) as u16).saturating_add(2)
     }
 
     /// Render the pending-input strip between the conversation pane and the
-    /// status line. Entries are hoverable and clickable: clicking recalls
-    /// the engine's newest pending input for editing.
+    /// status line. Only user rows can recall input for editing.
     pub(super) fn render_queue_strip(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         self.hit_map.queue_entries.clear();
         if area.height == 0 || area.width < 3 {
             return;
         }
-        let Some(pending) = self.selected_pending_inputs() else {
+        let pending = self.selected_queue_entries();
+        if pending.is_empty() {
             return;
-        };
+        }
         let oldest_age = jiff::Timestamp::now()
-            .duration_since(pending[0].admitted_at)
+            .duration_since(pending[0].accepted_at)
             .as_secs()
             .max(0);
-        let title = format!("Pending · oldest {}", queue_age_label(oldest_age));
+        let title = truncate_with_ellipsis(
+            &format!("Pending · oldest {}", queue_age_label(oldest_age)),
+            usize::from(area.width.saturating_sub(2)),
+        );
         let block = Block::bordered()
             .title(Span::styled(title, self.theme.muted()))
             .border_style(self.theme.panel_border())
@@ -5968,27 +6236,30 @@ impl App {
         let overflow = pending.len() - shown;
         let mut lines = Vec::new();
         for (index, entry) in pending.iter().enumerate().take(shown) {
-            let prefix = format!("⏳ {} ", index + 1);
+            let prefix =
+                truncate_with_ellipsis(&format!("⏳ {} ", index + 1), usize::from(inner.width));
             let available =
                 usize::from(inner.width).saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
             lines.push(Line::from(vec![
                 Span::styled(prefix, self.theme.muted()),
                 Span::styled(
-                    ellipsize_single_line(&entry.text, available),
+                    if available == 0 {
+                        String::new()
+                    } else {
+                        ellipsize_single_line(&entry.preview, available)
+                    },
                     self.theme.muted(),
                 ),
             ]));
         }
         if overflow > 0 {
             lines.push(Line::from(Span::styled(
-                format!("+{overflow} more"),
+                truncate_with_ellipsis(&format!("+{overflow} more"), usize::from(inner.width)),
                 self.theme.muted(),
             )));
         }
         let line_count = lines.len();
         frame.render_widget(Paragraph::new(lines), inner);
-        // Every body row is a recall affordance: the engine withdraws the
-        // newest pending input regardless of which row is clicked.
         self.hit_map.queue_entries = (0..line_count)
             .map(|index| QueueEntryHit {
                 rect: Rect::new(
@@ -5998,6 +6269,16 @@ impl App {
                     1,
                 ),
                 index,
+                kind: if index < shown {
+                    pending[index].kind
+                } else if pending
+                    .iter()
+                    .all(|entry| entry.kind == QueueEntryKind::User)
+                {
+                    QueueEntryKind::User
+                } else {
+                    QueueEntryKind::Overflow
+                },
             })
             .collect();
     }
@@ -6426,6 +6707,7 @@ impl App {
                 self.picker_state.select(Some(0));
             }
             SlashCommand::Cancel => self.cancel_active_run(),
+            SlashCommand::Goal(command) => self.run_goal_command(command),
             SlashCommand::Compact(focus) => self.compact_selected_session(focus).await,
             SlashCommand::Approve(decision) => self.answer_approval(decision).await,
             SlashCommand::Events(level) => {
@@ -6841,17 +7123,20 @@ impl App {
             frame.area(),
             tree_rows,
             self.queue_strip_height(),
+            self.goal_bar_visible(),
             input_text_rows,
         );
         self.render_tree(frame, layout.agent, &tree_entries);
         self.render_conversation(frame, layout.conversation);
         self.render_queue_strip(frame, layout.queue);
+        self.render_goal_bar(frame, layout.goal);
         let title_spans = self.message_title_spans();
         let rendered_input = super::input::render(
             frame,
             layout.input,
             &mut self.input,
             self.input_focused
+                && self.goal_focus.is_none()
                 && self.modal == Modal::None
                 && self
                     .selected
@@ -6919,7 +7204,7 @@ impl App {
             base_status = format!("{explanation} · {base_status}");
         }
         // The scroll-follow state lives in the Conversation title, not here.
-        let status = base_status;
+        let status = truncate_with_ellipsis(&base_status, usize::from(layout.status.width));
         // Status and bottom bar share the one cream surface with the input.
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.theme.muted())).style(self.theme.panel()),
@@ -6956,6 +7241,7 @@ impl App {
             self.hit_map.approval_actions = self.render_approval(frame, &approval, area);
         }
         match self.modal {
+            Modal::GoalDetail => self.render_goal_detail(frame),
             Modal::Sessions => {
                 self.render_session_search(frame, centered(frame.area(), 72, 60));
             }
