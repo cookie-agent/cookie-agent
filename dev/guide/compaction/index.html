@@ -812,6 +812,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#context-after-an-internal-checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      Context after an internal checkpoint
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Configuration
@@ -1260,6 +1269,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#context-after-an-internal-checkpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      Context after an internal checkpoint
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Configuration
@@ -1306,9 +1324,10 @@
 
 
 <h1 id="compaction">Compaction<a class="headerlink" href="#compaction" title="Permanent link">&para;</a></h1>
-<p>Compaction replaces a long session history with a checkpoint: a summarizer call
-whose output becomes the context for the next request. It keeps long sessions
-inside the model's context window without discarding the work done so far.</p>
+<p>Compaction reduces a long session history to a checkpoint. Internal compaction
+summarizes the discarded history prefix and preserves a bounded suffix of recent
+original messages alongside pinned context. Provider-native compaction instead
+stores an opaque provider window.</p>
 <h2 id="native-provider-compaction">Native provider compaction<a class="headerlink" href="#native-provider-compaction" title="Permanent link">&para;</a></h2>
 <p>OpenAI Responses and Azure OpenAI Responses models can opt into provider-native
 compaction. The native operation runs first. If the adapter rejects the
@@ -1325,7 +1344,10 @@ an explicit deployment.</p>
 text. Events through the checkpoint boundary are omitted from normal history,
 no framed summary message is inserted, and the window is attached to the next
 request. Later native compactions are seeded with the previous window. The
-window has a 32 MiB cap; <code>max_summary_bytes</code> applies only to text summaries.</p>
+window has a 32 MiB cap; <code>max_summary_bytes</code> applies only to text summaries.
+Native windows remain unchanged by recent-history retention: the engine does not
+append an independent recent-message tail to them. Neither native nor internal
+compaction rereads files or emits new <code>context_rehydrated</code> events.</p>
 <h2 id="the-trigger-threshold">The trigger threshold<a class="headerlink" href="#the-trigger-threshold" title="Permanent link">&para;</a></h2>
 <p>By default, compaction uses a proportional trigger:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>trigger_tokens = model_context_limit * percent / 100
@@ -1368,32 +1390,56 @@ model.</p>
    (8 KiB or more) from turns older than the last two are replaced with
    content-addressed artifact references. The context is then reassembled from
    the elided events. If elision brings an automatic compaction below its trigger
-    threshold, no summarizer call is made.
-    The original truncation artifact remains preferred by
-    <a href="../../reference/tools/#retained-tool-output"><code>read_tool_result</code></a>, so elision
-    of its preview does not discard the retained full output.</li>
-<li><strong>Native or summarizer call.</strong> An opted-in Responses model first attempts
-   native compaction. Otherwise, or after any native failure, the internal
-   <code>compaction</code> agent (see
-   <a href="../agents/#internal-agents">Internal agents</a>) receives the assembled history
-   plus the fixed instruction, optionally extended with the user's focus text.
-   It must return summary text only, at most <code>max_summary_bytes</code> (256 KiB by
-   default). Non-text output is rejected.</li>
+   threshold, no summarizer call is made.
+   The original truncation artifact remains preferred by
+   <a href="../../reference/tools/#retained-tool-output"><code>read_tool_result</code></a>, so elision
+   of its preview does not discard the retained full output.</li>
+<li><strong>Native attempt.</strong> An opted-in Responses model first attempts native
+   compaction. A successful native window goes directly to checkpoint commit,
+   without selecting an independent recent-history tail. Otherwise, or after
+   any native failure, the engine uses internal summarization.</li>
+<li><strong>Recent-history selection.</strong> For internal summarization, the engine selects
+   a contiguous suffix of original messages. Its effective token target is at
+   most <code>min(keep_recent_tokens, context_limit / 4)</code>, using integer division,
+   and is further limited by actual available space in the post-checkpoint
+   request. System and tool context, pinned context, the summary, and the output
+   reserve must still fit. Tool calls and their results are retained as complete
+   groups, never split at the suffix boundary. If the newest indivisible group
+   exceeds the target, no tail is retained; the engine does not exceed the
+   target or substitute an older, noncontiguous group. <code>keep_recent_tokens = 0</code>
+   disables the tail.</li>
+<li><strong>Discarded-prefix summary.</strong> The internal <code>compaction</code> agent (see
+   <a href="../agents/#internal-agents">Internal agents</a>) summarizes only the discarded
+   prefix, not the retained suffix. Its fixed instruction may be extended with
+   the user's focus text. It must return summary text only, at most
+   <code>max_summary_bytes</code> (256 KiB by default); non-text output is rejected. The
+   built-in compaction agent allows 4,096 output tokens. Authored internal-agent
+   documents that omit this limit retain the generic 2,048-token default.</li>
 <li><strong>Checkpoint commit.</strong> A <code>context_checkpoint_committed</code> event records the
-   text summary or opaque native window, its source boundaries, and the budget
-   math (context limit, trigger threshold, input tokens before, estimated tokens
-   after).</li>
-<li><strong>Rehydration.</strong> After the checkpoint, the engine re-reads up to 5 distinct
-   files most recently opened by the <code>read</code> tool (32 KiB each, 128 KiB total,
-   permission-checked against the owner policy) and appends a
-   <code>context_rehydrated</code> event with their contents, so the fresh context still
-   has the important file contents available.</li>
+   text summary or opaque native window, source and recent-suffix boundaries,
+   and the budget math, including the effective recent-history token budget.
+   Retained messages come from saved history, not new file reads.</li>
 </ol>
+<h2 id="context-after-an-internal-checkpoint">Context after an internal checkpoint<a class="headerlink" href="#context-after-an-internal-checkpoint" title="Permanent link">&para;</a></h2>
+<p>The next request assembles context in this order:</p>
+<ol>
+<li>System prompt and tool definitions.</li>
+<li>Pinned <code>AGENTS.md</code> context.</li>
+<li>Pinned loaded skill bodies.</li>
+<li>Summary of the discarded history prefix.</li>
+<li>Retained recent original message suffix, followed by any new messages.</li>
+</ol>
+<p>Pinned context is preserved separately from the suffix. With retention disabled,
+or when the newest complete group cannot fit, the recent suffix is absent and
+the summary covers the discarded history instead. The retained suffix is not
+duplicated in the summary. Native checkpoints continue to use their opaque
+provider windows rather than this summary-and-tail layout.</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[context_compaction]</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">auto</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">percent</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mi">70</span><span class="w"> </span><span class="p">}</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">max_summary_bytes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">262144</span><span class="w">  </span><span class="c1"># 256 KiB, max 2 MiB</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">keep_recent_tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">16384</span><span class="w"> </span><span class="c1"># 0 disables the recent-message tail</span>
 </code></pre></div>
 <p>To reserve a fixed amount of headroom instead:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[context_compaction]</span>
@@ -1406,6 +1452,12 @@ alias for the fixed trigger. It cannot be combined with <code>trigger</code>.</p
   Manual <code>/compact</code> and context-overflow recovery compaction remain available.</li>
 <li><code>max_summary_bytes</code> caps the summary produced by the compaction agent and must
   be at most 2 MiB.</li>
+<li><code>keep_recent_tokens</code> is a nonnegative <code>u64</code> token budget, defaulting to 16,384.
+  The runtime caps the effective target at one quarter of the model context
+  limit and further reduces it to fit available post-checkpoint space. Complete
+  message groups may retain fewer tokens than that target. Configuration loading
+  does not clamp the requested value. This setting applies only to internal
+  summaries, including fallback after a native-compaction failure.</li>
 </ul>
 <h2 id="manual-compaction">Manual compaction<a class="headerlink" href="#manual-compaction" title="Permanent link">&para;</a></h2>
 <p><code>/compact</code> forces a checkpoint for the selected idle session:</p>
@@ -1417,7 +1469,8 @@ compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.</p>
 <p><code>session.compact</code> returns whether a checkpoint was actually committed. Manual
 compaction uses raw history when it fits the compaction budget and uses
-tool-output elision only as overflow recovery.</p>
+tool-output elision only as overflow recovery. Internal summarization still
+separates the retained suffix and summarizes only the discarded prefix.</p>
 <h2 id="events">Events<a class="headerlink" href="#events" title="Permanent link">&para;</a></h2>
 <p>Compaction produces these event payloads:</p>
 <ul>
@@ -1425,8 +1478,12 @@ tool-output elision only as overflow recovery.</p>
 <li><code>internal_agent_started</code> / <code>internal_agent_completed</code> / <code>internal_agent_failed</code>
   / <code>internal_agent_fallback</code> — the compaction agent invocation</li>
 <li><code>context_checkpoint_committed</code> — the checkpoint with boundaries and budgets</li>
-<li><code>context_rehydrated</code> — file contents re-read into the fresh context</li>
 </ul>
+<p><code>context_rehydrated</code> (<code>ContextRehydrated</code> in Rust) is legacy-only. Saved logs
+containing it remain decodable and renderable, but new compactions never reread
+files or emit this event, including on the native path. See the
+<a href="../../reference/events/#compaction-checkpoints">event reference</a> for checkpoint
+retention fields and legacy defaults.</p>
 
 
 

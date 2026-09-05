@@ -2014,6 +2014,12 @@ without a cap. Cancellation still interrupts the wait.</p>
 <td><code>262144</code> (<code>256 * 1024</code>)</td>
 <td>Hard byte limit for a compaction summary produced by the internal <code>compaction</code> agent. Must be greater than zero and at most <code>2 * 1024 * 1024</code> (2 MiB).</td>
 </tr>
+<tr>
+<td><code>keep_recent_tokens</code></td>
+<td>integer (<code>u64</code>)</td>
+<td><code>16384</code></td>
+<td>Nonnegative token budget for the original recent-message suffix retained alongside an internal summary of the discarded prefix. <code>0</code> disables the tail. The effective target is at most <code>min(keep_recent_tokens, context_limit / 4)</code>, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group yields no tail. Configuration does not clamp the requested value. Native windows receive no independent tail.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="providersidcache"><code>[providers.&lt;id&gt;.cache]</code><a class="headerlink" href="#providersidcache" title="Permanent link">&para;</a></h2>
@@ -2882,8 +2888,10 @@ and merge keys are rejected, as is any <code>${env:</code> text.</p>
 </table>
 <p>For <code>primary</code>, <code>subagent</code>, and <code>all</code>, omitted or zero <code>max_output_tokens</code> adds no
 document cap. A nonzero value is combined with the model's output limit by taking
-the smaller value. Internal agents default to 2,048 output tokens; explicit zero
-removes that document cap. A nonzero <code>timeout_ms</code> is a hard error outside
+the smaller value. Authored internal agents default to 2,048 output tokens;
+explicit zero removes that document cap. The built-in <code>compaction</code> agent sets
+4,096 output tokens; built-in <code>approval</code> and <code>title</code> retain 2,048 and 128,
+respectively. A nonzero <code>timeout_ms</code> is a hard error outside
 <code>internal</code> mode. Internal agents default to 30,000 ms when it is omitted or zero.</p>
 <p>The former <code>model_fallback</code> key is a targeted hard error; use <code>models</code>. The former
 <code>limits.max_input_tokens</code> key is removed. Internal input budgets are derived per
@@ -2900,6 +2908,13 @@ unconditional rather than a placement strategy. OpenAI-compatible cache keys
 are provider-only.</p>
 <p>For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named <code>model_fallback</code>; only agent frontmatter uses <code>models</code>.</p>
+<p>Permission evaluation has no implicit filename or resource-name exceptions.
+Patterns apply to <code>.env</code> and <code>.env.*</code> like any other file for both <code>read</code> and
+<code>write</code>. Broad allows, including <code>${workspace_dir}/*</code>, need no special
+override. Explicit rules retain normal specificity and session-overlay
+precedence; unmatched resources ask. The synthesized <code>default</code> agent's explicit
+dotenv and credential-file rules remain ordinary policy rules.
+See <a href="../../guide/permissions/">Permissions</a>.</p>
 <p>See <a href="../../guide/agents/">Agents</a> for the full frontmatter reference and reserved
 IDs.</p>
 <h2 id="tui-configuration-tuitoml">TUI configuration (<code>tui.toml</code>)<a class="headerlink" href="#tui-configuration-tuitoml" title="Permanent link">&para;</a></h2>

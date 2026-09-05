@@ -1078,6 +1078,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compaction-checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compaction checkpoints
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#subscriptions" class="md-nav__link">
     <span class="md-ellipsis">
       Subscriptions
@@ -1206,6 +1215,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compaction-checkpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compaction checkpoints
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#subscriptions" class="md-nav__link">
     <span class="md-ellipsis">
       Subscriptions
@@ -1324,7 +1342,7 @@ origin class. This keeps the origin grammar restricted to <code>user</code>, <co
 </tr>
 <tr>
 <td>Compaction</td>
-<td><code>context_checkpoint_committed</code>, <code>context_rehydrated</code></td>
+<td><code>context_checkpoint_committed</code>; legacy read/render only: <code>context_rehydrated</code></td>
 </tr>
 </tbody>
 </table>
@@ -1441,6 +1459,49 @@ changes direct input; it contains both <code>original_input</code> and the non-e
 <code>user_input_seq</code> of its admission. Replay removes that specific pending input
 and preserves direct steers admitted after it. Legacy <code>user_input_recalled</code>
 continues to recall the newest pending input.</p>
+<h2 id="compaction-checkpoints">Compaction checkpoints<a class="headerlink" href="#compaction-checkpoints" title="Permanent link">&para;</a></h2>
+<p><code>context_checkpoint_committed</code> carries a <code>commit</code> containing the text summary or
+opaque native checkpoint, <code>boundaries</code>, and <code>budgets</code>. Internal summaries cover
+only the discarded history prefix; retained recent messages are replayed from
+the original saved history after the summary. System and tool context comes
+first, followed by pinned <code>AGENTS.md</code>, loaded skills, the summary, and the recent
+suffix. See <a href="../../guide/compaction/">Compaction</a> for selection and fit rules.</p>
+<p>The additive retention fields are optional in saved events:</p>
+<table>
+<thead>
+<tr>
+<th>Field within <code>commit</code></th>
+<th>Type</th>
+<th>Legacy absent value</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>boundaries.recent_from_seq</code></td>
+<td>optional <code>u64</code></td>
+<td><code>None</code></td>
+<td>Inclusive starting sequence of the retained original-message suffix. No value means no retained suffix.</td>
+</tr>
+<tr>
+<td><code>budgets.keep_recent_tokens</code></td>
+<td><code>u64</code></td>
+<td><code>0</code></td>
+<td>Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens.</td>
+</tr>
+</tbody>
+</table>
+<p>The effective budget is at most <code>min(configured keep_recent_tokens,
+context_limit / 4)</code> and is further limited by actual post-checkpoint available
+space. Complete tool-call/result groups can leave the retained suffix smaller
+than that budget; an oversized newest indivisible group yields no tail rather
+than exceeding the budget. An absent legacy retention boundary does not cause
+the reader to infer a suffix from current configuration.</p>
+<p>Native compacted windows retain their existing replay behavior, with no
+independently appended recent-message suffix. Neither checkpoint path triggers
+new file rereads or emits <code>context_rehydrated</code>. That legacy payload
+(<code>ContextRehydrated</code> in Rust) remains decodable and renderable for saved logs;
+its persisted contents do not require a new filesystem read.</p>
 <h2 id="subscriptions">Subscriptions<a class="headerlink" href="#subscriptions" title="Permanent link">&para;</a></h2>
 <p><code>events.subscribe</code> returns all retained events after the optional cursor and
 starts <code>events.subscription</code> notifications. A notification is tagged as either:</p>

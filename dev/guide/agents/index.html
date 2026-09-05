@@ -1456,7 +1456,7 @@ wrong type, or malformed YAML construct is also rejected.</p>
 <p><code>max_output_tokens</code> applies in every mode. A nonzero value caps each request at
 the smaller of the document value and the model's own output limit. It defaults
 to no document cap for the non-internal <code>primary</code>, <code>subagent</code>, and <code>all</code> modes.
-Internal agents retain a 2,048-token default; setting it explicitly to zero
+Authored internal agents retain a 2,048-token default; setting it explicitly to zero
 removes that document cap.
 <code>timeout_ms</code> applies only to internal agents. For other modes, a nonzero value is
 a hard error. Internal agents use the 30-second invocation timeout when
@@ -1659,7 +1659,7 @@ family (<code>internal_agent_started</code>, <code>internal_agent_completed</cod
 <td><code>compaction</code></td>
 <td>Summarizes context into a checkpoint</td>
 <td><code>${parent_model}</code></td>
-<td>30 s timeout; model-derived input budget; 2,048 max output tokens</td>
+<td>30 s timeout; model-derived input budget; 4,096 max output tokens</td>
 </tr>
 <tr>
 <td><code>title</code></td>
@@ -1695,7 +1695,7 @@ keeps its own selection:</p>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="k">-</span><span class="w"> </span>{ model: "openai/gpt-5-mini", variant: null }
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>limits:
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>  timeout_ms: 30000
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>  max_output_tokens: 2048
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>  max_output_tokens: 4096
 <a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="gu">permissions: {}</span>
 <a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="gu">---</span>
 <a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>Summarize conversation context faithfully within the supplied bounds. Return summary text only.

@@ -1339,6 +1339,18 @@ operations: <code>cat .env</code> is controlled by <code>bash</code>, not <code>
 as <code>git *</code> also matches a longer command beginning with <code>git</code>. See
 <a href="../security/">Security guarantees</a> for the platform-specific filesystem and
 process boundaries behind these tools.</p>
+<p>Path resource labels are normalized lexically from the single path requested by
+the caller. They are not canonicalized through symbolic links before permission
+matching. That one label authorizes the whole prepared <code>read</code>, <code>write</code>, or
+<code>edit</code> operation: if an allowed alias resolves outside the workspace, cookie
+agent does not perform a second permission check or require a rule for the
+resolved destination. Filesystem preparation still binds the traversed route
+and destination and can reject the operation independently. In particular,
+changing a link target after preparation fails with <code>operation_changed</code>; it
+does not cause policy to be reevaluated against the new destination.</p>
+<p>Bash remains independent of this path-resource contract. An allowed command has
+only its complete command-string resource and does not gain hidden <code>read</code> or
+<code>write</code> resource checks when the command traverses a link.</p>
 <p>Permission policy does not validate cookie agent's pre-existing private-state
 paths. New state is created with owner-only permissions, but existing loose,
 foreign-owned, hard-linked, or symlinked state is read and written as-is. This is
@@ -1354,8 +1366,23 @@ is <code>ask</code>.</p>
 against the engine workspace root during evaluation. Ordinary absolute patterns
 such as <code>/etc/*</code> control outside-workspace paths. Permission patterns do not
 expand environment variables.</p>
-<p>Generic read allows do not override the built-in ask behavior for <code>.env</code> and
-<code>.env.*</code>; an exact or more-specific authored rule decides.</p>
+<p>Permission evaluation has no implicit filename or resource-name exceptions.
+Credential files, <code>.env</code> and <code>.env.*</code>, and non-file resource labels all use the
+configured rules for their action, including in session overlays. Broad file
+allows such as <code>"*": allow</code> or
+<code>"${workspace_dir}/*": allow</code> apply without a protected-file override. Explicit
+<code>deny</code> and <code>ask</code> rules follow the same specificity and overlay precedence as any
+other file; unmatched resources ask.</p>
+<p>The synthesized <code>default</code> agent still declares explicit dotenv read denies and
+<code>.env.example</code> allows in its permission map. These are ordinary policy rules,
+not an implicit guard applied to authored agents or session overlays. The same
+applies to its explicit credential-file denies (such as <code>store-v3.json</code>,
+<code>token-v1</code>, <code>id_*</code>, <code>.netrc</code>, and <code>application_default_credentials.json</code>).</p>
+<p>This contract governs tool permission evaluation. It does not replace filesystem
+integrity and resource-binding checks, or govern engine configuration and prompt
+loading (such as workspace <code>AGENTS.md</code> admission). Generic approval modes and
+turn-scoped skill grants retain their documented behavior; they are not
+resource-name exceptions.</p>
 <h2 id="tool-availability-and-delegation">Tool availability and delegation<a class="headerlink" href="#tool-availability-and-delegation" title="Permanent link">&para;</a></h2>
 <p>Tools are opt-in. A permission action must have at least one effective <code>allow</code>
 or <code>ask</code> rule in the agent document or session overlay before that action's
