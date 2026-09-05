@@ -795,8 +795,14 @@ mod tests {
         std::os::windows::fs::symlink_dir(&workspace, &outside_alias).expect("outside alias");
         let outside_request = outside_alias.join("value.txt");
         assert_eq!(
-            super::abbreviated_display_path(&outside_request.to_string_lossy(), &workspace),
+            super::permission_path_label(&outside_request.to_string_lossy(), &workspace),
             super::normalized_path(&outside_request)
+        );
+        let parent_display =
+            super::abbreviated_display_path(&directory.path().to_string_lossy(), &workspace);
+        assert_eq!(
+            super::abbreviated_display_path(&outside_request.to_string_lossy(), &workspace),
+            format!("{parent_display}/outside-alias/value.txt")
         );
         let destination_file = destination.join("a long destination filename.txt");
         std::fs::write(&destination_file, "external").expect("external fixture");
