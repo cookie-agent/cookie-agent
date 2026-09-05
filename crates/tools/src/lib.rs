@@ -50,7 +50,7 @@ pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAge
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn assert_workspace_rule_allows(
     prepared: &cookie_agent_engine::PreparedTool,
     workspace: &Path,
@@ -198,9 +198,12 @@ pub(crate) fn prepared_path_resources(
     workspace: &Path,
     binding_bytes: &[u8],
 ) -> Result<(Vec<PreparedApprovalResource>, Vec<String>), ToolError> {
+    #[cfg(not(windows))]
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
+    #[cfg(windows)]
+    let workspace = workspace.to_owned();
     // Authorization names the lexical request, never its resolved destination.
     let label = permission_path_label(&normalized_path(requested_path), &workspace);
     let resource = prepared_resource(
@@ -215,6 +218,8 @@ pub(crate) fn prepared_path_resources(
 }
 
 fn normalized_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let path = fs_cap::lexical_path_spelling(path);
     let value = readable_path(path.to_string_lossy().replace('\\', "/"));
     if value.is_empty() { ".".into() } else { value }
 }
@@ -235,9 +240,12 @@ fn readable_path(value: String) -> String {
 
 pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
     let path = normalized_path(Path::new(path));
+    #[cfg(not(windows))]
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
+    #[cfg(windows)]
+    let workspace = workspace.to_owned();
     if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
         return relative;
     }
@@ -268,21 +276,17 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     }
     #[cfg(windows)]
     {
-        let workspace = workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.to_owned());
-        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
+        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(workspace)) {
             return relative;
         }
-        if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
-            let home = home.canonicalize().unwrap_or(home);
-            if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&home)) {
-                return if relative == "." {
-                    "~".into()
-                } else {
-                    format!("~/{relative}")
-                };
-            }
+        if let Ok(home) = cookie_agent_protocol::paths::home_dir()
+            && let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&home))
+        {
+            return if relative == "." {
+                "~".into()
+            } else {
+                format!("~/{relative}")
+            };
         }
         path
     }
@@ -687,6 +691,82 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn windows_short_path(path: &std::path::Path) -> std::path::PathBuf {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let required = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        assert_ne!(
+            required,
+            0,
+            "GetShortPathNameW: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut short = vec![0; required as usize];
+        let length = unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), required) };
+        assert!(length > 0 && length < required);
+        std::ffi::OsString::from_wide(&short[..length as usize]).into()
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace with a long name");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::write(workspace.join("value.txt"), "value").expect("fixture");
+        let long = workspace.canonicalize().expect("long workspace spelling");
+        let short = windows_short_path(&long);
+        let tool = ReadTool::new(&long);
+        let prepared = tool
+            .prepare(
+                ToolPreparationContext {
+                    session: SessionId::new_v7(),
+                    run: RunId::new_v7(),
+                    cwd: short.clone(),
+                    workspace_root: long.clone(),
+                    turn_context: crate::test_turn_context(),
+                },
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"filePath":"value.txt"}),
+                },
+            )
+            .await
+            .expect("prepare through short cwd");
+        assert_eq!(prepared.operation().resources().len(), 1);
+        assert_eq!(prepared.policy_labels(), [Some("value.txt".into())]);
+        super::assert_workspace_rule_allows(&prepared, &long, PermissionAction::Read, "value.txt");
+        assert_eq!(
+            tool.get_permission_resource("read", prepared.normalized_arguments())
+                .unwrap(),
+            ("read", Some("value.txt".into()))
+        );
+        for (requested, workspace) in [(&short, &long), (&long, &short)] {
+            assert_eq!(
+                super::permission_path_label(
+                    &requested.join("missing/file.txt").to_string_lossy(),
+                    workspace
+                ),
+                "missing/file.txt"
+            );
+            assert_eq!(
+                super::abbreviated_display_path(
+                    &requested.join("missing/file.txt").to_string_lossy(),
+                    workspace
+                ),
+                "missing/file.txt"
+            );
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     fn windows_permission_path_label_does_not_resolve_requested_path() {
         let directory = tempfile::tempdir().expect("temporary root");
@@ -717,6 +797,16 @@ mod tests {
         assert_eq!(
             super::abbreviated_display_path(&outside_request.to_string_lossy(), &workspace),
             super::normalized_path(&outside_request)
+        );
+        let destination_file = destination.join("a long destination filename.txt");
+        std::fs::write(&destination_file, "external").expect("external fixture");
+        let short_file = windows_short_path(&destination_file);
+        let suffix = short_file.file_name().expect("short leaf");
+        let requested = windows_short_path(&workspace).join("alias").join(suffix);
+        let expected = format!("alias/{}", suffix.to_string_lossy());
+        assert_eq!(
+            super::permission_path_label(&requested.to_string_lossy(), &workspace),
+            expected
         );
     }
 

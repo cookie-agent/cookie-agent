@@ -850,22 +850,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_read_exposes_canonical_arguments_not_raw_traversal() {
+    async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() {
         let root = tempfile::TempDir::new().expect("temp directory");
         std::fs::create_dir(root.path().join("safe")).expect("safe directory");
         std::fs::write(root.path().join(".env"), "secret").expect("env file");
         let prepared = prepared(root.path(), "safe/../.env").await;
-        let canonical = prepared
+        let normalized = prepared
             .normalized_arguments()
             .get("filePath")
             .and_then(serde_json::Value::as_str)
-            .expect("canonical file path");
-        let expected = root
-            .path()
-            .join(".env")
-            .canonicalize()
-            .expect("canonical fixture path");
-        assert_eq!(Path::new(canonical), expected);
+            .expect("normalized file path");
+        let expected = root.path().join(".env");
+        assert_eq!(Path::new(normalized), expected);
         assert!(
             !prepared
                 .normalized_arguments()

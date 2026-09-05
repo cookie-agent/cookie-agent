@@ -1032,7 +1032,11 @@ mod windows {
         ffi::OsString,
         fs,
         io::Write,
-        os::windows::{ffi::OsStrExt, fs::OpenOptionsExt as _, io::AsRawHandle as _},
+        os::windows::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::OpenOptionsExt as _,
+            io::AsRawHandle as _,
+        },
         path::{Component, Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -1040,18 +1044,65 @@ mod windows {
     use cookie_agent_engine::ToolError;
     use cookie_agent_protocol::Sha256Digest;
     use windows_sys::Win32::{
-        Foundation::HANDLE,
+        Foundation::{ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
+            FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FileRenameInfoEx, FindClose, FindFirstFileW,
             GetFileInformationByHandle, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-            MoveFileExW,
+            MoveFileExW, SetFileInformationByHandle, WIN32_FIND_DATAW,
         },
     };
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
     const MAX_LINK_TRAVERSALS: usize = 40;
     const MAX_ROUTE_COMPONENTS: usize = 4096;
+
+    pub(crate) fn lexical_path_spelling(path: &Path) -> PathBuf {
+        if !path.is_absolute() || !path.as_os_str().as_encoded_bytes().contains(&b'~') {
+            return path.to_owned();
+        }
+        let mut result = PathBuf::new();
+        let mut components = path.components();
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                result.push(component.as_os_str());
+                continue;
+            };
+            let candidate = result.join(name);
+            let found = validate_windows_component(name)
+                .and_then(|()| wide_path(&candidate))
+                .ok()
+                .and_then(|wide| {
+                    let mut data = WIN32_FIND_DATAW::default();
+                    let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+                    if handle == INVALID_HANDLE_VALUE {
+                        return None;
+                    }
+                    unsafe { FindClose(handle) };
+                    Some(data)
+                });
+            let Some(data) = found else {
+                result.push(name);
+                result.extend(components.map(|part| part.as_os_str()));
+                break;
+            };
+            let length = data
+                .cFileName
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(data.cFileName.len());
+            result.push(OsString::from_wide(&data.cFileName[..length]));
+            // FindFirstFile reports the link's own entry name. Never inspect its
+            // descendants for spelling: permission labels must retain the alias.
+            if data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                result.extend(components.map(|part| part.as_os_str()));
+                break;
+            }
+        }
+        result
+    }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct ObjectIdentity {
@@ -1950,15 +2001,73 @@ mod windows {
                 0
             };
         if unsafe { MoveFileExW(source_wide.as_ptr(), target_wide.as_ptr(), flags) } == 0 {
+            let mut error = std::io::Error::last_os_error();
+            if replace && error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+                // NTFS classic rename-over rejects an open destination even when
+                // it shares DELETE. Keep the pins and use a write-through POSIX
+                // rename, rather than weakening identity or durability checks.
+                match rename_over_open_target(source, &target_wide) {
+                    Ok(()) => return Ok(()),
+                    Err(rename_error) => error = rename_error,
+                }
+            }
             Err(ToolError::operation_changed(format!(
-                "MoveFileExW failed from {} to {}: {}",
+                "atomic rename failed from {} to {}: {}",
                 source.display(),
                 target.display(),
-                std::io::Error::last_os_error()
+                error
             )))
         } else {
             Ok(())
         }
+    }
+
+    fn rename_over_open_target(source: &Path, target: &[u16]) -> std::io::Result<()> {
+        const REPLACE_IF_EXISTS: u32 = 0x1;
+        const POSIX_SEMANTICS: u32 = 0x2;
+
+        let source = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_WRITE_THROUGH,
+            )
+            .open(source)?;
+        let filename_bytes = u32::try_from(std::mem::size_of_val(&target[..target.len() - 1]))
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let buffer_bytes =
+            std::mem::offset_of!(FILE_RENAME_INFO, FileName) + std::mem::size_of_val(target);
+        let buffer_length = u32::try_from(buffer_bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let mut buffer = vec![
+            FILE_RENAME_INFO::default();
+            buffer_bytes.div_ceil(std::mem::size_of::<FILE_RENAME_INFO>())
+        ];
+        let info = buffer.as_mut_ptr();
+        // The header array provides FILE_RENAME_INFO alignment and enough storage
+        // for its variable-length UTF-16 tail, including the terminator.
+        unsafe {
+            (*info).Anonymous = FILE_RENAME_INFO_0 {
+                Flags: REPLACE_IF_EXISTS | POSIX_SEMANTICS,
+            };
+            (*info).RootDirectory = std::ptr::null_mut();
+            (*info).FileNameLength = filename_bytes;
+            std::ptr::copy_nonoverlapping(
+                target.as_ptr(),
+                std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+                target.len(),
+            );
+            if SetFileInformationByHandle(
+                source.as_raw_handle() as HANDLE,
+                FileRenameInfoEx,
+                info.cast(),
+                buffer_length,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     fn append_path(bytes: &mut Vec<u8>, path: &Path) {
@@ -2577,13 +2686,7 @@ mod windows_tests {
             prepare_existing(root.path(), &outside_path).expect("prepare absolute outside target");
         let outside_direct = prepare_existing(outside.path(), std::path::Path::new("external.txt"))
             .expect("prepare direct outside target");
-        let canonical_outside = outside_path
-            .canonicalize()
-            .expect("canonical outside target");
-        assert!(paths_equal(
-            &outside_from_root.display_path,
-            &canonical_outside
-        ));
+        assert!(paths_equal(&outside_from_root.display_path, &outside_path));
         assert_eq!(outside_from_root.identity, outside_direct.identity);
         assert!(!components_start_with(
             &outside_from_root.display_path,
@@ -2600,6 +2703,51 @@ mod windows_tests {
             prepare_target(root.path(), &relative_escape.join("external.txt")),
             Err(ToolError::UnsupportedSecurity(_))
         ));
+    }
+
+    #[test]
+    fn windows_replacement_preserves_open_preimage_and_delete_sharing() {
+        use std::{io::Read as _, os::windows::fs::OpenOptionsExt as _};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let root = tempfile::tempdir().expect("sandbox");
+        let path = root.path().join("target.txt");
+        fs::write(&path, "original").expect("target");
+        let mut held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .expect("held destination");
+        let target = prepare_existing(root.path(), Path::new("target.txt")).expect("prepare");
+        target
+            .replace_atomically(b"replacement")
+            .expect("replace open destination");
+        let mut preimage = String::new();
+        held.read_to_string(&mut preimage)
+            .expect("read held preimage");
+        assert_eq!(preimage, "original");
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+
+        let target = prepare_existing(root.path(), Path::new("target.txt")).expect("prepare again");
+        let _deny_delete = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .expect("deny-delete holder");
+        assert!(matches!(
+            target.replace_atomically(b"forbidden"),
+            Err(ToolError::OperationChanged(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("cookie-stage")
+        }));
     }
 
     #[test]
@@ -2810,10 +2958,24 @@ mod windows_tests {
         fs::write(root.path().join("ancestor/file.txt"), "same").expect("file");
         let target =
             prepare_existing(root.path(), Path::new("ancestor/file.txt")).expect("prepare target");
+        // NTFS forbids renaming a directory with open descendants. Move the
+        // pinned leaf out first, then put that same object under the new ancestor.
+        fs::rename(
+            root.path().join("ancestor/file.txt"),
+            root.path().join("held-file.txt"),
+        )
+        .expect("move pinned leaf out");
         fs::rename(root.path().join("ancestor"), root.path().join("displaced"))
             .expect("displace ancestor");
         fs::create_dir(root.path().join("ancestor")).expect("replacement ancestor");
-        fs::write(root.path().join("ancestor/file.txt"), "same").expect("replacement file");
+        fs::rename(
+            root.path().join("held-file.txt"),
+            root.path().join("ancestor/file.txt"),
+        )
+        .expect("restore original leaf");
+        let replacement = prepare_existing(root.path(), Path::new("ancestor/file.txt"))
+            .expect("prepare replacement route");
+        assert_eq!(target.identity, replacement.identity);
         assert!(matches!(
             target.revalidate(),
             Err(ToolError::OperationChanged(_))
