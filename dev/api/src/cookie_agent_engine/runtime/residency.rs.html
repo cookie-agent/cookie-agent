@@ -295,113 +295,119 @@
 <a href=#295 id=295 data-nosnippet>295</a>                .keys()
 <a href=#296 id=296 data-nosnippet>296</a>                .any(|(session_id, <span class="kw">_</span>)| <span class="kw-2">*</span>session_id == session.meta.session_id)
 <a href=#297 id=297 data-nosnippet>297</a>            || has_runless_pending_inputs(<span class="kw-2">&amp;</span>session.log.event_snapshot())
-<a href=#298 id=298 data-nosnippet>298</a>        {
-<a href=#299 id=299 data-nosnippet>299</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
-<a href=#300 id=300 data-nosnippet>300</a>        }
-<a href=#301 id=301 data-nosnippet>301</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(record) = <span class="self">self
-<a href=#302 id=302 data-nosnippet>302</a>            </span>.inner
-<a href=#303 id=303 data-nosnippet>303</a>            .delegations_by_session
-<a href=#304 id=304 data-nosnippet>304</a>            .lock()
-<a href=#305 id=305 data-nosnippet>305</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#306 id=306 data-nosnippet>306</a>            .get(<span class="kw-2">&amp;</span>session.meta.session_id)
-<a href=#307 id=307 data-nosnippet>307</a>            .copied()
-<a href=#308 id=308 data-nosnippet>308</a>            &amp;&amp; (!<span class="macro">matches!</span>(record.state, DelegationState::Finished(<span class="kw">_</span>))
-<a href=#309 id=309 data-nosnippet>309</a>                || record.background &amp;&amp; !record.notification_sent)
-<a href=#310 id=310 data-nosnippet>310</a>        {
-<a href=#311 id=311 data-nosnippet>311</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
-<a href=#312 id=312 data-nosnippet>312</a>        }
-<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>ended_at = session
-<a href=#314 id=314 data-nosnippet>314</a>            .log
-<a href=#315 id=315 data-nosnippet>315</a>            .event_snapshot()
-<a href=#316 id=316 data-nosnippet>316</a>            .iter()
-<a href=#317 id=317 data-nosnippet>317</a>            .filter(|event| {
-<a href=#318 id=318 data-nosnippet>318</a>                event.run_id.is_some()
-<a href=#319 id=319 data-nosnippet>319</a>                    &amp;&amp; <span class="macro">matches!</span>(
-<a href=#320 id=320 data-nosnippet>320</a>                        event.payload,
-<a href=#321 id=321 data-nosnippet>321</a>                        Event::RunCompleted { .. }
-<a href=#322 id=322 data-nosnippet>322</a>                            | Event::RunFailed { .. }
-<a href=#323 id=323 data-nosnippet>323</a>                            | Event::RunCancelled { .. }
-<a href=#324 id=324 data-nosnippet>324</a>                            | Event::RunInterrupted { .. }
-<a href=#325 id=325 data-nosnippet>325</a>                    )
-<a href=#326 id=326 data-nosnippet>326</a>            })
-<a href=#327 id=327 data-nosnippet>327</a>            .map(|event| event.timestamp)
-<a href=#328 id=328 data-nosnippet>328</a>            .max()<span class="question-mark">?</span>;
-<a href=#329 id=329 data-nosnippet>329</a>        <span class="kw">let </span>idle = Duration::try_from(now.duration_since(ended_at)).ok()<span class="question-mark">?</span>;
-<a href=#330 id=330 data-nosnippet>330</a>        (idle &gt; idle_after).then_some(ended_at)
-<a href=#331 id=331 data-nosnippet>331</a>    }
-<a href=#332 id=332 data-nosnippet>332</a>
-<a href=#333 id=333 data-nosnippet>333</a>    <span class="kw">async fn </span>notify_evicted_subscribers(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: SessionId, last_event_seq: u64) {
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>subscribers = <span class="self">self
-<a href=#335 id=335 data-nosnippet>335</a>            </span>.inner
-<a href=#336 id=336 data-nosnippet>336</a>            .subscribers
-<a href=#337 id=337 data-nosnippet>337</a>            .lock()
-<a href=#338 id=338 data-nosnippet>338</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#339 id=339 data-nosnippet>339</a>            .remove(<span class="kw-2">&amp;</span>session_id)
-<a href=#340 id=340 data-nosnippet>340</a>            .unwrap_or_default();
-<a href=#341 id=341 data-nosnippet>341</a>        <span class="kw">for </span>subscriber <span class="kw">in </span>subscribers {
-<a href=#342 id=342 data-nosnippet>342</a>            <span class="kw">let _ </span>= subscriber
-<a href=#343 id=343 data-nosnippet>343</a>                .sender
-<a href=#344 id=344 data-nosnippet>344</a>                .send(cookie_agent_protocol::EventSubscriptionMessage::Gap {
-<a href=#345 id=345 data-nosnippet>345</a>                    session_id,
-<a href=#346 id=346 data-nosnippet>346</a>                    last_delivered_seq: last_event_seq,
-<a href=#347 id=347 data-nosnippet>347</a>                })
-<a href=#348 id=348 data-nosnippet>348</a>                .<span class="kw">await</span>;
-<a href=#349 id=349 data-nosnippet>349</a>        }
-<a href=#350 id=350 data-nosnippet>350</a>    }
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="kw">fn </span>clear_evicted_session_caches(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: SessionId, origin: <span class="kw-2">&amp;</span>SessionOrigin) {
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="comment">// Permission modes are tree-root keyed. Paging out a child must retain
-<a href=#354 id=354 data-nosnippet>354</a>        // the shared mode; an evicted root no longer owns runtime-only state.
-<a href=#355 id=355 data-nosnippet>355</a>        </span><span class="kw">if </span>root_id(origin, session_id) == session_id {
-<a href=#356 id=356 data-nosnippet>356</a>            <span class="self">self</span>.inner
-<a href=#357 id=357 data-nosnippet>357</a>                .permission_modes
-<a href=#358 id=358 data-nosnippet>358</a>                .lock()
-<a href=#359 id=359 data-nosnippet>359</a>                .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#360 id=360 data-nosnippet>360</a>                .remove(<span class="kw-2">&amp;</span>session_id);
-<a href=#361 id=361 data-nosnippet>361</a>        }
-<a href=#362 id=362 data-nosnippet>362</a>        <span class="self">self</span>.inner
-<a href=#363 id=363 data-nosnippet>363</a>            .context_token_estimators
-<a href=#364 id=364 data-nosnippet>364</a>            .lock()
-<a href=#365 id=365 data-nosnippet>365</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#366 id=366 data-nosnippet>366</a>            .remove(<span class="kw-2">&amp;</span>session_id);
-<a href=#367 id=367 data-nosnippet>367</a>        <span class="self">self</span>.inner
-<a href=#368 id=368 data-nosnippet>368</a>            .compaction_in_progress
-<a href=#369 id=369 data-nosnippet>369</a>            .lock()
-<a href=#370 id=370 data-nosnippet>370</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#371 id=371 data-nosnippet>371</a>            .remove(<span class="kw-2">&amp;</span>session_id);
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="self">self</span>.inner
-<a href=#373 id=373 data-nosnippet>373</a>            .compaction_deferred
-<a href=#374 id=374 data-nosnippet>374</a>            .lock()
-<a href=#375 id=375 data-nosnippet>375</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
-<a href=#376 id=376 data-nosnippet>376</a>            .remove(<span class="kw-2">&amp;</span>session_id);
-<a href=#377 id=377 data-nosnippet>377</a>    }
-<a href=#378 id=378 data-nosnippet>378</a>}
-<a href=#379 id=379 data-nosnippet>379</a>
-<a href=#380 id=380 data-nosnippet>380</a><span class="kw">fn </span>has_runless_pending_inputs(events: <span class="kw-2">&amp;</span>[cookie_agent_protocol::StoredEvent]) -&gt; bool {
-<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">let </span>boundary = events
-<a href=#382 id=382 data-nosnippet>382</a>        .iter()
-<a href=#383 id=383 data-nosnippet>383</a>        .rev()
-<a href=#384 id=384 data-nosnippet>384</a>        .find(|event| {
-<a href=#385 id=385 data-nosnippet>385</a>            <span class="macro">matches!</span>(
-<a href=#386 id=386 data-nosnippet>386</a>                event.payload,
-<a href=#387 id=387 data-nosnippet>387</a>                Event::RunCompleted { .. }
-<a href=#388 id=388 data-nosnippet>388</a>                    | Event::RunFailed { .. }
-<a href=#389 id=389 data-nosnippet>389</a>                    | Event::RunCancelled { .. }
-<a href=#390 id=390 data-nosnippet>390</a>                    | Event::RunInterrupted { .. }
-<a href=#391 id=391 data-nosnippet>391</a>            )
-<a href=#392 id=392 data-nosnippet>392</a>        })
-<a href=#393 id=393 data-nosnippet>393</a>        .map_or(<span class="number">0</span>, |event| event.seq);
-<a href=#394 id=394 data-nosnippet>394</a>    <span class="kw">let </span><span class="kw-2">mut </span>pending = <span class="number">0_usize</span>;
-<a href=#395 id=395 data-nosnippet>395</a>    <span class="kw">for </span>event <span class="kw">in </span>events
-<a href=#396 id=396 data-nosnippet>396</a>        .iter()
-<a href=#397 id=397 data-nosnippet>397</a>        .filter(|event| event.seq &gt; boundary &amp;&amp; event.run_id.is_none())
-<a href=#398 id=398 data-nosnippet>398</a>    {
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="kw">match </span>event.payload {
-<a href=#400 id=400 data-nosnippet>400</a>            Event::UserInputAdmitted { .. } =&gt; pending += <span class="number">1</span>,
-<a href=#401 id=401 data-nosnippet>401</a>            Event::UserInputRecalled { .. } =&gt; pending = pending.saturating_sub(<span class="number">1</span>),
-<a href=#402 id=402 data-nosnippet>402</a>            <span class="kw">_ </span>=&gt; {}
-<a href=#403 id=403 data-nosnippet>403</a>        }
-<a href=#404 id=404 data-nosnippet>404</a>    }
-<a href=#405 id=405 data-nosnippet>405</a>    pending != <span class="number">0
-<a href=#406 id=406 data-nosnippet>406</a></span>}
+<a href=#298 id=298 data-nosnippet>298</a>            || <span class="self">self</span>.producers_pin_session(session.meta.session_id)
+<a href=#299 id=299 data-nosnippet>299</a>        {
+<a href=#300 id=300 data-nosnippet>300</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#301 id=301 data-nosnippet>301</a>        }
+<a href=#302 id=302 data-nosnippet>302</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(record) = <span class="self">self
+<a href=#303 id=303 data-nosnippet>303</a>            </span>.inner
+<a href=#304 id=304 data-nosnippet>304</a>            .delegations_by_session
+<a href=#305 id=305 data-nosnippet>305</a>            .lock()
+<a href=#306 id=306 data-nosnippet>306</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#307 id=307 data-nosnippet>307</a>            .get(<span class="kw-2">&amp;</span>session.meta.session_id)
+<a href=#308 id=308 data-nosnippet>308</a>            .copied()
+<a href=#309 id=309 data-nosnippet>309</a>            &amp;&amp; (!<span class="macro">matches!</span>(record.state, DelegationState::Finished(<span class="kw">_</span>))
+<a href=#310 id=310 data-nosnippet>310</a>                || record.background &amp;&amp; !record.notification_sent)
+<a href=#311 id=311 data-nosnippet>311</a>        {
+<a href=#312 id=312 data-nosnippet>312</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#313 id=313 data-nosnippet>313</a>        }
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>ended_at = session
+<a href=#315 id=315 data-nosnippet>315</a>            .log
+<a href=#316 id=316 data-nosnippet>316</a>            .event_snapshot()
+<a href=#317 id=317 data-nosnippet>317</a>            .iter()
+<a href=#318 id=318 data-nosnippet>318</a>            .filter(|event| {
+<a href=#319 id=319 data-nosnippet>319</a>                event.run_id.is_some()
+<a href=#320 id=320 data-nosnippet>320</a>                    &amp;&amp; <span class="macro">matches!</span>(
+<a href=#321 id=321 data-nosnippet>321</a>                        event.payload,
+<a href=#322 id=322 data-nosnippet>322</a>                        Event::RunCompleted { .. }
+<a href=#323 id=323 data-nosnippet>323</a>                            | Event::RunFailed { .. }
+<a href=#324 id=324 data-nosnippet>324</a>                            | Event::RunCancelled { .. }
+<a href=#325 id=325 data-nosnippet>325</a>                            | Event::RunInterrupted { .. }
+<a href=#326 id=326 data-nosnippet>326</a>                    )
+<a href=#327 id=327 data-nosnippet>327</a>            })
+<a href=#328 id=328 data-nosnippet>328</a>            .map(|event| event.timestamp)
+<a href=#329 id=329 data-nosnippet>329</a>            .max()<span class="question-mark">?</span>;
+<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span>idle = Duration::try_from(now.duration_since(ended_at)).ok()<span class="question-mark">?</span>;
+<a href=#331 id=331 data-nosnippet>331</a>        (idle &gt; idle_after).then_some(ended_at)
+<a href=#332 id=332 data-nosnippet>332</a>    }
+<a href=#333 id=333 data-nosnippet>333</a>
+<a href=#334 id=334 data-nosnippet>334</a>    <span class="kw">async fn </span>notify_evicted_subscribers(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: SessionId, last_event_seq: u64) {
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>subscribers = <span class="self">self
+<a href=#336 id=336 data-nosnippet>336</a>            </span>.inner
+<a href=#337 id=337 data-nosnippet>337</a>            .subscribers
+<a href=#338 id=338 data-nosnippet>338</a>            .lock()
+<a href=#339 id=339 data-nosnippet>339</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#340 id=340 data-nosnippet>340</a>            .remove(<span class="kw-2">&amp;</span>session_id)
+<a href=#341 id=341 data-nosnippet>341</a>            .unwrap_or_default();
+<a href=#342 id=342 data-nosnippet>342</a>        <span class="kw">for </span>subscriber <span class="kw">in </span>subscribers {
+<a href=#343 id=343 data-nosnippet>343</a>            <span class="kw">let _ </span>= subscriber
+<a href=#344 id=344 data-nosnippet>344</a>                .sender
+<a href=#345 id=345 data-nosnippet>345</a>                .send(cookie_agent_protocol::EventSubscriptionMessage::Gap {
+<a href=#346 id=346 data-nosnippet>346</a>                    session_id,
+<a href=#347 id=347 data-nosnippet>347</a>                    last_delivered_seq: last_event_seq,
+<a href=#348 id=348 data-nosnippet>348</a>                })
+<a href=#349 id=349 data-nosnippet>349</a>                .<span class="kw">await</span>;
+<a href=#350 id=350 data-nosnippet>350</a>        }
+<a href=#351 id=351 data-nosnippet>351</a>    }
+<a href=#352 id=352 data-nosnippet>352</a>
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">fn </span>clear_evicted_session_caches(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: SessionId, origin: <span class="kw-2">&amp;</span>SessionOrigin) {
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="self">self</span>.inner
+<a href=#355 id=355 data-nosnippet>355</a>            .producers
+<a href=#356 id=356 data-nosnippet>356</a>            .lock()
+<a href=#357 id=357 data-nosnippet>357</a>            .unwrap_or_else(|e| e.into_inner())
+<a href=#358 id=358 data-nosnippet>358</a>            .remove(<span class="kw-2">&amp;</span>session_id);
+<a href=#359 id=359 data-nosnippet>359</a>        <span class="comment">// Permission modes are tree-root keyed. Paging out a child must retain
+<a href=#360 id=360 data-nosnippet>360</a>        // the shared mode; an evicted root no longer owns runtime-only state.
+<a href=#361 id=361 data-nosnippet>361</a>        </span><span class="kw">if </span>root_id(origin, session_id) == session_id {
+<a href=#362 id=362 data-nosnippet>362</a>            <span class="self">self</span>.inner
+<a href=#363 id=363 data-nosnippet>363</a>                .permission_modes
+<a href=#364 id=364 data-nosnippet>364</a>                .lock()
+<a href=#365 id=365 data-nosnippet>365</a>                .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#366 id=366 data-nosnippet>366</a>                .remove(<span class="kw-2">&amp;</span>session_id);
+<a href=#367 id=367 data-nosnippet>367</a>        }
+<a href=#368 id=368 data-nosnippet>368</a>        <span class="self">self</span>.inner
+<a href=#369 id=369 data-nosnippet>369</a>            .context_token_estimators
+<a href=#370 id=370 data-nosnippet>370</a>            .lock()
+<a href=#371 id=371 data-nosnippet>371</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#372 id=372 data-nosnippet>372</a>            .remove(<span class="kw-2">&amp;</span>session_id);
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="self">self</span>.inner
+<a href=#374 id=374 data-nosnippet>374</a>            .compaction_in_progress
+<a href=#375 id=375 data-nosnippet>375</a>            .lock()
+<a href=#376 id=376 data-nosnippet>376</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#377 id=377 data-nosnippet>377</a>            .remove(<span class="kw-2">&amp;</span>session_id);
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="self">self</span>.inner
+<a href=#379 id=379 data-nosnippet>379</a>            .compaction_deferred
+<a href=#380 id=380 data-nosnippet>380</a>            .lock()
+<a href=#381 id=381 data-nosnippet>381</a>            .unwrap_or_else(|poisoned| poisoned.into_inner())
+<a href=#382 id=382 data-nosnippet>382</a>            .remove(<span class="kw-2">&amp;</span>session_id);
+<a href=#383 id=383 data-nosnippet>383</a>    }
+<a href=#384 id=384 data-nosnippet>384</a>}
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>has_runless_pending_inputs(events: <span class="kw-2">&amp;</span>[cookie_agent_protocol::StoredEvent]) -&gt; bool {
+<a href=#387 id=387 data-nosnippet>387</a>    <span class="kw">let </span>boundary = events
+<a href=#388 id=388 data-nosnippet>388</a>        .iter()
+<a href=#389 id=389 data-nosnippet>389</a>        .rev()
+<a href=#390 id=390 data-nosnippet>390</a>        .find(|event| {
+<a href=#391 id=391 data-nosnippet>391</a>            <span class="macro">matches!</span>(
+<a href=#392 id=392 data-nosnippet>392</a>                event.payload,
+<a href=#393 id=393 data-nosnippet>393</a>                Event::RunCompleted { .. }
+<a href=#394 id=394 data-nosnippet>394</a>                    | Event::RunFailed { .. }
+<a href=#395 id=395 data-nosnippet>395</a>                    | Event::RunCancelled { .. }
+<a href=#396 id=396 data-nosnippet>396</a>                    | Event::RunInterrupted { .. }
+<a href=#397 id=397 data-nosnippet>397</a>            )
+<a href=#398 id=398 data-nosnippet>398</a>        })
+<a href=#399 id=399 data-nosnippet>399</a>        .map_or(<span class="number">0</span>, |event| event.seq);
+<a href=#400 id=400 data-nosnippet>400</a>    <span class="kw">let </span><span class="kw-2">mut </span>pending = <span class="number">0_usize</span>;
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="kw">for </span>event <span class="kw">in </span>events
+<a href=#402 id=402 data-nosnippet>402</a>        .iter()
+<a href=#403 id=403 data-nosnippet>403</a>        .filter(|event| event.seq &gt; boundary &amp;&amp; event.run_id.is_none())
+<a href=#404 id=404 data-nosnippet>404</a>    {
+<a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">match </span>event.payload {
+<a href=#406 id=406 data-nosnippet>406</a>            Event::UserInputAdmitted { .. } =&gt; pending += <span class="number">1</span>,
+<a href=#407 id=407 data-nosnippet>407</a>            Event::UserInputRecalled { .. } =&gt; pending = pending.saturating_sub(<span class="number">1</span>),
+<a href=#408 id=408 data-nosnippet>408</a>            <span class="kw">_ </span>=&gt; {}
+<a href=#409 id=409 data-nosnippet>409</a>        }
+<a href=#410 id=410 data-nosnippet>410</a>    }
+<a href=#411 id=411 data-nosnippet>411</a>    pending != <span class="number">0
+<a href=#412 id=412 data-nosnippet>412</a></span>}
 </code></pre></div></section></main></body></html>

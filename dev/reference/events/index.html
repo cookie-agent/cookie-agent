@@ -546,6 +546,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/permissions/" class="md-nav__link">
         
   
@@ -872,6 +895,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../development/goal-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api/" class="md-nav__link">
         
   
@@ -1075,6 +1121,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Payloads">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goal-and-producer-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal and producer contracts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-event-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Existing event behavior
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1212,6 +1282,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Payloads">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goal-and-producer-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal and producer contracts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-event-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Existing event behavior
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1313,6 +1407,14 @@ origin class. This keeps the origin grammar restricted to <code>user</code>, <co
 <td><code>plugin_event_added</code>, <code>plugin_diagnostic</code></td>
 </tr>
 <tr>
+<td>Goals</td>
+<td><code>goal_activated</code>, <code>goal_checklist_revised</code>, <code>goal_lifecycle_changed</code></td>
+</tr>
+<tr>
+<td>Producer messaging</td>
+<td><code>producer_message_accepted</code>, <code>producer_message_admitted</code>, <code>producer_messages_claimed</code>, <code>producer_messages_released</code>, <code>producer_message_consumed</code>, <code>producer_message_discarded</code></td>
+</tr>
+<tr>
 <td>User input</td>
 <td><code>message_injected</code>, <code>user_input_admitted</code>, <code>user_input_submitted</code>, <code>user_input_transformed</code>, <code>user_input_recalled</code>, <code>user_input_recalled_v2</code>, <code>user_input_applied</code></td>
 </tr>
@@ -1346,6 +1448,146 @@ origin class. This keeps the origin grammar restricted to <code>user</code>, <co
 </tr>
 </tbody>
 </table>
+<h3 id="goal-and-producer-contracts">Goal and producer contracts<a class="headerlink" href="#goal-and-producer-contracts" title="Permanent link">&para;</a></h3>
+<p>Goal and producer state is projected independently from model summaries. The engine
+serializes mutations, message acceptance, and admission through the session actor.
+Goal activation and producer acceptance persist an otherwise buffered session,
+even before its first model request.</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Payload fields</th>
+<th>Run scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>goal_activated</code></td>
+<td><code>goal_id</code>, <code>objective</code>, <code>revision</code></td>
+<td>Runless allowed</td>
+</tr>
+<tr>
+<td><code>goal_checklist_revised</code></td>
+<td><code>goal_id</code>, <code>items</code>, <code>revision</code></td>
+<td>Runless allowed</td>
+</tr>
+<tr>
+<td><code>goal_lifecycle_changed</code></td>
+<td><code>goal_id</code>, <code>status</code>, <code>revision</code></td>
+<td>Runless allowed</td>
+</tr>
+<tr>
+<td><code>producer_message_accepted</code></td>
+<td><code>message_id</code>, <code>producer_owner</code>, <code>mode</code>, <code>idempotency_key</code>, <code>body</code>; optional <code>reminder</code></td>
+<td>Runless allowed, including during an active run</td>
+</tr>
+<tr>
+<td><code>producer_message_admitted</code></td>
+<td><code>message_id</code></td>
+<td>Requires the destination run</td>
+</tr>
+<tr>
+<td><code>producer_messages_claimed</code></td>
+<td>Nonempty <code>message_ids</code></td>
+<td>Requires the admission run; envelope <code>seq</code> identifies the claim</td>
+</tr>
+<tr>
+<td><code>producer_messages_released</code></td>
+<td>Positive <code>claim_seq</code></td>
+<td>Requires the claimed run</td>
+</tr>
+<tr>
+<td><code>producer_message_consumed</code></td>
+<td><code>message_id</code>, <code>run_id</code></td>
+<td>Requires matching envelope <code>run_id</code></td>
+</tr>
+<tr>
+<td><code>producer_message_discarded</code></td>
+<td><code>message_id</code>; optional <code>producer_owner</code>, optional <code>reminder</code></td>
+<td>Runless allowed</td>
+</tr>
+</tbody>
+</table>
+<p><code>GoalId</code> and <code>ProducerMessageId</code> are durable UUID identities. <code>GoalItem</code> contains
+only <code>description</code> and <code>finished</code>, with no item ID. Writer validation rejects blank
+objectives/descriptions. Revision is an engine-owned <code>u64</code>, including zero;
+strictly increasing revisions, overflow rejection, matching goal identity, and
+lifecycle transitions are enforced by the engine projection. Model updates replace
+the entire ordered checklist through the session actor: the last accepted update
+wins for the current/latest session goal at actor acceptance, without a
+model-supplied <code>goal_id</code>, <code>expected_revision</code>, or lost-update protection. An older
+run's update can intentionally affect a newly activated active or paused goal;
+updates reject if the current goal is absent or terminal. The engine records the
+selected goal's ID and revision in durable events. User lifecycle RPC controls
+retain <code>SessionGoalLifecycleParams.goal_id</code> and <code>expected_revision</code>, including
+stale-identity and stale-revision rejection. Empty checklist revisions
+preserve the active/paused lifecycle. Completion requires nonempty all-finished
+items, including while paused.</p>
+<p>Handling of older stored checklist items containing an <code>id</code> is pending core
+implementation verification. No specific compatibility decoder or migration is
+promised here; the versionless best-effort session-history contract still applies.</p>
+<p><code>ProducerOwner</code> is tagged by <code>type</code>: <code>plugin { plugin }</code>,
+<code>delegation { invocation_id }</code>, <code>goal { goal_id }</code>, or
+<code>goal_control { goal_id }</code>. It identifies a specific
+stable owner, not a volatile registration or merely an owner kind. Accepted events
+are the sole authoritative message body/mode storage, including deferred queue
+sends while a run is active. Registration records are never session events.
+<code>GoalControl { goal_id }</code> owns engine-authored pause/cancel steering, not goal
+continuation reminders. These accepted messages survive goal-controller teardown
+and reminder invalidation.</p>
+<p>The optional accepted-event <code>reminder: GoalReminderIdentity { goal_id, revision }</code>
+identifies a goal reminder; if present, its goal must match the goal owner. Its
+body must contain the full objective and checklist, including finished items and
+revision. Each continuation attempt has a fresh message ID/idempotency key even
+at an unchanged revision. A consumed reminder cannot suppress later continuation.</p>
+<p><code>producer_message_admitted</code> links the accepted body to a run without duplicating
+user-input storage or changing existing input events. Its physical sequence is
+covered by <code>model_turn_committed.input_through_seq</code>. Admission is not consumption:
+append <code>producer_message_consumed</code> only after a committed turn covers the admission
+in that same run. Recovery repairs missing consumption markers from committed
+coverage; an uncommitted API attempt remains retryable. Queue acceptance does not
+create a forbidden runless pending user input during an active run.</p>
+<p><code>producer_messages_claimed</code> durably reserves admitted messages at the actor
+boundary before request preparation/dispatch. The claim's envelope sequence is
+its token, not evidence that the provider received input. Projection requires
+unique accepted, admitted, unconsumed, undiscarded message IDs belonging to the
+claim's run. Claims cover compaction, hooks, streaming, and model commit.
+<code>producer_messages_released</code> references the claim sequence in the same run and
+removes that claim. Failed or cancelled attempts release their reservation;
+recovery also releases surviving claims. Once all claims are released, an
+unconsumed, undiscarded message returns to waiting and the queue strip. Consumed
+messages remain consumed after release. Claim/release is not consumption and
+does not establish exactly-once model execution.</p>
+<p>Discard is separate from consumption and is a generic durable producer-message
+event, not restricted to goal reminders. <code>discard(session, message_id)</code> checks
+the caller's ownership against the accepted message, including after its producer
+unregisters. Owned already-discarded retries are idempotent; cross-owner discard
+is rejected. Only unclaimed waiting messages qualify, including admitted messages
+not yet claimed. Consumed or claimed messages reject discard, even before actual
+provider dispatch; absence of a consumption marker is not proof that a message
+is retractable. The actor serializes discard against claim acquisition.
+Durable discard removes the message from pending
+delivery/readiness and the queue strip, and replay must not restore it as pending.
+Goal reminder invalidation still checks its identity; it does not authorize
+discarding another owner's real message.</p>
+<p>Projection requires a supplied <code>producer_owner</code> to exactly match the accepted
+owner; a supplied <code>reminder</code> must also match. Historical reminder-only discards
+remain readable: when owner is absent, a matching reminder identity is required.
+An absent owner is not generic discard authority, and a wrong supplied owner
+cannot fall back to legacy reminder matching. Both forms reject consumed or
+claimed messages. Claimed messages are hidden from the waiting strip until
+release makes them eligible again; in-flight input cannot be retracted.</p>
+<p>Missing/corrupt optional reminder metadata follows the existing best-effort
+reader, with degradation diagnostics. Engine projection must quarantine invalid
+goal-owned reminder records rather than reclassifying them as real sends.
+Cross-event ownership, at-most-once consumption, and commit coverage are engine
+invariants, not properties a single-event decoder can verify.</p>
+<p>Goal state and unconsumed messages must survive compaction. Fork copies durable
+branch data, never registrations; revert reconciles only the visible branch.
+Failed/disabled recovery notices use the additive <code>PluginDiagnosticKind</code> values
+<code>recovery_failed</code> and <code>recovery_disabled</code>, not persisted readiness/registration records.</p>
+<h3 id="existing-event-behavior">Existing event behavior<a class="headerlink" href="#existing-event-behavior" title="Permanent link">&para;</a></h3>
 <p><code>agent_md_loaded</code> is a run-scoped root-session event stamped
 <code>engine:agent-md</code>. It contains one or two discovered <code>AGENTS.md</code> entries,
 each with a bounded display source, retained content, truncation flag, and
@@ -1353,12 +1595,14 @@ original byte size. Missing or disabled context produces no event. History uses
 only the latest run's event and replays its entries as one provenance-delimited
 user turn. Compaction pins that turn alongside loaded skill bodies. See
 <a href="../system-prompt/#agentsmd-context-turn">System Prompt Composition</a>.</p>
-<p><code>plugin_event_added</code> is a runless plugin publication containing <code>plugin</code>, <code>name</code>, and arbitrary
+<p>Legacy <code>plugin_event_added</code> is a runless plugin publication containing <code>plugin</code>, <code>name</code>, and arbitrary
 JSON <code>payload</code>. Plugin-originated payloads are capped at 256 KiB, names at 128 characters, and the
 complete serialized event at 272 KiB; per-plugin/session rate and byte quotas apply. The event is normal
 branch content: it survives reopen and fork, is visible to model history and compaction, and is
 tombstoned by revert. <code>plugin_diagnostic</code> records operational notices such as interception
-timeouts, hook blocks, invalid modifications, oversized publications, and dropped stream counts.</p>
+timeouts, hook blocks, invalid modifications, oversized publications, and dropped stream counts.
+Current model-bound plugin sends must use an explicitly registered producer;
+<code>plugin/emit</code> cannot append model-visible session publications. Bus traffic is unchanged.</p>
 <p>Delegation persistence includes <code>delegate_queued</code> and <code>delegate_finished</code>. The completion event is
 written to the parent run and carries <code>{ session_id, status, preview,
 total_lines }</code>; <code>preview</code> is limited to the first 20 lines and 2 KiB. It becomes
@@ -1370,7 +1614,10 @@ text-only user/assistant turns copied by <code>inherit_context</code>; it must p
 child's first run and deterministically rebuilds the same initial model history
 after restart. <code>delegate_finished_v2</code> adds the delegation <code>invocation_id</code> to the
 same completion payload so repeated resumes of one child each receive exactly
-one teaser. Current engines emit the V2 completion form.</p>
+one teaser. Current background completions first durably accept a steer producer
+message, then emit V2 for transcript consumers. Model history suppresses V2 when
+the invocation has a producer acceptance, so the result is materialized only once.
+Foreground delegation retains its tool result as its only result channel.</p>
 <p>The <code>delegation_*</code> lifecycle records are durable control events on the parent
 session. <code>delegation_reserved</code> contains the complete current delegate request,
 child agent snapshot, selected model suffix, runtime revisions, request

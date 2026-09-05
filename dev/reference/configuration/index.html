@@ -546,6 +546,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/permissions/" class="md-nav__link">
         
   
@@ -855,6 +878,29 @@
   
   <span class="md-ellipsis">
     Plugin development
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/goal-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
     
   </span>
   
@@ -2350,6 +2396,12 @@ runtime behavior. Plugin authors can use the
 <td>Whether the plugin starts with the engine.</td>
 </tr>
 <tr>
+<td><code>producer_messaging</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Opt in to the producer messaging protocol capability, allowing the plugin to register producers and send model-bound messages.</td>
+</tr>
+<tr>
 <td><code>interception_timeout_ms</code></td>
 <td>integer</td>
 <td><code>2000</code></td>
@@ -2389,10 +2441,11 @@ engine's environment, including <code>PATH</code>; use an absolute <code>command
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">PATH</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"/usr/bin:/bin"</span><span class="p">,</span><span class="w"> </span><span class="n">MODE</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"local"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="c1"># Complete child environment.</span>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">cwd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/workspace"</span><span class="w">                           </span><span class="c1"># Optional child working directory.</span>
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="w">                                </span><span class="c1"># Start when the engine opens.</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span><span class="w">                </span><span class="c1"># Per interception hook.</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span><span class="w">                    </span><span class="c1"># Initialization handshake.</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span><span class="w">                      </span><span class="c1"># Grace before termination.</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span><span class="w">                       </span><span class="c1"># Per plugin tool call.</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">producer_messaging</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="w">                    </span><span class="c1"># Opt in to model-bound producer messaging.</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span><span class="w">                </span><span class="c1"># Per interception hook.</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span><span class="w">                    </span><span class="c1"># Initialization handshake.</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span><span class="w">                      </span><span class="c1"># Grace before termination.</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span><span class="w">                       </span><span class="c1"># Per plugin tool call.</span>
 </code></pre></div>
 <h2 id="providers"><code>[providers]</code><a class="headerlink" href="#providers" title="Permanent link">&para;</a></h2>
 <p>Provider definitions are keyed by provider ID under <code>[providers.&lt;id&gt;]</code>. Each

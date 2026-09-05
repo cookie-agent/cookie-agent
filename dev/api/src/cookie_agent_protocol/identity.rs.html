@@ -130,232 +130,240 @@
 <a href=#130 id=130 data-nosnippet>130</a>
 <a href=#131 id=131 data-nosnippet>131</a><span class="macro">bounded_control_free_type!</span>(ClientRunId, <span class="number">256</span>, <span class="string">"Bounded run idempotency key."</span>);
 <a href=#132 id=132 data-nosnippet>132</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#133 id=133 data-nosnippet>133</a>    ClientResponseId,
+<a href=#133 id=133 data-nosnippet>133</a>    ProducerIdempotencyKey,
 <a href=#134 id=134 data-nosnippet>134</a>    <span class="number">256</span>,
-<a href=#135 id=135 data-nosnippet>135</a>    <span class="string">"Bounded approval response idempotency key."
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="string">"Sender-chosen idempotency key scoped to a session and stable producer owner."
 <a href=#136 id=136 data-nosnippet>136</a></span>);
 <a href=#137 id=137 data-nosnippet>137</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#138 id=138 data-nosnippet>138</a>    ClientConnectId,
+<a href=#138 id=138 data-nosnippet>138</a>    ClientResponseId,
 <a href=#139 id=139 data-nosnippet>139</a>    <span class="number">256</span>,
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="string">"Bounded provider connection idempotency key."
+<a href=#140 id=140 data-nosnippet>140</a>    <span class="string">"Bounded approval response idempotency key."
 <a href=#141 id=141 data-nosnippet>141</a></span>);
 <a href=#142 id=142 data-nosnippet>142</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#143 id=143 data-nosnippet>143</a>    ClientRequestId,
+<a href=#143 id=143 data-nosnippet>143</a>    ClientConnectId,
 <a href=#144 id=144 data-nosnippet>144</a>    <span class="number">256</span>,
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="string">"Bounded provider mutation idempotency key."
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="string">"Bounded provider connection idempotency key."
 <a href=#146 id=146 data-nosnippet>146</a></span>);
 <a href=#147 id=147 data-nosnippet>147</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#148 id=148 data-nosnippet>148</a>    ClientRenameId,
+<a href=#148 id=148 data-nosnippet>148</a>    ClientRequestId,
 <a href=#149 id=149 data-nosnippet>149</a>    <span class="number">256</span>,
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="string">"Bounded title mutation idempotency key."
+<a href=#150 id=150 data-nosnippet>150</a>    <span class="string">"Bounded provider mutation idempotency key."
 <a href=#151 id=151 data-nosnippet>151</a></span>);
 <a href=#152 id=152 data-nosnippet>152</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#153 id=153 data-nosnippet>153</a>    ModelCallId,
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="number">512</span>,
-<a href=#155 id=155 data-nosnippet>155</a>    <span class="string">"Bounded semantic model tool-call identity."
+<a href=#153 id=153 data-nosnippet>153</a>    ClientRenameId,
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="number">256</span>,
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="string">"Bounded title mutation idempotency key."
 <a href=#156 id=156 data-nosnippet>156</a></span>);
-<a href=#157 id=157 data-nosnippet>157</a><span class="macro">bounded_control_free_type!</span>(ProviderItemId, <span class="number">512</span>, <span class="string">"Bounded provider item identity."</span>);
-<a href=#158 id=158 data-nosnippet>158</a><span class="macro">bounded_control_free_type!</span>(CwdIdentity, <span class="number">4096</span>, <span class="string">"Opaque canonical workspace identity."</span>);
-<a href=#159 id=159 data-nosnippet>159</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#160 id=160 data-nosnippet>160</a>    SafeDisplayText,
-<a href=#161 id=161 data-nosnippet>161</a>    <span class="number">1024</span>,
-<a href=#162 id=162 data-nosnippet>162</a>    <span class="string">"Control-free bounded presentation text."
-<a href=#163 id=163 data-nosnippet>163</a></span>);
+<a href=#157 id=157 data-nosnippet>157</a><span class="macro">bounded_control_free_type!</span>(
+<a href=#158 id=158 data-nosnippet>158</a>    ModelCallId,
+<a href=#159 id=159 data-nosnippet>159</a>    <span class="number">512</span>,
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="string">"Bounded semantic model tool-call identity."
+<a href=#161 id=161 data-nosnippet>161</a></span>);
+<a href=#162 id=162 data-nosnippet>162</a><span class="macro">bounded_control_free_type!</span>(ProviderItemId, <span class="number">512</span>, <span class="string">"Bounded provider item identity."</span>);
+<a href=#163 id=163 data-nosnippet>163</a><span class="macro">bounded_control_free_type!</span>(CwdIdentity, <span class="number">4096</span>, <span class="string">"Opaque canonical workspace identity."</span>);
 <a href=#164 id=164 data-nosnippet>164</a><span class="macro">bounded_control_free_type!</span>(
-<a href=#165 id=165 data-nosnippet>165</a>    SafeErrorMessage,
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="number">4096</span>,
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="string">"Control-free bounded safe error text."
+<a href=#165 id=165 data-nosnippet>165</a>    SafeDisplayText,
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="number">1024</span>,
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="string">"Control-free bounded presentation text."
 <a href=#168 id=168 data-nosnippet>168</a></span>);
-<a href=#169 id=169 data-nosnippet>169</a><span class="macro">bounded_control_free_type!</span>(CatalogIdentifier, <span class="number">1024</span>, <span class="string">"Bounded catalog identity."</span>);
-<a href=#170 id=170 data-nosnippet>170</a>
-<a href=#171 id=171 data-nosnippet>171</a><span class="attr">#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-<a href=#172 id=172 data-nosnippet>172</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
-<a href=#173 id=173 data-nosnippet>173</a></span><span class="kw">pub struct </span>CatalogText(String);
-<a href=#174 id=174 data-nosnippet>174</a><span class="macro">string_wire_impl!</span>(
-<a href=#175 id=175 data-nosnippet>175</a>    CatalogText,
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="number">16_384</span>,
-<a href=#177 id=177 data-nosnippet>177</a>    <span class="string">"^\\S(?:.*\\S)?$"</span>,
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="string">"Trimmed bounded catalog display text."</span>,
-<a href=#179 id=179 data-nosnippet>179</a>    |value: <span class="kw-2">&amp;</span>str| {
-<a href=#180 id=180 data-nosnippet>180</a>        validate_control_free(value, CatalogText::MAX_BYTES)<span class="question-mark">?</span>;
-<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">if </span>value.trim() != value {
-<a href=#182 id=182 data-nosnippet>182</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(<span class="string">"must be trimmed and nonblank"</span>));
-<a href=#183 id=183 data-nosnippet>183</a>        }
-<a href=#184 id=184 data-nosnippet>184</a>        <span class="prelude-val">Ok</span>(())
-<a href=#185 id=185 data-nosnippet>185</a>    }
-<a href=#186 id=186 data-nosnippet>186</a>);
-<a href=#187 id=187 data-nosnippet>187</a>
-<a href=#188 id=188 data-nosnippet>188</a><span class="attr">#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-<a href=#189 id=189 data-nosnippet>189</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
-<a href=#190 id=190 data-nosnippet>190</a></span><span class="kw">pub struct </span>CredentialFieldName(String);
-<a href=#191 id=191 data-nosnippet>191</a>
-<a href=#192 id=192 data-nosnippet>192</a><span class="macro">string_wire_impl!</span>(
-<a href=#193 id=193 data-nosnippet>193</a>    CredentialFieldName,
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="number">1024</span>,
-<a href=#195 id=195 data-nosnippet>195</a>    <span class="string">"^[A-Z0-9_]+$"</span>,
-<a href=#196 id=196 data-nosnippet>196</a>    <span class="string">"Strict provider credential field name."</span>,
-<a href=#197 id=197 data-nosnippet>197</a>    |value: <span class="kw-2">&amp;</span>str| {
-<a href=#198 id=198 data-nosnippet>198</a>        validate_bounded(value, CredentialFieldName::MAX_BYTES)<span class="question-mark">?</span>;
-<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">if </span>!value
-<a href=#200 id=200 data-nosnippet>200</a>            .bytes()
-<a href=#201 id=201 data-nosnippet>201</a>            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == <span class="string">b'_'</span>)
-<a href=#202 id=202 data-nosnippet>202</a>        {
-<a href=#203 id=203 data-nosnippet>203</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(
-<a href=#204 id=204 data-nosnippet>204</a>                <span class="string">"must use only uppercase ASCII letters, digits, or '_'"</span>,
-<a href=#205 id=205 data-nosnippet>205</a>            ));
-<a href=#206 id=206 data-nosnippet>206</a>        }
-<a href=#207 id=207 data-nosnippet>207</a>        <span class="prelude-val">Ok</span>(())
-<a href=#208 id=208 data-nosnippet>208</a>    }
-<a href=#209 id=209 data-nosnippet>209</a>);
-<a href=#210 id=210 data-nosnippet>210</a>
-<a href=#211 id=211 data-nosnippet>211</a><span class="attr">#[derive(Clone, Deserialize, Serialize)]
-<a href=#212 id=212 data-nosnippet>212</a>#[serde(transparent)]
-<a href=#213 id=213 data-nosnippet>213</a></span><span class="kw">struct </span>TransparentUuid(Uuid);
-<a href=#214 id=214 data-nosnippet>214</a>
-<a href=#215 id=215 data-nosnippet>215</a><span class="macro">macro_rules!</span> uuid_id {
-<a href=#216 id=216 data-nosnippet>216</a>    (<span class="macro-nonterminal">$name</span>:ident) =&gt; {
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="attr">#[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, TS)]
-<a href=#218 id=218 data-nosnippet>218</a>        #[schemars(transparent)]
-<a href=#219 id=219 data-nosnippet>219</a>        </span><span class="kw">pub struct </span><span class="macro-nonterminal">$name</span>(<span class="kw">pub </span>Uuid);
-<a href=#220 id=220 data-nosnippet>220</a>
-<a href=#221 id=221 data-nosnippet>221</a>        <span class="kw">impl </span>Serialize <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#222 id=222 data-nosnippet>222</a>            <span class="kw">fn </span>serialize&lt;S&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt;
-<a href=#223 id=223 data-nosnippet>223</a>            <span class="kw">where
-<a href=#224 id=224 data-nosnippet>224</a>                </span>S: serde::Serializer,
-<a href=#225 id=225 data-nosnippet>225</a>            {
-<a href=#226 id=226 data-nosnippet>226</a>                TransparentUuid(<span class="self">self</span>.<span class="number">0</span>).serialize(serializer)
-<a href=#227 id=227 data-nosnippet>227</a>            }
-<a href=#228 id=228 data-nosnippet>228</a>        }
-<a href=#229 id=229 data-nosnippet>229</a>
-<a href=#230 id=230 data-nosnippet>230</a>        <span class="kw">impl</span>&lt;<span class="lifetime">'de</span>&gt; Deserialize&lt;<span class="lifetime">'de</span>&gt; <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#231 id=231 data-nosnippet>231</a>            <span class="kw">fn </span>deserialize&lt;D&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt;
-<a href=#232 id=232 data-nosnippet>232</a>            <span class="kw">where
-<a href=#233 id=233 data-nosnippet>233</a>                </span>D: serde::Deserializer&lt;<span class="lifetime">'de</span>&gt;,
-<a href=#234 id=234 data-nosnippet>234</a>            {
-<a href=#235 id=235 data-nosnippet>235</a>                TransparentUuid::deserialize(deserializer).map(|uuid| <span class="self">Self</span>(uuid.<span class="number">0</span>))
-<a href=#236 id=236 data-nosnippet>236</a>            }
-<a href=#237 id=237 data-nosnippet>237</a>        }
-<a href=#238 id=238 data-nosnippet>238</a>
-<a href=#239 id=239 data-nosnippet>239</a>        <span class="kw">impl </span><span class="macro-nonterminal">$name </span>{
-<a href=#240 id=240 data-nosnippet>240</a>            <span class="attr">#[must_use]
-<a href=#241 id=241 data-nosnippet>241</a>            </span><span class="kw">pub fn </span>new_v7() -&gt; <span class="self">Self </span>{
-<a href=#242 id=242 data-nosnippet>242</a>                <span class="self">Self</span>(Uuid::now_v7())
-<a href=#243 id=243 data-nosnippet>243</a>            }
-<a href=#244 id=244 data-nosnippet>244</a>        }
-<a href=#245 id=245 data-nosnippet>245</a>
-<a href=#246 id=246 data-nosnippet>246</a>        <span class="kw">impl </span>fmt::Display <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#247 id=247 data-nosnippet>247</a>            <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#248 id=248 data-nosnippet>248</a>                <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
-<a href=#249 id=249 data-nosnippet>249</a>            }
-<a href=#250 id=250 data-nosnippet>250</a>        }
-<a href=#251 id=251 data-nosnippet>251</a>
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="kw">impl </span>FromStr <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
-<a href=#253 id=253 data-nosnippet>253</a>            <span class="kw">type </span><span class="prelude-val">Err </span>= uuid::Error;
-<a href=#254 id=254 data-nosnippet>254</a>            <span class="kw">fn </span>from_str(value: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
-<a href=#255 id=255 data-nosnippet>255</a>                value.parse().map(<span class="self">Self</span>)
-<a href=#256 id=256 data-nosnippet>256</a>            }
-<a href=#257 id=257 data-nosnippet>257</a>        }
-<a href=#258 id=258 data-nosnippet>258</a>    };
-<a href=#259 id=259 data-nosnippet>259</a>}
-<a href=#260 id=260 data-nosnippet>260</a>
-<a href=#261 id=261 data-nosnippet>261</a><span class="macro">uuid_id!</span>(SessionId);
-<a href=#262 id=262 data-nosnippet>262</a><span class="macro">uuid_id!</span>(RunId);
-<a href=#263 id=263 data-nosnippet>263</a><span class="macro">uuid_id!</span>(AttemptId);
-<a href=#264 id=264 data-nosnippet>264</a><span class="macro">uuid_id!</span>(ToolCallId);
-<a href=#265 id=265 data-nosnippet>265</a><span class="macro">uuid_id!</span>(InvocationId);
-<a href=#266 id=266 data-nosnippet>266</a><span class="macro">uuid_id!</span>(InternalAgentInvocationId);
-<a href=#267 id=267 data-nosnippet>267</a><span class="macro">uuid_id!</span>(InternalAgentRunId);
-<a href=#268 id=268 data-nosnippet>268</a><span class="macro">uuid_id!</span>(ApprovalId);
-<a href=#269 id=269 data-nosnippet>269</a><span class="macro">uuid_id!</span>(TreeApprovalGrantId);
-<a href=#270 id=270 data-nosnippet>270</a><span class="macro">uuid_id!</span>(DurableProviderReceiptId);
-<a href=#271 id=271 data-nosnippet>271</a>
-<a href=#272 id=272 data-nosnippet>272</a><span class="attr">#[derive(Clone, Eq, Hash, PartialEq, TS)]
-<a href=#273 id=273 data-nosnippet>273</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
-<a href=#274 id=274 data-nosnippet>274</a></span><span class="kw">pub struct </span>Sha256Digest(String);
-<a href=#275 id=275 data-nosnippet>275</a>
-<a href=#276 id=276 data-nosnippet>276</a><span class="kw">impl </span>Sha256Digest {
-<a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">pub const </span>HEX_LENGTH: usize = <span class="number">64</span>;
-<a href=#278 id=278 data-nosnippet>278</a>
-<a href=#279 id=279 data-nosnippet>279</a>    <span class="kw">pub fn </span>new(value: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, WireStringError&gt; {
-<a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>value = value.into();
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">if </span>value.len() != <span class="self">Self</span>::HEX_LENGTH
-<a href=#282 id=282 data-nosnippet>282</a>            || !value
-<a href=#283 id=283 data-nosnippet>283</a>                .bytes()
-<a href=#284 id=284 data-nosnippet>284</a>                .all(|byte| byte.is_ascii_digit() || (<span class="string">b'a'</span>..=<span class="string">b'f'</span>).contains(<span class="kw-2">&amp;</span>byte))
-<a href=#285 id=285 data-nosnippet>285</a>        {
-<a href=#286 id=286 data-nosnippet>286</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(
-<a href=#287 id=287 data-nosnippet>287</a>                <span class="string">"must be exactly 64 lowercase hexadecimal characters"</span>,
-<a href=#288 id=288 data-nosnippet>288</a>            ));
-<a href=#289 id=289 data-nosnippet>289</a>        }
-<a href=#290 id=290 data-nosnippet>290</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>(value))
-<a href=#291 id=291 data-nosnippet>291</a>    }
-<a href=#292 id=292 data-nosnippet>292</a>
-<a href=#293 id=293 data-nosnippet>293</a>    <span class="attr">#[must_use]
-<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">pub fn </span>as_str(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0
-<a href=#296 id=296 data-nosnippet>296</a>    </span>}
-<a href=#297 id=297 data-nosnippet>297</a>
-<a href=#298 id=298 data-nosnippet>298</a>    <span class="attr">#[must_use]
-<a href=#299 id=299 data-nosnippet>299</a>    </span><span class="kw">pub fn </span>of_bytes(bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="self">Self </span>{
-<a href=#300 id=300 data-nosnippet>300</a>        <span class="self">Self</span>(sha256_hex(bytes))
-<a href=#301 id=301 data-nosnippet>301</a>    }
-<a href=#302 id=302 data-nosnippet>302</a>
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="attr">#[must_use]
-<a href=#304 id=304 data-nosnippet>304</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>hash_domain_separated(domain: <span class="kw-2">&amp;</span>[u8], bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="self">Self </span>{
-<a href=#305 id=305 data-nosnippet>305</a>        <span class="kw">let </span><span class="kw-2">mut </span>input = Vec::with_capacity(domain.len() + <span class="number">8 </span>+ bytes.len());
-<a href=#306 id=306 data-nosnippet>306</a>        input.extend_from_slice(domain);
-<a href=#307 id=307 data-nosnippet>307</a>        input.extend_from_slice(<span class="kw-2">&amp;</span>(bytes.len() <span class="kw">as </span>u64).to_be_bytes());
-<a href=#308 id=308 data-nosnippet>308</a>        input.extend_from_slice(bytes);
-<a href=#309 id=309 data-nosnippet>309</a>        <span class="self">Self</span>(sha256_hex(<span class="kw-2">&amp;</span>input))
-<a href=#310 id=310 data-nosnippet>310</a>    }
-<a href=#311 id=311 data-nosnippet>311</a>}
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a><span class="kw">impl </span>fmt::Debug <span class="kw">for </span>Sha256Digest {
-<a href=#314 id=314 data-nosnippet>314</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#315 id=315 data-nosnippet>315</a>        <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
-<a href=#316 id=316 data-nosnippet>316</a>    }
-<a href=#317 id=317 data-nosnippet>317</a>}
-<a href=#318 id=318 data-nosnippet>318</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>Sha256Digest {
-<a href=#319 id=319 data-nosnippet>319</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#320 id=320 data-nosnippet>320</a>        <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
-<a href=#321 id=321 data-nosnippet>321</a>    }
-<a href=#322 id=322 data-nosnippet>322</a>}
-<a href=#323 id=323 data-nosnippet>323</a><span class="kw">impl </span>Serialize <span class="kw">for </span>Sha256Digest {
-<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">fn </span>serialize&lt;S&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt;
-<a href=#325 id=325 data-nosnippet>325</a>    <span class="kw">where
-<a href=#326 id=326 data-nosnippet>326</a>        </span>S: serde::Serializer,
-<a href=#327 id=327 data-nosnippet>327</a>    {
-<a href=#328 id=328 data-nosnippet>328</a>        serializer.serialize_str(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0</span>)
+<a href=#169 id=169 data-nosnippet>169</a><span class="macro">bounded_control_free_type!</span>(
+<a href=#170 id=170 data-nosnippet>170</a>    SafeErrorMessage,
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="number">4096</span>,
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="string">"Control-free bounded safe error text."
+<a href=#173 id=173 data-nosnippet>173</a></span>);
+<a href=#174 id=174 data-nosnippet>174</a><span class="macro">bounded_control_free_type!</span>(CatalogIdentifier, <span class="number">1024</span>, <span class="string">"Bounded catalog identity."</span>);
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a><span class="attr">#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+<a href=#177 id=177 data-nosnippet>177</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
+<a href=#178 id=178 data-nosnippet>178</a></span><span class="kw">pub struct </span>CatalogText(String);
+<a href=#179 id=179 data-nosnippet>179</a><span class="macro">string_wire_impl!</span>(
+<a href=#180 id=180 data-nosnippet>180</a>    CatalogText,
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="number">16_384</span>,
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="string">"^\\S(?:.*\\S)?$"</span>,
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="string">"Trimmed bounded catalog display text."</span>,
+<a href=#184 id=184 data-nosnippet>184</a>    |value: <span class="kw-2">&amp;</span>str| {
+<a href=#185 id=185 data-nosnippet>185</a>        validate_control_free(value, CatalogText::MAX_BYTES)<span class="question-mark">?</span>;
+<a href=#186 id=186 data-nosnippet>186</a>        <span class="kw">if </span>value.trim() != value {
+<a href=#187 id=187 data-nosnippet>187</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(<span class="string">"must be trimmed and nonblank"</span>));
+<a href=#188 id=188 data-nosnippet>188</a>        }
+<a href=#189 id=189 data-nosnippet>189</a>        <span class="prelude-val">Ok</span>(())
+<a href=#190 id=190 data-nosnippet>190</a>    }
+<a href=#191 id=191 data-nosnippet>191</a>);
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a><span class="attr">#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+<a href=#194 id=194 data-nosnippet>194</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
+<a href=#195 id=195 data-nosnippet>195</a></span><span class="kw">pub struct </span>CredentialFieldName(String);
+<a href=#196 id=196 data-nosnippet>196</a>
+<a href=#197 id=197 data-nosnippet>197</a><span class="macro">string_wire_impl!</span>(
+<a href=#198 id=198 data-nosnippet>198</a>    CredentialFieldName,
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="number">1024</span>,
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="string">"^[A-Z0-9_]+$"</span>,
+<a href=#201 id=201 data-nosnippet>201</a>    <span class="string">"Strict provider credential field name."</span>,
+<a href=#202 id=202 data-nosnippet>202</a>    |value: <span class="kw-2">&amp;</span>str| {
+<a href=#203 id=203 data-nosnippet>203</a>        validate_bounded(value, CredentialFieldName::MAX_BYTES)<span class="question-mark">?</span>;
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="kw">if </span>!value
+<a href=#205 id=205 data-nosnippet>205</a>            .bytes()
+<a href=#206 id=206 data-nosnippet>206</a>            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == <span class="string">b'_'</span>)
+<a href=#207 id=207 data-nosnippet>207</a>        {
+<a href=#208 id=208 data-nosnippet>208</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(
+<a href=#209 id=209 data-nosnippet>209</a>                <span class="string">"must use only uppercase ASCII letters, digits, or '_'"</span>,
+<a href=#210 id=210 data-nosnippet>210</a>            ));
+<a href=#211 id=211 data-nosnippet>211</a>        }
+<a href=#212 id=212 data-nosnippet>212</a>        <span class="prelude-val">Ok</span>(())
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>);
+<a href=#215 id=215 data-nosnippet>215</a>
+<a href=#216 id=216 data-nosnippet>216</a><span class="attr">#[derive(Clone, Deserialize, Serialize)]
+<a href=#217 id=217 data-nosnippet>217</a>#[serde(transparent)]
+<a href=#218 id=218 data-nosnippet>218</a></span><span class="kw">struct </span>TransparentUuid(Uuid);
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a><span class="macro">macro_rules!</span> uuid_id {
+<a href=#221 id=221 data-nosnippet>221</a>    (<span class="macro-nonterminal">$name</span>:ident) =&gt; {
+<a href=#222 id=222 data-nosnippet>222</a>        <span class="attr">#[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, TS)]
+<a href=#223 id=223 data-nosnippet>223</a>        #[schemars(transparent)]
+<a href=#224 id=224 data-nosnippet>224</a>        </span><span class="kw">pub struct </span><span class="macro-nonterminal">$name</span>(<span class="kw">pub </span>Uuid);
+<a href=#225 id=225 data-nosnippet>225</a>
+<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">impl </span>Serialize <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#227 id=227 data-nosnippet>227</a>            <span class="kw">fn </span>serialize&lt;S&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt;
+<a href=#228 id=228 data-nosnippet>228</a>            <span class="kw">where
+<a href=#229 id=229 data-nosnippet>229</a>                </span>S: serde::Serializer,
+<a href=#230 id=230 data-nosnippet>230</a>            {
+<a href=#231 id=231 data-nosnippet>231</a>                TransparentUuid(<span class="self">self</span>.<span class="number">0</span>).serialize(serializer)
+<a href=#232 id=232 data-nosnippet>232</a>            }
+<a href=#233 id=233 data-nosnippet>233</a>        }
+<a href=#234 id=234 data-nosnippet>234</a>
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">impl</span>&lt;<span class="lifetime">'de</span>&gt; Deserialize&lt;<span class="lifetime">'de</span>&gt; <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#236 id=236 data-nosnippet>236</a>            <span class="kw">fn </span>deserialize&lt;D&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt;
+<a href=#237 id=237 data-nosnippet>237</a>            <span class="kw">where
+<a href=#238 id=238 data-nosnippet>238</a>                </span>D: serde::Deserializer&lt;<span class="lifetime">'de</span>&gt;,
+<a href=#239 id=239 data-nosnippet>239</a>            {
+<a href=#240 id=240 data-nosnippet>240</a>                TransparentUuid::deserialize(deserializer).map(|uuid| <span class="self">Self</span>(uuid.<span class="number">0</span>))
+<a href=#241 id=241 data-nosnippet>241</a>            }
+<a href=#242 id=242 data-nosnippet>242</a>        }
+<a href=#243 id=243 data-nosnippet>243</a>
+<a href=#244 id=244 data-nosnippet>244</a>        <span class="kw">impl </span><span class="macro-nonterminal">$name </span>{
+<a href=#245 id=245 data-nosnippet>245</a>            <span class="attr">#[must_use]
+<a href=#246 id=246 data-nosnippet>246</a>            </span><span class="kw">pub fn </span>new_v7() -&gt; <span class="self">Self </span>{
+<a href=#247 id=247 data-nosnippet>247</a>                <span class="self">Self</span>(Uuid::now_v7())
+<a href=#248 id=248 data-nosnippet>248</a>            }
+<a href=#249 id=249 data-nosnippet>249</a>        }
+<a href=#250 id=250 data-nosnippet>250</a>
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="kw">impl </span>fmt::Display <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#252 id=252 data-nosnippet>252</a>            <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#253 id=253 data-nosnippet>253</a>                <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
+<a href=#254 id=254 data-nosnippet>254</a>            }
+<a href=#255 id=255 data-nosnippet>255</a>        }
+<a href=#256 id=256 data-nosnippet>256</a>
+<a href=#257 id=257 data-nosnippet>257</a>        <span class="kw">impl </span>FromStr <span class="kw">for </span><span class="macro-nonterminal">$name </span>{
+<a href=#258 id=258 data-nosnippet>258</a>            <span class="kw">type </span><span class="prelude-val">Err </span>= uuid::Error;
+<a href=#259 id=259 data-nosnippet>259</a>            <span class="kw">fn </span>from_str(value: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
+<a href=#260 id=260 data-nosnippet>260</a>                value.parse().map(<span class="self">Self</span>)
+<a href=#261 id=261 data-nosnippet>261</a>            }
+<a href=#262 id=262 data-nosnippet>262</a>        }
+<a href=#263 id=263 data-nosnippet>263</a>    };
+<a href=#264 id=264 data-nosnippet>264</a>}
+<a href=#265 id=265 data-nosnippet>265</a>
+<a href=#266 id=266 data-nosnippet>266</a><span class="macro">uuid_id!</span>(SessionId);
+<a href=#267 id=267 data-nosnippet>267</a><span class="macro">uuid_id!</span>(RunId);
+<a href=#268 id=268 data-nosnippet>268</a><span class="macro">uuid_id!</span>(AttemptId);
+<a href=#269 id=269 data-nosnippet>269</a><span class="macro">uuid_id!</span>(ToolCallId);
+<a href=#270 id=270 data-nosnippet>270</a><span class="macro">uuid_id!</span>(InvocationId);
+<a href=#271 id=271 data-nosnippet>271</a><span class="macro">uuid_id!</span>(InternalAgentInvocationId);
+<a href=#272 id=272 data-nosnippet>272</a><span class="macro">uuid_id!</span>(InternalAgentRunId);
+<a href=#273 id=273 data-nosnippet>273</a><span class="macro">uuid_id!</span>(ApprovalId);
+<a href=#274 id=274 data-nosnippet>274</a><span class="macro">uuid_id!</span>(TreeApprovalGrantId);
+<a href=#275 id=275 data-nosnippet>275</a><span class="macro">uuid_id!</span>(DurableProviderReceiptId);
+<a href=#276 id=276 data-nosnippet>276</a><span class="macro">uuid_id!</span>(GoalId);
+<a href=#277 id=277 data-nosnippet>277</a><span class="macro">uuid_id!</span>(ProducerId);
+<a href=#278 id=278 data-nosnippet>278</a><span class="macro">uuid_id!</span>(ProducerMessageId);
+<a href=#279 id=279 data-nosnippet>279</a>
+<a href=#280 id=280 data-nosnippet>280</a><span class="attr">#[derive(Clone, Eq, Hash, PartialEq, TS)]
+<a href=#281 id=281 data-nosnippet>281</a>#[ts(<span class="kw">type </span>= <span class="string">"string"</span>)]
+<a href=#282 id=282 data-nosnippet>282</a></span><span class="kw">pub struct </span>Sha256Digest(String);
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a><span class="kw">impl </span>Sha256Digest {
+<a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">pub const </span>HEX_LENGTH: usize = <span class="number">64</span>;
+<a href=#286 id=286 data-nosnippet>286</a>
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">pub fn </span>new(value: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, WireStringError&gt; {
+<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">let </span>value = value.into();
+<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">if </span>value.len() != <span class="self">Self</span>::HEX_LENGTH
+<a href=#290 id=290 data-nosnippet>290</a>            || !value
+<a href=#291 id=291 data-nosnippet>291</a>                .bytes()
+<a href=#292 id=292 data-nosnippet>292</a>                .all(|byte| byte.is_ascii_digit() || (<span class="string">b'a'</span>..=<span class="string">b'f'</span>).contains(<span class="kw-2">&amp;</span>byte))
+<a href=#293 id=293 data-nosnippet>293</a>        {
+<a href=#294 id=294 data-nosnippet>294</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(WireStringError::Invalid(
+<a href=#295 id=295 data-nosnippet>295</a>                <span class="string">"must be exactly 64 lowercase hexadecimal characters"</span>,
+<a href=#296 id=296 data-nosnippet>296</a>            ));
+<a href=#297 id=297 data-nosnippet>297</a>        }
+<a href=#298 id=298 data-nosnippet>298</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>(value))
+<a href=#299 id=299 data-nosnippet>299</a>    }
+<a href=#300 id=300 data-nosnippet>300</a>
+<a href=#301 id=301 data-nosnippet>301</a>    <span class="attr">#[must_use]
+<a href=#302 id=302 data-nosnippet>302</a>    </span><span class="kw">pub fn </span>as_str(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0
+<a href=#304 id=304 data-nosnippet>304</a>    </span>}
+<a href=#305 id=305 data-nosnippet>305</a>
+<a href=#306 id=306 data-nosnippet>306</a>    <span class="attr">#[must_use]
+<a href=#307 id=307 data-nosnippet>307</a>    </span><span class="kw">pub fn </span>of_bytes(bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="self">Self </span>{
+<a href=#308 id=308 data-nosnippet>308</a>        <span class="self">Self</span>(sha256_hex(bytes))
+<a href=#309 id=309 data-nosnippet>309</a>    }
+<a href=#310 id=310 data-nosnippet>310</a>
+<a href=#311 id=311 data-nosnippet>311</a>    <span class="attr">#[must_use]
+<a href=#312 id=312 data-nosnippet>312</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>hash_domain_separated(domain: <span class="kw-2">&amp;</span>[u8], bytes: <span class="kw-2">&amp;</span>[u8]) -&gt; <span class="self">Self </span>{
+<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span><span class="kw-2">mut </span>input = Vec::with_capacity(domain.len() + <span class="number">8 </span>+ bytes.len());
+<a href=#314 id=314 data-nosnippet>314</a>        input.extend_from_slice(domain);
+<a href=#315 id=315 data-nosnippet>315</a>        input.extend_from_slice(<span class="kw-2">&amp;</span>(bytes.len() <span class="kw">as </span>u64).to_be_bytes());
+<a href=#316 id=316 data-nosnippet>316</a>        input.extend_from_slice(bytes);
+<a href=#317 id=317 data-nosnippet>317</a>        <span class="self">Self</span>(sha256_hex(<span class="kw-2">&amp;</span>input))
+<a href=#318 id=318 data-nosnippet>318</a>    }
+<a href=#319 id=319 data-nosnippet>319</a>}
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a><span class="kw">impl </span>fmt::Debug <span class="kw">for </span>Sha256Digest {
+<a href=#322 id=322 data-nosnippet>322</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
+<a href=#324 id=324 data-nosnippet>324</a>    }
+<a href=#325 id=325 data-nosnippet>325</a>}
+<a href=#326 id=326 data-nosnippet>326</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>Sha256Digest {
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, formatter: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#328 id=328 data-nosnippet>328</a>        <span class="self">self</span>.<span class="number">0</span>.fmt(formatter)
 <a href=#329 id=329 data-nosnippet>329</a>    }
 <a href=#330 id=330 data-nosnippet>330</a>}
-<a href=#331 id=331 data-nosnippet>331</a><span class="kw">impl</span>&lt;<span class="lifetime">'de</span>&gt; Deserialize&lt;<span class="lifetime">'de</span>&gt; <span class="kw">for </span>Sha256Digest {
-<a href=#332 id=332 data-nosnippet>332</a>    <span class="kw">fn </span>deserialize&lt;D&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt;
+<a href=#331 id=331 data-nosnippet>331</a><span class="kw">impl </span>Serialize <span class="kw">for </span>Sha256Digest {
+<a href=#332 id=332 data-nosnippet>332</a>    <span class="kw">fn </span>serialize&lt;S&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, serializer: S) -&gt; <span class="prelude-ty">Result</span>&lt;S::Ok, S::Error&gt;
 <a href=#333 id=333 data-nosnippet>333</a>    <span class="kw">where
-<a href=#334 id=334 data-nosnippet>334</a>        </span>D: serde::Deserializer&lt;<span class="lifetime">'de</span>&gt;,
+<a href=#334 id=334 data-nosnippet>334</a>        </span>S: serde::Serializer,
 <a href=#335 id=335 data-nosnippet>335</a>    {
-<a href=#336 id=336 data-nosnippet>336</a>        <span class="self">Self</span>::new(String::deserialize(deserializer)<span class="question-mark">?</span>).map_err(serde::de::Error::custom)
+<a href=#336 id=336 data-nosnippet>336</a>        serializer.serialize_str(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0</span>)
 <a href=#337 id=337 data-nosnippet>337</a>    }
 <a href=#338 id=338 data-nosnippet>338</a>}
-<a href=#339 id=339 data-nosnippet>339</a><span class="kw">impl </span>JsonSchema <span class="kw">for </span>Sha256Digest {
-<a href=#340 id=340 data-nosnippet>340</a>    <span class="kw">fn </span>inline_schema() -&gt; bool {
-<a href=#341 id=341 data-nosnippet>341</a>        <span class="bool-val">true
-<a href=#342 id=342 data-nosnippet>342</a>    </span>}
-<a href=#343 id=343 data-nosnippet>343</a>    <span class="kw">fn </span>schema_name() -&gt; Cow&lt;<span class="lifetime">'static</span>, str&gt; {
-<a href=#344 id=344 data-nosnippet>344</a>        Cow::Borrowed(<span class="string">"Sha256Digest"</span>)
+<a href=#339 id=339 data-nosnippet>339</a><span class="kw">impl</span>&lt;<span class="lifetime">'de</span>&gt; Deserialize&lt;<span class="lifetime">'de</span>&gt; <span class="kw">for </span>Sha256Digest {
+<a href=#340 id=340 data-nosnippet>340</a>    <span class="kw">fn </span>deserialize&lt;D&gt;(deserializer: D) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, D::Error&gt;
+<a href=#341 id=341 data-nosnippet>341</a>    <span class="kw">where
+<a href=#342 id=342 data-nosnippet>342</a>        </span>D: serde::Deserializer&lt;<span class="lifetime">'de</span>&gt;,
+<a href=#343 id=343 data-nosnippet>343</a>    {
+<a href=#344 id=344 data-nosnippet>344</a>        <span class="self">Self</span>::new(String::deserialize(deserializer)<span class="question-mark">?</span>).map_err(serde::de::Error::custom)
 <a href=#345 id=345 data-nosnippet>345</a>    }
-<a href=#346 id=346 data-nosnippet>346</a>    <span class="kw">fn </span>json_schema(_generator: <span class="kw-2">&amp;mut </span>SchemaGenerator) -&gt; Schema {
-<a href=#347 id=347 data-nosnippet>347</a>        <span class="macro">json_schema!</span>({<span class="string">"type"</span>:<span class="string">"string"</span>,<span class="string">"pattern"</span>:<span class="string">"^[0-9a-f]{64}$"</span>,<span class="string">"minLength"</span>:<span class="number">64</span>,<span class="string">"maxLength"</span>:<span class="number">64</span>})
-<a href=#348 id=348 data-nosnippet>348</a>    }
-<a href=#349 id=349 data-nosnippet>349</a>}
-<a href=#350 id=350 data-nosnippet>350</a>
-<a href=#351 id=351 data-nosnippet>351</a><span class="kw">fn </span>sha256_hex(input: <span class="kw-2">&amp;</span>[u8]) -&gt; String {
-<a href=#352 id=352 data-nosnippet>352</a>    <span class="kw">use </span>sha2::{Digest, Sha256};
-<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">let </span>digest = Sha256::digest(input);
-<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">let </span><span class="kw-2">mut </span>output = String::with_capacity(<span class="number">64</span>);
-<a href=#355 id=355 data-nosnippet>355</a>    <span class="kw">for </span>byte <span class="kw">in </span>digest {
-<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">use </span>std::fmt::Write <span class="kw">as _</span>;
-<a href=#357 id=357 data-nosnippet>357</a>        <span class="macro">write!</span>(<span class="kw-2">&amp;mut </span>output, <span class="string">"{byte:02x}"</span>).expect(<span class="string">"writing to a string cannot fail"</span>);
-<a href=#358 id=358 data-nosnippet>358</a>    }
-<a href=#359 id=359 data-nosnippet>359</a>    output
-<a href=#360 id=360 data-nosnippet>360</a>}
+<a href=#346 id=346 data-nosnippet>346</a>}
+<a href=#347 id=347 data-nosnippet>347</a><span class="kw">impl </span>JsonSchema <span class="kw">for </span>Sha256Digest {
+<a href=#348 id=348 data-nosnippet>348</a>    <span class="kw">fn </span>inline_schema() -&gt; bool {
+<a href=#349 id=349 data-nosnippet>349</a>        <span class="bool-val">true
+<a href=#350 id=350 data-nosnippet>350</a>    </span>}
+<a href=#351 id=351 data-nosnippet>351</a>    <span class="kw">fn </span>schema_name() -&gt; Cow&lt;<span class="lifetime">'static</span>, str&gt; {
+<a href=#352 id=352 data-nosnippet>352</a>        Cow::Borrowed(<span class="string">"Sha256Digest"</span>)
+<a href=#353 id=353 data-nosnippet>353</a>    }
+<a href=#354 id=354 data-nosnippet>354</a>    <span class="kw">fn </span>json_schema(_generator: <span class="kw-2">&amp;mut </span>SchemaGenerator) -&gt; Schema {
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="macro">json_schema!</span>({<span class="string">"type"</span>:<span class="string">"string"</span>,<span class="string">"pattern"</span>:<span class="string">"^[0-9a-f]{64}$"</span>,<span class="string">"minLength"</span>:<span class="number">64</span>,<span class="string">"maxLength"</span>:<span class="number">64</span>})
+<a href=#356 id=356 data-nosnippet>356</a>    }
+<a href=#357 id=357 data-nosnippet>357</a>}
+<a href=#358 id=358 data-nosnippet>358</a>
+<a href=#359 id=359 data-nosnippet>359</a><span class="kw">fn </span>sha256_hex(input: <span class="kw-2">&amp;</span>[u8]) -&gt; String {
+<a href=#360 id=360 data-nosnippet>360</a>    <span class="kw">use </span>sha2::{Digest, Sha256};
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="kw">let </span>digest = Sha256::digest(input);
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="kw">let </span><span class="kw-2">mut </span>output = String::with_capacity(<span class="number">64</span>);
+<a href=#363 id=363 data-nosnippet>363</a>    <span class="kw">for </span>byte <span class="kw">in </span>digest {
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">use </span>std::fmt::Write <span class="kw">as _</span>;
+<a href=#365 id=365 data-nosnippet>365</a>        <span class="macro">write!</span>(<span class="kw-2">&amp;mut </span>output, <span class="string">"{byte:02x}"</span>).expect(<span class="string">"writing to a string cannot fail"</span>);
+<a href=#366 id=366 data-nosnippet>366</a>    }
+<a href=#367 id=367 data-nosnippet>367</a>    output
+<a href=#368 id=368 data-nosnippet>368</a>}
 </code></pre></div></section></main></body></html>

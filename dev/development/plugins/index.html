@@ -16,7 +16,7 @@
         <link rel="prev" href="../building/">
       
       
-        <link rel="next" href="../../reference/api/">
+        <link rel="next" href="../goal-mode/">
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
@@ -546,6 +546,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/permissions/" class="md-nav__link">
         
   
@@ -910,6 +933,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Rust SDK">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#producer-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer SDK
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -918,6 +956,30 @@
       Protocol
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#producer-messaging-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer messaging contracts
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Producer messaging contracts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transportruntime-worker-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Transport/runtime worker boundary
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -979,6 +1041,29 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../goal-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -1257,6 +1342,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Rust SDK">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#producer-sdk" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer SDK
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1265,6 +1365,30 @@
       Protocol
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#producer-messaging-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer messaging contracts
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Producer messaging contracts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#transportruntime-worker-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Transport/runtime worker boundary
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1387,17 +1511,62 @@ initialize, ping, shutdown, framing, and JSON-RPC messages:</p>
 </code></pre></div>
 <p>Event and bus handlers are registered with <code>on_event</code> and <code>on_bus_event</code>. A handler can publish
 once from its automatically tracked context grant with
-<code>ctx.emit_bus(event.session_id, "name", payload)</code> or
-<code>ctx.emit_session(event.session_id, "name", payload)</code>. Bus and durable session publishing are off
-by default and are enabled explicitly with <code>enable_bus_publishing</code> and
-<code>enable_session_publishing</code>, respectively. These set process-lifetime protocol capabilities. When
-both are enabled, every emitted event is offered to both routes; <code>emit_bus</code> and <code>emit_session</code>
-return the selected route's status. Each handler context is scoped to its triggering token, so
+<code>ctx.emit_bus(event.session_id, "name", payload)</code>. Bus publishing is off by default
+and is enabled explicitly with <code>enable_bus_publishing</code>; it is non-model traffic.
+The SDK no longer exposes <code>enable_session_publishing</code> or <code>emit_session</code>. Model
+messages use the explicit producer API below. Each bus handler context is scoped to its triggering token, so
 concurrent callbacks for one session cannot consume each other's grants. Notification grants expire
 four seconds after the SDK reader decodes the frame, so inbound queue delay consumes the local
 window. The one-second safety margin assumes the engine-to-SDK delivery interval is under one
 second; the engine remains authoritative, and a timing rejection is surfaced as
 <code>ExtensionEmitStatus::Rejected</code>.</p>
+<h3 id="producer-sdk">Producer SDK<a class="headerlink" href="#producer-sdk" title="Permanent link">&para;</a></h3>
+<p>Opt in with <code>PluginServer::builder(...).enable_producers()</code>. From a tool, event,
+or recovery callback, call <code>ctx.register_producer(session_id).await</code> to obtain a
+<code>ProducerHandle</code>. Keep the handle for the lifetime of external work; it is not a
+one-shot context grant and remains usable after the triggering callback or turn.</p>
+<ul>
+<li><code>handle.send(message, ProducerDeliveryMode::{Steer, Queue}, key).await</code> returns
+  the durable <code>ProducerMessageId</code> receipt.</li>
+<li><code>handle.steer(message, key).await</code> and <code>handle.queue(message, key).await</code> are
+  per-send conveniences. Construct a validated key with
+  <code>ProducerIdempotencyKey::new(stable_message_key)</code>.</li>
+<li><code>handle.id()</code> and <code>handle.session_id()</code> expose the runtime registration and
+  destination. Do not persist registration IDs for reuse after reconnect.</li>
+<li><code>handle.unregister().await</code> explicitly closes the registration. Zero-send
+  unregistration is valid. Dropping a handle does not unregister it, and
+  unregistration never removes already accepted messages. The method borrows the
+  handle, so a rejected close can be retried; the engine rejects sends after close.</li>
+<li><code>handle.discard(message_id).await</code> discards a waiting message in the handle's
+  session and remains usable after <code>handle.unregister().await</code>. Discard does not
+  unregister the producer, and dropping a handle never discards messages.</li>
+<li><code>ctx.discard_producer_message(session_id, message_id).await</code> discards by durable
+  receipt without a registration, including during recovery on a new connection
+  with the same configured plugin name.</li>
+</ul>
+<p>Use <code>.on_recovery(|ctx| async move { ... })</code> to restore from plugin-owned storage
+or external services. The callback returns <code>RecoveryResult</code>: <code>Ok(())</code> reports
+ready; <code>Err(RecoveryFailure)</code> reports failed. <code>PluginError</code> converts into
+<code>RecoveryFailure</code>, so producer calls can use <code>?</code>. The SDK sends a separate
+<code>plugin/recovery/complete</code> request after the callback returns, without a deadline.
+The callback can await registrations and sends while restoring. Producer-capable
+plugins without a recovery callback immediately report ready when recovery starts.</p>
+<p>The SDK services responses independently of callbacks. It bounds ordinary
+callbacks at 64 concurrent handlers, producer requests at 128 pending replies,
+the inbound queue at 32 frames, and the outbound queue at 128 frames. Recovery
+has its own single callback slot. Callback saturation rejects requests explicitly
+and drops observational notifications with a stderr diagnostic; it never drops a
+producer ACK. Disconnect fails pending producer calls with <code>TransportClosed</code>.
+Missing send ACKs remain commit-uncertain: register again after reconnect and
+retry the same body, mode, and stable key.</p>
+<p>The workspace example <code>crates/plugin_sdk/examples/producer_plugin.rs</code> compiles
+with <code>cargo check --locked -p cookie_agent_plugin_sdk --example producer_plugin</code>.
+It reads an optional <code>COOKIE_SESSION_ID</code> from its configured environment and shows
+registration, a stable-key steer, explicit unregister, and recovery completion.
+With <code>COOKIE_DISCARD_MESSAGE_ID</code> also set to a saved message receipt, it instead
+discards that owned waiting message during recovery without registering a producer.
+Consumed or currently claimed receipts fail recovery visibly rather than reporting a
+successful discard.</p>
 <p>Interception handlers use builder methods named after every hook, including <code>user_before_input</code>,
 <code>model_before_request</code>, <code>provider_before_headers</code>, <code>provider_before_request</code>,
 <code>provider_after_response</code>, <code>message_end</code>, <code>model_before_select</code>, <code>session_before_fork</code>, and
@@ -1407,10 +1576,14 @@ and interception capabilities are derived by the SDK; plugin authors do not cons
 flags or set the extension protocol version. See <a href="#protocol">Protocol</a> for delivery, grant, quota,
 and hook-chaining details.</p>
 <h2 id="protocol">Protocol<a class="headerlink" href="#protocol" title="Permanent link">&para;</a></h2>
-<p>The extension protocol version is the semantic-version string <code>0.0.4</code>. Before version 1.0,
+<p>The extension protocol version is the semantic-version string <code>0.0.5</code>. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.</p>
+<p>The host advertises <code>producer_messaging: true</code> on a connection only when its
+configuration opts in and the runtime producer handler is installed. The session
+protocol remains 16, and the crate/package version is unchanged. Event history
+remains additive and versionless.</p>
 <p>The engine sends <code>plugin/initialize</code> with the protocol version, engine version, and engine
 capabilities. The plugin returns its exact protocol version, configured plugin name, plugin
 version, capabilities, and tool declarations. Tool names must be unique within the plugin and
@@ -1427,8 +1600,180 @@ permission and resource, for example:</p>
 <p>The protocol also supports <code>plugin/ping</code> for liveness and sends the <code>plugin/shutdown</code>
 notification during engine shutdown.</p>
 <p>The initialize result declares <code>subscribe_events</code>, <code>subscribe_bus</code>, <code>publish_bus</code>,
-<code>publish_session_events</code>, and an <code>intercept</code> hook-name array in addition to tool and resource
+<code>publish_session_events</code>, <code>producer_messaging</code>, and an <code>intercept</code> hook-name array in addition to tool and resource
 capabilities. Capabilities are fixed for the process lifetime.</p>
+<h2 id="producer-messaging-contracts">Producer messaging contracts<a class="headerlink" href="#producer-messaging-contracts" title="Permanent link">&para;</a></h2>
+<p>Producer messaging requires explicit plugin capability opt-in and
+<code>plugins.&lt;name&gt;.producer_messaging = true</code> in configuration, both off by default.
+The engine derives the stable owner from the configured plugin name and checks
+the live connection's ownership; senders cannot choose or impersonate an owner.</p>
+<table>
+<thead>
+<tr>
+<th>Wire method</th>
+<th>Direction</th>
+<th>Parameters</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plugin/producer/register</code></td>
+<td>Plugin to engine</td>
+<td><code>ExtensionProducerRegisterParams { session_id }</code></td>
+<td><code>ExtensionProducerRegisterResult { producer_id }</code></td>
+</tr>
+<tr>
+<td><code>plugin/producer/send</code></td>
+<td>Plugin to engine</td>
+<td><code>ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, body }</code></td>
+<td><code>ExtensionProducerSendResult { message_id }</code></td>
+</tr>
+<tr>
+<td><code>plugin/producer/unregister</code></td>
+<td>Plugin to engine</td>
+<td><code>ExtensionProducerUnregisterParams { session_id, producer_id }</code></td>
+<td><code>ExtensionProducerUnregisterResult {}</code></td>
+</tr>
+<tr>
+<td><code>plugin/producer/discard</code></td>
+<td>Plugin to engine</td>
+<td><code>ExtensionProducerDiscardParams { session_id, message_id }</code></td>
+<td><code>ExtensionProducerDiscardResult {}</code></td>
+</tr>
+<tr>
+<td><code>plugin/recovery/start</code></td>
+<td>Engine to plugin notification</td>
+<td><code>ExtensionRecoveryStartParams {}</code></td>
+<td>None; no request ID or response</td>
+</tr>
+<tr>
+<td><code>plugin/recovery/complete</code></td>
+<td>Plugin to engine</td>
+<td><code>ExtensionRecoveryCompleteParams { outcome }</code></td>
+<td><code>ExtensionRecoveryCompleteResult {}</code></td>
+</tr>
+</tbody>
+</table>
+<p>Producer operations and recovery completion are JSON-RPC requests with strict
+parameters/results. Recovery start is a notification created by
+<code>extension_recovery_start_notification()</code> using <code>PLUGIN_RECOVERY_START_METHOD</code>.
+It never enters the engine's deadlineful <code>PendingRequest</code> map. <code>outcome</code> is
+<code>{ "status": "ready" }</code> or <code>{ "status": "failed", "message": "..." }</code>.
+The SDK starts restoration asynchronously without blocking its reader; completion
+is a separate explicit request on that connection after restoration from
+plugin-owned storage/services. There is no recovery deadline or start ACK.
+Registration during restoration must not wait for goal readiness or eager session
+adoption. There are no timers, replay methods, or engine-owned recovery blobs.</p>
+<p><code>ProducerId</code> is a fresh runtime UUID, never a durable identity. Each send chooses
+<code>ProducerDeliveryMode</code> (<code>steer</code> or <code>queue</code>). Its sender-chosen
+<code>ProducerIdempotencyKey</code> is 1-256 control-free bytes. A live, owned registration is
+required even for retries; closed/foreign registrations and closing sessions reject
+sends. Zero-send unregister is valid and unregister never removes accepted messages.</p>
+<p>Discard addresses a message receipt, not a registration. It requires a live,
+producer-capable connection, but the message belongs to the stable plugin owner
+in that session. The original registration may already be closed, and the current
+connection epoch need not match the epoch that accepted the message. Runtime
+rejects foreign-owner or wrong-session receipts and consumed messages. A durable
+claim by the session actor reserves a message and removes it from waiting before
+request preparation and hooks. Discard rejects while that claim is held, even
+before any network request is sent; the claim is not proof that a provider received
+or executed the request. If preparation fails or the attempt is cancelled, releasing
+the claim may return an unconsumed message to waiting, where discard is available
+again. Consumed messages do not return to waiting. Repeating a discard of an
+already-discarded owned message succeeds. Discard never cancels a model request
+or undoes model execution or external effects.</p>
+<p>The ACK follows durable acceptance only. Identical retries scoped to
+<code>(session, stable producer owner, idempotency_key)</code> return the original message ID;
+different body or mode rejects key reuse. Missing ACKs are commit-uncertain. These
+contracts make no exactly-once claim about model calls or external effects.</p>
+<p><code>PluginRecoveryStatus</code> has exactly <code>starting</code>, <code>ready</code>, <code>failed</code>, <code>disabled</code>.
+Readiness inspection is runtime-only through <code>session.producers</code>. Failed/disabled
+plugins require <code>plugin_diagnostic</code> (<code>recovery_failed</code>/<code>recovery_disabled</code>) and a
+TUI notice; unrecovered external work remains unknown, not completed. Accepted
+messages recover independently of registration or plugin readiness. The engine
+cannot distinguish no pending work from lost plugin state.</p>
+<p>Model-bound messages require explicit producer sends. <code>plugin/emit</code> is for
+non-model publication; the runtime rejects the legacy durable model-history route.
+No implicit registration authorizes an emission. Pure bus publication is unchanged.</p>
+<h3 id="transportruntime-worker-boundary">Transport/runtime worker boundary<a class="headerlink" href="#transportruntime-worker-boundary" title="Permanent link">&para;</a></h3>
+<p>The plugin transport exposes the following crate-private Rust callback boundary in
+<code>engine::plugin</code>, following the existing <code>PluginEmitHandler</code> pattern. These are
+runtime handoff signatures, not additional protocol wire types. The core runtime
+installs the callback before starting plugins.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::{</span><span class="n">future</span><span class="p">::</span><span class="n">Future</span><span class="p">,</span><span class="w"> </span><span class="n">pin</span><span class="p">::</span><span class="n">Pin</span><span class="p">,</span><span class="w"> </span><span class="n">sync</span><span class="p">::</span><span class="n">Arc</span><span class="p">};</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">use</span><span class="w"> </span><span class="n">cookie_agent_protocol</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">PluginConnectionAuthority</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">plugin</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">connection_epoch</span><span class="p">:</span><span class="w"> </span><span class="kt">u64</span><span class="p">,</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">}</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">PluginProducerRequest</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="n">Register</span><span class="p">(</span><span class="n">ExtensionProducerRegisterParams</span><span class="p">),</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="nb">Send</span><span class="p">(</span><span class="n">ExtensionProducerSendParams</span><span class="p">),</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">    </span><span class="n">Unregister</span><span class="p">(</span><span class="n">ExtensionProducerUnregisterParams</span><span class="p">),</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">    </span><span class="n">Discard</span><span class="p">(</span><span class="n">ExtensionProducerDiscardParams</span><span class="p">),</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">    </span><span class="n">RecoveryComplete</span><span class="p">(</span><span class="n">ExtensionRecoveryCompleteParams</span><span class="p">),</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="p">}</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">PluginProducerResponse</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">    </span><span class="n">Register</span><span class="p">(</span><span class="n">ExtensionProducerRegisterResult</span><span class="p">),</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">    </span><span class="nb">Send</span><span class="p">(</span><span class="n">ExtensionProducerSendResult</span><span class="p">),</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">    </span><span class="n">Unregister</span><span class="p">(</span><span class="n">ExtensionProducerUnregisterResult</span><span class="p">),</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">    </span><span class="n">Discard</span><span class="p">(</span><span class="n">ExtensionProducerDiscardResult</span><span class="p">),</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">    </span><span class="n">RecoveryComplete</span><span class="p">(</span><span class="n">ExtensionRecoveryCompleteResult</span><span class="p">),</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="p">}</span>
+<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>
+<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">type</span><span class="w"> </span><span class="nc">PluginProducerHandler</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span>
+<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">    </span><span class="k">dyn</span><span class="w"> </span><span class="nb">Fn</span><span class="p">(</span><span class="n">PluginConnectionAuthority</span><span class="p">,</span><span class="w"> </span><span class="n">PluginProducerRequest</span><span class="p">)</span>
+<a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="w">        </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Pin</span><span class="o">&lt;</span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Future</span><span class="o">&lt;</span><span class="n">Output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">PluginProducerResponse</span><span class="p">,</span><span class="w"> </span><span class="n">JsonRpcError</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="o">&gt;&gt;</span>
+<a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="w">        </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="p">,</span>
+<a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="o">&gt;</span><span class="p">;</span>
+</code></pre></div>
+<p>The host derives <code>plugin</code> from the authenticated configured name and assigns a
+fresh, non-reused epoch per connection within its lifetime. Neither value is
+accepted from request parameters. Bind registrations and recovery readiness to
+name + epoch; reject stale-connection sends/completions. A disconnect must revoke
+only that epoch's registrations, not a replacement connection's registrations.
+Durable deduplication uses <code>ProducerOwner::Plugin { plugin }</code> with session and
+idempotency key, never the connection epoch. Mode remains per send.
+For <code>Discard</code>, runtime checks the current authenticated epoch and the message's
+stable owner and session, not an active producer registration or its original epoch.</p>
+<p>Decode each method into its exact protocol parameters, invoke the handler without
+blocking the transport reader, and correlate the matching typed response with the
+original JSON-RPC ID. Serialize only the response's inner protocol result, never
+the private enum. The runtime returns <code>Send</code> success only after durable acceptance.
+Recovery start uses the control notification path, not the lossy event stream or
+<code>PendingRequest</code>; restoration is not wrapped in a timeout. Registration during
+restoration must remain serviceable. Do not implement protocol aliases or implicit
+producer registration to authorize <code>emit</code>.</p>
+<p>Runtime integration helpers in <code>PluginRegistry</code> (transport implementation):</p>
+<ul>
+<li><code>set_producer_handler(PluginProducerHandler)</code> installs the exact callback above;
+  absent handlers reject requests, including recovery completion.</li>
+<li><code>producer_recovery_states() -&gt; Vec&lt;PluginRecoveryState&gt;</code> returns configured or
+  declared producer plugins, including disabled/failed entries.</li>
+<li><code>producer_connection_is_current(plugin: &amp;str, epoch: &amp;u64) -&gt; bool</code> checks live
+  capability-authorized connection ownership. Check it inside actor operations,
+  including register, send, unregister, discard, and recovery completion.</li>
+<li><code>complete_producer_recovery(&amp;PluginConnectionAuthority,
+  &amp;ExtensionRecoveryOutcome) -&gt; Result&lt;(), JsonRpcError&gt;</code> is called by the runtime
+  <code>RecoveryComplete</code> handler before actor reconciliation and its typed ACK. Exact
+  repeated outcomes are idempotent; stale epochs and changed outcomes reject.</li>
+<li><code>subscribe_producer_changes() -&gt; tokio::sync::watch::Receiver&lt;u64&gt;</code> provides
+  coalescing wakeups on handshake, completion, and disconnect, including supervisor
+  cancellation. Subscribe before starting plugins and reconcile the initial snapshot
+  as well as every change. Runtime must inspect current recovery states, revoke
+  registrations whose owner name/epoch is no longer current, reconcile loaded
+  sessions, and emit <code>recovery_failed</code>/<code>recovery_disabled</code> diagnostics. This is a
+  state watch, not an event log; no engine event enum or callback variants change.</li>
+</ul>
+<p>Producer handlers run in at most 32 concurrent tasks per connection. Overload
+returns an explicit JSON-RPC error. Accepted handler tasks await the bounded control
+queue for <code>Control::ReplyFrame</code>; ACKs are never silently dropped. The single host
+loop remains the stdin writer. Recovery start is written once immediately after
+the successful handshake on this same reliable writer, outside <code>PendingRequest</code>.</p>
 <h2 id="event-streaming">Event streaming<a class="headerlink" href="#event-streaming" title="Permanent link">&para;</a></h2>
 <p>A plugin with <code>subscribe_events: true</code> receives <code>plugin/event</code> notifications containing
 <code>session_id</code>, physical <code>seq</code>, the raw <code>EventPayload</code> JSON as <code>event</code>, and <code>timestamp</code>. Delivery
@@ -1448,7 +1793,7 @@ by chunk, ordinary, or terminal class in their diagnostic message.</p>
 <p>This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.4; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.5; replay and filtered subscriptions remain
 future work.</p>
 <p>Plugins with <code>subscribe_bus: true</code> also receive non-durable <code>plugin/bus_event</code> notifications.
 These real-time notifications have the source plugin, session, name, and arbitrary JSON payload,
@@ -1466,11 +1811,11 @@ spent and prevents later activation. Unknown tokens never use the plugin-supplie
 session as a diagnostic target; only a known triggering session may receive a durable diagnostic.
 With <code>publish_bus</code>, the
 engine emits an <code>EngineEvent::PluginEvent</code>, forwards it to other subscribed plugins, and sends an
-<code>events.plugin</code> notification only to RPC connections subscribed to that session. With
-<code>publish_session_events</code>, it also appends
-<code>plugin_event_added</code> to the session log. The durable event is ordinary branch data: it survives
-reopen, enters model history and compaction, and is removed from the visible branch by revert in
-the same way as other events.</p>
+<code>events.plugin</code> notification only to RPC connections subscribed to that session.
+The legacy <code>publish_session_events</code> model-history route is rejected; use
+<code>plugin/producer/send</code> with a live registration for model-bound messages. Existing
+<code>plugin_event_added</code> history retains its replay semantics, but new <code>plugin/emit</code>
+calls do not authorize model messages.</p>
 <p>Payload JSON is limited to 256 KiB, names to 128 control-free characters, and the complete
 serialized event to 272 KiB. Each plugin/session pair may publish 40 events per second and 4 MiB
 per minute; another plugin or session has independent quotas. <code>plugin/emit_result</code> reports separate
@@ -1488,7 +1833,7 @@ never receives its own
 published event through either subscription, preventing accidental feedback loops; other plugins
 receive it normally.</p>
 <h2 id="interception">Interception<a class="headerlink" href="#interception" title="Permanent link">&para;</a></h2>
-<p>Plugins register hook names in <code>capabilities.intercept</code>. The complete 0.0.4 set is
+<p>Plugins register hook names in <code>capabilities.intercept</code>. The complete 0.0.5 set is
 <code>tool_before_call</code>, <code>tool_after_result</code>, <code>agent_before_start</code>, <code>session_before_compact</code>,
 <code>user_before_input</code>, <code>model_before_request</code>, <code>provider_before_headers</code>,
 <code>provider_before_request</code>, <code>provider_after_response</code>, <code>message_end</code>, <code>model_before_select</code>,
@@ -1527,7 +1872,7 @@ Replacement history and inference controls must pass Oven's structural and model
 validation before later plugins see them. Parameter adjustments apply with either <code>keep</code> or
 <code>replace</code>; <code>replace</code> requires a complete message list. Prompt-cache markers are placed only after
 the final validated model-hook result.</p>
-<p>Pinned Oven adapters in 0.0.4 do not expose their adapter-assembled HTTP headers or raw provider
+<p>Pinned Oven adapters in 0.0.5 do not expose their adapter-assembled HTTP headers or raw provider
 JSON. Accordingly, <code>provider_before_headers</code> receives an empty map; requesting a non-empty <code>set</code> or
 <code>delete</code> mutation records an <code>unsupported_capability</code> diagnostic and does not mutate the HTTP
 request. <code>provider_before_request</code> operates on Oven's normalized request JSON, not the adapter's raw
@@ -1587,7 +1932,7 @@ revalidation after removal. Crashed plugins stay failed until engine restart.</p
 sends <code>plugin/shutdown</code>, closes plugin standard input, waits for <code>shutdown_grace_ms</code>, and then
 terminates the process if needed. Shutdown remains bounded when initialization is still pending.</p>
 <h2 id="current-limitation">Current limitation<a class="headerlink" href="#current-limitation" title="Permanent link">&para;</a></h2>
-<p>Plugin resource methods remain deferred. Protocol 0.0.4 event subscriptions have no replay or
+<p>Plugin resource methods remain deferred. Protocol 0.0.5 event subscriptions have no replay or
 per-event-type filters.</p>
 
 

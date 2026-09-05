@@ -546,6 +546,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/permissions/" class="md-nav__link">
         
   
@@ -872,6 +895,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../development/goal-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api/" class="md-nav__link">
         
   
@@ -1079,6 +1125,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Steering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goalproducer-integration-handoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal/producer integration handoff
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-steering" class="md-nav__link">
+    <span class="md-ellipsis">
+      User steering
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1266,6 +1336,30 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Steering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goalproducer-integration-handoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal/producer integration handoff
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#user-steering" class="md-nav__link">
+    <span class="md-ellipsis">
+      User steering
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1404,6 +1498,26 @@ and the CLI share one implementation of the protocol mechanics.</p>
 <td>Session metadata with skipped-event diagnostics</td>
 </tr>
 <tr>
+<td><code>session.goal.get</code></td>
+<td>Session ID</td>
+<td>Required nullable <code>goal: GoalState</code></td>
+</tr>
+<tr>
+<td><code>session.goal.set</code></td>
+<td>Session ID, objective, optional <code>selection: RunSelection</code></td>
+<td>Activated <code>goal: GoalState</code></td>
+</tr>
+<tr>
+<td><code>session.goal.lifecycle</code></td>
+<td>Session ID, goal ID, expected revision, pause/resume/cancel action, optional <code>selection</code> for resume only</td>
+<td>Updated <code>goal: GoalState</code></td>
+</tr>
+<tr>
+<td><code>session.producers</code></td>
+<td>Session ID</td>
+<td>Runtime <code>producers</code> and <code>plugin_recovery</code> inspection</td>
+</tr>
+<tr>
 <td><code>session.usage</code></td>
 <td>Session ID</td>
 <td>Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown</td>
@@ -1514,6 +1628,95 @@ and the CLI share one implementation of the protocol mechanics.</p>
 session-aware <code>skills.list</code> and <code>skills.get</code> methods because visibility depends
 on the governing run policy and session overlay.</p>
 <h2 id="steering">Steering<a class="headerlink" href="#steering" title="Permanent link">&para;</a></h2>
+<h3 id="goalproducer-integration-handoff">Goal/producer integration handoff<a class="headerlink" href="#goalproducer-integration-handoff" title="Permanent link">&para;</a></h3>
+<p>The engine implements these methods through its per-session actor. Goal mutations
+are root-only; producer inspection is available for any owned session.
+The session wire remains 16: these additive methods do not alter the
+handshake or existing required request/result fields. The independently versioned
+plugin extension advances to <code>0.0.5</code>; package versions are unchanged.</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Public contract</th>
+<th>Implementation owner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Goal projection</td>
+<td><code>GoalState</code>, <code>GoalItem</code>, <code>GoalStatus</code>, <code>GoalId</code></td>
+<td>Engine; TUI renders durable events</td>
+</tr>
+<tr>
+<td>Goal read</td>
+<td><code>SessionGoalGetParams/Result</code>, <code>get_session_goal</code></td>
+<td>Engine; TUI/clients call async API</td>
+</tr>
+<tr>
+<td>Activation</td>
+<td><code>SessionGoalSetParams/Result</code>, <code>set_session_goal</code></td>
+<td>User-only root command, rejects active/paused goal</td>
+</tr>
+<tr>
+<td>Lifecycle</td>
+<td><code>SessionGoalLifecycleParams/Result</code>, <code>change_session_goal_lifecycle</code>, <code>GoalLifecycleAction</code></td>
+<td>User-only root pause/resume/cancel; reject stale/terminal goal</td>
+</tr>
+<tr>
+<td>Model tools</td>
+<td><code>GoalGetParams/Result</code>, <code>GoalUpdateParams/Result</code></td>
+<td>Root-only <code>goal_get</code>/<code>goal_update</code>, frozen at run admission</td>
+</tr>
+<tr>
+<td>Runtime inspection</td>
+<td><code>SessionProducersParams/Result</code>, <code>session_producers</code>, <code>ProducerRegistration</code>, <code>PluginRecoveryState</code></td>
+<td>Session runtime snapshot, not global catalog snapshot or persistence</td>
+</tr>
+<tr>
+<td>Plugin messaging</td>
+<td><code>ExtensionProducer{Register,Send,Discard,Unregister}Params/Result</code></td>
+<td>Engine request handlers; SDK mirrors register/send/discard/unregister</td>
+</tr>
+<tr>
+<td>Recovery handshake</td>
+<td><code>ExtensionRecoveryStartParams</code>, <code>ExtensionRecoveryCompleteParams/Result</code>, <code>ExtensionRecoveryOutcome</code></td>
+<td><code>plugin/recovery/start</code> engine notification (no deadline/response); plugin completion request</td>
+</tr>
+</tbody>
+</table>
+<p>Goal activation accepts an optional <code>selection: RunSelection</code>, including agent,
+model, variant, and preset. The engine validates and persists this selection
+before scheduling a wake, so it survives waiting for producers and restarting.
+Lifecycle requests accept <code>selection</code> only with <code>action: "resume"</code>; pause and
+cancel reject a supplied selection. Resuming without it preserves the goal's
+previous selection. If activation omitted it and no later resume supplied one,
+automatic runs use the latest persisted run selection, falling back to the
+session's creation selection. None of these changes mutate an already-running
+turn's frozen selection or attribution.</p>
+<p><code>GoalItem { description, finished }</code> has no item ID.
+<code>GoalUpdateParams { items }</code> replaces the entire ordered checklist through the
+session actor: the last accepted update wins for the current/latest session goal
+at actor acceptance. Model updates have no <code>goal_id</code>, <code>expected_revision</code>, or
+lost-update protection. An older run's update can intentionally affect a newly
+activated active or paused goal; updates reject if the current goal is absent or
+terminal. Internal <code>GoalId</code> and engine-owned <code>GoalState.revision</code> remain for durable
+state and reminder identity. User lifecycle RPC controls retain
+<code>SessionGoalLifecycleParams.goal_id</code> and <code>expected_revision</code> and reject stale
+identities and revisions; no
+model tool can set an objective or issue lifecycle commands. Empty lists preserve
+the active/paused lifecycle and can bootstrap an active goal without completion.
+The engine decides existing tool permission mapping: <code>goal_get</code> uses <code>read</code>,
+and <code>goal_update</code> uses <code>write</code>, both with resource <code>goal:current</code>. Ordinary
+permission rules still apply. There is no new permission action or goal configuration.</p>
+<p>To preserve strictly increasing event revisions, an all-finished update appends
+checklist revision <code>r+1</code>, then completion revision <code>r+2</code>, and returns the final
+state. Recovery repairs a missing completion event after a committed all-finished
+checklist. Empty checklists never complete through this rule.</p>
+<p>See <a href="../events/#goal-and-producer-contracts">Events</a> for admission/commit
+coverage and owned-message discard, and <a href="../../development/plugins/#producer-messaging-contracts">Plugins</a>
+for method names, idempotency, recovery, and the no-implicit-registration requirement.</p>
+<h3 id="user-steering">User steering<a class="headerlink" href="#user-steering" title="Permanent link">&para;</a></h3>
 <p><code>run.steer</code> requires an active target run. It immediately appends
 <code>user_input_admitted</code> and returns <code>{ "accepted": true }</code>; admission does not
 change model history. At each completed tool batch and no-tool completion

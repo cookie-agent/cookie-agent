@@ -1,0 +1,2372 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Documentation for the cookie agent coding harness">
+      
+      
+      
+        <link rel="canonical" href="https://cookie-agent.github.io/cookie-agent/dev/development/goal-mode/">
+      
+      
+        <link rel="prev" href="../plugins/">
+      
+      
+        <link rel="next" href="../../reference/api/">
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.18">
+    
+    
+      
+        <title>Goal mode (design spec) - cookie agent</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.7e37652d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#goal-mode-and-producer-messaging-design-spec" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="cookie agent" class="md-header__button md-logo" aria-label="cookie agent" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            cookie agent
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Goal mode (design spec)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cookie-agent/cookie-agent" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.0.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cookie-agent/cookie-agent
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../install/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Installation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../guide/tui/" class="md-tabs__link">
+          
+  
+  
+  Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../building/" class="md-tabs__link">
+          
+  
+  
+  Development
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/configuration/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="cookie agent" class="md-nav__button md-logo" aria-label="cookie agent" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    cookie agent
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cookie-agent/cookie-agent" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.0.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cookie-agent/cookie-agent
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    Guide
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/tui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    TUI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/headless/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Headless runs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/sessions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Sessions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/permissions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Permissions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Security guarantees
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    MCP servers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Plugins
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Agents
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Skills
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Providers
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/compaction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Compaction
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guide/usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Usage and cost
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../building/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Building and testing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Plugin development
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-goal-mode-root-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Goal mode (root session)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Goal mode (root session)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-activation" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.1 Activation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-durable-goal-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.2 Durable goal state
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-model-tools-goal_get-and-goal_update" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.3 Model tools: goal_get and goal_update
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-unified-producer-registry-runtime-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Unified producer registry (runtime-only)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Unified producer registry (runtime-only)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.1 Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-ownership-and-authorization" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.2 Ownership and authorization
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-message-persistence-and-acknowledgment" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.3 Message persistence and acknowledgment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-owned-message-discard" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.4 Owned-message discard
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-delivery-modes-and-admission" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Delivery modes and admission
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Delivery modes and admission">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-steer" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.1 STEER
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-queue" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.2 QUEUE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-subagent-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.3 Subagent results
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-goal-wake-controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Goal wake controller
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Goal wake controller">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.1 Registration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-readiness-condition" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.2 Readiness condition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-reminder-identity-and-content" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.3 Reminder identity and content
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-pause-cancel-complete" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.4 Pause / cancel / complete
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-restart-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Restart and recovery
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-durable-events-projection-invariants-and-history-transforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Durable events, projection invariants, and history transforms
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-apis-permissions-and-surfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. APIs, permissions, and surfaces
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-testing-and-acceptance-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      8. Testing and acceptance matrix
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-staging-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      9. Staging plan
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-open-technical-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      10. Open technical risks
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/system-prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System prompt
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/events/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Events
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Tools
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Schemas
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-goal-mode-root-session" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Goal mode (root session)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Goal mode (root session)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-activation" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.1 Activation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-durable-goal-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.2 Durable goal state
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-model-tools-goal_get-and-goal_update" class="md-nav__link">
+    <span class="md-ellipsis">
+      1.3 Model tools: goal_get and goal_update
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-unified-producer-registry-runtime-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Unified producer registry (runtime-only)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Unified producer registry (runtime-only)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.1 Model
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-ownership-and-authorization" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.2 Ownership and authorization
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-message-persistence-and-acknowledgment" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.3 Message persistence and acknowledgment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-owned-message-discard" class="md-nav__link">
+    <span class="md-ellipsis">
+      2.4 Owned-message discard
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-delivery-modes-and-admission" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Delivery modes and admission
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Delivery modes and admission">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-steer" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.1 STEER
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-queue" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.2 QUEUE
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-subagent-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      3.3 Subagent results
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-goal-wake-controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Goal wake controller
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Goal wake controller">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.1 Registration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-readiness-condition" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.2 Readiness condition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-reminder-identity-and-content" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.3 Reminder identity and content
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-pause-cancel-complete" class="md-nav__link">
+    <span class="md-ellipsis">
+      4.4 Pause / cancel / complete
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-restart-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Restart and recovery
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-durable-events-projection-invariants-and-history-transforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Durable events, projection invariants, and history transforms
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-apis-permissions-and-surfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. APIs, permissions, and surfaces
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-testing-and-acceptance-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      8. Testing and acceptance matrix
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-staging-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      9. Staging plan
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-open-technical-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      10. Open technical risks
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="goal-mode-and-producer-messaging-design-spec">Goal Mode and Producer Messaging (Design Spec)<a class="headerlink" href="#goal-mode-and-producer-messaging-design-spec" title="Permanent link">&para;</a></h1>
+<p>Status: <strong>implemented; approved product contract</strong>. This document is the
+governing specification for session goal mode and the unified producer
+messaging registry. The prerequisite compaction, permissions, and symlink
+work was reviewed and pushed as commits <code>4cf56157</code> and <code>9ccf8fa6</code> before
+implementation began. See <a href="#9-staging-plan">Staging plan</a>.</p>
+<p>This spec does not reopen the approved product decisions. Where a genuine
+ambiguity or contradiction remains, it is listed under
+<a href="#10-open-technical-risks">Open technical risks</a> instead of being silently
+resolved here.</p>
+<p>Non-goals: no inferred goals, no goal inheritance into subagents, no
+deadlines/watchdogs/expiry for producers, no Codex-style extra budgets,
+blocker counters, or additional goal states, no new public scheduler
+priorities, no mandatory third message queue.</p>
+<h2 id="1-goal-mode-root-session">1. Goal mode (root session)<a class="headerlink" href="#1-goal-mode-root-session" title="Permanent link">&para;</a></h2>
+<h3 id="11-activation">1.1 Activation<a class="headerlink" href="#11-activation" title="Permanent link">&para;</a></h3>
+<p>Goal mode is activated <strong>explicitly only</strong>, by the user typing
+<code>/goal &lt;objective&gt;</code> in the root session's TUI (see
+<code>crates/tui/src/ui/slash.rs</code>, <code>COMMANDS</code>). The engine never infers a goal from
+prompt content. Only root sessions can have a goal; the slash command in a
+delegated/child session is rejected with an explanatory error.</p>
+<p>Activation and retained lifecycle shortcuts:</p>
+<ul>
+<li><code>/goal &lt;objective text&gt;</code> — activate goal mode with the given objective.
+  Errors if a goal is already <code>active</code> or <code>paused</code> (the user must
+  cancel or complete the current goal first).</li>
+<li>Bare <code>/goal</code> shows usage requiring an objective; it does not report status.</li>
+<li><code>/goal status</code> is removed and rejected, not interpreted as an objective.</li>
+<li><code>/goal pause</code> — transition <code>active -&gt; paused</code>.</li>
+<li><code>/goal resume</code> — transition <code>paused -&gt; active</code>.</li>
+<li><code>/goal cancel</code> — transition <code>active|paused -&gt; cancelled</code>.</li>
+</ul>
+<p>The primary lifecycle controls are the goal bar's Pause/Resume and Cancel
+buttons; slash lifecycle shortcuts are secondary. A persistent one-line goal
+bar sits above the message composer whenever the selected session has a goal.
+It is hidden when no goal exists and remains visible with read-only status for
+completed or cancelled goals. Clicking the objective description opens a detail
+modal containing the full objective, checklist, and lifecycle status. This is
+a read-only checklist view, not an editor; the root maintains checklist items
+through <code>goal_update { items }</code>.</p>
+<p>The producer queue strip remains separate, above the goal bar and composer.
+This persistent goal surface replaces command-generated status reports and
+ephemeral goal progress in the general status row. Internal goal IDs, revisions,
+and lifecycle RPC identity/concurrency checks are unchanged.</p>
+<p>Lifecycle states are exactly: <code>active</code>, <code>paused</code>, <code>completed</code>, <code>cancelled</code>.
+<code>completed</code> and <code>cancelled</code> are terminal. The user owns the objective and the
+lifecycle; the model cannot change either through tools (see 1.3).</p>
+<h3 id="12-durable-goal-state">1.2 Durable goal state<a class="headerlink" href="#12-durable-goal-state" title="Permanent link">&para;</a></h3>
+<p>Goal state is durable session event history (<code>crates/protocol/src/event.rs</code>)
+and is <strong>independent of summaries and compaction</strong>: compaction
+(<code>crates/engine/src/runtime/compaction.rs</code>, <code>ContextCheckpointCommit</code>) never
+elides goal events from the projection, and the goal projection is rebuilt
+from events, not from summary text. The objective and the full checklist are
+re-injected into goal-continuation reminders (4.3), so compaction cannot
+strand the goal.</p>
+<p>New events (additive; event history is versionless and read best-effort per
+<code>AGENTS.md</code>):</p>
+<ul>
+<li><code>GoalActivated { goal_id, objective, revision }</code></li>
+<li><code>GoalChecklistRevised { goal_id, items: Vec&lt;GoalItem&gt;, revision }</code></li>
+<li><code>GoalLifecycleChanged { goal_id, status, revision }</code></li>
+</ul>
+<p><code>GoalItem = { description, finished }</code>; checklist items have no IDs.
+<code>GoalState.revision</code> is an engine-owned, strictly increasing per-goal counter
+for durable state, user lifecycle controls, and reminder identity. Each activation
+has a distinct durable <code>goal_id</code>; replacing a terminal goal cannot make an
+old lifecycle RPC or reminder valid again merely by reusing a revision number.
+Model checklist updates are not bound to a goal ID.</p>
+<h3 id="13-model-tools-goal_get-and-goal_update">1.3 Model tools: <code>goal_get</code> and <code>goal_update</code><a class="headerlink" href="#13-model-tools-goal_get-and-goal_update" title="Permanent link">&para;</a></h3>
+<p>After activation, the root run's tool set gains two tools. They are
+<strong>root-only</strong>: delegated child sessions never see them and there is no goal
+inheritance. Because tool prompt sections are composed only at run admission
+and frozen into <code>run_started</code> (<code>AGENTS.md</code>; <code>crates/engine/src/runtime/tool_prompts.rs</code>),
+the tools appear/disappear at the <strong>next safe run admission</strong> after a
+lifecycle change — never mid-run.</p>
+<ul>
+<li><code>goal_get</code> — returns objective, status, revision, and the full checklist.</li>
+<li><code>goal_update { items }</code> — replaces the entire ordered checklist of the
+  current/latest session goal when the engine actor accepts the update.
+  Each item contains only <code>description</code> and <code>finished</code>. The session actor
+  serializes replacements; the last accepted update wins. The model supplies
+  neither <code>goal_id</code> nor <code>expected_revision</code>, and there is no model-facing
+  lost-update protection. An update from an older run can intentionally
+  replace the checklist of a newly activated active or paused goal. Updates
+  reject if the current goal is absent or terminal, even from tools still
+  present in an already-admitted run.</li>
+</ul>
+<p>User lifecycle RPC controls retain
+<code>SessionGoalLifecycleParams.goal_id</code> and <code>expected_revision</code>; a stale lifecycle
+request is rejected. These checks are separate from model checklist replacement.</p>
+<p>Rules:</p>
+<ul>
+<li>The model <strong>cannot</strong> set, pause, resume, or cancel through tools. Lifecycle
+  transitions are user-only, except the completion rule below.</li>
+<li>When <code>goal_update</code> leaves the checklist <strong>non-empty and every item
+  finished</strong>, the engine records <code>completed</code> (via <code>GoalLifecycleChanged</code>)
+  with the new revision. An <strong>empty checklist is never vacuous completion</strong>:
+  it is accepted as a revision but preserves the current active or paused
+  lifecycle state. An active goal with an empty checklist remains eligible
+  for a reminder that asks the root to establish the checklist.</li>
+<li><strong>Paused behavior (explicit design judgment):</strong> while paused, <code>goal_get</code>
+  and <code>goal_update</code> remain available at the next admission and updates are
+  preserved, including an all-finished update that records <code>completed</code>.
+  Refusing writes would add a new user-facing feature surface; recording is
+  the minimal behavior. Recording completion while paused schedules <strong>no</strong>
+  continuation — pause and completion both suppress goal wakes (4.2), so
+  there is nothing to resume. The model still cannot unpause or cancel.</li>
+<li>Tool guidance (system-prompt/tool-description text) instructs the model
+  that evidence and audit are <strong>root-authoritative</strong>: the root should verify
+  work directly or via subagents before marking items finished, and the root
+  checklist is the authoritative record over any subagent's self-report.</li>
+</ul>
+<h2 id="2-unified-producer-registry-runtime-only">2. Unified producer registry (runtime-only)<a class="headerlink" href="#2-unified-producer-registry-runtime-only" title="Permanent link">&para;</a></h2>
+<h3 id="21-model">2.1 Model<a class="headerlink" href="#21-model" title="Permanent link">&para;</a></h3>
+<p>The engine owns a per-session <strong>producer registry</strong>: a runtime-only,
+inspectable vector of registration records. Nothing about registrations is
+durable; restart semantics are in section 5.</p>
+<p>Operations (separate calls, mode is <strong>per send</strong>, not per registration):</p>
+<ul>
+<li><code>register(session) -&gt; producer_id</code></li>
+<li><code>send(producer_id, message, mode: steer | queue) -&gt; ack</code></li>
+<li><code>unregister(producer_id)</code></li>
+<li><code>discard(session, message_id)</code> (owned accepted message, not registration)</li>
+</ul>
+<p>Semantics:</p>
+<ul>
+<li>Registering and unregistering without any send is valid.</li>
+<li><code>send</code> to a closed (unregistered) or foreign (wrong owner / wrong session)
+  registration is rejected.</li>
+<li>A registered producer may send <strong>after its turn ends</strong>; sending to an idle
+  session wakes it (section 3). Sending to a session being evicted/closed is
+  rejected.</li>
+<li>There are <strong>no deadlines, watchdogs, or expiry</strong>. Producers are good-faith
+  owners of their registration lifecycle; a leaked registration only affects
+  goal-readiness evaluation (4.2) and is surfaced in inspection.</li>
+</ul>
+<h3 id="22-ownership-and-authorization">2.2 Ownership and authorization<a class="headerlink" href="#22-ownership-and-authorization" title="Permanent link">&para;</a></h3>
+<p>Every registration has one authenticated owner. Durable <code>ProducerOwner</code> variants
+are <code>Plugin { plugin }</code>, <code>Delegation { invocation_id }</code>, <code>Goal { goal_id }</code>, and
+<code>GoalControl { goal_id }</code> (<code>crates/protocol/src/producer.rs</code>). Plugin connection
+authority remains runtime-only. <code>GoalControl</code> identifies engine-authored lifecycle
+steering, separate from the goal controller's continuation reminders. The
+destination is fixed at registration and checked on every send.</p>
+<p>Plugins must declare a new protocol capability to register producers (the
+current plugin request surface rejects unknown requests — see
+<code>crates/engine/src/plugin.rs</code> <code>PendingRequest</code> and the capability model in
+<code>docs/site/development/plugins.md</code>; an extension protocol bump beyond <code>0.0.4</code>
+is required). Only <strong>live, owned</strong> registrations authorize post-turn
+model-message sends. The existing plugin <code>emit_session</code> path
+(<code>enable_session_publishing</code>, <code>ctx.emit_session</code>) must <strong>not</strong> remain a
+bypass for model-bound messages: emitting content that enters model history
+requires an explicitly supplied live producer registration. The engine must
+not create an implicit registration to authorize an otherwise unregistered
+emission. Legacy <code>emit_session</code> is restricted to non-model content or removed
+in favor of the explicit producer API. Pure
+bus events (<code>emit_bus</code>) are unaffected — non-model bus traffic is separate.</p>
+<h3 id="23-message-persistence-and-acknowledgment">2.3 Message persistence and acknowledgment<a class="headerlink" href="#23-message-persistence-and-acknowledgment" title="Permanent link">&para;</a></h3>
+<p>Message <em>registrations</em> are volatile; accepted <em>messages</em> are durable.</p>
+<ul>
+<li><code>send</code> returns its ACK <strong>only after</strong> the engine appends a durable
+  <code>ProducerMessageAccepted { message_id, producer_owner, mode,
+  idempotency_key, body }</code> event to the session log. Senders must treat a
+  missing/failed ACK as commit-uncertain and retry with the same
+  <code>idempotency_key</code> (a stable sender-chosen message ID); the admission path
+  deduplicates on <code>(session, stable_producer_owner, idempotency_key)</code>.
+  The stable owner identifies the specific plugin, delegation invocation,
+  or goal, not just its kind or volatile registration ID. A retry requires
+  a live owned registration; identical retries return the original receipt,
+  while reuse with different content or mode is rejected. This is a
+  modest at-least-once design; the engine makes <strong>no exactly-once claim</strong>
+  about external side effects or model execution.</li>
+<li><code>unregister</code> does <strong>not</strong> remove accepted, unconsumed messages.</li>
+<li>After a crash, accepted-but-unconsumed, undiscarded messages are recovered and admitted
+  independently of whether their producer re-registers (5.4).</li>
+</ul>
+<h3 id="24-owned-message-discard">2.4 Owned-message discard<a class="headerlink" href="#24-owned-message-discard" title="Permanent link">&para;</a></h3>
+<p><code>discard(session, message_id)</code> authorizes against the authenticated caller's
+ownership of the durable accepted message, not a live registration. An owner
+can discard its own waiting message even after unregistering. Cross-owner
+discard is rejected; a retry for an owned already-discarded message succeeds
+idempotently. This is separate from unregistering or recalling user input.</p>
+<p>Only <strong>unclaimed waiting messages</strong> can be discarded, including admitted messages
+not yet claimed. The actor serializes discard against durable claim acquisition
+before request preparation/dispatch: consumed or claimed messages reject discard,
+even if no provider request has been sent yet. A claim is a reservation, not proof
+of provider dispatch. It remains held through compaction, hooks, streaming, and
+model commit. Failed or cancelled attempts release claims; recovery releases
+surviving claims. Once all claims are released, unconsumed, undiscarded messages
+return to waiting. In-flight input cannot be retracted, and discard cannot undo
+model or external actions. See <code>crates/engine/src/runtime/producer_claims.rs</code>.</p>
+<p>Successful discard is durable through <code>ProducerMessageDiscarded</code>, for real
+producer messages as well as goal reminders. Discarded messages no longer
+participate in delivery or pending-work readiness and are removed from the
+queue strip; replay must not restore them as pending. Goal reminder invalidation
+continues to check reminder identity and never discards another owner's work.</p>
+<h2 id="3-delivery-modes-and-admission">3. Delivery modes and admission<a class="headerlink" href="#3-delivery-modes-and-admission" title="Permanent link">&para;</a></h2>
+<p>The existing machinery — the per-session actor mailbox
+(<code>crates/engine/src/actor.rs</code>), <code>UserInputAdmitted</code> / <code>UserInputSubmitted</code> /
+<code>pending_inputs</code> (<code>crates/engine/src/runtime/mailbox.rs</code>), and the residency
+rule that forbids runless pending inputs while a run is active
+(<code>crates/engine/src/runtime/residency.rs</code>,
+<code>has_runless_pending_inputs</code>) — retains its existing user-input rules.
+Producer delivery extends it with separate events:</p>
+<ul>
+<li><code>ProducerMessageAccepted</code> durably stores the body and delivery mode, even
+  when a run is active.</li>
+<li><code>ProducerMessageAdmitted</code> references that message from a particular run.
+  Its sequence participates in committed model input coverage.</li>
+<li><code>ProducerMessagesClaimed</code> reserves admitted messages; its event sequence
+  identifies the claim. <code>ProducerMessagesReleased</code> releases that reservation.</li>
+<li><code>ProducerMessageConsumed</code> records committed consumption;
+  <code>ProducerMessageDiscarded</code> records generic owned-message discard, including
+  pending goal reminder invalidation.</li>
+</ul>
+<p>User-input event shapes are unchanged. Producer messages do not enter the
+user composer restoration lane or become void merely because a run ends.
+Pending and admitted producer <code>steer</code>/<code>queue</code> messages do appear in the existing
+auto-show/hide queue strip above the goal bar and composer. Visibility does not
+grant user composer recall. Claimed entries are hidden until release returns
+them to waiting, unless already consumed or discarded.</p>
+<h3 id="31-steer">3.1 STEER<a class="headerlink" href="#31-steer" title="Permanent link">&para;</a></h3>
+<p>A steer message is inserted into the <strong>next safe model API request</strong>,
+including within an active run's tool loop: it joins the existing pending
+steer lane and is promoted per <code>PromotePendingInputs</code>
+(<code>crates/engine/src/runtime/mailbox.rs</code>). It never cancels an in-flight API
+request and never splits a tool-call/tool-result pair. A steer sent to an
+idle session starts a normal run.</p>
+<h3 id="32-queue">3.2 QUEUE<a class="headerlink" href="#32-queue" title="Permanent link">&para;</a></h3>
+<p>A queue message starts a <strong>subsequent</strong> normal run. While a run is active it
+is accepted and persisted but <strong>not delivered mid-run</strong>; when the session is
+idle it starts a normal run. This requires additive events plus an admission
+extension: today runless admits are forbidden while active, so queue admits
+during an active run must be recorded as accepted-but-deferred rather than
+rejected or voided (<code>void_runless_pending_inputs</code>,
+<code>crates/engine/src/runtime/delegation.rs</code>). Both modes wake generically —
+this is not goal-specific machinery.</p>
+<h3 id="33-subagent-results">3.3 Subagent results<a class="headerlink" href="#33-subagent-results" title="Permanent link">&para;</a></h3>
+<p>Subagent results are <strong>always steer</strong>. Background delegation completions
+register a producer <strong>before</strong> starting the async work, <code>send(.., steer)</code> on
+finish, then explicitly <code>unregister</code>. Foreground (blocking) delegation keeps
+its tool result as the single result channel and must <strong>not</strong> additionally
+emit a separate message. The result must be materialized exactly once: the
+current <code>DelegateFinishedV2</code> projection path
+(<code>crates/engine/src/runtime/delegation.rs</code>,
+<code>crates/engine/src/model_history.rs</code>) is unified with producer steer delivery
+so a background completion cannot appear both as a tool-style result and as
+a steered message.</p>
+<h2 id="4-goal-wake-controller">4. Goal wake controller<a class="headerlink" href="#4-goal-wake-controller" title="Permanent link">&para;</a></h2>
+<h3 id="41-registration">4.1 Registration<a class="headerlink" href="#41-registration" title="Permanent link">&para;</a></h3>
+<p>While a goal is <code>active</code>, the goal controller holds a producer registration
+on the root session. When evaluating readiness (4.2), the controller excludes
+<strong>only its own registration ID</strong> — any other live producer blocks the wake.</p>
+<h3 id="42-readiness-condition">4.2 Readiness condition<a class="headerlink" href="#42-readiness-condition" title="Permanent link">&para;</a></h3>
+<p>A goal continuation reminder is armed when <strong>all</strong> hold:</p>
+<ol>
+<li>goal is <code>active</code> and the checklist is empty or has unfinished items;</li>
+<li>the session is recovered and the root is idle (no active run);</li>
+<li>no pending real steer, queue, or user messages exist;</li>
+<li>no <strong>other</strong> live producer registration exists;</li>
+<li>no goal reminder is already pending.</li>
+</ol>
+<p>The check-and-enqueue is atomic inside the session actor and is <strong>rechecked
+at run admission</strong> (<code>crates/engine/src/runtime/admission.rs</code>), so real work
+that arrives between arming and admission always wins. An active goal run
+can still receive real steer messages normally.</p>
+<h3 id="43-reminder-identity-and-content">4.3 Reminder identity and content<a class="headerlink" href="#43-reminder-identity-and-content" title="Permanent link">&para;</a></h3>
+<p>The reminder message carries the <strong>full objective and the entire checklist</strong>
+(finished and unfinished items, with revision). Reminders have an internal
+identity <code>(goal_id, revision)</code> allowing coalescing and invalidation of a
+pending reminder — no public
+scheduler priority and no mandatory third queue. Reconciliation is triggered
+on: run end, message send/consume, producer unregister, goal
+activation/resume, and session recovery. A consumed reminder does not block
+another reminder for the same revision after its run ends: making no
+checklist edit is not completion. Durable send idempotency uses a fresh
+message ID for each continuation attempt, distinct from the pending
+reminder's coalescing key.</p>
+<h3 id="44-pause-cancel-complete">4.4 Pause / cancel / complete<a class="headerlink" href="#44-pause-cancel-complete" title="Permanent link">&para;</a></h3>
+<p><code>pause</code>, <code>cancel</code>, and <code>completed</code> each unregister the goal producer and
+invalidate any pending reminder, stopping future goal continuations.</p>
+<p>User pause/cancel also durably queues a root notification in <code>steer</code> mode
+before the relevant producer registration closes if <strong>any</strong> of these hold:</p>
+<ul>
+<li>the root has an active run;</li>
+<li>the root has other live producer registrations, excluding the goal's own
+  registration, including producers for pending subagent results;</li>
+<li>the root has queued real messages (not goal reminders).</li>
+</ul>
+<p>The notification enters the next safe model API request, without cancelling an
+in-flight request or splitting tool-call/tool-result pairs. It tells the model
+that the goal was paused or cancelled, to stop autonomous pursuit of that old
+goal, and to follow the user's directions. Closing the registration does not
+remove the accepted notification. Its accepted owner is
+<code>ProducerOwner::GoalControl { goal_id }</code>, not <code>Goal</code>; it is not a reminder and
+survives goal-controller teardown and reminder invalidation.</p>
+<p>For an idle root waiting on other producers or queued real messages, ordinary
+<code>steer</code> semantics can wake a normal root run. This does <strong>not</strong> resume goal
+reminders: the goal remains paused or cancelled. A fully idle root with no
+other live producers and no queued real messages persists the lifecycle change
+without an announcement run; the goal's own registration or pending reminder
+alone does not qualify for notification. Steering does not abort an active run
+or delegations, and cannot undo actions already emitted. The separate
+interrupt/cancel-run path (<code>/cancel</code>, <code>RunCancelled</code>, <code>RunInterrupted</code>) is
+unchanged. This notification adds no run binding to <code>goal_update { items }</code>:
+updates still target the current session goal at actor acceptance.</p>
+<h2 id="5-restart-and-recovery">5. Restart and recovery<a class="headerlink" href="#5-restart-and-recovery" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Registrations vanish on restart. Durable goal state and accepted messages
+   are restored from the event log; delegations are reconciled by the
+   existing recovery path (<code>crates/engine/src/runtime/recovery.rs</code>).</li>
+<li>Producer-capable plugins reconstruct their pending work during their
+   recovery/init phase from their <strong>own storage or the external services they
+   front</strong>, then register fresh runtime IDs. Logs alone are currently
+   live-only, and this spec deliberately adds <strong>no general replay API</strong>, no
+   engine-managed durable producer records, and no plugin recovery blobs
+   (both rejected at product level).</li>
+<li>Plugin recovery uses an explicit engine request/callback with an explicit
+   completion notification — <strong>no timers</strong>. The engine tracks per-plugin
+   startup readiness statuses (<code>starting</code>, <code>ready</code>, <code>failed</code>, <code>disabled</code>).
+   Session adoption stays lazy so engine↔plugin callbacks cannot deadlock.</li>
+<li><strong>Readiness barrier:</strong> a producer-capable plugin may register during
+   restoration without waiting for goal readiness, but the goal controller
+   holds its auto-registration/wake until the readiness barrier completes
+   (all tracked producer-capable plugins report <code>ready</code>). Failed or disabled
+   tracked producers hold goal readiness and are diagnosed rather than being
+   interpreted as completed external work.
+   An <code>inactive</code> (paused/completed/cancelled or absent) goal needs no
+   barrier. Accepted messages from before the crash are recovered and
+   admitted independently of any producer re-registering.</li>
+<li><strong>Failed/disabled plugins must not silently prove work done.</strong> If a
+   producer-capable plugin ends <code>failed</code> or <code>disabled</code>, the engine surfaces
+   that status (diagnostic event + TUI notice) and goal readiness treats
+   unrecovered external work as unknown rather than complete. Documented
+   limitation: the engine cannot distinguish "plugin had no pending work"
+   from "plugin lost its state" — this is weaker than the user-facing
+   assumption that restarts are transparent, and it is called out in the
+   user docs.</li>
+</ol>
+<h2 id="6-durable-events-projection-invariants-and-history-transforms">6. Durable events, projection invariants, and history transforms<a class="headerlink" href="#6-durable-events-projection-invariants-and-history-transforms" title="Permanent link">&para;</a></h2>
+<p>Events (all in <code>crates/protocol/src/event.rs</code>, with corresponding entries in
+<code>docs/site/reference/events.md</code> and generated schemas):</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Payload (summary)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GoalActivated</code></td>
+<td><code>goal_id</code>, <code>objective</code>, <code>revision</code></td>
+</tr>
+<tr>
+<td><code>GoalChecklistRevised</code></td>
+<td><code>goal_id</code>, <code>items</code>, <code>revision</code></td>
+</tr>
+<tr>
+<td><code>GoalLifecycleChanged</code></td>
+<td><code>goal_id</code>, <code>status</code>, <code>revision</code></td>
+</tr>
+<tr>
+<td><code>ProducerMessageAccepted</code></td>
+<td><code>message_id</code>, <code>producer_owner</code>, <code>mode</code>, <code>idempotency_key</code>, <code>body</code>, optional <code>reminder</code></td>
+</tr>
+<tr>
+<td><code>ProducerMessageAdmitted</code></td>
+<td><code>message_id</code>; enclosing event carries the destination <code>run_id</code></td>
+</tr>
+<tr>
+<td><code>ProducerMessagesClaimed</code></td>
+<td>Nonempty <code>message_ids</code>; run-scoped, envelope <code>seq</code> identifies the claim</td>
+</tr>
+<tr>
+<td><code>ProducerMessagesReleased</code></td>
+<td>Positive <code>claim_seq</code>; run-scoped to the same run as the referenced claim</td>
+</tr>
+<tr>
+<td><code>ProducerMessageConsumed</code></td>
+<td><code>message_id</code>, <code>run_id</code></td>
+</tr>
+<tr>
+<td><code>ProducerMessageDiscarded</code></td>
+<td><code>message_id</code>; optional <code>producer_owner</code>, optional <code>reminder</code></td>
+</tr>
+</tbody>
+</table>
+<p>Projection invariants:</p>
+<ul>
+<li>Goal revision strictly increases per activation and is assigned by the
+  engine. Model checklist replacements are actor-serialized, last accepted
+  update wins for the current goal at actor acceptance, with no model goal ID
+  or expected-revision check. Updates reject absent or terminal current goals;
+  user lifecycle RPCs still reject stale goal IDs and <code>expected_revision</code> values.</li>
+<li><code>completed</code> requires a non-empty, all-finished checklist.</li>
+<li>Every <code>ProducerMessageAccepted</code> is consumed at most once; consumed
+  messages are excluded from <code>pending_inputs</code>. Consumption is durable only
+  when a committed model turn records that message in its input coverage,
+  not merely when it is selected for an API request. Recovery reconciles a
+  committed turn whose consumption marker was not yet appended. An
+  uncommitted API attempt can be repeated after a crash; this is not an
+  exactly-once guarantee for provider calls or external effects.</li>
+<li>Reminder coalescing never reorders or drops <strong>real</strong> (non-reminder)
+  messages.</li>
+<li>Durable discard is distinct from consumption. Discarded messages are excluded
+  from delivery, pending-work readiness, and the queue strip. Ownership checks
+  survive unregister; eligibility is checked atomically against claim acquisition,
+  not inferred merely from the absence of a consumption marker. Claimed messages
+  are nondiscardable and hidden from the waiting strip, including before dispatch.</li>
+<li>Claims reference unique accepted/admitted, unconsumed, undiscarded messages
+  belonging to the claim's run. Release identifies a claim by envelope sequence
+  and must match that run. Release removes only that reservation; when all claims
+  are gone, unconsumed, undiscarded messages return to waiting. It does not undo
+  committed consumption or prove that a provider request did or did not execute.</li>
+<li>Discard projection strictly matches a supplied owner against the accepted
+  message and any supplied reminder against its identity. Historical discards
+  without an owner require a matching reminder; a wrong supplied owner cannot
+  use that legacy fallback. Both forms reject consumed or claimed messages.</li>
+</ul>
+<p>History transforms:</p>
+<ul>
+<li><strong>Compaction</strong> (<code>ContextCheckpointCommit</code>): goal events and unconsumed
+  <code>ProducerMessageAccepted</code> events survive compaction in the projection; the
+  reminder re-injects objective+checklist so the model never depends on
+  pre-compaction goal text.</li>
+<li><strong>Fork</strong>: a forked session copies the goal projection and, for an <code>active</code>
+  goal, creates a fresh goal producer registration; runtime registrations
+  never cross the fork. Unconsumed accepted messages are forked with the
+  log; consumed or durably discarded ones are not replayed as pending. Compaction
+  likewise preserves the discard projection alongside accepted-message state.</li>
+<li><strong>Revert</strong> (<code>SessionReverted</code>): goal and message events after the revert
+  point are discarded per the existing contract, which may resurrect an
+   earlier goal state or unconsumed messages. Goal and delegation-owned
+   registrations are reconciled with the surviving projection; plugin
+   registrations cannot be reconstructed from history and remain subject to
+   explicit plugin lifecycle handling. Revert retains the engine's existing
+   active-run restrictions; it does not gain permission to rewrite active
+   execution merely because goal pause is non-interrupting.</li>
+</ul>
+<h2 id="7-apis-permissions-and-surfaces">7. APIs, permissions, and surfaces<a class="headerlink" href="#7-apis-permissions-and-surfaces" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Protocol/SDK</strong>: extension protocol <code>0.0.5</code> adds the producer capability,
+  plugin requests <code>plugin/producer/register</code>, <code>plugin/producer/send</code>,
+  <code>plugin/producer/unregister</code>, and <code>plugin/recovery/complete</code>, plus the
+  deadline-free <code>plugin/recovery/start</code> notification. The SDK exposes
+  explicit producer handles and removes the legacy session-publishing
+  helpers. See <code>docs/site/development/plugins.md</code> for the public contract.</li>
+<li><strong>Permissions</strong>: <code>goal_get</code>/<code>goal_update</code> follow the existing tool
+  permission model (<code>crates/engine/src/permissions.rs</code>); they are root-only
+  by construction, not by permission config, and are not configurable
+  capability surface. <code>goal_get</code> matches <code>read</code> on <code>goal:current</code>;
+  <code>goal_update</code> matches <code>write</code> on <code>goal:current</code>. Explicit activation does
+  not grant a permission exception. The producer capability is off by
+  default for plugins.</li>
+<li><strong>Run-freeze integration</strong>: tool set and tool-prompt changes apply only at
+  run admission; goal lifecycle events never mutate <code>history[0]</code>
+  (<code>AGENTS.md</code> rules; <code>crates/engine/src/runtime/tool_prompts.rs</code>).</li>
+<li><strong>TUI</strong> (<code>crates/tui/src/ui/slash.rs</code>, <code>crates/tui/src/state</code>):
+  explicit <code>/goal &lt;objective&gt;</code> activation with matching usage/help, plus a
+  persistent one-line goal bar above the composer. Its clickable objective
+  opens a detail modal with the full checklist and status, without checklist
+  editing. Pause/Resume and Cancel buttons are the primary lifecycle controls;
+  terminal goals retain a read-only bar and detail view, while absent goals
+  hide the bar. Notifications for goal completion and failed/disabled
+  producer-capable plugins remain separate from this persistent surface.
+  Pending/admitted producer steer and queue messages share the existing queue
+  strip above the goal bar and composer, using its existing automatic show/hide
+  behavior.
+  Claimed entries are hidden until release restores waiting, unless consumed
+  or discarded. Discarded entries are removed/hidden; producer messages cannot be recalled
+  into the user composer. Discard is an owner-authorized producer API, not a
+  new composer recall action.</li>
+<li><strong>Inspection</strong>: runtime snapshot exposes the producer registry records
+  (owner kind, session, age) for debugging; this is read-only.</li>
+</ul>
+<h2 id="8-testing-and-acceptance-matrix">8. Testing and acceptance matrix<a class="headerlink" href="#8-testing-and-acceptance-matrix" title="Permanent link">&para;</a></h2>
+<p>Engine tests (<code>crates/engine/src/runtime_tests.rs</code>), protocol round-trips
+(<code>crates/protocol/src/tests.rs</code>), TUI tests, and docs build
+(<code>./scripts/build-docs.sh</code>, strict) must cover at minimum:</p>
+<ol>
+<li><code>/goal</code> grammar: explicit objective activation; bare <code>/goal</code> shows objective
+   usage without a status report; <code>/goal status</code> is rejected without activation.
+   Retained lifecycle shortcuts, child-session rejection, and activation conflicts
+   remain covered.</li>
+<li>Lifecycle: pause/resume/cancel transitions; terminal-state rejection of
+   further transitions; user-only lifecycle enforcement against tool calls.</li>
+<li>Checklist: items contain only <code>description</code> and <code>finished</code>; full ordered
+   replacements take only <code>items</code>, and the last accepted update wins for the
+   current goal. An older run's update can affect a newly activated active or
+   paused goal. Engine revisions still increase; stale user lifecycle goal IDs
+   and revisions, and updates with no current active/paused goal, are rejected. An empty
+   checklist never completes or unpauses a goal, and can bootstrap an active
+   goal; all-finished completes.</li>
+<li>Pause semantics: updates preserved while paused; all-finished-while-paused
+   records completion with no continuation; no future continuations after
+   pause/cancel. Each notification condition independently qualifies: an active
+   root run, another live producer (excluding goal self), or queued real messages.
+   Steering is durable before the producer registration closes and enters the
+   next safe model request; idle roots with other producers or real messages can
+   wake a normal run without resuming goal reminders. A fully idle root persists
+   lifecycle without an announcement run; goal self/reminders alone do not qualify.
+   In-flight requests and delegations are not aborted, tool pairs remain intact,
+   and already-emitted actions are not undone. Notification guidance stops
+   autonomous old-goal pursuit without adding run binding to checklist updates.</li>
+<li>Tools appear/disappear only at run admission (freeze).</li>
+<li>Producer registry: zero-send unregister; closed/foreign send rejection;
+   post-turn send wakes idle session; mode is per-send.</li>
+<li>Persistence: ACK-after-durable-accept; retry with same idempotency key
+   dedupes; crash recovery admits accepted-unconsumed messages without a
+   live producer; unregister keeps queued messages.</li>
+<li>Delivery: steer lands mid-tool-loop without splitting tool pairs or
+   cancelling in-flight API; queue-while-active is persisted and deferred;
+   idle queue starts a run.</li>
+<li>Subagent results: background completion steered exactly once (no
+   <code>DelegateFinishedV2</code> duplication); foreground result not duplicated.</li>
+<li>Goal readiness: each readiness conjunct individually blocks; own
+    registration excluded; atomic check + admission recheck; reminder
+    coalescing/invalidation by goal ID and revision; real work ahead of
+    reminders; repeated reminders at an unchanged unfinished revision.</li>
+<li>Restart: registrations gone; goal restored; readiness barrier holds auto
+    wake; failed/disabled plugin surfaced and does not complete goal items;
+    lazy adoption does not deadlock.</li>
+<li>Compaction/fork/revert invariants from section 6.</li>
+<li>Producer discard: owned waiting messages can be discarded before or after
+    unregister, including admitted-but-unclaimed messages; own
+    already-discarded retries are idempotent. Reject cross-owner, consumed, and
+    claimed/in-flight messages, including claims before provider dispatch. Race
+    discard against claim acquisition; replay durable discard
+    without redelivery or a stale pending-work blocker.</li>
+<li>Queue strip: pending/admitted producer steer and queue messages appear in
+    the existing strip above the goal bar and composer, participate in automatic
+    show/hide,
+    and disappear on discard. Producer entries cannot be recalled into the
+    user composer. Claims hide entries; release restores only unconsumed,
+    undiscarded waiting entries after all claims end. In-flight input cannot be
+    retracted. Cover failed/cancelled attempts and recovery release.</li>
+<li>Goal bar: persist one line while the selected session has a goal; hide when
+    absent and retain terminal read-only status. Clicking the objective opens
+    the full checklist/status modal without editing controls. Pause/Resume and
+    Cancel buttons invoke the existing lifecycle controls with identity/revision
+    checks. Session switching and narrow layouts keep the queue strip, goal bar,
+    and composer separate, without overlap or ephemeral status-row substitution.</li>
+</ol>
+<h2 id="9-staging-plan">9. Staging plan<a class="headerlink" href="#9-staging-plan" title="Permanent link">&para;</a></h2>
+<p>The prerequisite compaction/permissions/symlink work was reviewed, committed,
+and pushed before these implementation stages:</p>
+<ol>
+<li>Protocol events + projection (section 6) with tests; no behavior change.</li>
+<li>Producer registry core + admission extension (sections 2–3) including
+   queue-while-active persistence; plugin capability + SDK surface.</li>
+<li>Delegation integration: background completions via registry, single
+   materialization of results (3.3).</li>
+<li>Goal mode: durable state, tools, slash commands, wake controller
+   (sections 1, 4, 7).</li>
+<li>Recovery/readiness barrier + TUI progress/notifications (sections 5, 7).</li>
+<li>Docs: events reference, plugin development, user guide; bindings regen.</li>
+</ol>
+<h2 id="10-open-technical-risks">10. Open technical risks<a class="headerlink" href="#10-open-technical-risks" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Queue-while-active admission</strong> is the deepest change: the residency
+   invariant (<code>has_runless_pending_inputs</code>, <code>void_runless_pending_inputs</code>)
+   currently forbids or voids runless admits during an active run, and the
+   run-end path voids still-pending steered inputs
+   (<code>crates/tui/src/state/mod.rs</code> mirrors this). Queue messages must be
+   exempted from voiding without weakening the user-input invariants.</li>
+<li><strong>Single materialization of background results</strong>: merging the
+   <code>DelegateFinishedV2</code> path with producer steer delivery risks either
+   duplicate model-history content or a lost result on the crash boundary
+   between "accepted" and "materialized"; the ACK/consume events must be the
+   single source of truth.</li>
+<li><strong>Plugin emit migration</strong>: routing existing <code>emit_session</code> model-bound
+   content through registrations is a breaking extension-protocol change for
+   current plugins; the bypass must close without stranding non-model uses.</li>
+<li><strong>Readiness barrier vs. plugin latency</strong>: holding goal auto-wake until
+   plugin recovery completes can delay continuations arbitrarily if a plugin
+   hangs in <code>starting</code>; the no-timers decision means the engine cannot force
+   a timeout, only surface the status.</li>
+<li><strong>Revert/compaction interaction</strong> for accepted-but-unconsumed messages
+   relies on best-effort reading of versionless history; malformed or
+   partially reverted message events need defined discard behavior (reuse
+   the existing <code>DiscardedInvalidPayload</code> pattern).</li>
+<li><strong>Paused-completion judgment</strong> (1.3) is recorded as minimal behavior; if
+   product later wants "paused blocks completion", that is a new decision,
+   not a bug fix.</li>
+<li><strong>Historical checklist decoding</strong>: treatment of older stored items that
+   contain an <code>id</code> is pending verification of the core implementation. This
+   spec does not promise a particular compatibility decoder or migration;
+   session history remains subject to the versionless best-effort contract.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.instant", "navigation.instant.progress", "navigation.sections", "content.code.copy"], "search": "../../assets/javascripts/workers/search.973d3a69.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.92b07e13.min.js"></script>
+      
+    
+  </body>
+</html>

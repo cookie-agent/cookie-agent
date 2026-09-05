@@ -551,6 +551,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../goals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goals
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../permissions/" class="md-nav__link">
         
   
@@ -673,6 +696,15 @@
   <a href="#configure-and-enable-a-plugin" class="md-nav__link">
     <span class="md-ellipsis">
       Configure and enable a plugin
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#producer-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer messages
     </span>
   </a>
   
@@ -929,6 +961,29 @@
   
   <span class="md-ellipsis">
     Plugin development
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/goal-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Goal mode (design spec)
     
   </span>
   
@@ -1215,6 +1270,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#producer-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Producer messages
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#allow-plugin-tools" class="md-nav__link">
     <span class="md-ellipsis">
       Allow plugin tools
@@ -1267,10 +1331,11 @@ contracts, see <a href="../../development/plugins/">Plugin development</a>.</p>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">EXAMPLE_MODE</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">"local"</span><span class="w"> </span><span class="p">}</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">cwd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"/workspace"</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">enabled</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">producer_messaging</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">interception_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2000</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">startup_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10000</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">shutdown_grace_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3000</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">tool_timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30000</span>
 </code></pre></div>
 <p><code>command</code> is required. <code>args</code> and <code>env</code> default to empty collections, <code>enabled</code>
 defaults to <code>true</code>, and <code>cwd</code> is optional. All timeout values must be positive.
@@ -1281,6 +1346,31 @@ Configure <code>PATH</code> explicitly when the plugin itself needs it.</p>
 <p>Each enabled plugin starts when the engine opens. Set <code>enabled = false</code> to keep
 an installed plugin configured without starting it. Configuration changes take
 effect when the engine next starts.</p>
+<h2 id="producer-messages">Producer messages<a class="headerlink" href="#producer-messages" title="Permanent link">&para;</a></h2>
+<p>Plugins that send messages to the model must explicitly declare producer support.
+Enable it only for trusted plugins with <code>producer_messaging = true</code>; this setting
+defaults to <code>false</code> independently of plugin tool permissions. A plugin must register
+for the destination session before sending. Registrations may outlive a turn and
+must be explicitly closed by the plugin. There is no registration expiry.</p>
+<p>Each message chooses <code>steer</code> (the next safe model request) or <code>queue</code> (a subsequent
+run). Sending to an idle session can start a run. A successful send acknowledges
+durable acceptance, not model execution or completion of an external action.
+Retries use the plugin's stable message key; changing the configured plugin name
+changes its durable deduplication identity.</p>
+<p>A plugin can explicitly discard its own waiting message by session and message
+receipt, even after unregistering or reconnecting under the same configured name.
+The session actor durably claims a message before request preparation and hooks.
+That reservation removes the message from waiting, and discard rejects until the
+claim is released, even if no network request has been sent. A claim is not proof
+that the provider received or executed a request. After failed preparation or
+cancellation, releasing the claim may return an unconsumed message to waiting;
+consumed messages cannot return or be discarded. Repeated discard of an already
+discarded message is harmless. Discard does not close a producer registration,
+cancel a run, or undo effects of a message already delivered. A rejected discard
+does not establish exactly-once execution or external effects.</p>
+<p>The old session-publishing API cannot authorize model-bound messages. Plugins
+using that API must migrate to explicit producer registration and sends. Ordinary
+observational bus publication is unaffected.</p>
 <h2 id="allow-plugin-tools">Allow plugin tools<a class="headerlink" href="#allow-plugin-tools" title="Permanent link">&para;</a></h2>
 <p>Plugin tools remain hidden until the selected agent's policy or a session
 overlay allows or asks for the plugin's declared permission and resource. The
@@ -1298,6 +1388,17 @@ and session overrides.</p>
 or to <code>failed</code> with a diagnostic reason. A plugin failure does not stop the
 engine or other plugins. Crashed plugins remain failed until the engine
 restarts.</p>
+<p>Producer readiness is tracked separately as <code>starting</code>, <code>ready</code>, <code>failed</code>, or
+<code>disabled</code>, and is inspectable through <code>session.producers</code>. During startup the
+plugin restores pending work from its own storage or external service and registers
+fresh producer IDs before explicitly completing recovery. Recovery has no timeout;
+an indefinitely <code>starting</code> plugin can hold goal continuations indefinitely.</p>
+<p>Failed or disabled producer plugins leave external work <strong>unknown</strong>, not complete.
+The runtime surfaces recovery diagnostics and goal readiness remains blocked;
+neither state finishes goal checklist items. Accepted messages recover from the
+session log independently of plugin restoration. The engine cannot distinguish a
+plugin with no pending work from one that lost its own state, so restart recovery
+is only as complete as the plugin's own durable records.</p>
 <p>During shutdown, the engine requests plugin shutdown, waits for the configured
 grace period, and then terminates the process if needed.</p>
 
