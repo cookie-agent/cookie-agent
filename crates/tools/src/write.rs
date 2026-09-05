@@ -199,6 +199,8 @@ impl PreparedExecutor for WriteExecutor {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use cookie_agent_engine::ToolExecutionContext;
     use cookie_agent_engine::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
     use cookie_agent_protocol::{
         OperationFingerprint, PermissionAction, RunId, SessionId, ToolCallId,
@@ -315,5 +317,193 @@ mod tests {
             prepared.operation().resources()[0].capability,
             PermissionAction::Write
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_routes_keep_lexical_write_contract_and_preserve_links() {
+        use std::{fs, os::unix::fs::symlink};
+
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        fs::create_dir(&workspace).expect("workspace");
+        fs::create_dir(workspace.join("routes")).expect("routes");
+        fs::create_dir(&external).expect("external");
+        for name in [
+            "relative-leaf.txt",
+            "absolute-leaf.txt",
+            "relative-ancestor.txt",
+            "absolute-ancestor.txt",
+        ] {
+            fs::write(external.join(name), "old").expect("fixture");
+        }
+        symlink(
+            "../../external/relative-leaf.txt",
+            workspace.join("routes/relative-leaf"),
+        )
+        .expect("relative leaf");
+        symlink(
+            external.join("absolute-leaf.txt"),
+            workspace.join("routes/absolute-leaf"),
+        )
+        .expect("absolute leaf");
+        symlink(
+            "absolute-ancestor",
+            workspace.join("routes/relative-ancestor"),
+        )
+        .expect("relative ancestor");
+        symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
+
+        let tool = WriteTool::new(&workspace);
+        for (requested, destination, link) in [
+            (
+                "routes/relative-leaf",
+                external.join("relative-leaf.txt"),
+                workspace.join("routes/relative-leaf"),
+            ),
+            (
+                "routes/absolute-leaf",
+                external.join("absolute-leaf.txt"),
+                workspace.join("routes/absolute-leaf"),
+            ),
+            (
+                "routes/relative-ancestor/relative-ancestor.txt",
+                external.join("relative-ancestor.txt"),
+                workspace.join("routes/relative-ancestor"),
+            ),
+            (
+                "routes/absolute-ancestor/absolute-ancestor.txt",
+                external.join("absolute-ancestor.txt"),
+                workspace.join("routes/absolute-ancestor"),
+            ),
+        ] {
+            let original_link = fs::read_link(&link).expect("link target");
+            let prepared = tool
+                .prepare(
+                    context(&workspace),
+                    ToolCall {
+                        id: ToolCallId::new_v7(),
+                        name: "write".into(),
+                        arguments: serde_json::json!({"filePath":requested,"content":"new"}),
+                    },
+                )
+                .await
+                .expect("prepare symlink write");
+            assert_eq!(prepared.operation().resources().len(), 1);
+            assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
+            assert_eq!(
+                prepared.normalized_arguments()["filePath"],
+                workspace.join(requested).to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                tool.get_permission_resource("write", prepared.normalized_arguments())
+                    .expect("normalized permission resource"),
+                ("write", Some(requested.to_owned()))
+            );
+            crate::assert_workspace_rule_allows(
+                &prepared,
+                &workspace,
+                PermissionAction::Write,
+                "routes/*",
+            );
+            prepared
+                .execute_for_test(
+                    ToolExecutionContext::for_test(
+                        root.path().join("artifacts"),
+                        crate::test_turn_context(),
+                    )
+                    .expect("execution context"),
+                )
+                .await
+                .expect("execute symlink write");
+            assert_eq!(fs::read_to_string(destination).unwrap(), "new");
+            assert_eq!(fs::read_link(link).unwrap(), original_link);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_follows_dangling_leaf_for_creation_without_replacing_link() {
+        use std::{fs, os::unix::fs::symlink};
+
+        let root = tempfile::tempdir().expect("root");
+        symlink("created.txt", root.path().join("route")).expect("dangling route");
+        let prepared = WriteTool::new(root.path())
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({"filePath":"route","content":"created"}),
+                },
+            )
+            .await
+            .expect("prepare dangling write");
+        prepared
+            .execute_for_test(
+                ToolExecutionContext::for_test(
+                    root.path().join("artifacts"),
+                    crate::test_turn_context(),
+                )
+                .expect("execution context"),
+            )
+            .await
+            .expect("execute dangling write");
+
+        assert_eq!(
+            fs::read_link(root.path().join("route")).unwrap(),
+            std::path::Path::new("created.txt")
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("created.txt")).unwrap(),
+            "created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_route_swap_is_operation_changed_and_routes_affect_fingerprint() {
+        use std::{fs, os::unix::fs::symlink};
+
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.txt"), "old").expect("fixture");
+        symlink("value.txt", root.path().join("left")).expect("left route");
+        symlink("value.txt", root.path().join("right")).expect("right route");
+        let tool = WriteTool::new(root.path());
+        let prepare = |path: &str| {
+            tool.prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments: serde_json::json!({"filePath":path,"content":"new"}),
+                },
+            )
+        };
+        let left = prepare("left").await.expect("prepare left");
+        let right = prepare("right").await.expect("prepare right");
+        assert_ne!(
+            left.operation().resources()[0].binding_digest,
+            right.operation().resources()[0].binding_digest
+        );
+        assert_ne!(
+            OperationFingerprint::from_prepared_operation(left.operation()),
+            OperationFingerprint::from_prepared_operation(right.operation())
+        );
+
+        fs::remove_file(root.path().join("left")).expect("remove route");
+        symlink("value.txt", root.path().join("left")).expect("replace route");
+        let error = left
+            .execute_for_test(
+                ToolExecutionContext::for_test(
+                    root.path().join("artifacts"),
+                    crate::test_turn_context(),
+                )
+                .expect("execution context"),
+            )
+            .await
+            .expect_err("route swap must fail");
+        assert!(matches!(error, ToolError::OperationChanged(_)));
     }
 }

@@ -357,6 +357,33 @@ Fixture agent body.
     }
 }
 
+#[test]
+fn dotenv_permissions_do_not_gain_implicit_rules() {
+    for permissions in [
+        serde_json::json!({ "read": "allow", "write": "allow" }),
+        serde_json::json!({ "read": { "*": "allow" }, "write": { "*": "allow" } }),
+    ] {
+        let frontmatter: AgentFrontmatter = serde_json::from_value(serde_json::json!({
+            "description": "Ordinary file permissions",
+            "mode": "primary",
+            "enabled": true,
+            "models": [],
+            "permissions": permissions
+        }))
+        .expect("agent frontmatter");
+        for action in [PermissionAction::Read, PermissionAction::Write] {
+            assert_eq!(frontmatter.permissions[&action].rules(action).len(), 1);
+            for path in [".env", ".env.local", "nested/.env.local"] {
+                assert_eq!(
+                    configured_effect(&frontmatter, action, path),
+                    PermissionEffect::Allow,
+                    "{action:?} {path}"
+                );
+            }
+        }
+    }
+}
+
 fn configured_effect(
     frontmatter: &AgentFrontmatter,
     action: PermissionAction,
@@ -365,20 +392,11 @@ fn configured_effect(
     let Some(value) = frontmatter.permissions.get(&action) else {
         return PermissionEffect::Ask;
     };
-    let name = resource.rsplit('/').next().unwrap_or(resource);
-    let protected_env = action == PermissionAction::Read
-        && (name == ".env" || name.starts_with(".env."))
-        && !name.ends_with(".example");
     value
         .rules(action)
         .into_iter()
         .enumerate()
-        .filter(|(_, rule)| {
-            simple_wildcard_match(rule.resource.as_str(), resource)
-                && !(protected_env
-                    && rule.effect == PermissionEffect::Allow
-                    && rule.resource.as_str() != resource)
-        })
+        .filter(|(_, rule)| simple_wildcard_match(rule.resource.as_str(), resource))
         .max_by_key(|(index, rule)| {
             let wildcards = rule
                 .resource

@@ -439,7 +439,6 @@ pub(crate) fn effective_permission(
     resource: &str,
     workspace: &Path,
 ) -> (PermissionEffect, String) {
-    let protected_env = action == PermissionAction::Read && protected_env_resource(resource);
     let absolute_resource = absolute_resource(workspace, resource);
     let winner = policy
         .permissions
@@ -453,47 +452,21 @@ pub(crate) fn effective_permission(
                     &absolute_resource,
                     workspace,
                 )
-                && !(protected_env
-                    && rule.effect == PermissionEffect::Allow
-                    && !permission_pattern_is_exact(
-                        rule.resource.as_str(),
-                        resource,
-                        &absolute_resource,
-                        workspace,
-                    ))
         })
         .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index));
     winner
         .map_or_else(
             || {
-                if protected_env {
-                    (
-                        PermissionEffect::Ask,
-                        "built-in .env read guard asks by default; no exact allow overrides it"
-                            .into(),
-                    )
-                } else {
-                    (
-                        PermissionEffect::Ask,
-                        "no matching rule; ask by default".into(),
-                    )
-                }
+                (
+                    PermissionEffect::Ask,
+                    "no matching rule; ask by default".into(),
+                )
             },
             |(_, rule)| {
-                let reason = if protected_env
-                    && rule.effect == PermissionEffect::Allow
-                    && permission_pattern_is_exact(
-                        rule.resource.as_str(),
-                        resource,
-                        &absolute_resource,
-                        workspace,
-                    )
-                {
-                    "exact agent rule overrides the built-in .env default".into()
-                } else {
-                    "most-specific matching pattern: more literal characters, then fewer wildcards, then later declaration".into()
-                };
-                (rule.effect, reason)
+                (
+                    rule.effect,
+                    "most-specific matching pattern: more literal characters, then fewer wildcards, then later declaration".into(),
+                )
             },
         )
 }
@@ -505,7 +478,6 @@ pub(crate) fn effective_permission_with_overlay(
     resource: &str,
     workspace: &Path,
 ) -> (PermissionEffect, String) {
-    let protected_env = action == PermissionAction::Read && protected_env_resource(resource);
     let absolute_resource = absolute_resource(workspace, resource);
     let winner = overlay.and_then(|overlay| {
         overlay
@@ -520,47 +492,18 @@ pub(crate) fn effective_permission_with_overlay(
                         &absolute_resource,
                         workspace,
                     )
-                    && !(protected_env
-                        && rule.effect == PermissionEffect::Allow
-                        && !permission_pattern_is_exact(
-                            rule.resource.as_str(),
-                            resource,
-                            &absolute_resource,
-                            workspace,
-                        ))
             })
             .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index))
     });
     winner.map_or_else(
         || effective_permission(policy, action, resource, workspace),
         |(_, rule)| {
-            let reason = if protected_env && rule.effect == PermissionEffect::Allow {
-                "exact session overlay rule overrides the built-in .env default"
-            } else {
-                "session overlay matching rule takes precedence over the agent document"
-            };
-            (rule.effect, reason.into())
+            (
+                rule.effect,
+                "session overlay matching rule takes precedence over the agent document".into(),
+            )
         },
     )
-}
-
-fn permission_pattern_is_exact(
-    pattern: &str,
-    relative_resource: &str,
-    absolute_resource: &str,
-    workspace: &Path,
-) -> bool {
-    if pattern
-        .chars()
-        .any(|character| matches!(character, '*' | '?'))
-    {
-        return false;
-    }
-    if pattern.contains(cookie_agent_protocol::WildcardPattern::WORKSPACE_DIR_EXPRESSION) {
-        expand_workspace_pattern(pattern, workspace) == absolute_resource
-    } else {
-        pattern == relative_resource
-    }
 }
 
 fn permission_pattern_matches(
@@ -631,11 +574,6 @@ fn specificity(
         .count();
     let literals = pattern.chars().count() - wildcards;
     (literals, std::cmp::Reverse(wildcards), declaration_index)
-}
-
-fn protected_env_resource(resource: &str) -> bool {
-    let name = resource.rsplit('/').next().unwrap_or(resource);
-    (name == ".env" || name.starts_with(".env.")) && !name.ends_with(".example")
 }
 
 fn matching_rules(
@@ -1778,45 +1716,167 @@ mod tests {
     }
 
     #[test]
-    fn env_read_guard_overrides_allow_all_at_root_and_nested_paths() {
-        let allow_all = policy(vec![rule(
-            "allow-all",
-            PermissionAction::Read,
-            "*",
-            PermissionEffect::Allow,
-        )]);
-        for path in [".env", "nested/.env.local"] {
-            let decision = decide(
-                &allow_all,
-                resource(PermissionAction::Read, path, path.as_bytes()),
-            );
-            assert_eq!(decision.effect, PermissionEffect::Ask, "{path}");
-            assert_eq!(
-                decision.evaluations[0].trace.precedence_reason,
-                "built-in .env read guard asks by default; no exact allow overrides it"
-            );
+    fn resource_names_do_not_override_configured_permission_effects() {
+        let file_names = [
+            ".env",
+            ".env.local",
+            ".env.example",
+            "nested/.env.local",
+            "store-v3.json",
+            "nested/token-v1",
+            ".ssh/id_ed25519",
+            ".netrc",
+            "application_default_credentials.json",
+            "AGENTS.md",
+            ".cookie-agent/config.toml",
+        ];
+        let cases = [
+            (PermissionAction::Read, file_names.as_slice()),
+            (PermissionAction::Write, file_names.as_slice()),
+            (PermissionAction::Read, &["tool_result:call_123"][..]),
+            (PermissionAction::Bash, &["cat .env", "rm -rf x"][..]),
+            (PermissionAction::Delegate, &["reviewer"][..]),
+            (PermissionAction::Mcp, &["github_delete_repo"][..]),
+            (PermissionAction::Plugin, &["read .env"][..]),
+            (PermissionAction::Skill, &["review"][..]),
+        ];
+        for (action, names) in cases {
+            for name in names {
+                let operation = operation(vec![resource(action, name, name.as_bytes())]);
+                let labels = [Some((*name).into())];
+                for effect in [
+                    PermissionEffect::Allow,
+                    PermissionEffect::Deny,
+                    PermissionEffect::Ask,
+                ] {
+                    let rules = vec![rule("configured", action, "*", effect)];
+                    for (policy, overlay) in [
+                        (policy(rules.clone()), None),
+                        (
+                            policy(vec![rule("agent", action, name, PermissionEffect::Deny)]),
+                            Some(SessionPermissionOverlay { rules }),
+                        ),
+                    ] {
+                        let decision = PermissionPipeline::default().decide_operation_with_overlay(
+                            &policy,
+                            overlay.as_ref(),
+                            &operation,
+                            &labels,
+                            std::path::Path::new("/workspace"),
+                        );
+                        assert_eq!(decision.effect, effect, "{action:?} {name}");
+                        assert_eq!(decision.evaluations[0].trace.effect, effect);
+                    }
+                }
+                let decision = decide(&policy(Vec::new()), resource(action, name, name.as_bytes()));
+                assert_eq!(
+                    decision.effect,
+                    PermissionEffect::Ask,
+                    "unmatched {action:?} {name}"
+                );
+                assert!(decision.evaluations[0].trace.candidates.is_empty());
+            }
         }
     }
 
     #[test]
-    fn exact_env_rules_override_default_ask_but_generic_allow_does_not() {
-        for (effect, expected) in [
-            (PermissionEffect::Allow, PermissionEffect::Allow),
-            (PermissionEffect::Deny, PermissionEffect::Deny),
-        ] {
-            let decision = decide(
-                &policy(vec![
-                    rule(
-                        "allow-all",
-                        PermissionAction::Read,
-                        "*",
+    fn dotenv_files_accept_broad_policy_and_overlay_allows() {
+        for action in [PermissionAction::Read, PermissionAction::Write] {
+            for pattern in ["*", "${workspace_dir}/*"] {
+                let allow_all = rule("allow-all", action, pattern, PermissionEffect::Allow);
+                let overlay = SessionPermissionOverlay {
+                    rules: vec![allow_all.clone()],
+                };
+                for path in [
+                    ".env",
+                    ".env.local",
+                    "nested/.env",
+                    "nested/.env.local",
+                    "nested/.env.production.example",
+                    "/workspace/.env",
+                    "/workspace/.env.local",
+                ] {
+                    let decision = decide(
+                        &policy(vec![allow_all.clone()]),
+                        resource(action, path, path.as_bytes()),
+                    );
+                    assert_eq!(
+                        decision.effect,
                         PermissionEffect::Allow,
+                        "{action:?} {pattern} {path}"
+                    );
+                    assert_eq!(decision.evaluations[0].trace.candidates.len(), 1);
+
+                    let decision = PermissionPipeline::default().decide_operation_with_overlay(
+                        &policy(vec![rule(
+                            "agent-deny",
+                            action,
+                            path,
+                            PermissionEffect::Deny,
+                        )]),
+                        Some(&overlay),
+                        &operation(vec![resource(action, path, path.as_bytes())]),
+                        &[Some(path.into())],
+                        std::path::Path::new("/workspace"),
+                    );
+                    assert_eq!(
+                        decision.effect,
+                        PermissionEffect::Allow,
+                        "overlay {action:?} {pattern} {path}"
+                    );
+                    assert_eq!(
+                        decision.evaluations[0].trace.precedence_reason,
+                        "session overlay matching rule takes precedence over the agent document"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dotenv_specific_rules_override_broad_allows_in_each_layer() {
+        for action in [PermissionAction::Read, PermissionAction::Write] {
+            for effect in [
+                PermissionEffect::Allow,
+                PermissionEffect::Deny,
+                PermissionEffect::Ask,
+            ] {
+                for (broad, specific, path) in [
+                    ("*", ".env", ".env"),
+                    ("*", ".env.*", ".env.local"),
+                    ("*", "*/.env.*", "nested/.env.local"),
+                    ("${workspace_dir}/*", "${workspace_dir}/.env", ".env"),
+                    (
+                        "${workspace_dir}/*",
+                        "${workspace_dir}/.env.*",
+                        ".env.local",
                     ),
-                    rule("exact-env", PermissionAction::Read, ".env", effect),
-                ]),
-                resource(PermissionAction::Read, ".env", b"env"),
-            );
-            assert_eq!(decision.effect, expected);
+                ] {
+                    let rules = vec![
+                        rule("specific", action, specific, effect),
+                        rule("later-broad", action, broad, PermissionEffect::Allow),
+                    ];
+                    let decision = decide(
+                        &policy(rules.clone()),
+                        resource(action, path, path.as_bytes()),
+                    );
+                    assert_eq!(decision.effect, effect, "{action:?} {specific}");
+
+                    let decision = PermissionPipeline::default().decide_operation_with_overlay(
+                        &policy(vec![rule(
+                            "agent-allow",
+                            action,
+                            path,
+                            PermissionEffect::Allow,
+                        )]),
+                        Some(&SessionPermissionOverlay { rules }),
+                        &operation(vec![resource(action, path, path.as_bytes())]),
+                        &[Some(path.into())],
+                        std::path::Path::new("/workspace"),
+                    );
+                    assert_eq!(decision.effect, effect, "overlay {action:?} {specific}");
+                }
+            }
         }
     }
 
@@ -1843,21 +1903,34 @@ mod tests {
     }
 
     #[test]
-    fn env_example_read_is_not_guarded() {
-        let decision = decide(
-            &policy(vec![rule(
-                "allow-all",
-                PermissionAction::Read,
-                "*",
-                PermissionEffect::Allow,
-            )]),
-            resource(
-                PermissionAction::Read,
-                "nested/.env.production.example",
-                b"example",
-            ),
-        );
-        assert_eq!(decision.effect, PermissionEffect::Allow);
+    fn unmatched_dotenv_files_use_normal_default_ask() {
+        for action in [PermissionAction::Read, PermissionAction::Write] {
+            for path in [".env", ".env.local", "nested/.env.local", "/outside/.env"] {
+                for rules in [
+                    Vec::new(),
+                    vec![rule(
+                        "unrelated",
+                        action,
+                        "${workspace_dir}/src/*",
+                        PermissionEffect::Allow,
+                    )],
+                ] {
+                    let decision = PermissionPipeline::default().decide_operation_with_overlay(
+                        &policy(rules.clone()),
+                        Some(&SessionPermissionOverlay { rules }),
+                        &operation(vec![resource(action, path, path.as_bytes())]),
+                        &[Some(path.into())],
+                        std::path::Path::new("/workspace"),
+                    );
+                    assert_eq!(decision.effect, PermissionEffect::Ask, "{action:?} {path}");
+                    assert!(decision.evaluations[0].trace.candidates.is_empty());
+                    assert_eq!(
+                        decision.evaluations[0].trace.precedence_reason,
+                        "no matching rule; ask by default"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

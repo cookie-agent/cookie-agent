@@ -3,11 +3,12 @@
 #[cfg(unix)]
 mod unix {
     use std::{
+        collections::VecDeque,
         ffi::{OsStr, OsString},
         fs::{self, File},
         io::{Read, Seek, SeekFrom, Write},
         os::fd::AsRawFd,
-        os::unix::fs::MetadataExt,
+        os::unix::{ffi::OsStrExt, fs::MetadataExt},
         path::{Component, Path, PathBuf},
         sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     };
@@ -35,6 +36,16 @@ mod unix {
             let limit = PREPARED_WEIGHT_LIMIT.load(Ordering::Acquire);
             reserve_weight(&PREPARED_WEIGHT, limit, weight)?;
             Ok(Self { weight })
+        }
+
+        fn grow(&mut self, weight: usize) -> Result<(), ToolError> {
+            reserve_weight(
+                &PREPARED_WEIGHT,
+                PREPARED_WEIGHT_LIMIT.load(Ordering::Acquire),
+                weight,
+            )?;
+            self.weight += weight;
+            Ok(())
         }
     }
 
@@ -105,6 +116,9 @@ mod unix {
         pub(super) parent: File,
         pub(super) name: OsString,
         pub(super) identity: ObjectIdentity,
+        // Keep links and exited directories alive so their inodes cannot be reused.
+        pub(super) _object: File,
+        pub(super) link_target: Option<OsString>,
     }
 
     pub struct PreparedExisting {
@@ -169,7 +183,21 @@ mod unix {
     }
 
     pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
-        let directory = open_absolute_directory(cwd)?;
+        let mut budget = BudgetReservation::reserve(4)?;
+        let resolved = resolve_path(&normalize_absolute(cwd.to_owned())?, &mut budget)?;
+        if !resolved.missing.is_empty() {
+            return Err(ToolError::execution("prepared directory does not exist"));
+        }
+        let directory = File::from(
+            rustix::fs::openat(
+                &resolved.parent,
+                &resolved.basename,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(super::io_error)?,
+        );
+        revalidate_chain(&resolved.chain)?;
         Ok(
             ObjectIdentity::from_metadata(&directory.metadata().map_err(super::io_error)?)
                 .canonical_bytes(),
@@ -204,19 +232,18 @@ mod unix {
         } else {
             cwd.join(requested)
         })?;
-        let weight = absolute.components().count().saturating_add(4);
-        let budget = BudgetReservation::reserve(weight)?;
-        let basename = absolute
-            .file_name()
-            .ok_or_else(|| ToolError::unsupported_security("target has no basename"))?
-            .to_owned();
-        let parent_path = absolute
-            .parent()
-            .ok_or_else(|| ToolError::unsupported_security("target has no parent"))?;
-        let (parent, chain, missing_parent) = open_nearest_directory_chain(parent_path)?;
-        if !missing_parent.is_empty() {
-            let mut missing = missing_parent;
-            missing.push(basename.clone());
+        if absolute.file_name().is_none() {
+            return Err(ToolError::unsupported_security("target has no basename"));
+        }
+        let mut budget = BudgetReservation::reserve(4)?;
+        let ResolvedPath {
+            parent,
+            basename,
+            chain,
+            missing,
+        } = resolve_path(&absolute, &mut budget)?;
+        if !missing.is_empty() {
+            revalidate_chain(&chain)?;
             return Ok(PreparedTarget::Absent(PreparedAbsent {
                 parent,
                 basename,
@@ -226,7 +253,7 @@ mod unix {
                 _budget: budget,
             }));
         }
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
         match rustix::fs::openat(&parent, &basename, flags, Mode::empty()) {
             Ok(fd) => {
                 let file = File::from(fd);
@@ -242,6 +269,7 @@ mod unix {
                 } else {
                     Sha256Digest::of_bytes(&read_all(&file)?)
                 };
+                revalidate_chain(&chain)?;
                 Ok(PreparedTarget::Existing(PreparedExisting {
                     parent,
                     file,
@@ -262,8 +290,8 @@ mod unix {
                 chain,
                 _budget: budget,
             })),
-            Err(rustix::io::Errno::LOOP) => Err(ToolError::unsupported_security(
-                "prepared target is a symlink",
+            Err(rustix::io::Errno::LOOP) => Err(ToolError::operation_changed(
+                "prepared target became a symlink during resolution",
             )),
             Err(error) => Err(super::io_error(error)),
         }
@@ -348,6 +376,10 @@ mod unix {
             self.revalidate()?;
             let temporary = stage(&self.parent, bytes, self.identity.mode)?;
             before_exchange();
+            if let Err(error) = revalidate_chain(&self.chain) {
+                let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
+                return Err(error);
+            }
             if let Err(error) = rename_exchange(&self.parent, &temporary, &self.basename) {
                 let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
                 return Err(ToolError::operation_changed(format!(
@@ -356,6 +388,7 @@ mod unix {
                 )));
             }
             let verification = (|| {
+                revalidate_chain(&self.chain)?;
                 injected_exchange_failure(ExchangeFailurePoint::OpenDisplaced)?;
                 let displaced = rustix::fs::openat(
                     &self.parent,
@@ -451,6 +484,7 @@ mod unix {
                 append_tagged_os_string(&mut bytes, b"ancestor-name", &node.name);
                 bytes.extend_from_slice(b"ancestor-identity\0");
                 bytes.extend_from_slice(&node.identity.canonical_bytes());
+                append_link_manifest(&mut bytes, node);
             }
             bytes.extend_from_slice(b"parent-identity\0");
             bytes.extend_from_slice(
@@ -482,10 +516,15 @@ mod unix {
                 .missing
                 .first()
                 .ok_or_else(|| ToolError::execution("missing subtree is empty"))?;
+            let before_publish = || {
+                before_publish();
+                self.revalidate()
+            };
             if self.missing.len() == 1 {
                 let temporary = stage(&self.parent, bytes, 0o100600)?;
-                before_publish();
-                if let Err(error) = rename_noreplace(&self.parent, &temporary, first) {
+                if let Err(error) = before_publish()
+                    .and_then(|()| rename_noreplace(&self.parent, &temporary, first))
+                {
                     let _ = rustix::fs::unlinkat(&self.parent, &temporary, AtFlags::empty());
                     return Err(error);
                 }
@@ -505,10 +544,6 @@ mod unix {
         rename_exchange(parent, temporary, target)?;
         rustix::fs::unlinkat(parent, temporary, AtFlags::empty()).map_err(super::io_error)?;
         rustix::fs::fsync(parent).map_err(super::io_error)
-    }
-
-    fn open_absolute_directory(path: &Path) -> Result<File, ToolError> {
-        open_absolute_directory_chain(path).map(|(file, _)| file)
     }
 
     fn normalize_absolute(path: PathBuf) -> Result<PathBuf, ToolError> {
@@ -539,9 +574,17 @@ mod unix {
         Ok(normalized)
     }
 
-    fn open_nearest_directory_chain(
+    struct ResolvedPath {
+        parent: File,
+        basename: OsString,
+        chain: Vec<ChainNode>,
+        missing: Vec<OsString>,
+    }
+
+    fn resolve_path(
         path: &Path,
-    ) -> Result<(File, Vec<ChainNode>, Vec<OsString>), ToolError> {
+        budget: &mut BudgetReservation,
+    ) -> Result<ResolvedPath, ToolError> {
         if !path.is_absolute() {
             return Err(ToolError::unsupported_security(
                 "filesystem anchor is not absolute",
@@ -551,50 +594,159 @@ mod unix {
         let mut current =
             File::from(rustix::fs::open("/", flags, Mode::empty()).map_err(super::io_error)?);
         let mut chain = Vec::new();
-        let mut missing = Vec::new();
-        for component in path.components() {
-            match component {
-                Component::RootDir | Component::CurDir => {}
-                Component::Normal(name) if missing.is_empty() => {
-                    match rustix::fs::openat(&current, name, flags, Mode::empty()) {
-                        Ok(fd) => {
-                            let next = File::from(fd);
-                            let identity = ObjectIdentity::from_metadata(
-                                &next.metadata().map_err(super::io_error)?,
-                            );
-                            chain.push(ChainNode {
-                                parent: current.try_clone().map_err(super::io_error)?,
-                                name: name.to_owned(),
-                                identity,
-                            });
-                            current = next;
-                        }
-                        Err(rustix::io::Errno::NOENT) => missing.push(name.to_owned()),
-                        Err(rustix::io::Errno::LOOP) => {
-                            return Err(ToolError::unsupported_security(
-                                "prepared path contains a symlink",
+        let mut pending = path
+            .components()
+            .map(|part| part.as_os_str().to_owned())
+            .collect::<VecDeque<_>>();
+        let mut links = 0;
+        let mut steps = 0;
+        while let Some(name) = pending.pop_front() {
+            steps += 1;
+            if steps > 4096 || pending.len() > 4096 {
+                return Err(ToolError::resource_limit(
+                    "prepared path resolution is too deep",
+                ));
+            }
+            if name == "/" {
+                current = File::from(
+                    rustix::fs::open("/", flags, Mode::empty()).map_err(super::io_error)?,
+                );
+                continue;
+            }
+            if name == "." {
+                continue;
+            }
+            let stat = match rustix::fs::statat(&current, &name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(rustix::io::Errno::NOENT) => {
+                    if pending.back().is_some_and(|part| part == ".") {
+                        return Err(ToolError::execution(
+                            "symlink destination requires a directory",
+                        ));
+                    }
+                    let mut missing = vec![name];
+                    for part in pending {
+                        if part == ".." {
+                            return Err(ToolError::execution(
+                                "symlink target traverses a missing directory",
                             ));
                         }
-                        Err(error) => return Err(super::io_error(error)),
+                        if part != "." {
+                            missing.push(part);
+                        }
                     }
+                    budget.grow(missing.len())?;
+                    let basename = missing.last().expect("missing leaf").clone();
+                    return Ok(ResolvedPath {
+                        parent: current,
+                        basename,
+                        chain,
+                        missing,
+                    });
                 }
-                Component::Normal(name) => missing.push(name.to_owned()),
-                Component::ParentDir | Component::Prefix(_) => {
+                Err(error) => return Err(super::io_error(error)),
+            };
+            if FileType::from_raw_mode(stat.st_mode) == FileType::Symlink {
+                links += 1;
+                if links > 40 {
                     return Err(ToolError::unsupported_security(
-                        "parent traversal is not supported by prepared filesystem operations",
+                        "too many symlinks in prepared path",
                     ));
                 }
+                budget.grow(2)?;
+                let object = open_link(&current, &name)?;
+                let identity =
+                    ObjectIdentity::from_metadata(&object.metadata().map_err(super::io_error)?);
+                if stat_identity(&stat) != (identity.device, identity.inode) {
+                    return Err(ToolError::operation_changed(
+                        "symlink changed during resolution",
+                    ));
+                }
+                let target =
+                    rustix::fs::readlinkat(&current, &name, Vec::new()).map_err(super::io_error)?;
+                let target = OsStr::from_bytes(target.as_bytes()).to_owned();
+                chain.push(ChainNode {
+                    parent: current.try_clone().map_err(super::io_error)?,
+                    name,
+                    identity,
+                    _object: object,
+                    link_target: Some(target.clone()),
+                });
+                // Expand target components in place: `..` is evaluated from the
+                // resolved directory, never lexically across another symlink.
+                if target.as_bytes().ends_with(b"/") || target.as_bytes().ends_with(b"/.") {
+                    pending.push_front(OsString::from("."));
+                }
+                for part in Path::new(&target).components().rev() {
+                    pending.push_front(part.as_os_str().to_owned());
+                }
+                continue;
             }
+            if pending.is_empty() && name != ".." {
+                return Ok(ResolvedPath {
+                    parent: current,
+                    basename: name,
+                    chain,
+                    missing: Vec::new(),
+                });
+            }
+            budget.grow(2)?;
+            let next = File::from(
+                rustix::fs::openat(&current, &name, flags, Mode::empty())
+                    .map_err(super::io_error)?,
+            );
+            let identity =
+                ObjectIdentity::from_metadata(&next.metadata().map_err(super::io_error)?);
+            if stat_identity(&stat) != (identity.device, identity.inode) {
+                return Err(ToolError::operation_changed(
+                    "ancestor changed during resolution",
+                ));
+            }
+            chain.push(ChainNode {
+                parent: current,
+                name,
+                identity,
+                _object: next.try_clone().map_err(super::io_error)?,
+                link_target: None,
+            });
+            current = next;
         }
-        Ok((current, chain, missing))
+        Ok(ResolvedPath {
+            parent: current,
+            basename: OsString::from("."),
+            chain,
+            missing: Vec::new(),
+        })
     }
 
-    fn open_absolute_directory_chain(path: &Path) -> Result<(File, Vec<ChainNode>), ToolError> {
-        let (file, chain, missing) = open_nearest_directory_chain(path)?;
-        if missing.is_empty() {
-            Ok((file, chain))
-        } else {
-            Err(ToolError::execution("prepared directory does not exist"))
+    fn open_link(parent: &File, name: &OsStr) -> Result<File, ToolError> {
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+        let flags = OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        #[cfg(target_vendor = "apple")]
+        let flags =
+            OFlags::from_bits_retain(libc::O_SYMLINK as _) | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd",
+            target_vendor = "apple"
+        ))]
+        {
+            rustix::fs::openat(parent, name, flags, Mode::empty())
+                .map(File::from)
+                .map_err(super::io_error)
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "freebsd",
+            target_vendor = "apple"
+        )))]
+        {
+            let _ = (parent, name);
+            Err(ToolError::unsupported_platform(
+                "pinning symlink objects is unsupported on this Unix platform",
+            ))
         }
     }
 
@@ -607,6 +759,15 @@ mod unix {
                 return Err(ToolError::operation_changed(
                     "prepared ancestor identity changed",
                 ));
+            }
+            if let Some(target) = &node.link_target {
+                let actual = rustix::fs::readlinkat(&node.parent, &node.name, Vec::new())
+                    .map_err(|_| ToolError::operation_changed("prepared symlink changed"))?;
+                if actual.as_bytes() != target.as_encoded_bytes() {
+                    return Err(ToolError::operation_changed(
+                        "prepared symlink target changed",
+                    ));
+                }
             }
         }
         Ok(())
@@ -625,6 +786,7 @@ mod unix {
             append_tagged_os_string(&mut bytes, b"ancestor-name", &node.name);
             bytes.extend_from_slice(b"ancestor-identity\0");
             bytes.extend_from_slice(&node.identity.canonical_bytes());
+            append_link_manifest(&mut bytes, node);
         }
         bytes.extend_from_slice(b"parent-identity\0");
         bytes.extend_from_slice(&parent.canonical_bytes());
@@ -640,6 +802,12 @@ mod unix {
         bytes.extend_from_slice(digest.as_str().as_bytes());
         bytes.push(0);
         bytes
+    }
+
+    fn append_link_manifest(bytes: &mut Vec<u8>, node: &ChainNode) {
+        if let Some(target) = &node.link_target {
+            append_tagged_os_string(bytes, b"symlink-target", target);
+        }
     }
 
     fn append_tagged_os_string(bytes: &mut Vec<u8>, tag: &[u8], value: &OsStr) {
@@ -682,7 +850,7 @@ mod unix {
         anchor: &File,
         missing: &[OsString],
         bytes: &[u8],
-        before_publish: impl FnOnce(),
+        before_publish: impl FnOnce() -> Result<(), ToolError>,
     ) -> Result<(), ToolError> {
         let temporary = OsString::from(format!(
             ".cookie-agent-subtree-{}-{}",
@@ -726,7 +894,7 @@ mod unix {
             file.write_all(bytes).map_err(super::io_error)?;
             file.sync_all().map_err(super::io_error)?;
             rustix::fs::fsync(&current).map_err(super::io_error)?;
-            before_publish();
+            before_publish()?;
             rename_noreplace(anchor, &temporary, &missing[0])
         })();
         if result.is_err() {
@@ -860,6 +1028,8 @@ mod windows {
     //! Windows has no atomic two-file exchange for expected-target rollback.
 
     use std::{
+        collections::VecDeque,
+        ffi::OsString,
         fs,
         io::Write,
         os::windows::{ffi::OsStrExt, fs::OpenOptionsExt as _, io::AsRawHandle as _},
@@ -880,6 +1050,8 @@ mod windows {
     };
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    const MAX_LINK_TRAVERSALS: usize = 40;
+    const MAX_ROUTE_COMPONENTS: usize = 4096;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct ObjectIdentity {
@@ -903,15 +1075,32 @@ mod windows {
         pub identity: ObjectIdentity,
         pub content_digest: Sha256Digest,
         pub directory: bool,
-        original_path: PathBuf,
-        canonical_path: PathBuf,
+        execution_path: PathBuf,
         sandbox_root: PathBuf,
+        route: Vec<RouteNode>,
     }
     pub struct PreparedAbsent {
         pub display_path: PathBuf,
-        original_path: PathBuf,
+        execution_path: PathBuf,
         first_missing: PathBuf,
         sandbox_root: PathBuf,
+        route: Vec<RouteNode>,
+    }
+    struct RouteNode {
+        path: PathBuf,
+        identity: ObjectIdentity,
+        link_target: Option<PathBuf>,
+        _object: fs::File,
+    }
+    struct ResolvedPath {
+        execution_path: PathBuf,
+        first_missing: Option<PathBuf>,
+        route: Vec<RouteNode>,
+    }
+    enum PendingComponent {
+        Normal(OsString),
+        Parent,
+        RequireDirectory,
     }
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct AtomicWriteOutcome {
@@ -942,7 +1131,9 @@ mod windows {
         pub fn manifest_bytes(&self) -> Result<Vec<u8>, ToolError> {
             let mut bytes = b"windows-existing\0".to_vec();
             append_path(&mut bytes, &self.sandbox_root);
-            append_path(&mut bytes, &self.canonical_path);
+            append_path(&mut bytes, &self.display_path);
+            append_path(&mut bytes, &self.execution_path);
+            append_route(&mut bytes, &self.route);
             bytes.extend_from_slice(&self.identity.canonical_bytes());
             bytes.extend_from_slice(self.content_digest.as_str().as_bytes());
             Ok(bytes)
@@ -951,7 +1142,7 @@ mod windows {
             if self.directory {
                 return Err(ToolError::execution("prepared target is a directory"));
             }
-            fs::read(&self.canonical_path).map_err(super::io_error)
+            fs::read(&self.execution_path).map_err(super::io_error)
         }
         pub fn verified_bytes(&self) -> Result<Vec<u8>, ToolError> {
             self.revalidate()?;
@@ -967,19 +1158,34 @@ mod windows {
             if !self.directory {
                 return Err(ToolError::execution("prepared target is not a directory"));
             }
-            directory_entries(&self.canonical_path)
+            directory_entries(&self.execution_path)
         }
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            validate_path_chain(&self.original_path, false)?;
-            let canonical = self.original_path.canonicalize().map_err(super::io_error)?;
-            if !paths_equal(&canonical, &self.canonical_path) {
+            revalidate_route(&self.route)?;
+            let resolved = resolve_path(&self.display_path, false).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target route changed: {error}"))
+            })?;
+            if !paths_equal(&resolved.execution_path, &self.execution_path)
+                || resolved.first_missing.is_some()
+                || !routes_equal(&resolved.route, &self.route)
+            {
                 return Err(ToolError::operation_changed(
                     "prepared target resolved to another path",
                 ));
             }
-            validate_contained_path(&self.sandbox_root, &self.canonical_path, false)?;
-            let file = open_for_identity(&self.canonical_path)?;
-            let identity = identity(&file)?;
+            validate_contained_path(&self.sandbox_root, &resolved.execution_path).map_err(
+                |error| {
+                    ToolError::operation_changed(format!(
+                        "prepared target containment changed: {error}"
+                    ))
+                },
+            )?;
+            let file = open_for_identity(&self.execution_path).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target changed: {error}"))
+            })?;
+            let identity = identity(&file).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target changed: {error}"))
+            })?;
             if identity.device != self.identity.device
                 || identity.inode != self.identity.inode
                 || identity.mode != self.identity.mode
@@ -988,7 +1194,9 @@ mod windows {
                     "prepared target identity changed",
                 ));
             }
-            let digest = content_digest(&self.canonical_path, self.directory)?;
+            let digest = content_digest(&self.execution_path, self.directory).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target changed: {error}"))
+            })?;
             if digest != self.content_digest {
                 return Err(ToolError::operation_changed(
                     "prepared target content changed",
@@ -1003,20 +1211,20 @@ mod windows {
                 ));
             }
             self.revalidate()?;
-            let temporary = stage_sibling(&self.canonical_path, bytes)?;
-            if let Err(error) = move_file(&temporary, &self.canonical_path, true) {
+            let temporary = stage_sibling(&self.execution_path, bytes)?;
+            if let Err(error) = move_file(&temporary, &self.execution_path, true) {
                 let _ = fs::remove_file(&temporary);
                 return Err(error);
             }
             Ok(AtomicWriteOutcome::default())
         }
         pub fn proc_fd_path(&self) -> PathBuf {
-            self.canonical_path.clone()
+            self.execution_path.clone()
         }
     }
     impl PreparedAbsent {
         pub fn revalidate(&self) -> Result<(), ToolError> {
-            validate_path_chain(&self.original_path, true)?;
+            revalidate_route(&self.route)?;
             match fs::symlink_metadata(&self.first_missing) {
                 Ok(_) => {
                     return Err(ToolError::operation_changed(
@@ -1024,16 +1232,31 @@ mod windows {
                     ));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(super::io_error(error)),
+                Err(error) => {
+                    return Err(ToolError::operation_changed(format!(
+                        "prepared missing route changed: {error}"
+                    )));
+                }
             }
-            let canonical = canonicalize_target(&self.original_path)?;
-            if !paths_equal(&canonical, &self.display_path) {
+            let resolved = resolve_path(&self.display_path, true).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target route changed: {error}"))
+            })?;
+            if !paths_equal(&resolved.execution_path, &self.execution_path)
+                || resolved.first_missing.as_ref() != Some(&self.first_missing)
+                || !routes_equal(&resolved.route, &self.route)
+            {
                 return Err(ToolError::operation_changed(
                     "prepared absent target resolved to another path",
                 ));
             }
-            validate_contained_path(&self.sandbox_root, &canonical, true)?;
-            if self.display_path.exists() {
+            validate_contained_path(&self.sandbox_root, &resolved.execution_path).map_err(
+                |error| {
+                    ToolError::operation_changed(format!(
+                        "prepared target containment changed: {error}"
+                    ))
+                },
+            )?;
+            if self.execution_path.exists() {
                 return Err(ToolError::operation_changed(
                     "a prepared absent path was inserted",
                 ));
@@ -1044,18 +1267,20 @@ mod windows {
             let mut bytes = b"windows-absent\0".to_vec();
             append_path(&mut bytes, &self.sandbox_root);
             append_path(&mut bytes, &self.display_path);
+            append_path(&mut bytes, &self.execution_path);
             append_path(&mut bytes, &self.first_missing);
+            append_route(&mut bytes, &self.route);
             Ok(bytes)
         }
         pub fn create_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
             self.revalidate()?;
             let parent = self
-                .display_path
+                .execution_path
                 .parent()
                 .ok_or_else(|| ToolError::unsupported_security("target has no parent"))?;
             create_private_parents(&self.sandbox_root, parent)?;
-            let temporary = stage_sibling(&self.display_path, bytes)?;
-            if let Err(error) = move_file(&temporary, &self.display_path, false) {
+            let temporary = stage_sibling(&self.execution_path, bytes)?;
+            if let Err(error) = move_file(&temporary, &self.execution_path, false) {
                 let _ = fs::remove_file(&temporary);
                 return Err(error);
             }
@@ -1063,10 +1288,9 @@ mod windows {
         }
     }
     pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
-        validate_path_chain(cwd, false)?;
-        let canonical = cwd.canonicalize().map_err(super::io_error)?;
-        validate_no_reparse(&canonical)?;
-        Ok(identity(&open_for_identity(&canonical)?)?.canonical_bytes())
+        let cwd = normalize_absolute(cwd)?;
+        let resolved = resolve_path(&cwd, false)?;
+        Ok(identity(&open_for_identity(&resolved.execution_path)?)?.canonical_bytes())
     }
     pub fn ensure_atomic_write_supported() -> Result<(), ToolError> {
         Ok(())
@@ -1080,77 +1304,358 @@ mod windows {
         }
     }
     pub fn prepare_target(cwd: &Path, requested: &Path) -> Result<PreparedTarget, ToolError> {
-        let original_path = absolute_requested(cwd, requested)?;
-        let sandbox_root = sandbox_root(cwd, &original_path, requested.is_absolute())?;
-        validate_path_chain(&original_path, true)?;
-        let requested_absolute = canonicalize_target(&original_path)?;
-        let target_exists = requested_absolute.exists();
-        validate_contained_path(&sandbox_root, &requested_absolute, !target_exists)?;
-        if target_exists {
-            let canonical_path = requested_absolute;
-            let file = open_for_identity(&canonical_path)?;
-            let identity = identity(&file)?;
-            let directory = file.metadata().map_err(super::io_error)?.is_dir();
-            let content_digest = content_digest(&canonical_path, directory)?;
-            Ok(PreparedTarget::Existing(PreparedExisting {
-                display_path: canonical_path.clone(),
-                identity,
-                content_digest,
-                directory,
-                original_path,
-                canonical_path,
-                sandbox_root,
-            }))
+        let display_path = absolute_requested(cwd, requested)?;
+        let sandbox_root = sandbox_root(cwd, &display_path, requested.is_absolute())?;
+        let resolved = resolve_path(&display_path, true)?;
+        validate_contained_path(&sandbox_root, &resolved.execution_path)?;
+        match resolved.first_missing {
+            None => {
+                let file = open_for_identity(&resolved.execution_path)?;
+                let identity = identity(&file)?;
+                let directory = file.metadata().map_err(super::io_error)?.is_dir();
+                let content_digest = content_digest(&resolved.execution_path, directory)?;
+                revalidate_route(&resolved.route)?;
+                Ok(PreparedTarget::Existing(PreparedExisting {
+                    display_path,
+                    identity,
+                    content_digest,
+                    directory,
+                    execution_path: resolved.execution_path,
+                    sandbox_root,
+                    route: resolved.route,
+                }))
+            }
+            Some(first_missing) => {
+                revalidate_route(&resolved.route)?;
+                match fs::symlink_metadata(&first_missing) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(_) => {
+                        return Err(ToolError::operation_changed(
+                            "missing route component was inserted during preparation",
+                        ));
+                    }
+                    Err(error) => return Err(super::io_error(error)),
+                }
+                Ok(PreparedTarget::Absent(PreparedAbsent {
+                    display_path,
+                    execution_path: resolved.execution_path,
+                    first_missing,
+                    sandbox_root,
+                    route: resolved.route,
+                }))
+            }
+        }
+    }
+
+    fn resolve_path(path: &Path, allow_missing: bool) -> Result<ResolvedPath, ToolError> {
+        let path = normalize_absolute(path)?;
+        let (mut current, names) = root_and_names(&path)?;
+        let mut pending = names
+            .into_iter()
+            .map(PendingComponent::Normal)
+            .collect::<VecDeque<_>>();
+        let mut route = Vec::new();
+        let mut links = 0;
+        ensure_resolution_bound(1, pending.len())?;
+        pin_route_node(&mut route, current.clone(), None)?;
+
+        while let Some(component) = pending.pop_front() {
+            let name = match component {
+                PendingComponent::Normal(name) => name,
+                PendingComponent::Parent => {
+                    if current.file_name().is_none() || !current.pop() {
+                        return Err(ToolError::unsupported_security(
+                            "link target traverses above its native root",
+                        ));
+                    }
+                    continue;
+                }
+                PendingComponent::RequireDirectory => {
+                    if !fs::metadata(&current).map_err(super::io_error)?.is_dir() {
+                        return Err(ToolError::execution(
+                            "symlink destination requires a directory",
+                        ));
+                    }
+                    continue;
+                }
+            };
+            let candidate = current.join(&name);
+            match fs::symlink_metadata(&candidate) {
+                Ok(_) => {
+                    ensure_resolution_bound(route.len() + 1, pending.len())?;
+                    let object = open_for_identity(&candidate)?;
+                    let is_reparse = opened_file_is_reparse(&object)?;
+                    let directory = object.metadata().map_err(super::io_error)?.is_dir();
+                    let link_target = if is_reparse {
+                        Some(read_supported_link(&candidate)?)
+                    } else {
+                        None
+                    };
+                    pin_open_route_node(
+                        &mut route,
+                        candidate.clone(),
+                        link_target.clone(),
+                        object,
+                    )?;
+                    if let Some(target) = link_target {
+                        links += 1;
+                        if links > MAX_LINK_TRAVERSALS {
+                            return Err(ToolError::unsupported_security(
+                                "filesystem path exceeds the Windows link traversal limit",
+                            ));
+                        }
+                        let (target_root, target_components) =
+                            link_target_components(&current, &target)?;
+                        ensure_resolution_bound(
+                            route.len() + usize::from(target_root.is_some()),
+                            pending.len().saturating_add(target_components.len()),
+                        )?;
+                        if let Some(target_root) = target_root {
+                            current = target_root;
+                            pin_route_node(&mut route, current.clone(), None)?;
+                        }
+                        for component in target_components.into_iter().rev() {
+                            pending.push_front(component);
+                        }
+                    } else {
+                        if !pending.is_empty() && !directory {
+                            return Err(ToolError::execution(format!(
+                                "filesystem path component is not a directory: {}",
+                                candidate.display()
+                            )));
+                        }
+                        current = candidate;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
+                    ensure_resolution_bound(route.len(), pending.len().saturating_add(1))?;
+                    if matches!(pending.back(), Some(PendingComponent::RequireDirectory)) {
+                        return Err(ToolError::execution(
+                            "symlink destination requires a directory",
+                        ));
+                    }
+                    let canonical_parent = current.canonicalize().map_err(super::io_error)?;
+                    let first_missing = canonical_parent.join(&name);
+                    current = first_missing.clone();
+                    for component in pending {
+                        match component {
+                            PendingComponent::Normal(component) => current.push(component),
+                            PendingComponent::Parent => {
+                                return Err(ToolError::execution(
+                                    "link target traverses a missing directory",
+                                ));
+                            }
+                            PendingComponent::RequireDirectory => {}
+                        }
+                    }
+                    return Ok(ResolvedPath {
+                        execution_path: current,
+                        first_missing: Some(first_missing),
+                        route,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ToolError::operation_changed(
+                        "prepared filesystem object disappeared",
+                    ));
+                }
+                Err(error) => {
+                    return Err(super::io_error(format!(
+                        "symlink_metadata failed for {}: {error}",
+                        candidate.display()
+                    )));
+                }
+            }
+        }
+        Ok(ResolvedPath {
+            execution_path: current.canonicalize().map_err(super::io_error)?,
+            first_missing: None,
+            route,
+        })
+    }
+
+    pub(super) fn ensure_resolution_bound(route: usize, pending: usize) -> Result<(), ToolError> {
+        if route
+            .checked_add(pending)
+            .is_none_or(|total| total > MAX_ROUTE_COMPONENTS)
+        {
+            Err(ToolError::resource_limit(format!(
+                "Windows filesystem route exceeds {MAX_ROUTE_COMPONENTS} components"
+            )))
         } else {
-            let first_missing = first_missing_component(&original_path)?;
-            Ok(PreparedTarget::Absent(PreparedAbsent {
-                display_path: requested_absolute,
-                original_path,
-                first_missing,
-                sandbox_root,
-            }))
+            Ok(())
         }
     }
 
-    fn first_missing_component(path: &Path) -> Result<PathBuf, ToolError> {
-        let mut current = PathBuf::new();
+    fn link_target_components(
+        current: &Path,
+        target: &Path,
+    ) -> Result<(Option<PathBuf>, Vec<PendingComponent>), ToolError> {
+        let rooted = target.has_root();
+        let root = if target.is_absolute() {
+            Some(native_root(target)?)
+        } else if rooted {
+            Some(native_root(current)?)
+        } else {
+            None
+        };
+        let mut components = Vec::new();
+        for component in target.components() {
+            match component {
+                Component::Normal(name) => {
+                    validate_windows_component(name)?;
+                    components.push(PendingComponent::Normal(name.to_owned()));
+                }
+                Component::ParentDir => components.push(PendingComponent::Parent),
+                Component::CurDir | Component::RootDir if rooted => {}
+                Component::CurDir => {}
+                Component::Prefix(_) if target.is_absolute() => {}
+                Component::Prefix(_) => {
+                    return Err(ToolError::unsupported_security(
+                        "drive-relative link targets are unsupported",
+                    ));
+                }
+                Component::RootDir => {
+                    return Err(ToolError::unsupported_security(
+                        "link target has an unsupported root",
+                    ));
+                }
+            }
+        }
+        if link_target_requires_directory(target) {
+            components.push(PendingComponent::RequireDirectory);
+        }
+        Ok((root, components))
+    }
+
+    fn link_target_requires_directory(target: &Path) -> bool {
+        let target = target.as_os_str().encode_wide().collect::<Vec<_>>();
+        match target.as_slice() {
+            [.., character] if *character == u16::from(b'/') || *character == u16::from(b'\\') => {
+                true
+            }
+            [.., prior, character]
+                if *character == u16::from(b'.')
+                    && (*prior == u16::from(b'/') || *prior == u16::from(b'\\')) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn native_root(path: &Path) -> Result<PathBuf, ToolError> {
+        let mut root = PathBuf::new();
         for component in path.components() {
-            current.push(component.as_os_str());
-            if !matches!(component, Component::Normal(_)) {
-                continue;
-            }
-            match fs::symlink_metadata(&current) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(current),
-                Err(error) => return Err(super::io_error(error)),
+            match component {
+                Component::Prefix(prefix) => root.push(prefix.as_os_str()),
+                Component::RootDir => {
+                    root.push(Path::new("\\"));
+                    break;
+                }
+                _ => break,
             }
         }
-        Err(ToolError::execution(
-            "prepared absent path has no missing component",
-        ))
+        if !root.is_absolute() {
+            return Err(ToolError::unsupported_security(
+                "filesystem path has no absolute Windows root",
+            ));
+        }
+        Ok(root)
     }
 
-    fn canonicalize_target(path: &Path) -> Result<PathBuf, ToolError> {
-        if path.exists() {
-            return path.canonicalize().map_err(super::io_error);
+    fn root_and_names(path: &Path) -> Result<(PathBuf, Vec<OsString>), ToolError> {
+        let mut root = PathBuf::new();
+        let mut names = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => root.push(prefix.as_os_str()),
+                Component::RootDir => root.push(Path::new("\\")),
+                Component::Normal(name) => names.push(name.to_owned()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(ToolError::unsupported_security(
+                        "filesystem path is not lexically normalized",
+                    ));
+                }
+            }
         }
-        let mut existing = path.to_owned();
-        let mut missing = Vec::new();
-        while !existing.exists() {
-            let name = existing
-                .file_name()
-                .ok_or_else(|| ToolError::unsupported_security("target has no existing anchor"))?;
-            missing.push(name.to_owned());
-            existing = existing
-                .parent()
-                .ok_or_else(|| ToolError::unsupported_security("target has no existing anchor"))?
-                .to_owned();
+        if !root.is_absolute() {
+            return Err(ToolError::unsupported_security(
+                "filesystem path has no absolute Windows root",
+            ));
         }
-        let mut canonical = existing.canonicalize().map_err(super::io_error)?;
-        for component in missing.into_iter().rev() {
-            canonical.push(component);
+        Ok((root, names))
+    }
+
+    fn pin_route_node(
+        route: &mut Vec<RouteNode>,
+        path: PathBuf,
+        link_target: Option<PathBuf>,
+    ) -> Result<(), ToolError> {
+        ensure_resolution_bound(route.len() + 1, 0)?;
+        let object = open_for_identity(&path)?;
+        pin_open_route_node(route, path, link_target, object)
+    }
+
+    fn pin_open_route_node(
+        route: &mut Vec<RouteNode>,
+        path: PathBuf,
+        link_target: Option<PathBuf>,
+        object: fs::File,
+    ) -> Result<(), ToolError> {
+        let identity = identity(&object)?;
+        route.push(RouteNode {
+            path,
+            identity,
+            link_target,
+            _object: object,
+        });
+        Ok(())
+    }
+
+    fn routes_equal(left: &[RouteNode], right: &[RouteNode]) -> bool {
+        left.len() == right.len()
+            && left.iter().zip(right).all(|(left, right)| {
+                paths_equal(&left.path, &right.path)
+                    && same_route_identity(&left.identity, &right.identity)
+                    && left.link_target == right.link_target
+            })
+    }
+
+    fn same_route_identity(left: &ObjectIdentity, right: &ObjectIdentity) -> bool {
+        left.device == right.device && left.inode == right.inode && left.mode == right.mode
+    }
+
+    fn revalidate_route(route: &[RouteNode]) -> Result<(), ToolError> {
+        for node in route {
+            let file = open_for_identity(&node.path).map_err(|_| {
+                ToolError::operation_changed("prepared route component disappeared")
+            })?;
+            let found = identity(&file)
+                .map_err(|_| ToolError::operation_changed("prepared route component changed"))?;
+            if !same_route_identity(&found, &node.identity) {
+                return Err(ToolError::operation_changed(
+                    "prepared route component identity changed",
+                ));
+            }
+            let is_reparse = opened_file_is_reparse(&file).map_err(|error| {
+                ToolError::operation_changed(format!("prepared route component changed: {error}"))
+            })?;
+            if is_reparse != node.link_target.is_some() {
+                return Err(ToolError::operation_changed(
+                    "prepared route component type changed",
+                ));
+            }
+            if let Some(expected) = &node.link_target {
+                let found = fs::read_link(&node.path)
+                    .map_err(|_| ToolError::operation_changed("prepared link target changed"))?;
+                if found != *expected {
+                    return Err(ToolError::operation_changed("prepared link target changed"));
+                }
+            }
         }
-        Ok(canonical)
+        Ok(())
     }
 
     fn absolute_requested(cwd: &Path, requested: &Path) -> Result<PathBuf, ToolError> {
@@ -1167,23 +1672,20 @@ mod windows {
         requested: &Path,
         absolute_request: bool,
     ) -> Result<PathBuf, ToolError> {
-        if cwd == Path::new("/") || absolute_request {
-            let mut root = PathBuf::new();
-            for component in requested.components() {
-                match component {
-                    Component::Prefix(prefix) => root.push(prefix.as_os_str()),
-                    Component::RootDir => {
-                        root.push(Path::new("\\"));
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-            validate_path_chain(&root, false)?;
-            return root.canonicalize().map_err(super::io_error);
+        if absolute_request {
+            return native_root(requested);
         }
-        validate_path_chain(cwd, false)?;
-        cwd.canonicalize().map_err(super::io_error)
+        let cwd = normalize_absolute(cwd)?;
+        let resolved = resolve_path(&cwd, false)?;
+        if !fs::metadata(&resolved.execution_path)
+            .map_err(super::io_error)?
+            .is_dir()
+        {
+            return Err(ToolError::unsupported_security(
+                "filesystem sandbox root is not a directory",
+            ));
+        }
+        Ok(resolved.execution_path)
     }
 
     fn normalize_absolute(path: &Path) -> Result<PathBuf, ToolError> {
@@ -1203,7 +1705,7 @@ mod windows {
                     normalized.push(name);
                 }
                 Component::ParentDir => {
-                    if !normalized.pop() {
+                    if normalized.file_name().is_none() || !normalized.pop() {
                         return Err(ToolError::unsupported_security(
                             "filesystem path traverses above its root",
                         ));
@@ -1234,55 +1736,14 @@ mod windows {
         }
     }
 
-    fn validate_contained_path(
-        root: &Path,
-        path: &Path,
-        allow_missing: bool,
-    ) -> Result<(), ToolError> {
-        if !components_start_with(path, root) {
-            return Err(ToolError::unsupported_security(
+    fn validate_contained_path(root: &Path, path: &Path) -> Result<(), ToolError> {
+        if components_start_with(path, root) {
+            Ok(())
+        } else {
+            Err(ToolError::unsupported_security(
                 "filesystem target escapes the prepared sandbox",
-            ));
+            ))
         }
-        validate_path_chain(path, allow_missing)
-    }
-
-    fn validate_path_chain(path: &Path, allow_missing: bool) -> Result<(), ToolError> {
-        let mut current = PathBuf::new();
-        for component in path.components() {
-            current.push(component.as_os_str());
-            if !matches!(component, Component::Normal(_)) {
-                continue;
-            }
-            match fs::symlink_metadata(&current) {
-                Ok(_) => {
-                    if opened_path_is_reparse(&current)? {
-                        return Err(ToolError::unsupported_security(
-                            "prepared path contains a symlink or junction",
-                        ));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound && allow_missing => {
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(ToolError::operation_changed(
-                        "prepared filesystem object disappeared",
-                    ));
-                }
-                Err(error) => {
-                    return Err(super::io_error(format!(
-                        "symlink_metadata failed for {}: {error}",
-                        current.display()
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_no_reparse(path: &Path) -> Result<(), ToolError> {
-        validate_path_chain(path, false)
     }
 
     pub(super) fn components_start_with(path: &Path, root: &Path) -> bool {
@@ -1300,10 +1761,15 @@ mod windows {
 
     fn component_equal(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
         let normalize = |value: &std::ffi::OsStr| {
-            value
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_ascii_lowercase()
+            let value = value.to_string_lossy();
+            if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{unc}").to_ascii_lowercase()
+            } else {
+                value
+                    .strip_prefix(r"\\?\")
+                    .unwrap_or(&value)
+                    .to_ascii_lowercase()
+            }
         };
         normalize(left) == normalize(right)
     }
@@ -1331,21 +1797,32 @@ mod windows {
 
     fn opened_path_is_reparse(path: &Path) -> Result<bool, ToolError> {
         let file = open_for_identity(path)?;
+        opened_file_is_reparse(&file)
+    }
+
+    fn opened_file_is_reparse(file: &fs::File) -> Result<bool, ToolError> {
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
         let handle = file.as_raw_handle() as HANDLE;
         if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
-            return Err(super::io_error(format!(
-                "GetFileInformationByHandle failed during reparse check for {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            )));
+            return Err(super::io_error(std::io::Error::last_os_error()));
         }
         Ok(information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
     }
 
+    fn read_supported_link(path: &Path) -> Result<PathBuf, ToolError> {
+        // Windows std accepts symbolic-link and mount-point (junction) tags here
+        // and rejects every other reparse tag as unsupported.
+        fs::read_link(path).map_err(|error| {
+            ToolError::unsupported_security(format!(
+                "unsupported reparse point at {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
     fn open_for_identity(path: &Path) -> Result<fs::File, ToolError> {
         fs::OpenOptions::new()
-            .read(true)
+            .access_mode(0)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
@@ -1406,11 +1883,7 @@ mod windows {
     }
 
     fn create_private_parents(root: &Path, parent: &Path) -> Result<(), ToolError> {
-        if !components_start_with(parent, root) {
-            return Err(ToolError::unsupported_security(
-                "filesystem target escapes the prepared sandbox",
-            ));
-        }
+        validate_contained_path(root, parent)?;
         let mut current = PathBuf::new();
         for component in parent.components() {
             current.push(component.as_os_str());
@@ -1493,6 +1966,23 @@ mod windows {
         bytes.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
         bytes.extend_from_slice(encoded.as_bytes());
     }
+
+    fn append_route(bytes: &mut Vec<u8>, route: &[RouteNode]) {
+        bytes.extend_from_slice(&(route.len() as u64).to_be_bytes());
+        for node in route {
+            append_path(bytes, &node.path);
+            bytes.extend_from_slice(&node.identity.device.to_be_bytes());
+            bytes.extend_from_slice(&node.identity.inode.to_be_bytes());
+            bytes.extend_from_slice(&node.identity.mode.to_be_bytes());
+            match &node.link_target {
+                Some(target) => {
+                    bytes.push(1);
+                    append_path(bytes, target);
+                }
+                None => bytes.push(0),
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1552,6 +2042,146 @@ mod tests {
             ancestor.revalidate(),
             Err(ToolError::OperationChanged(_))
         ));
+    }
+
+    #[test]
+    fn symlink_targets_resolve_parent_components_after_following_links() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("actual/nested")).unwrap();
+        fs::write(root.path().join("actual/value"), "resolved").unwrap();
+        fs::write(root.path().join("value"), "lexical").unwrap();
+        symlink("actual/nested", root.path().join("directory")).unwrap();
+        symlink("directory/../value", root.path().join("alias")).unwrap();
+        let target = prepare_existing(root.path(), std::path::Path::new("alias")).unwrap();
+        assert_eq!(target.verified_bytes().unwrap(), b"resolved");
+        target.replace_atomically(b"updated").unwrap();
+        assert_eq!(
+            fs::read(root.path().join("actual/value")).unwrap(),
+            b"updated"
+        );
+        assert_eq!(fs::read(root.path().join("value")).unwrap(), b"lexical");
+        assert_eq!(
+            fs::read_link(root.path().join("alias")).unwrap(),
+            std::path::Path::new("directory/../value")
+        );
+
+        symlink(
+            "directory/../missing/deep/value",
+            root.path().join("dangling"),
+        )
+        .unwrap();
+        let PreparedTarget::Absent(absent) =
+            prepare_target(root.path(), std::path::Path::new("dangling")).unwrap()
+        else {
+            panic!("absent")
+        };
+        absent.create_atomically(b"created").unwrap();
+        assert_eq!(
+            fs::read(root.path().join("actual/missing/deep/value")).unwrap(),
+            b"created"
+        );
+        assert!(
+            fs::symlink_metadata(root.path().join("dangling"))
+                .unwrap()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn traversed_but_exited_ancestors_and_chained_links_remain_bound() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("actual/nested")).unwrap();
+        fs::write(root.path().join("actual/value"), "value").unwrap();
+        symlink("actual/nested", root.path().join("directory")).unwrap();
+        symlink("directory/../value", root.path().join("alias")).unwrap();
+        let target = prepare_existing(root.path(), std::path::Path::new("alias")).unwrap();
+        fs::rename(root.path().join("actual/nested"), root.path().join("saved")).unwrap();
+        fs::create_dir(root.path().join("actual/nested")).unwrap();
+        assert!(matches!(
+            target.revalidate(),
+            Err(ToolError::OperationChanged(_))
+        ));
+
+        let target = prepare_existing(root.path(), std::path::Path::new("alias")).unwrap();
+        let binding = target.manifest_bytes().unwrap();
+        fs::rename(
+            root.path().join("directory"),
+            root.path().join("saved-link"),
+        )
+        .unwrap();
+        symlink("actual/nested", root.path().join("directory")).unwrap();
+        assert!(matches!(
+            target.revalidate(),
+            Err(ToolError::OperationChanged(_))
+        ));
+        let replacement = prepare_existing(root.path(), std::path::Path::new("alias")).unwrap();
+        assert_ne!(binding, replacement.manifest_bytes().unwrap());
+        assert_eq!(target.identity, replacement.identity);
+    }
+
+    #[test]
+    fn alias_retargeting_at_commit_barriers_preserves_destinations() {
+        for missing in [None, Some("new"), Some("subtree/deep/new")] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("existing"), "original").unwrap();
+            fs::write(root.path().join("other"), "other").unwrap();
+            let destination = missing.unwrap_or("existing");
+            let alias = root.path().join("alias");
+            symlink(destination, &alias).unwrap();
+            let target = prepare_target(root.path(), std::path::Path::new("alias")).unwrap();
+            let retarget = || {
+                fs::rename(&alias, root.path().join("saved-alias")).unwrap();
+                symlink("other", &alias).unwrap();
+            };
+            let result = match target {
+                PreparedTarget::Existing(target) => {
+                    target.replace_atomically_inner(b"new", retarget)
+                }
+                PreparedTarget::Absent(target) => target.create_atomically_inner(b"new", retarget),
+            };
+            assert!(matches!(result, Err(ToolError::OperationChanged(_))));
+            assert_eq!(fs::read(root.path().join("existing")).unwrap(), b"original");
+            assert_eq!(fs::read(root.path().join("other")).unwrap(), b"other");
+            if let Some(missing) = missing {
+                assert!(!root.path().join(missing).exists());
+            }
+            assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".cookie-agent-")
+            }));
+        }
+    }
+
+    #[test]
+    fn symlink_cycles_and_missing_parent_traversal_fail_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        symlink("two", root.path().join("one")).unwrap();
+        symlink("one", root.path().join("two")).unwrap();
+        symlink("missing/../value", root.path().join("dangling")).unwrap();
+        for path in ["one", "one/child", "dangling"] {
+            assert!(prepare_target(root.path(), std::path::Path::new(path)).is_err());
+        }
+        assert!(!root.path().join("missing").exists());
+        assert!(!root.path().join("value").exists());
+    }
+
+    #[test]
+    fn link_target_directory_suffix_cannot_be_written_as_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("file"), "value").unwrap();
+        for (index, destination) in ["file/", "file/.", "missing/", "missing/."]
+            .into_iter()
+            .enumerate()
+        {
+            let alias = format!("alias-{index}");
+            symlink(destination, root.path().join(&alias)).unwrap();
+            assert!(prepare_target(root.path(), std::path::Path::new(&alias)).is_err());
+        }
+        assert_eq!(fs::read(root.path().join("file")).unwrap(), b"value");
+        assert!(!root.path().join("missing").exists());
     }
 
     #[test]
@@ -1631,6 +2261,8 @@ mod tests {
         let chain = vec![ChainNode {
             parent: parent_file,
             name: OsString::from("ancestor"),
+            _object: fs::File::open(root.path()).expect("ancestor"),
+            link_target: None,
             identity: ObjectIdentity {
                 device: 1,
                 inode: 2,
@@ -1667,10 +2299,8 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         fs::write(root.path().join("file"), "value").expect("fixture");
         symlink("file", root.path().join("link")).expect("symlink");
-        assert!(matches!(
-            prepare_existing(root.path(), std::path::Path::new("link")),
-            Err(ToolError::UnsupportedSecurity(_))
-        ));
+        drop(prepare_existing(root.path(), std::path::Path::new("link")).expect("symlink"));
+        symlink("loop", root.path().join("loop")).expect("loop");
         let PreparedTarget::Absent(missing) =
             prepare_target(root.path(), std::path::Path::new("missing/subtree/file"))
                 .expect("prepare missing subtree")
@@ -1695,6 +2325,13 @@ mod tests {
         let before = descriptors_for_root();
         for _ in 0..128 {
             drop(prepare_existing(root.path(), std::path::Path::new("file")).expect("prepare"));
+            drop(
+                prepare_existing(root.path(), std::path::Path::new("link")).expect("prepare link"),
+            );
+            assert!(matches!(
+                prepare_existing(root.path(), std::path::Path::new("loop")),
+                Err(ToolError::UnsupportedSecurity(_))
+            ));
         }
         let after = descriptors_for_root();
         assert_eq!(
@@ -1884,12 +2521,13 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use std::fs;
+    use std::{fs, path::Path, process::Command};
 
     use cookie_agent_engine::ToolError;
 
     use super::{
-        PreparedTarget, components_start_with, paths_equal, prepare_existing, prepare_target,
+        PreparedTarget, components_start_with, ensure_resolution_bound, paths_equal,
+        prepare_existing, prepare_target,
     };
 
     #[test]
@@ -1904,6 +2542,10 @@ mod windows_tests {
         assert!(!components_start_with(
             std::path::Path::new(r"C:\Users\runneradmin-other\file.txt"),
             std::path::Path::new(r"C:\Users\runneradmin")
+        ));
+        assert!(components_start_with(
+            std::path::Path::new(r"\\?\UNC\server\share\root\file.txt"),
+            std::path::Path::new(r"\\server\share\root")
         ));
     }
 
@@ -1947,22 +2589,285 @@ mod windows_tests {
             &outside_from_root.display_path,
             &root.path().canonicalize().expect("canonical sandbox")
         ));
+
+        let relative_escape = Path::new("..").join(
+            outside
+                .path()
+                .file_name()
+                .expect("outside directory basename"),
+        );
+        assert!(matches!(
+            prepare_target(root.path(), &relative_escape.join("external.txt")),
+            Err(ToolError::UnsupportedSecurity(_))
+        ));
     }
 
     #[test]
-    fn windows_capability_rejects_reparse_components() {
+    fn windows_capability_resolves_links_but_keeps_a_lexical_display_path() {
         let root = tempfile::tempdir().expect("sandbox");
-        let target = root.path().join("target");
-        fs::create_dir(&target).expect("target");
+        fs::create_dir(root.path().join("target")).expect("target directory");
+        fs::write(root.path().join("target/file.txt"), "inside").expect("target");
         let link = root.path().join("link");
-        if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+        if let Err(error) = std::os::windows::fs::symlink_dir("target", &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        let target = prepare_existing(root.path(), Path::new(r".\link\file.txt"))
+            .expect("prepare through link");
+        assert!(paths_equal(
+            &target.display_path,
+            &root.path().join("link/file.txt")
+        ));
+        assert_eq!(
+            target.verified_bytes().expect("read destination"),
+            b"inside"
+        );
+    }
+
+    #[test]
+    fn windows_relative_link_parent_components_resolve_from_the_link_parent() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::create_dir_all(root.path().join("real/directory")).expect("directory");
+        fs::create_dir(root.path().join("real/value")).expect("value directory");
+        fs::write(root.path().join("real/value/file.txt"), "value").expect("target");
+        let directory = root.path().join("directory");
+        if let Err(error) =
+            std::os::windows::fs::symlink_dir(Path::new(r"real\directory"), &directory)
+        {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create directory symlink: {error}");
+        }
+        let link = root.path().join("link");
+        if let Err(error) =
+            std::os::windows::fs::symlink_dir(Path::new(r"directory\..\value"), &link)
+        {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        let target = prepare_existing(root.path(), Path::new("link/file.txt"))
+            .expect("prepare through relative target");
+        assert_eq!(target.verified_bytes().expect("read destination"), b"value");
+    }
+
+    #[test]
+    fn windows_link_parent_cannot_traverse_through_a_regular_file() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::write(root.path().join("file"), "not a directory").expect("file");
+        fs::create_dir(root.path().join("value")).expect("value directory");
+        fs::write(root.path().join("value/result.txt"), "wrong").expect("result");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir(Path::new(r"file\..\value"), &link) {
             if error.kind() == std::io::ErrorKind::PermissionDenied {
                 return;
             }
             panic!("create symlink: {error}");
         }
         assert!(matches!(
-            prepare_target(root.path(), std::path::Path::new("link/file.txt")),
+            prepare_existing(root.path(), Path::new("link/result.txt")),
+            Err(ToolError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn windows_link_target_dot_suffix_requires_an_existing_directory() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::write(root.path().join("file"), "not a directory").expect("file");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_file(Path::new(r"file\."), &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        assert!(matches!(
+            prepare_existing(root.path(), Path::new("link")),
+            Err(ToolError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn windows_dangling_link_trailing_separator_cannot_create_a_regular_file() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir(Path::new(r"missing\"), &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        assert!(matches!(
+            prepare_target(root.path(), Path::new("link")),
+            Err(ToolError::Failed(_))
+        ));
+        assert!(!root.path().join("missing").exists());
+    }
+
+    #[test]
+    fn windows_resolution_component_budget_is_bounded() {
+        assert!(ensure_resolution_bound(4095, 1).is_ok());
+        assert!(matches!(
+            ensure_resolution_bound(4096, 1),
+            Err(ToolError::ResourceLimit(_))
+        ));
+        assert!(matches!(
+            ensure_resolution_bound(usize::MAX, 1),
+            Err(ToolError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn windows_relative_link_destination_must_remain_in_the_resolved_sandbox() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("file.txt"), "outside").expect("target");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir(outside.path(), &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        assert!(matches!(
+            prepare_existing(root.path(), Path::new("link/file.txt")),
+            Err(ToolError::UnsupportedSecurity(_))
+        ));
+    }
+
+    #[test]
+    fn windows_dangling_directory_link_supports_atomic_destination_creation() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir("destination", &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        let PreparedTarget::Absent(target) =
+            prepare_target(root.path(), Path::new("link/nested/file.txt")).expect("prepare")
+        else {
+            panic!("absent destination")
+        };
+        assert!(paths_equal(
+            &target.display_path,
+            &root.path().join("link/nested/file.txt")
+        ));
+        target.create_atomically(b"created").expect("create");
+        assert_eq!(
+            fs::read(root.path().join("destination/nested/file.txt")).expect("destination"),
+            b"created"
+        );
+        let slash_link = root.path().join("slash-link");
+        std::os::windows::fs::symlink_dir("other\\", &slash_link).expect("directory suffix");
+        let PreparedTarget::Absent(target) =
+            prepare_target(root.path(), Path::new("slash-link/nested/file.txt"))
+                .expect("prepare child")
+        else {
+            panic!("absent child destination")
+        };
+        target.create_atomically(b"child").expect("create child");
+        assert_eq!(
+            fs::read(root.path().join("other/nested/file.txt")).unwrap(),
+            b"child"
+        );
+        assert!(fs::read_link(slash_link).is_ok());
+    }
+
+    #[test]
+    fn windows_link_target_change_is_operation_changed() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::create_dir(root.path().join("first")).expect("first");
+        fs::create_dir(root.path().join("second")).expect("second");
+        fs::write(root.path().join("first/file.txt"), "first").expect("first file");
+        fs::write(root.path().join("second/file.txt"), "second").expect("second file");
+        let link = root.path().join("link");
+        if let Err(error) = std::os::windows::fs::symlink_dir("first", &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        let target =
+            prepare_existing(root.path(), Path::new("link/file.txt")).expect("prepare target");
+        fs::remove_dir(&link).expect("remove old link");
+        std::os::windows::fs::symlink_dir("second", &link).expect("replace link");
+        assert!(matches!(
+            target.revalidate(),
+            Err(ToolError::OperationChanged(_))
+        ));
+    }
+
+    #[test]
+    fn windows_route_ancestor_replacement_is_operation_changed() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::create_dir(root.path().join("ancestor")).expect("ancestor");
+        fs::write(root.path().join("ancestor/file.txt"), "same").expect("file");
+        let target =
+            prepare_existing(root.path(), Path::new("ancestor/file.txt")).expect("prepare target");
+        fs::rename(root.path().join("ancestor"), root.path().join("displaced"))
+            .expect("displace ancestor");
+        fs::create_dir(root.path().join("ancestor")).expect("replacement ancestor");
+        fs::write(root.path().join("ancestor/file.txt"), "same").expect("replacement file");
+        assert!(matches!(
+            target.revalidate(),
+            Err(ToolError::OperationChanged(_))
+        ));
+    }
+
+    #[test]
+    fn windows_route_identity_ignores_mutable_directory_size() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::create_dir(root.path().join("ancestor")).expect("ancestor");
+        fs::write(root.path().join("ancestor/file.txt"), "value").expect("file");
+        let target =
+            prepare_existing(root.path(), Path::new("ancestor/file.txt")).expect("prepare target");
+        fs::write(root.path().join("ancestor/sibling.txt"), "sibling").expect("sibling");
+        target.revalidate().expect("stable route identity");
+    }
+
+    #[test]
+    fn windows_junctions_are_supported_route_components() {
+        let root = tempfile::tempdir().expect("sandbox");
+        fs::create_dir(root.path().join("target")).expect("target");
+        fs::write(root.path().join("target/file.txt"), "junction").expect("file");
+        let junction = root.path().join("junction");
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(root.path().join("target"))
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "mklink failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let target = prepare_existing(root.path(), Path::new("junction/file.txt"))
+            .expect("prepare through junction");
+        assert_eq!(
+            target.verified_bytes().expect("read destination"),
+            b"junction"
+        );
+    }
+
+    #[test]
+    fn windows_link_loops_are_bounded() {
+        let root = tempfile::tempdir().expect("sandbox");
+        let link = root.path().join("loop");
+        if let Err(error) = std::os::windows::fs::symlink_dir("loop", &link) {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                return;
+            }
+            panic!("create symlink: {error}");
+        }
+        assert!(matches!(
+            prepare_target(root.path(), Path::new("loop/file.txt")),
             Err(ToolError::UnsupportedSecurity(_))
         ));
     }

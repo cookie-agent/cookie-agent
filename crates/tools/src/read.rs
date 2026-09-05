@@ -975,6 +975,144 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        fs::create_dir(&workspace).expect("workspace");
+        fs::create_dir(workspace.join("routes")).expect("routes");
+        fs::create_dir(&external).expect("external");
+        fs::write(external.join("value.txt"), "external value").expect("fixture");
+        symlink(
+            "../../external/value.txt",
+            workspace.join("routes/relative-leaf"),
+        )
+        .expect("relative leaf");
+        symlink(
+            external.join("value.txt"),
+            workspace.join("routes/absolute-leaf"),
+        )
+        .expect("absolute leaf");
+        symlink(
+            "absolute-ancestor",
+            workspace.join("routes/relative-ancestor"),
+        )
+        .expect("relative ancestor");
+        symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
+
+        let tool = ReadTool::new(&workspace);
+        for requested in [
+            "routes/relative-leaf",
+            "routes/absolute-leaf",
+            "routes/relative-ancestor/value.txt",
+            "routes/absolute-ancestor/value.txt",
+        ] {
+            let prepared = tool
+                .prepare(
+                    context(&workspace),
+                    ToolCall {
+                        id: ToolCallId::new_v7(),
+                        name: "read".into(),
+                        arguments: serde_json::json!({"filePath":requested}),
+                    },
+                )
+                .await
+                .expect("prepare symlink read");
+            let expected_path = workspace.join(requested);
+            assert_eq!(prepared.operation().resources().len(), 1);
+            assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
+            assert_eq!(
+                prepared.normalized_arguments()["filePath"],
+                expected_path.to_string_lossy().as_ref()
+            );
+            assert_eq!(
+                tool.get_permission_resource("read", prepared.normalized_arguments())
+                    .expect("normalized permission resource"),
+                ("read", Some(requested.to_owned()))
+            );
+            crate::assert_workspace_rule_allows(
+                &prepared,
+                &workspace,
+                PermissionAction::Read,
+                "routes/*",
+            );
+            let result = prepared
+                .execute_for_test(
+                    ToolExecutionContext::for_test(
+                        root.path().join("artifacts"),
+                        crate::test_turn_context(),
+                    )
+                    .expect("execution context"),
+                )
+                .await
+                .expect("execute symlink read");
+            assert!(result.output.contains("external value"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_symlink_read_errors_and_route_swaps_are_operation_changed() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.txt"), "value").expect("fixture");
+        symlink("missing.txt", root.path().join("dangling")).expect("dangling link");
+        let dangling = ReadTool::new(root.path())
+            .prepare(
+                context(root.path()),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"filePath":"dangling"}),
+                },
+            )
+            .await;
+        assert!(matches!(dangling, Err(ToolError::Failed(_))));
+
+        symlink("value.txt", root.path().join("route")).expect("route");
+        let prepared = prepared(root.path(), "route").await;
+        fs::remove_file(root.path().join("route")).expect("remove route");
+        symlink("value.txt", root.path().join("route")).expect("replace route");
+        let error = prepared
+            .execute_for_test(
+                ToolExecutionContext::for_test(
+                    root.path().join("artifacts"),
+                    crate::test_turn_context(),
+                )
+                .expect("execution context"),
+            )
+            .await
+            .expect_err("route swap must fail");
+        assert!(matches!(error, ToolError::OperationChanged(_)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_routes_to_the_same_read_target_have_distinct_fingerprints() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        fs::write(root.path().join("value.txt"), "value").expect("fixture");
+        symlink("value.txt", root.path().join("left")).expect("left route");
+        symlink("value.txt", root.path().join("right")).expect("right route");
+
+        let left = prepared(root.path(), "left").await;
+        let right = prepared(root.path(), "right").await;
+        assert_ne!(
+            left.operation().resources()[0].binding_digest,
+            right.operation().resources()[0].binding_digest
+        );
+        assert_ne!(
+            OperationFingerprint::from_prepared_operation(left.operation()),
+            OperationFingerprint::from_prepared_operation(right.operation())
+        );
+    }
+
     #[tokio::test]
     async fn leaf_and_parent_swaps_change_read_fingerprint() {
         let root = tempfile::tempdir().expect("root");

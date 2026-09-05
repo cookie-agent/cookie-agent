@@ -196,6 +196,7 @@ Controls the automatic context-limit behavior documented in
 | `trigger` | inline table | `{ percent = 70 }` | Trigger threshold selection. `{ percent = N }` uses `N%` of the model context limit, where `N` must be from 1 through 99. `{ buffer_tokens = N }` subtracts positive `N` from the context limit, saturating at zero. |
 | `buffer_tokens` | integer | unset | Legacy alias for `trigger = { buffer_tokens = N }`. Must be greater than zero and cannot be set together with `trigger`. |
 | `max_summary_bytes` | integer | `262144` (`256 * 1024`) | Hard byte limit for a compaction summary produced by the internal `compaction` agent. Must be greater than zero and at most `2 * 1024 * 1024` (2 MiB). |
+| `keep_recent_tokens` | integer (`u64`) | `16384` | Nonnegative token budget for the original recent-message suffix retained alongside an internal summary of the discarded prefix. `0` disables the tail. The effective target is at most `min(keep_recent_tokens, context_limit / 4)`, further limited by actual post-checkpoint available space. Complete tool-call/result groups are never split; an oversized newest indivisible group yields no tail. Configuration does not clamp the requested value. Native windows receive no independent tail. |
 
 ## `[providers.<id>.cache]`
 
@@ -581,8 +582,10 @@ and merge keys are rejected, as is any `${env:` text.
 
 For `primary`, `subagent`, and `all`, omitted or zero `max_output_tokens` adds no
 document cap. A nonzero value is combined with the model's output limit by taking
-the smaller value. Internal agents default to 2,048 output tokens; explicit zero
-removes that document cap. A nonzero `timeout_ms` is a hard error outside
+the smaller value. Authored internal agents default to 2,048 output tokens;
+explicit zero removes that document cap. The built-in `compaction` agent sets
+4,096 output tokens; built-in `approval` and `title` retain 2,048 and 128,
+respectively. A nonzero `timeout_ms` is a hard error outside
 `internal` mode. Internal agents default to 30,000 ms when it is omitted or zero.
 
 The former `model_fallback` key is a targeted hard error; use `models`. The former
@@ -602,6 +605,14 @@ are provider-only.
 
 For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named `model_fallback`; only agent frontmatter uses `models`.
+
+Permission evaluation has no implicit filename or resource-name exceptions.
+Patterns apply to `.env` and `.env.*` like any other file for both `read` and
+`write`. Broad allows, including `${workspace_dir}/*`, need no special
+override. Explicit rules retain normal specificity and session-overlay
+precedence; unmatched resources ask. The synthesized `default` agent's explicit
+dotenv and credential-file rules remain ordinary policy rules.
+See [Permissions](../guide/permissions.md).
 
 See [Agents](../guide/agents.md) for the full frontmatter reference and reserved
 IDs.

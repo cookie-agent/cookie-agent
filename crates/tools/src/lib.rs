@@ -50,6 +50,48 @@ pub(crate) fn test_turn_context() -> std::sync::Arc<cookie_agent_engine::TurnAge
     })
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn assert_workspace_rule_allows(
+    prepared: &cookie_agent_engine::PreparedTool,
+    workspace: &Path,
+    action: PermissionAction,
+    resource: &str,
+) {
+    use cookie_agent_protocol::{
+        AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
+        PermissionEffect, PermissionRule, WildcardPattern,
+    };
+
+    let policy = AgentSnapshot {
+        agent: AgentId::new("test").expect("agent id"),
+        schema: AgentSchemaVersion::current(),
+        mode: AgentMode::Primary,
+        description: "Test agent".into(),
+        document_source: AgentDocumentSource::Workspace,
+        document_fingerprint: Sha256Digest::of_bytes(b"test document"),
+        composed_prompt: "Test permission evaluation.\n".into(),
+        prompt_fingerprint: Sha256Digest::of_bytes(b"Test permission evaluation.\n"),
+        max_output_tokens: 0,
+        permissions: vec![PermissionRule {
+            action,
+            resource: WildcardPattern::new(resource).expect("permission resource pattern"),
+            effect: PermissionEffect::Allow,
+        }],
+        delegation: None,
+        fallback_chain: Vec::new(),
+        selected_suffix_start: 0,
+    };
+    let decision = cookie_agent_engine::permissions::PermissionPipeline::default()
+        .decide_operation(
+            &policy,
+            prepared.operation(),
+            prepared.policy_labels(),
+            workspace,
+        );
+    assert_eq!(decision.effect, PermissionEffect::Allow);
+    assert_eq!(decision.evaluations.len(), 1);
+}
+
 pub(crate) fn schema<T: JsonSchema>() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
 }
@@ -152,14 +194,15 @@ pub(crate) fn prepared_resource(
 pub(crate) fn prepared_path_resources(
     action: PermissionAction,
     logical_kind: &str,
-    canonical_path: &Path,
+    requested_path: &Path,
     workspace: &Path,
     binding_bytes: &[u8],
 ) -> Result<(Vec<PreparedApprovalResource>, Vec<String>), ToolError> {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
-    let label = permission_path_label(&normalized_path(canonical_path), &workspace);
+    // Authorization names the lexical request, never its resolved destination.
+    let label = permission_path_label(&normalized_path(requested_path), &workspace);
     let resource = prepared_resource(
         action,
         logical_kind,
@@ -195,8 +238,7 @@ pub(crate) fn permission_path_label(path: &str, workspace: &Path) -> String {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_owned());
-    let comparison_path = comparison_path(&path);
-    if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&workspace)) {
+    if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
         return relative;
     }
     path
@@ -226,19 +268,15 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
     }
     #[cfg(windows)]
     {
-        let comparison_path = comparison_path(&path);
         let workspace = workspace
             .canonicalize()
             .unwrap_or_else(|_| workspace.to_owned());
-        if let Some(relative) =
-            strip_absolute_prefix(&comparison_path, &normalized_path(&workspace))
-        {
+        if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&workspace)) {
             return relative;
         }
         if let Ok(home) = cookie_agent_protocol::paths::home_dir() {
             let home = home.canonicalize().unwrap_or(home);
-            if let Some(relative) = strip_absolute_prefix(&comparison_path, &normalized_path(&home))
-            {
+            if let Some(relative) = strip_absolute_prefix(&path, &normalized_path(&home)) {
                 return if relative == "." {
                     "~".into()
                 } else {
@@ -248,33 +286,6 @@ pub(crate) fn abbreviated_display_path(path: &str, workspace: &Path) -> String {
         }
         path
     }
-}
-
-#[cfg(windows)]
-fn comparison_path(path: &str) -> String {
-    let path = Path::new(path);
-    let mut existing = path.to_owned();
-    let mut missing = Vec::new();
-    while !existing.exists() {
-        let Some(name) = existing.file_name() else {
-            return normalized_path(path);
-        };
-        missing.push(name.to_owned());
-        let Some(parent) = existing.parent() else {
-            return normalized_path(path);
-        };
-        existing = parent.to_owned();
-    }
-    let Ok(mut canonical) = existing.canonicalize() else {
-        return normalized_path(path);
-    };
-    canonical.extend(missing.into_iter().rev());
-    normalized_path(&canonical)
-}
-
-#[cfg(not(windows))]
-fn comparison_path(path: &str) -> String {
-    path.to_owned()
 }
 
 fn strip_absolute_prefix(path: &str, prefix: &str) -> Option<String> {
@@ -515,6 +526,73 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn builtin_relative_paths_revalidate_a_symlinked_cwd_route() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&destination).expect("destination");
+        std::fs::write(destination.join("value.txt"), "old").expect("fixture");
+        let cwd = root.path().join("cwd");
+        symlink(&destination, &cwd).expect("cwd symlink");
+        let context = ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: cwd.clone(),
+            workspace_root: root.path().to_owned(),
+            turn_context: crate::test_turn_context(),
+        };
+        let tools = BuiltinTools::new(root.path());
+        let mut prepared = Vec::new();
+        for (name, arguments) in [
+            ("read", serde_json::json!({"filePath":"value.txt"})),
+            (
+                "write",
+                serde_json::json!({"filePath":"value.txt","content":"new"}),
+            ),
+            (
+                "edit",
+                serde_json::json!({
+                    "filePath":"value.txt",
+                    "oldString":"old",
+                    "newString":"new"
+                }),
+            ),
+        ] {
+            prepared.push(
+                tools
+                    .prepare(
+                        context.clone(),
+                        ToolCall {
+                            id: ToolCallId::new_v7(),
+                            name: name.into(),
+                            arguments,
+                        },
+                    )
+                    .await
+                    .expect("prepare through symlinked cwd"),
+            );
+        }
+
+        std::fs::remove_file(&cwd).expect("remove cwd route");
+        symlink(&destination, &cwd).expect("replace cwd route");
+        for prepared in prepared {
+            let error = prepared
+                .execute_for_test(
+                    cookie_agent_engine::ToolExecutionContext::for_test(
+                        root.path().join("artifacts"),
+                        crate::test_turn_context(),
+                    )
+                    .expect("execution context"),
+                )
+                .await
+                .expect_err("cwd route swap must fail");
+            assert!(matches!(error, ToolError::OperationChanged(_)));
+        }
+    }
+
     #[test]
     fn fixed_identity_v7_fingerprint_is_golden_and_deterministic() {
         let operation = PreparedOperationIdentity::new(
@@ -605,6 +683,40 @@ mod tests {
                 std::path::Path::new("workspace"),
             ),
             "workspace/src/lib.rs",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_permission_path_label_does_not_resolve_requested_path() {
+        let directory = tempfile::tempdir().expect("temporary root");
+        let workspace = directory.path().join("workspace");
+        let destination = directory.path().join("destination");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&destination).expect("destination");
+        let alias = workspace.join("alias");
+        if let Err(error) = std::os::windows::fs::symlink_dir(&destination, &alias) {
+            if error.raw_os_error() == Some(1314) {
+                return;
+            }
+            panic!("create directory symlink: {error}");
+        }
+        let requested = alias.join("value.txt");
+
+        assert_eq!(
+            super::permission_path_label(&requested.to_string_lossy(), &workspace),
+            "alias/value.txt"
+        );
+        assert_eq!(
+            super::abbreviated_display_path(&requested.to_string_lossy(), &workspace),
+            "alias/value.txt"
+        );
+        let outside_alias = directory.path().join("outside-alias");
+        std::os::windows::fs::symlink_dir(&workspace, &outside_alias).expect("outside alias");
+        let outside_request = outside_alias.join("value.txt");
+        assert_eq!(
+            super::abbreviated_display_path(&outside_request.to_string_lossy(), &workspace),
+            super::normalized_path(&outside_request)
         );
     }
 

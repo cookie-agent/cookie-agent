@@ -44,6 +44,20 @@ as `git *` also matches a longer command beginning with `git`. See
 [Security guarantees](security.md) for the platform-specific filesystem and
 process boundaries behind these tools.
 
+Path resource labels are normalized lexically from the single path requested by
+the caller. They are not canonicalized through symbolic links before permission
+matching. That one label authorizes the whole prepared `read`, `write`, or
+`edit` operation: if an allowed alias resolves outside the workspace, cookie
+agent does not perform a second permission check or require a rule for the
+resolved destination. Filesystem preparation still binds the traversed route
+and destination and can reject the operation independently. In particular,
+changing a link target after preparation fails with `operation_changed`; it
+does not cause policy to be reevaluated against the new destination.
+
+Bash remains independent of this path-resource contract. An allowed command has
+only its complete command-string resource and does not gain hidden `read` or
+`write` resource checks when the command traverses a link.
+
 Permission policy does not validate cookie agent's pre-existing private-state
 paths. New state is created with owner-only permissions, but existing loose,
 foreign-owned, hard-linked, or symlinked state is read and written as-is. This is
@@ -63,8 +77,25 @@ against the engine workspace root during evaluation. Ordinary absolute patterns
 such as `/etc/*` control outside-workspace paths. Permission patterns do not
 expand environment variables.
 
-Generic read allows do not override the built-in ask behavior for `.env` and
-`.env.*`; an exact or more-specific authored rule decides.
+Permission evaluation has no implicit filename or resource-name exceptions.
+Credential files, `.env` and `.env.*`, and non-file resource labels all use the
+configured rules for their action, including in session overlays. Broad file
+allows such as `"*": allow` or
+`"${workspace_dir}/*": allow` apply without a protected-file override. Explicit
+`deny` and `ask` rules follow the same specificity and overlay precedence as any
+other file; unmatched resources ask.
+
+The synthesized `default` agent still declares explicit dotenv read denies and
+`.env.example` allows in its permission map. These are ordinary policy rules,
+not an implicit guard applied to authored agents or session overlays. The same
+applies to its explicit credential-file denies (such as `store-v3.json`,
+`token-v1`, `id_*`, `.netrc`, and `application_default_credentials.json`).
+
+This contract governs tool permission evaluation. It does not replace filesystem
+integrity and resource-binding checks, or govern engine configuration and prompt
+loading (such as workspace `AGENTS.md` admission). Generic approval modes and
+turn-scoped skill grants retain their documented behavior; they are not
+resource-name exceptions.
 
 ## Tool availability and delegation
 
