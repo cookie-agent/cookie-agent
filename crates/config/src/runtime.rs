@@ -538,6 +538,8 @@ pub struct ContextCompactionConfig {
     pub auto_compaction: bool,
     pub trigger: ContextCompactionTrigger,
     pub max_summary_bytes: usize,
+    /// Recent-history tail token budget; zero disables retention. Runtime caps it to available space.
+    pub keep_recent_tokens: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -556,6 +558,8 @@ struct RawContextCompactionConfig {
     buffer_tokens: Option<u64>,
     #[serde(default = "default_summary")]
     max_summary_bytes: usize,
+    #[serde(default = "default_keep_recent_tokens")]
+    keep_recent_tokens: u64,
 }
 
 impl<'de> Deserialize<'de> for ContextCompactionConfig {
@@ -578,6 +582,7 @@ impl<'de> Deserialize<'de> for ContextCompactionConfig {
             auto_compaction: raw.auto_compaction,
             trigger,
             max_summary_bytes: raw.max_summary_bytes,
+            keep_recent_tokens: raw.keep_recent_tokens,
         })
     }
 }
@@ -588,6 +593,7 @@ impl Default for ContextCompactionConfig {
             auto_compaction: true,
             trigger: default_compaction_trigger(),
             max_summary_bytes: default_summary(),
+            keep_recent_tokens: default_keep_recent_tokens(),
         }
     }
 }
@@ -596,6 +602,9 @@ const fn default_compaction_trigger() -> ContextCompactionTrigger {
 }
 const fn default_summary() -> usize {
     256 * 1024
+}
+const fn default_keep_recent_tokens() -> u64 {
+    16_384
 }
 
 #[derive(Clone, Debug, Deserialize)]

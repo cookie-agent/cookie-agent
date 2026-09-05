@@ -1505,6 +1505,8 @@ pub struct ContextCheckpointBoundaries {
     pub source_from_seq: u64,
     #[schemars(range(min = 1))]
     pub source_through_seq: u64,
+    #[serde(default)]
+    pub recent_from_seq: Option<u64>,
     pub input_through_seq: u64,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<u64>", required)]
@@ -1564,6 +1566,8 @@ pub struct ContextCheckpointBudgets {
     #[schemars(range(min = 1))]
     pub input_tokens_before: u64,
     pub input_tokens_after: u64,
+    #[serde(default)]
+    pub keep_recent_tokens: u64,
     pub max_summary_bytes: SummaryByteLimit,
 }
 
@@ -1704,12 +1708,25 @@ pub struct ContextCheckpointCommit {
 }
 impl ContextCheckpointCommit {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
+        let recent_outside_source =
+            self.boundaries
+                .recent_from_seq
+                .is_some_and(|recent_from_seq| {
+                    recent_from_seq < self.boundaries.source_from_seq
+                        || recent_from_seq > self.boundaries.source_through_seq
+                });
+        let native_has_recent_tail =
+            matches!(self.checkpoint, ContextCheckpoint::NativeWindow { .. })
+                && (self.boundaries.recent_from_seq.is_some()
+                    || self.budgets.keep_recent_tokens != 0);
         if self.boundaries.source_from_seq == 0
             || self.boundaries.source_from_seq > self.boundaries.source_through_seq
+            || recent_outside_source
             || self.boundaries.input_through_seq < self.boundaries.source_through_seq
             || self.budgets.context_limit_tokens == 0
             || self.budgets.trigger_tokens > self.budgets.context_limit_tokens
             || self.budgets.input_tokens_after >= self.budgets.input_tokens_before
+            || native_has_recent_tail
         {
             return Err(EventSchemaError::InvalidCheckpointBoundaries);
         }

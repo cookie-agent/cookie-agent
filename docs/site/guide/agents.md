@@ -53,7 +53,7 @@ Review the requested change and report concrete findings.
 `max_output_tokens` applies in every mode. A nonzero value caps each request at
 the smaller of the document value and the model's own output limit. It defaults
 to no document cap for the non-internal `primary`, `subagent`, and `all` modes.
-Internal agents retain a 2,048-token default; setting it explicitly to zero
+Authored internal agents retain a 2,048-token default; setting it explicitly to zero
 removes that document cap.
 `timeout_ms` applies only to internal agents. For other modes, a nonzero value is
 a hard error. Internal agents use the 30-second invocation timeout when
@@ -276,7 +276,7 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
 | `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
-| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
+| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 30 s timeout; model-derived input budget; 4,096 max output tokens |
 | `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; 128 max output tokens |
 
 All three default to `${parent_model}`, so they run on the model the parent run
@@ -310,7 +310,7 @@ models:
   - { model: "openai/gpt-5-mini", variant: null }
 limits:
   timeout_ms: 30000
-  max_output_tokens: 2048
+  max_output_tokens: 4096
 permissions: {}
 ---
 Summarize conversation context faithfully within the supplied bounds. Return summary text only.

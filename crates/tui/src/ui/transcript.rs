@@ -4066,6 +4066,7 @@ mod tests {
             boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
                 source_from_seq: 2,
                 source_through_seq: 3,
+                recent_from_seq: None,
                 input_through_seq: 4,
                 prior_checkpoint_seq: None,
             },
@@ -4074,6 +4075,7 @@ mod tests {
                 trigger_tokens: 8_000,
                 input_tokens_before: 9_000,
                 input_tokens_after: 1_200,
+                keep_recent_tokens: 0,
                 max_summary_bytes: max,
             },
         }
@@ -6478,6 +6480,7 @@ mod tests {
                     boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
                         source_from_seq: 2,
                         source_through_seq: 3,
+                        recent_from_seq: None,
                         input_through_seq: 4,
                         prior_checkpoint_seq: None,
                     },
@@ -6486,6 +6489,7 @@ mod tests {
                         trigger_tokens: 8_000,
                         input_tokens_before: 9_000,
                         input_tokens_after: 1_200,
+                        keep_recent_tokens: 0,
                         max_summary_bytes: max,
                     },
                 },

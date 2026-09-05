@@ -7,33 +7,28 @@ use std::{
 use cookie_agent_config::ContextCompactionTrigger;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
-    ContextCheckpointCommit, ContextRehydratedFile, ExtensionSessionBeforeCompactParams,
-    InternalAgentKind, InternalSummaryCheckpoint, PersistedAssistantPart, PersistedToolResult,
-    PluginDiagnosticKind, RunId, SessionCompactResult, SessionId, SessionStatus, Sha256Digest,
-    StoredEvent, SummaryByteLimit, ToolCallId, ToolEmittedContent,
+    ContextCheckpointCommit, ExtensionSessionBeforeCompactParams, InternalAgentKind,
+    InternalSummaryCheckpoint, PersistedToolResult, PluginDiagnosticKind, RunId,
+    SessionCompactResult, SessionId, SessionStatus, StoredEvent, SummaryByteLimit,
+    ToolEmittedContent,
 };
 use oven_sdk::{
     CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
 };
 use oven_sdk_azure::{AzureOpenAiCompactionOptions, AzureOpenAiCompactionRequestExt as _};
 use oven_sdk_openai::{OpenAiResponsesCompactionOptions, OpenAiResponsesCompactionRequestExt as _};
-use serde_json::Value;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::titles::active_fallback_index;
 use super::{
     Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
     InternalAgentHistoryInput, SessionCommand,
-    helpers::{safe_display, truncate_utf8},
     internal_agents::{internal_agent_input_fits, internal_agent_output_limit},
 };
 use crate::{
-    events::OutputHub,
     model_bridge::AbortBridge,
     model_history::{self, assemble_model_context},
     policy::{self, FrozenRunPolicy},
-    tool_api::{ProgressSink, ToolCall, ToolExecutionContext, TurnAgentContext},
 };
 
 pub(crate) const COMPACTION_INSTRUCTION: &str = "Create a detailed technical summary of the conversation so work can continue without the earlier context. Include: the goal/objective; decisions and their rationale; files changed and current code state; commands run and their outcomes; errors encountered and fixes applied; and the pending next step. Preserve exact identifiers, paths, constraints, and unresolved questions. Return summary text only and do not call tools.";
@@ -41,9 +36,6 @@ pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
 // Frozen policies normally provide this value. Keep substantial headroom when replaying an
 // unavailable or legacy policy whose output limit is zero.
 pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
-pub(super) const REHYDRATION_MAX_FILES: usize = 5;
-pub(super) const REHYDRATION_MAX_FILE_BYTES: usize = 32 * 1024;
-pub(super) const REHYDRATION_MAX_TOTAL_BYTES: usize = 128 * 1024;
 // Video is frame-sampled and can cost tens of thousands of tokens independent of file bytes.
 const VIDEO_FILE_FIT_SURROGATE_BYTES: usize = 40_000 * 4;
 
@@ -61,15 +53,6 @@ pub(super) struct CompactionInput<'a> {
     pub(super) focus: Option<&'a str>,
     pub(super) actor_direct: bool,
     pub(super) origin: cookie_agent_protocol::EventOrigin,
-}
-
-struct RehydrationInput<'a> {
-    session: SessionId,
-    run: RunId,
-    owner_policy: &'a FrozenRunPolicy,
-    cancellation: &'a CancellationToken,
-    events: &'a [StoredEvent],
-    turn_context: Arc<TurnAgentContext>,
 }
 
 impl Engine {
@@ -281,7 +264,6 @@ impl Engine {
             input.binding,
             &composed_prompt,
         )?;
-        let mut measured_compaction_input_tokens = None;
         let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
             input.overflow_recovery,
             projection
@@ -302,9 +284,7 @@ impl Engine {
                     compaction_focus.as_deref(),
                     &input.internal_policy.agent.composed_prompt,
                 );
-                let tokens = self.estimated_request_tokens(input.session, &history, input.tools)?;
-                measured_compaction_input_tokens = Some(tokens);
-                tokens
+                self.estimated_request_tokens(input.session, &history, input.tools)?
             };
             compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
         };
@@ -331,31 +311,32 @@ impl Engine {
             return Ok(Arc::from(events));
         }
 
-        // Rehydration runs outside a normal turn, so it uses the owner and binding that triggered
-        // this checkpoint.
-        let rehydration_turn_context = Arc::new(TurnAgentContext {
-            agent: input.owner_policy.agent.agent.clone(),
-            model: input.binding.selection.model.clone(),
-            adapter: policy::wire_adapter(input.binding.protocol_recipe.as_str()),
-            adapter_family: policy::adapter_family(input.binding.protocol_recipe.as_str()),
-            capabilities: input
-                .owner_policy
-                .model_capabilities(input.binding)
-                .ok_or(EngineError::NoRunnableModel)?,
-        });
-
         let input_through_seq = events.last().map_or(0, |event| event.seq);
         let previous = projection.log.latest_checkpoint_seq();
-        let source_from_seq = if previous == 0 {
+        let mut source_from_seq = if previous == 0 {
             1
         } else {
             previous.saturating_add(1)
         };
-        let boundaries = ContextCheckpointBoundaries {
+        if let Some(recent_from) = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                Event::ContextCheckpointCommitted { commit } => {
+                    Some(commit.boundaries.recent_from_seq)
+                }
+                _ => None,
+            })
+            .flatten()
+        {
+            source_from_seq = source_from_seq.min(recent_from);
+        }
+        let mut boundaries = ContextCheckpointBoundaries {
             source_from_seq,
             source_through_seq: input_through_seq,
             input_through_seq,
             prior_checkpoint_seq: (previous > 0).then_some(previous),
+            recent_from_seq: None,
         };
         let summary_limit = SummaryByteLimit::new(config.max_summary_bytes as u64)
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
@@ -428,6 +409,7 @@ impl Engine {
                 input_tokens_before: context_tokens_before,
                 input_tokens_after,
                 max_summary_bytes: summary_limit,
+                keep_recent_tokens: 0,
             };
             let commit = ContextCheckpointCommit {
                 checkpoint: ContextCheckpoint::NativeWindow { window },
@@ -443,30 +425,102 @@ impl Engine {
                     input.origin.clone(),
                 )
                 .await?;
-                return self
-                    .finalize_context_checkpoint(
-                        input,
-                        events,
-                        input_tokens_after,
-                        rehydration_turn_context,
-                    )
-                    .await;
+                return self.finalize_context_checkpoint(input.session, input_tokens_after);
             }
         }
 
+        // Reserve an output-sized summary before selecting a suffix. The final fit check uses
+        // the actual replay projection and the same calibrated estimator as the input.
+        let output_reserve = match (
+            input.binding.descriptor.capabilities.limits.output,
+            input.owner_policy.agent.max_output_tokens,
+        ) {
+            (Some(model), agent) if agent > 0 => model.min(agent),
+            (Some(model), _) => model,
+            (None, agent) if agent > 0 => agent,
+            _ => DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
+        };
+        let retained_limit = context_limit
+            .saturating_sub(output_reserve)
+            .min(if trigger_tokens > 0 {
+                trigger_tokens - 1
+            } else {
+                context_limit
+            })
+            .min(context_tokens_before.saturating_sub(1));
+        let summary_output_limit = input
+            .internal_policy
+            .models
+            .iter()
+            .filter_map(|binding| internal_agent_output_limit(binding, input.internal_policy))
+            .max()
+            .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
+        let summary_reserve_bytes = summary_output_limit
+            .saturating_mul(4)
+            .min(config.max_summary_bytes as u64) as usize;
+        let summary_reserve = "x".repeat(summary_reserve_bytes);
+        let base = model_history::project_summary_context(
+            &events,
+            &self.inner.artifacts,
+            input.binding,
+            &composed_prompt,
+            input_through_seq,
+            None,
+            &summary_reserve,
+        )?;
+        let base_tokens =
+            self.estimated_request_tokens(input.session, &base.history, input.tools)?;
+        let keep_recent_tokens = effective_recent_budget(
+            config.keep_recent_tokens,
+            context_limit,
+            retained_limit.saturating_sub(base_tokens),
+        );
+        let recent_from_seq = select_recent_tail(
+            model_history::compaction_tail_candidates(&events),
+            keep_recent_tokens,
+            base_tokens,
+            retained_limit,
+            |candidate| {
+                let projected = model_history::project_summary_context(
+                    &events,
+                    &self.inner.artifacts,
+                    input.binding,
+                    &composed_prompt,
+                    input_through_seq,
+                    Some(candidate),
+                    &summary_reserve,
+                )?;
+                self.estimated_request_tokens(input.session, &projected.history, input.tools)
+            },
+        )?;
+        let prefix = model_history::compaction_prefix_history(
+            &events,
+            &self.inner.artifacts,
+            input.binding,
+            &composed_prompt,
+            recent_from_seq,
+        )?;
+        let prior_summary_count = usize::from(
+            events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    Event::ContextCheckpointCommitted { commit } => Some(matches!(
+                        commit.checkpoint,
+                        ContextCheckpoint::InternalSummary { .. }
+                    )),
+                    _ => None,
+                })
+                .unwrap_or(false),
+        );
+        if prefix.len() <= checkpoint_prefix.len().saturating_add(prior_summary_count) {
+            return Ok(Arc::from(events));
+        }
         let (history, instruction) = compaction_history(
-            context.history,
+            prefix,
             compaction_focus.as_deref(),
             &input.internal_policy.agent.composed_prompt,
         );
-        let input_tokens_before = if raw_fits {
-            measured_compaction_input_tokens.map_or_else(
-                || self.estimated_request_tokens(input.session, &history, input.tools),
-                Ok,
-            )?
-        } else {
-            self.estimated_request_tokens(input.session, &history, input.tools)?
-        };
         let summary = self
             .run_internal_history_agent(
                 input.session,
@@ -500,18 +554,49 @@ impl Engine {
             summary_limit,
         )
         .map_err(|error| EngineError::from(ModelError::invalid_response(error.to_string())))?;
-        let retained_history = model_history::checkpoint_retained_history(
-            &checkpoint_prefix,
+        let retained_context = model_history::project_summary_context(
             &events,
-            Some(checkpoint.summary()),
+            &self.inner.artifacts,
+            input.binding,
+            &composed_prompt,
+            input_through_seq,
+            recent_from_seq,
+            checkpoint.summary(),
+        )?;
+        let input_tokens_after =
+            self.estimated_request_tokens(input.session, &retained_context.history, input.tools)?;
+        let actual_base = model_history::project_summary_context(
+            &events,
+            &self.inner.artifacts,
+            input.binding,
+            &composed_prompt,
+            input_through_seq,
+            None,
+            checkpoint.summary(),
+        )?;
+        let actual_base_tokens =
+            self.estimated_request_tokens(input.session, &actual_base.history, input.tools)?;
+        let keep_recent_tokens = effective_recent_budget(
+            config.keep_recent_tokens,
+            context_limit,
+            retained_limit.saturating_sub(actual_base_tokens),
         );
-        let input_tokens_after = estimated_request_tokens(&retained_history, input.tools)?;
+        if input_tokens_after > retained_limit
+            || input_tokens_after.saturating_sub(actual_base_tokens) > keep_recent_tokens
+        {
+            return Ok(Arc::from(events));
+        }
+        boundaries.recent_from_seq = recent_from_seq;
+        if let Some(recent_from_seq) = recent_from_seq {
+            boundaries.source_from_seq = boundaries.source_from_seq.min(recent_from_seq);
+        }
         let budgets = ContextCheckpointBudgets {
             context_limit_tokens: context_limit,
             trigger_tokens: trigger_tokens.max(1).min(context_limit),
-            input_tokens_before,
+            input_tokens_before: context_tokens_before,
             input_tokens_after,
             max_summary_bytes: summary_limit,
+            keep_recent_tokens,
         };
         let commit = ContextCheckpointCommit {
             checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
@@ -529,50 +614,22 @@ impl Engine {
             input.origin.clone(),
         )
         .await?;
-        self.finalize_context_checkpoint(
-            input,
-            events,
-            input_tokens_after,
-            rehydration_turn_context,
-        )
-        .await
+        self.finalize_context_checkpoint(input.session, input_tokens_after)
     }
 
-    async fn finalize_context_checkpoint(
+    fn finalize_context_checkpoint(
         &self,
-        input: CompactionInput<'_>,
-        events: Vec<StoredEvent>,
+        session: SessionId,
         input_tokens_after: u64,
-        turn_context: Arc<TurnAgentContext>,
     ) -> Result<Arc<[StoredEvent]>, EngineError> {
         self.inner
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(input.session)
+            .entry(session)
             .or_default()
             .record_compaction(input_tokens_after);
-        let files = self
-            .rehydrated_files(RehydrationInput {
-                session: input.session,
-                run: input.run,
-                owner_policy: input.owner_policy,
-                cancellation: input.cancellation,
-                events: &events,
-                turn_context,
-            })
-            .await;
-        if !files.is_empty() {
-            self.append_compaction_event(
-                input.session,
-                Some(input.run),
-                Event::ContextRehydrated { files },
-                input.actor_direct,
-                input.origin.clone(),
-            )
-            .await?;
-        }
-        Ok(self.inner.store.get(input.session)?.log.event_snapshot())
+        Ok(self.inner.store.get(session)?.log.event_snapshot())
     }
 
     async fn stage_tool_output_elision(
@@ -663,115 +720,6 @@ impl Engine {
         Ok(estimated_tokens_for_bytes(bytes))
     }
 
-    async fn rehydrated_files(&self, input: RehydrationInput<'_>) -> Vec<ContextRehydratedFile> {
-        let mut files = Vec::new();
-        let mut total = 0_usize;
-        for display_path in recent_read_candidates(input.events) {
-            if total >= REHYDRATION_MAX_TOTAL_BYTES {
-                break;
-            }
-            let call_id = ToolCallId::new_v7();
-            let prepared = self
-                .prepare_tool_call(
-                    input.session,
-                    input.run,
-                    ToolCall {
-                        id: call_id,
-                        name: "read".into(),
-                        arguments: serde_json::json!({
-                            "filePath": display_path,
-                            "limit": null,
-                            "offset": null
-                        }),
-                    },
-                    input.owner_policy,
-                    Arc::clone(&input.turn_context),
-                )
-                .await;
-            let Ok(prepared) = prepared.prepared else {
-                continue;
-            };
-            let Ok(session) = self.inner.store.get(input.session) else {
-                continue;
-            };
-            let permission_overlay = session.permission_overlay;
-            let grants = self.skill_grants_for_session(input.session);
-            let permission = self.inner.permissions.decide_operation_with_grants(
-                &input.owner_policy.agent,
-                Some(&permission_overlay),
-                grants.as_ref(),
-                &prepared.operation,
-                &prepared.policy_labels,
-                self.inner.store.cwd(),
-            );
-            if permission.effect != cookie_agent_protocol::PermissionEffect::Allow {
-                continue;
-            }
-            let Some(executor) = prepared.executor.lock().await.take() else {
-                continue;
-            };
-            let (progress_tx, _progress_rx) = mpsc::channel(1);
-            let result = executor
-                .execute(ToolExecutionContext {
-                    session: input.session,
-                    run: input.run,
-                    progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
-                    cancellation: input.cancellation.child_token(),
-                    stdin: None,
-                    turn_context: Arc::clone(&input.turn_context),
-                    artifacts: self.inner.artifacts.clone(),
-                })
-                .await;
-            let Ok(result) = result else {
-                continue;
-            };
-            let remaining = REHYDRATION_MAX_TOTAL_BYTES.saturating_sub(total);
-            let content = truncate_utf8(&result.output, REHYDRATION_MAX_FILE_BYTES.min(remaining));
-            if content.is_empty() {
-                continue;
-            }
-            total = total.saturating_add(content.len());
-            files.push(ContextRehydratedFile {
-                path: safe_display(&display_path),
-                byte_length: content.len() as u64,
-                sha256: Sha256Digest::of_bytes(content.as_bytes()),
-                content,
-            });
-        }
-        files
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn rehydrated_files_for_test(
-        &self,
-        session: SessionId,
-        run: RunId,
-        owner_policy: &FrozenRunPolicy,
-        events: &[StoredEvent],
-    ) -> Vec<ContextRehydratedFile> {
-        let binding = owner_policy
-            .selected_suffix
-            .first()
-            .expect("test owner policy has a model binding");
-        self.rehydrated_files(RehydrationInput {
-            session,
-            run,
-            owner_policy,
-            cancellation: &CancellationToken::new(),
-            events,
-            turn_context: Arc::new(TurnAgentContext {
-                agent: owner_policy.agent.agent.clone(),
-                model: binding.selection.model.clone(),
-                adapter: policy::wire_adapter(binding.protocol_recipe.as_str()),
-                adapter_family: policy::adapter_family(binding.protocol_recipe.as_str()),
-                capabilities: owner_policy
-                    .model_capabilities(binding)
-                    .expect("test binding has published capabilities"),
-            }),
-        })
-        .await
-    }
-
     async fn append_compaction_event(
         &self,
         session: SessionId,
@@ -821,6 +769,31 @@ fn usage_reaches_compaction_trigger(observed_tokens: u64, trigger_tokens: u64) -
     observed_tokens >= trigger_tokens
 }
 
+fn effective_recent_budget(target: u64, context_limit: u64, available: u64) -> u64 {
+    target.min(context_limit / 4).min(available)
+}
+
+fn select_recent_tail(
+    candidates: Vec<u64>,
+    budget: u64,
+    base_tokens: u64,
+    retained_limit: u64,
+    mut estimate: impl FnMut(u64) -> Result<u64, EngineError>,
+) -> Result<Option<u64>, EngineError> {
+    let mut selected = None;
+    if budget == 0 {
+        return Ok(selected);
+    }
+    for candidate in candidates.into_iter().rev() {
+        let tokens = estimate(candidate)?;
+        if tokens > retained_limit || tokens.saturating_sub(base_tokens) > budget {
+            break;
+        }
+        selected = Some(candidate);
+    }
+    Ok(selected)
+}
+
 #[cfg(test)]
 fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bool {
     events.iter().rev().any(|event| {
@@ -846,8 +819,8 @@ pub(crate) fn serialized_fit_request_bytes(
 fn fit_history(history: &[oven_sdk::HistoryTurn]) -> (Vec<oven_sdk::HistoryTurn>, usize) {
     // Media costs are flat-ish, usually hundreds to low-thousands of tokens per part, and do not
     // track serialized byte size. Exclude image/PDF/audio files; video alone gets a flat surrogate
-    // because frame sampling can be materially expensive. Overestimation can spuriously compact
-    // and drop attachments during rehydration, while real usage calibrates residual error.
+    // because frame sampling can be materially expensive. Overestimation can trigger unnecessary
+    // compaction and discard attachments, while real usage calibrates residual error.
     let mut history = history.to_vec();
     let mut part_bytes = 0_usize;
     for turn in &mut history {
@@ -1091,77 +1064,6 @@ fn should_elide_tool_output(
         && output_bytes >= TOOL_OUTPUT_ELISION_MIN_BYTES
 }
 
-fn recent_read_candidates(events: &[StoredEvent]) -> Vec<String> {
-    let turns = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Event::ModelTurnCommitted {
-                model_turn_seq,
-                turn,
-                ..
-            } => Some((*model_turn_seq, (event.run_id, turn))),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let starts = events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Event::ToolCallStarted { start } => Some((
-                start.tool_call_id,
-                (
-                    event.run_id,
-                    start.owner.model_turn_seq,
-                    start.owner.content_index,
-                ),
-            )),
-            _ => None,
-        })
-        .collect::<HashMap<_, _>>();
-    let mut paths = Vec::new();
-    let mut seen = HashSet::new();
-    for event in events.iter().rev() {
-        let Event::ToolCallTerminated { termination } = &event.payload else {
-            continue;
-        };
-        if termination.result.is_none() {
-            continue;
-        }
-        let Some((start_run, model_turn_seq, content_index)) =
-            starts.get(&termination.tool_call_id)
-        else {
-            continue;
-        };
-        if event.run_id != *start_run {
-            continue;
-        }
-        let Some((turn_run, turn)) = turns.get(model_turn_seq) else {
-            continue;
-        };
-        if turn_run != start_run {
-            continue;
-        }
-        let Some(PersistedAssistantPart::ToolCall { name, input, .. }) =
-            turn.content.get(*content_index as usize)
-        else {
-            continue;
-        };
-        if name.as_str() != "read" {
-            continue;
-        }
-        let Some(path) = input.get("filePath").and_then(Value::as_str) else {
-            continue;
-        };
-        if seen.insert(path.to_owned()) {
-            paths.push(path.to_owned());
-        }
-        if paths.len() == REHYDRATION_MAX_FILES {
-            break;
-        }
-    }
-    paths.reverse();
-    paths
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1169,10 +1071,9 @@ mod tests {
     use cookie_agent_protocol::{
         ArtifactReference, ContextCheckpoint, ContextCheckpointBoundaries,
         ContextCheckpointBudgets, ContextCheckpointCommit, InternalSummaryCheckpoint, MimeType,
-        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult as ToolResult, RunId,
-        SafeDisplayText, SessionId, Sha256Digest, StoredEvent, SummaryByteLimit, ToolAttachment,
-        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
-        ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome,
+        PersistedToolResult as ToolResult, RunId, SafeDisplayText, SessionId, Sha256Digest,
+        StoredEvent, SummaryByteLimit, ToolAttachment, ToolEmittedContent, ToolEmittedMessage,
+        ToolEmittedMessageRole,
     };
     use oven_sdk::{
         CompactionCapability, FilePart, FileSource, HistoryTurn, InputPart, JsonSchema,
@@ -1184,19 +1085,17 @@ mod tests {
         COMPACTION_INSTRUCTION, DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS, FitPart,
         TOOL_OUTPUT_ELISION_MIN_BYTES, VIDEO_FILE_FIT_SURROGATE_BYTES, checkpoint_covers_input,
         compaction_gate, compaction_history, compaction_input_fits, compaction_instruction,
-        elidable_bytes, estimated_request_tokens, fit_part_bytes, native_compaction_input_budget,
-        raw_fit_from_real_usage, recent_read_candidates, resolve_compaction_trigger,
-        serialized_fit_request_bytes, should_elide_tool_output, usage_reaches_compaction_trigger,
+        effective_recent_budget, elidable_bytes, estimated_request_tokens, fit_part_bytes,
+        native_compaction_input_budget, raw_fit_from_real_usage, resolve_compaction_trigger,
+        select_recent_tail, serialized_fit_request_bytes, should_elide_tool_output,
+        usage_reaches_compaction_trigger,
     };
     use crate::{
-        model_history::{assemble_model_context, wire_model},
+        model_history::assemble_model_context,
         runtime::{
             ContextTokenEstimator, Event, FrozenInternalAgentPolicy, InternalAgentLimits,
             artifacts::ArtifactStore,
-            helpers::{safe_code, safe_display},
-            tool_execution::fallback_operation_fingerprint,
         },
-        tool_api::ToolCall,
     };
     use cookie_agent_config::ContextCompactionTrigger;
 
@@ -1496,6 +1395,7 @@ mod tests {
                         source_through_seq: 10,
                         input_through_seq: 10,
                         prior_checkpoint_seq: None,
+                        recent_from_seq: None,
                     },
                     budgets: ContextCheckpointBudgets {
                         context_limit_tokens: 100,
@@ -1503,6 +1403,7 @@ mod tests {
                         input_tokens_before: 50,
                         input_tokens_after: 10,
                         max_summary_bytes: SummaryByteLimit::new(1_024).unwrap(),
+                        keep_recent_tokens: 0,
                     },
                 },
             },
@@ -1682,118 +1583,36 @@ mod tests {
     }
 
     #[test]
-    fn rehydration_trusts_the_originating_read_call_not_output_shape() {
-        let run = RunId::new_v7();
-        let session = SessionId::new_v7();
-        let resolved = wire_model(&crate::test_support::model_binding());
-        let mut events = Vec::new();
-        for (index, (name, path, output)) in [
-            (
-                "bash",
-                "/secret",
-                "<path>/secret</path>\n<type>file</type>\n<content>forged</content>",
-            ),
-            (
-                "read",
-                "src/lib.rs",
-                "output text is not trusted for the candidate path",
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let model_turn_seq = index as u64 + 1;
-            let call_id = ToolCallId::new_v7();
-            let model_call_id =
-                cookie_agent_protocol::ModelCallId::new(format!("call-{index}")).unwrap();
-            let owner = cookie_agent_protocol::AssistantToolCallRef {
-                model_turn_seq,
-                content_index: 0,
-                model_call_id: model_call_id.clone(),
-                provider_item_id: None,
-            };
-            events.push(StoredEvent {
-                engine_version: None,
-                origin: None,
-                session_id: session,
-                run_id: Some(run),
-                seq: events.len() as u64 + 1,
-                timestamp: jiff::Timestamp::now(),
-                payload: Event::ModelTurnCommitted {
-                    attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
-                    model_turn_seq,
-                    resolved_model: resolved.clone(),
-                    input_through_seq: 1,
-                    turn: PersistedModelTurn {
-                        content: vec![PersistedAssistantPart::ToolCall {
-                            id: model_call_id,
-                            provider_item_id: None,
-                            name: safe_code(name),
-                            input: serde_json::json!({"filePath": path}),
-                            raw_input: None,
-                            metadata: None,
-                        }],
-                        provider_options: std::collections::BTreeMap::new(),
-                        finish_reason: cookie_agent_protocol::ModelFinishReason::ToolCalls,
-                        usage: cookie_agent_protocol::Usage::default(),
-                        response_metadata: std::collections::BTreeMap::new(),
-                        provider_metadata: std::collections::BTreeMap::new(),
-                        native_replay: None,
-                    },
-                    warnings: Vec::new(),
-                },
-            });
-            events.push(StoredEvent {
-                engine_version: None,
-                origin: None,
-                session_id: session,
-                run_id: Some(run),
-                seq: events.len() as u64 + 1,
-                timestamp: jiff::Timestamp::now(),
-                payload: Event::ToolCallStarted {
-                    start: ToolCallStart {
-                        tool_call_id: call_id,
-                        owner: owner.clone(),
-                        presentation: ToolCallPresentation {
-                            title: safe_display(name),
-                            primary_argument: None,
-                        },
-                        operation_fingerprint: fallback_operation_fingerprint(
-                            &ToolCall {
-                                id: call_id,
-                                name: name.into(),
-                                arguments: serde_json::json!({"filePath": path}),
-                            },
-                            Some("read"),
-                        ),
-                    },
-                },
-            });
-            events.push(StoredEvent {
-                engine_version: None,
-                origin: None,
-                session_id: session,
-                run_id: Some(run),
-                seq: events.len() as u64 + 1,
-                timestamp: jiff::Timestamp::now(),
-                payload: Event::ToolCallTerminated {
-                    termination: ToolCallTermination {
-                        tool_call_id: call_id,
-                        owner,
-                        outcome: ToolTerminationOutcome::Completed,
-                        result: Some(ToolResult {
-                            title: safe_display(name),
-                            output: output.into(),
-                            metadata: serde_json::json!({}),
-                            truncation: None,
-                            attachments: Vec::new(),
-                            additional_messages: Vec::new(),
-                        }),
-                        error: None,
-                    },
-                },
-            });
-        }
-        assert_eq!(recent_read_candidates(&events), vec!["src/lib.rs"]);
+    fn recent_budget_handles_zero_exact_fit_overbudget_and_huge_targets() {
+        assert_eq!(effective_recent_budget(0, 100_000, 20_000), 0);
+        assert_eq!(effective_recent_budget(16_384, 100_000, 16_384), 16_384);
+        assert_eq!(effective_recent_budget(16_384, 100_000, 123), 123);
+        assert_eq!(effective_recent_budget(16_384, 100_000, 0), 0);
+        assert_eq!(effective_recent_budget(u64::MAX, 100_000, u64::MAX), 25_000);
+        assert_eq!(
+            effective_recent_budget(u64::MAX, u64::MAX, u64::MAX),
+            u64::MAX / 4
+        );
+    }
+
+    #[test]
+    fn recent_selection_keeps_only_fitting_complete_suffixes() {
+        let select = |budget, limit| {
+            select_recent_tail(vec![10, 20, 30], budget, 100, limit, |seq| {
+                Ok(match seq {
+                    10 => 400,
+                    20 => 300,
+                    _ => 200,
+                })
+            })
+            .unwrap()
+        };
+        assert_eq!(select(0, 1_000), None);
+        assert_eq!(select(200, 1_000), Some(20));
+        assert_eq!(select(199, 1_000), Some(30));
+        assert_eq!(select(99, 1_000), None);
+        assert_eq!(select(u64::MAX, 199), None);
+        assert_eq!(select(u64::MAX, 300), Some(20));
+        assert_eq!(select(u64::MAX, u64::MAX), Some(10));
     }
 }

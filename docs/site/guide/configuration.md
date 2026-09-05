@@ -73,6 +73,7 @@ backoff_ceiling_ms = 60000
 auto = true
 trigger = { percent = 70 }
 max_summary_bytes = 262144
+keep_recent_tokens = 16384
 
 [session_title]
 max_chars = 80
@@ -93,6 +94,11 @@ Validation rules that apply regardless of what you set:
 - Positive size and timeout limits are required; compaction trigger percentages
   must be from 1 through 99, and `context_compaction.max_summary_bytes` may not
   exceed 2 MiB.
+- `context_compaction.keep_recent_tokens` accepts zero to disable the recent
+  original-message suffix. Its default is 16,384 tokens; the runtime caps it at
+  one quarter of the context limit and by actual post-checkpoint available
+  space. It applies only to internal summaries, not native windows. See
+  [Compaction](compaction.md) for complete-group retention rules.
 - Model retry counts are signed: zero disables retries after the first attempt,
   and a negative value retries that error class until success or cancellation.
   The default standard budget is three retries, or four total attempts; the

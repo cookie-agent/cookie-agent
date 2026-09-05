@@ -1,8 +1,9 @@
 # Compaction
 
-Compaction replaces a long session history with a checkpoint: a summarizer call
-whose output becomes the context for the next request. It keeps long sessions
-inside the model's context window without discarding the work done so far.
+Compaction reduces a long session history to a checkpoint. Internal compaction
+summarizes the discarded history prefix and preserves a bounded suffix of recent
+original messages alongside pinned context. Provider-native compaction instead
+stores an opaque provider window.
 
 ## Native provider compaction
 
@@ -24,6 +25,9 @@ text. Events through the checkpoint boundary are omitted from normal history,
 no framed summary message is inserted, and the window is attached to the next
 request. Later native compactions are seeded with the previous window. The
 window has a 32 MiB cap; `max_summary_bytes` applies only to text summaries.
+Native windows remain unchanged by recent-history retention: the engine does not
+append an independent recent-message tail to them. Neither native nor internal
+compaction rereads files or emits new `context_rehydrated` events.
 
 ## The trigger threshold
 
@@ -76,26 +80,51 @@ The threshold is compared against two signals:
    (8 KiB or more) from turns older than the last two are replaced with
    content-addressed artifact references. The context is then reassembled from
    the elided events. If elision brings an automatic compaction below its trigger
-    threshold, no summarizer call is made.
-    The original truncation artifact remains preferred by
-    [`read_tool_result`](../reference/tools.md#retained-tool-output), so elision
-    of its preview does not discard the retained full output.
-3. **Native or summarizer call.** An opted-in Responses model first attempts
-   native compaction. Otherwise, or after any native failure, the internal
-   `compaction` agent (see
-   [Internal agents](agents.md#internal-agents)) receives the assembled history
-   plus the fixed instruction, optionally extended with the user's focus text.
-   It must return summary text only, at most `max_summary_bytes` (256 KiB by
-   default). Non-text output is rejected.
-4. **Checkpoint commit.** A `context_checkpoint_committed` event records the
-   text summary or opaque native window, its source boundaries, and the budget
-   math (context limit, trigger threshold, input tokens before, estimated tokens
-   after).
-5. **Rehydration.** After the checkpoint, the engine re-reads up to 5 distinct
-   files most recently opened by the `read` tool (32 KiB each, 128 KiB total,
-   permission-checked against the owner policy) and appends a
-   `context_rehydrated` event with their contents, so the fresh context still
-   has the important file contents available.
+   threshold, no summarizer call is made.
+   The original truncation artifact remains preferred by
+   [`read_tool_result`](../reference/tools.md#retained-tool-output), so elision
+   of its preview does not discard the retained full output.
+3. **Native attempt.** An opted-in Responses model first attempts native
+   compaction. A successful native window goes directly to checkpoint commit,
+   without selecting an independent recent-history tail. Otherwise, or after
+   any native failure, the engine uses internal summarization.
+4. **Recent-history selection.** For internal summarization, the engine selects
+   a contiguous suffix of original messages. Its effective token target is at
+   most `min(keep_recent_tokens, context_limit / 4)`, using integer division,
+   and is further limited by actual available space in the post-checkpoint
+   request. System and tool context, pinned context, the summary, and the output
+   reserve must still fit. Tool calls and their results are retained as complete
+   groups, never split at the suffix boundary. If the newest indivisible group
+   exceeds the target, no tail is retained; the engine does not exceed the
+   target or substitute an older, noncontiguous group. `keep_recent_tokens = 0`
+   disables the tail.
+5. **Discarded-prefix summary.** The internal `compaction` agent (see
+   [Internal agents](agents.md#internal-agents)) summarizes only the discarded
+   prefix, not the retained suffix. Its fixed instruction may be extended with
+   the user's focus text. It must return summary text only, at most
+   `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
+   built-in compaction agent allows 4,096 output tokens. Authored internal-agent
+   documents that omit this limit retain the generic 2,048-token default.
+6. **Checkpoint commit.** A `context_checkpoint_committed` event records the
+   text summary or opaque native window, source and recent-suffix boundaries,
+   and the budget math, including the effective recent-history token budget.
+   Retained messages come from saved history, not new file reads.
+
+## Context after an internal checkpoint
+
+The next request assembles context in this order:
+
+1. System prompt and tool definitions.
+2. Pinned `AGENTS.md` context.
+3. Pinned loaded skill bodies.
+4. Summary of the discarded history prefix.
+5. Retained recent original message suffix, followed by any new messages.
+
+Pinned context is preserved separately from the suffix. With retention disabled,
+or when the newest complete group cannot fit, the recent suffix is absent and
+the summary covers the discarded history instead. The retained suffix is not
+duplicated in the summary. Native checkpoints continue to use their opaque
+provider windows rather than this summary-and-tail layout.
 
 ## Configuration
 
@@ -104,6 +133,7 @@ The threshold is compared against two signals:
 auto = true
 trigger = { percent = 70 }
 max_summary_bytes = 262144  # 256 KiB, max 2 MiB
+keep_recent_tokens = 16384 # 0 disables the recent-message tail
 ```
 
 To reserve a fixed amount of headroom instead:
@@ -120,6 +150,12 @@ alias for the fixed trigger. It cannot be combined with `trigger`.
   Manual `/compact` and context-overflow recovery compaction remain available.
 - `max_summary_bytes` caps the summary produced by the compaction agent and must
   be at most 2 MiB.
+- `keep_recent_tokens` is a nonnegative `u64` token budget, defaulting to 16,384.
+  The runtime caps the effective target at one quarter of the model context
+  limit and further reduces it to fit available post-checkpoint space. Complete
+  message groups may retain fewer tokens than that target. Configuration loading
+  does not clamp the requested value. This setting applies only to internal
+  summaries, including fallback after a native-compaction failure.
 
 ## Manual compaction
 
@@ -136,7 +172,8 @@ honoring any recalls made during compaction.
 
 `session.compact` returns whether a checkpoint was actually committed. Manual
 compaction uses raw history when it fits the compaction budget and uses
-tool-output elision only as overflow recovery.
+tool-output elision only as overflow recovery. Internal summarization still
+separates the retained suffix and summarizes only the discarded prefix.
 
 ## Events
 
@@ -146,4 +183,9 @@ Compaction produces these event payloads:
 - `internal_agent_started` / `internal_agent_completed` / `internal_agent_failed`
   / `internal_agent_fallback` — the compaction agent invocation
 - `context_checkpoint_committed` — the checkpoint with boundaries and budgets
-- `context_rehydrated` — file contents re-read into the fresh context
+
+`context_rehydrated` (`ContextRehydrated` in Rust) is legacy-only. Saved logs
+containing it remain decodable and renderable, but new compactions never reread
+files or emit this event, including on the native path. See the
+[event reference](../reference/events.md#compaction-checkpoints) for checkpoint
+retention fields and legacy defaults.

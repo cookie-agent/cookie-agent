@@ -2048,163 +2048,6 @@ impl PreparedExecutor for TestMediaReadExecutor {
     }
 }
 
-#[derive(Clone)]
-struct TestRehydrationReadProvider {
-    executed: Arc<TestFlag>,
-    swap_after_prepare: bool,
-}
-
-struct TestRehydrationReadExecutor {
-    executed: Arc<TestFlag>,
-    path: std::path::PathBuf,
-    expected: Option<std::path::PathBuf>,
-}
-
-#[async_trait]
-impl ToolProvider for TestRehydrationReadProvider {
-    fn provider_id(&self) -> &'static str {
-        "test.rehydration_read"
-    }
-
-    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(vec![ToolSpec {
-            concurrency: Default::default(),
-            result_truncation: Default::default(),
-            name: "read".into(),
-            permission_name: "read".into(),
-            description: "Test capability-bound read".into(),
-            parameters: serde_json::json!({
-                "type":"object",
-                "additionalProperties":false,
-                "properties":{"filePath":{"type":"string"}},
-                "required":["filePath"]
-            }),
-        }])
-    }
-
-    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
-        match tool_name {
-            "read" => Ok("read"),
-            _ => Err(ToolError::execution("read provider received another tool")),
-        }
-    }
-
-    fn get_permission_resource(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> Result<(&'static str, Option<String>), ToolError> {
-        let permission_name = Self::get_permission_name(name)?;
-        let resource = arguments
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?;
-        Ok((permission_name, Some(resource)))
-    }
-
-    fn get_display_argument(
-        &self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> Result<String, ToolError> {
-        let (_, resource) = self.get_permission_resource(name, arguments)?;
-        resource.ok_or_else(|| ToolError::execution("read permission resource is missing"))
-    }
-
-    async fn prepare(
-        &self,
-        ctx: ToolPreparationContext,
-        call: ToolCall,
-    ) -> Result<PreparedTool, ToolError> {
-        let display = call
-            .arguments
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?
-            .to_owned();
-        let path = if std::path::Path::new(&display).is_absolute() {
-            std::path::PathBuf::from(&display)
-        } else {
-            ctx.cwd.join(&display)
-        };
-        let expected = std::fs::read_link(&path).ok();
-        if self.swap_after_prepare && expected.is_some() {
-            #[cfg(unix)]
-            {
-                std::fs::remove_file(&path)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                std::os::unix::fs::symlink("denied.txt", &path)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-            }
-            #[cfg(not(unix))]
-            return Err(ToolError::execution(
-                "symlink-swap rehydration fixture is Unix-only",
-            ));
-        }
-        let operation = PreparedOperationIdentity::new(
-            Sha256Digest::of_bytes(display.as_bytes()),
-            vec![ApprovalCapability {
-                action: PermissionAction::Read,
-                operation: PreparedCapabilityOperation::new("read:file")
-                    .map_err(|error| ToolError::execution(error.to_string()))?,
-            }],
-            vec![PreparedApprovalResource {
-                capability: PermissionAction::Read,
-                canonical: PreparedResourceIdentity::new(display.clone())
-                    .map_err(|error| ToolError::execution(error.to_string()))?,
-                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
-                    display.as_bytes(),
-                ),
-                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
-                boundary: ApprovalBoundary::Exact,
-                source: ApprovalResourceSource::PrimaryOperation,
-            }],
-            Sha256Digest::of_bytes(b"rehydration read context"),
-        )
-        .map_err(|error| ToolError::execution(error.to_string()))?;
-        PreparedTool::new(
-            operation,
-            serde_json::json!({"filePath": path}),
-            None,
-            Box::new(TestRehydrationReadExecutor {
-                executed: Arc::clone(&self.executed),
-                path,
-                expected,
-            }),
-        )
-    }
-}
-
-#[async_trait]
-impl PreparedExecutor for TestRehydrationReadExecutor {
-    async fn revalidate(&self) -> Result<(), ToolError> {
-        Ok(())
-    }
-
-    async fn execute(
-        self: Box<Self>,
-        _context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        if self.expected.is_some() && std::fs::read_link(&self.path).ok() != self.expected {
-            return Err(ToolError::operation_changed(
-                "read symlink changed after capability preparation",
-            ));
-        }
-        self.executed.set();
-        let output = std::fs::read_to_string(&self.path)
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        Ok(cookie_agent_protocol::PersistedToolResult {
-            title: cookie_agent_protocol::SafeDisplayText::new("rehydrated read").unwrap(),
-            output,
-            metadata: serde_json::Value::Null,
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        })
-    }
-}
-
 struct TestToolDefinitionProvider;
 
 #[derive(Clone)]
@@ -3720,164 +3563,6 @@ fn try_frozen_root_policy(
         },
         fixture.config.runtime.model_retry,
     )
-}
-
-fn completed_read_events(
-    session: SessionId,
-    run: cookie_agent_protocol::RunId,
-    path: &str,
-) -> Vec<cookie_agent_protocol::StoredEvent> {
-    let model_call_id = cookie_agent_protocol::ModelCallId::new("rehydration-read").unwrap();
-    let tool_call_id = ToolCallId::new_v7();
-    let owner = cookie_agent_protocol::AssistantToolCallRef {
-        model_turn_seq: 1,
-        content_index: 0,
-        model_call_id: model_call_id.clone(),
-        provider_item_id: None,
-    };
-    let envelope = |seq, payload| cookie_agent_protocol::StoredEvent {
-        engine_version: None,
-        origin: None,
-        session_id: session,
-        run_id: Some(run),
-        seq,
-        timestamp: Timestamp::now(),
-        payload,
-    };
-    vec![
-        envelope(
-            1,
-            EventPayload::ModelTurnCommitted {
-                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
-                model_turn_seq: 1,
-                resolved_model: crate::policy::wire_resolved(&crate::test_support::model_binding()),
-                input_through_seq: 1,
-                turn: cookie_agent_protocol::PersistedModelTurn {
-                    content: vec![cookie_agent_protocol::PersistedAssistantPart::ToolCall {
-                        id: model_call_id,
-                        provider_item_id: None,
-                        name: cookie_agent_protocol::SafeCode::new("read").unwrap(),
-                        input: serde_json::json!({"filePath": path}),
-                        raw_input: None,
-                        metadata: None,
-                    }],
-                    provider_options: BTreeMap::new(),
-                    finish_reason: cookie_agent_protocol::ModelFinishReason::ToolCalls,
-                    usage: cookie_agent_protocol::Usage::default(),
-                    response_metadata: BTreeMap::new(),
-                    provider_metadata: BTreeMap::new(),
-                    native_replay: None,
-                },
-                warnings: Vec::new(),
-            },
-        ),
-        envelope(
-            2,
-            EventPayload::ToolCallStarted {
-                start: cookie_agent_protocol::ToolCallStart {
-                    tool_call_id,
-                    owner: owner.clone(),
-                    presentation: cookie_agent_protocol::ToolCallPresentation {
-                        title: cookie_agent_protocol::SafeDisplayText::new("Read").unwrap(),
-                        primary_argument: None,
-                    },
-                    operation_fingerprint: serde_json::from_value(serde_json::json!({
-                        "digest": Sha256Digest::of_bytes(path.as_bytes())
-                    }))
-                    .unwrap(),
-                },
-            },
-        ),
-        envelope(
-            3,
-            EventPayload::ToolCallTerminated {
-                termination: cookie_agent_protocol::ToolCallTermination {
-                    tool_call_id,
-                    owner,
-                    outcome: ToolTerminationOutcome::Completed,
-                    result: Some(cookie_agent_protocol::PersistedToolResult {
-                        title: cookie_agent_protocol::SafeDisplayText::new("Read").unwrap(),
-                        output: "historical output".into(),
-                        metadata: serde_json::Value::Null,
-                        truncation: None,
-                        attachments: Vec::new(),
-                        additional_messages: Vec::new(),
-                    }),
-                    error: None,
-                },
-            },
-        ),
-    ]
-}
-
-#[tokio::test]
-async fn rehydration_skips_reads_denied_by_the_frozen_permission_pipeline() {
-    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
-        "http://127.0.0.1:9/v1",
-        "---\ndescription: Rehydration deny test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n---\nTest denied rehydration.\n",
-    );
-    let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestRehydrationReadProvider {
-            executed: Arc::clone(&executed),
-            swap_after_prepare: false,
-        }));
-    let session = fixture
-        .engine
-        .create_session(selection.clone())
-        .expect("rehydration session");
-    let run = cookie_agent_protocol::RunId::new_v7();
-    let owner = frozen_root_policy(&fixture, &selection);
-    let files = fixture
-        .engine
-        .rehydrated_files_for_test(
-            session.session_id,
-            run,
-            &owner,
-            &completed_read_events(session.session_id, run, "denied.txt"),
-        )
-        .await;
-    assert!(files.is_empty());
-    assert!(!executed.is_set());
-}
-
-// This regression requires replacing a Unix symlink after preparation.
-#[cfg(unix)]
-#[tokio::test]
-async fn rehydration_skips_a_symlink_swapped_after_capability_preparation() {
-    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
-        "http://127.0.0.1:9/v1",
-        "---\ndescription: Rehydration swap test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest swapped rehydration.\n",
-    );
-    fs::write(fixture._directory.path().join("allowed.txt"), "allowed").expect("allowed file");
-    fs::write(fixture._directory.path().join("denied.txt"), "denied").expect("denied file");
-    std::os::unix::fs::symlink("allowed.txt", fixture._directory.path().join("link.txt"))
-        .expect("read symlink");
-    let executed = Arc::new(TestFlag::default());
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestRehydrationReadProvider {
-            executed: Arc::clone(&executed),
-            swap_after_prepare: true,
-        }));
-    let session = fixture
-        .engine
-        .create_session(selection.clone())
-        .expect("rehydration session");
-    let run = cookie_agent_protocol::RunId::new_v7();
-    let owner = frozen_root_policy(&fixture, &selection);
-    let files = fixture
-        .engine
-        .rehydrated_files_for_test(
-            session.session_id,
-            run,
-            &owner,
-            &completed_read_events(session.session_id, run, "link.txt"),
-        )
-        .await;
-    assert!(files.is_empty());
-    assert!(!executed.is_set());
 }
 
 #[test]
@@ -7899,8 +7584,8 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             .expect("projection")
             .log
             .events();
-        let checkpoint = events.iter().find_map(|event| match &event.payload {
-            EventPayload::ContextCheckpointCommitted { commit } => Some(&commit.checkpoint),
+        let commit = events.iter().find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
             _ => None,
         });
         let compaction_events = events
@@ -7909,7 +7594,6 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                 matches!(
                     event.payload,
                     EventPayload::ContextCheckpointCommitted { .. }
-                        | EventPayload::ContextRehydrated { .. }
                         | EventPayload::ToolOutputElided { .. }
                 )
             })
@@ -7936,22 +7620,31 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
         assert_ne!(assembled, full);
         assert!(full.contains("compact this context"));
         assert!(!assembled.contains("compact this context"));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
+        );
+        let commit = commit.expect("compaction checkpoint");
         if fail_native {
             let Some(cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint }) =
-                checkpoint
+                Some(&commit.checkpoint)
             else {
                 panic!("native failure must commit the harness checkpoint");
             };
             assert_eq!(checkpoint.summary(), "fallback summary");
             assert!(assembled.contains("fallback summary"));
         } else {
+            assert_eq!(commit.boundaries.recent_from_seq, None);
+            assert_eq!(commit.budgets.keep_recent_tokens, 0);
             assert!(matches!(
-                checkpoint,
+                Some(&commit.checkpoint),
                 Some(cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. })
             ));
         }
         let requests = captured.await.expect("captured requests");
         assert!(requests[1].starts_with("POST /v1/responses/compact "));
+        assert!(requests[1].contains("compact this context"));
         if fail_native {
             assert!(requests[2].starts_with("POST /v1/responses "));
         }
@@ -8351,7 +8044,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             usize::MAX,
         )
         .await;
-        let (fixture, selection) =
+        let (mut fixture, selection) =
             custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
                 &endpoint,
                 "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
@@ -8366,6 +8059,9 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 context_tokens,
                 None,
             );
+        fixture.engine.shutdown().await;
+        fixture.config.runtime.context_compaction.keep_recent_tokens = 0;
+        fixture.engine = reopen_engine(&fixture);
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -8387,14 +8083,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         let owner_policy = frozen_root_policy(&fixture, &selection);
         let binding = owner_policy.selected_suffix.first().expect("binding");
-        let internal_policy = fixture
-            .engine
-            .internal_agent_policy(
-                InternalAgentKind::ContextCompaction,
-                &owner_policy,
-                Some(binding),
-            )
-            .expect("compaction policy");
         let output = format!(
             "{RAW_MARKER}{}",
             "x".repeat(output_bytes - RAW_MARKER.len())
@@ -8455,6 +8143,8 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 _ => None,
             })
             .expect("compaction checkpoint");
+        assert_eq!(commit.budgets.keep_recent_tokens, 0);
+        assert_eq!(commit.boundaries.recent_from_seq, None);
         assert_eq!(
             events
                 .iter()
@@ -8474,20 +8164,9 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             &owner_policy.agent.composed_prompt,
         )
         .expect("selected compaction context");
-        let mut history = context.history;
-        history[0] = oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
-            oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
-                internal_policy.agent.composed_prompt,
-            )),
-        ]));
-        history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
-            vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
-                crate::runtime::compaction::COMPACTION_INSTRUCTION,
-            ))],
-        )));
         let serialized_bytes =
-            crate::runtime::compaction::serialized_fit_request_bytes(&history, &[])
-                .expect("measure selected compaction request");
+            crate::runtime::compaction::serialized_fit_request_bytes(&context.history, &[])
+                .expect("measure canonical owner request");
         assert_eq!(
             commit.budgets.input_tokens_before,
             (serialized_bytes as u64).div_ceil(4)
@@ -8507,6 +8186,240 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         assert!(!summary_request.contains("input_image"));
         fixture.engine.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_compaction() {
+    const OLD_USER: &str = "OLD_PREFIX_USER";
+    const OLD_ASSISTANT: &str = "OLD_PREFIX_ASSISTANT";
+    const RECENT_USER: &str = "ORIGINAL_RECENT_USER";
+    const RECENT_ASSISTANT: &str = "ORIGINAL_RECENT_ASSISTANT";
+    const NEW_USER: &str = "NEW_POST_CHECKPOINT_USER";
+    const NEW_ASSISTANT: &str = "NEW_POST_CHECKPOINT_ASSISTANT";
+
+    let response = |text: String| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n",
+            serde_json::to_string(&text).expect("response text")
+        )
+    };
+    let oversized_old_assistant = format!("{OLD_ASSISTANT} {}", "old ".repeat(600));
+    let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![
+            response(oversized_old_assistant),
+            response(RECENT_ASSISTANT.into()),
+            response("first checkpoint summary".into()),
+            response(NEW_ASSISTANT.into()),
+            response("second checkpoint summary".into()),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: Recent-tail compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest recent-tail compaction.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            8_192,
+            None,
+        );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.context_compaction.max_summary_bytes = 256;
+    fixture.config.runtime.context_compaction.keep_recent_tokens = 300;
+    fixture.engine = reopen_engine(&fixture);
+
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for (client_run_id, input) in [("old-prefix", OLD_USER), ("recent-tail", RECENT_USER)] {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(client_run_id).unwrap(),
+                    selection: selection.clone(),
+                    input: input.into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+
+    let owner_policy = frozen_root_policy(&fixture, &selection);
+    let binding = owner_policy.selected_suffix.first().unwrap();
+    let before_events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let canonical_before = crate::model_history::assemble_model_context(
+        &before_events,
+        &fixture.engine.inner.artifacts,
+        binding,
+        &owner_policy.agent.composed_prompt,
+    )
+    .unwrap();
+    let expected_before =
+        crate::runtime::compaction::serialized_fit_request_bytes(&canonical_before.history, &[])
+            .unwrap()
+            .div_ceil(4) as u64;
+
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap()
+    );
+    let first_events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let first_commit = first_events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
+            _ => None,
+        })
+        .expect("first checkpoint");
+    assert_eq!(first_commit.budgets.input_tokens_before, expected_before);
+    assert_eq!(first_commit.budgets.keep_recent_tokens, 300);
+    assert!(first_commit.boundaries.recent_from_seq.is_some());
+    assert!(
+        first_events
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
+    );
+
+    let assembled = fixture
+        .engine
+        .get_history(session.session_id, EngineHistoryView::Assembled)
+        .await
+        .unwrap();
+    let assembled = serde_json::to_string(&assembled).unwrap();
+    assert!(assembled.contains("first checkpoint summary"));
+    assert!(assembled.contains(RECENT_USER));
+    assert!(assembled.contains(RECENT_ASSISTANT));
+    assert!(!assembled.contains(OLD_USER));
+    assert!(!assembled.contains(OLD_ASSISTANT));
+
+    let projected_after = crate::model_history::assemble_model_context(
+        &first_events,
+        &fixture.engine.inner.artifacts,
+        binding,
+        &owner_policy.agent.composed_prompt,
+    )
+    .unwrap();
+    let expected_after =
+        crate::runtime::compaction::serialized_fit_request_bytes(&projected_after.history, &[])
+            .unwrap()
+            .div_ceil(4) as u64;
+    assert_eq!(first_commit.budgets.input_tokens_after, expected_after);
+
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("new-after-checkpoint").unwrap(),
+                selection: selection.clone(),
+                input: NEW_USER.into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap()
+    );
+
+    let final_events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert_eq!(
+        final_events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ContextCheckpointCommitted { .. }
+            ))
+            .count(),
+        2
+    );
+    assert!(
+        final_events
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::ContextRehydrated { .. }))
+    );
+    let assembled = fixture
+        .engine
+        .get_history(session.session_id, EngineHistoryView::Assembled)
+        .await
+        .unwrap();
+    let assembled = serde_json::to_string(&assembled).unwrap();
+    for marker in ["second checkpoint summary", NEW_USER, NEW_ASSISTANT] {
+        assert!(
+            assembled.contains(marker),
+            "missing retained marker {marker}"
+        );
+    }
+    for marker in [OLD_USER, OLD_ASSISTANT, RECENT_USER, RECENT_ASSISTANT] {
+        assert!(
+            !assembled.contains(marker),
+            "unexpected compacted marker {marker}"
+        );
+    }
+
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 5);
+    let first_summary_request = &requests[2];
+    assert!(first_summary_request.contains(OLD_USER));
+    assert!(first_summary_request.contains(OLD_ASSISTANT));
+    assert!(!first_summary_request.contains(RECENT_USER));
+    assert!(!first_summary_request.contains(RECENT_ASSISTANT));
+    let owner_replay_request = &requests[3];
+    assert!(owner_replay_request.contains("first checkpoint summary"));
+    assert!(owner_replay_request.contains(RECENT_USER));
+    assert!(owner_replay_request.contains(RECENT_ASSISTANT));
+    assert!(!owner_replay_request.contains(OLD_USER));
+    assert!(!owner_replay_request.contains(OLD_ASSISTANT));
+    let second_summary_request = &requests[4];
+    assert!(second_summary_request.contains("first checkpoint summary"));
+    assert!(second_summary_request.contains(RECENT_USER));
+    assert!(second_summary_request.contains(RECENT_ASSISTANT));
+    assert!(!second_summary_request.contains(NEW_USER));
+    assert!(!second_summary_request.contains(NEW_ASSISTANT));
+    fixture.engine.shutdown().await;
 }
 
 fn reopen_engine(fixture: &Fixture) -> Engine {
@@ -10353,6 +10266,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .engine
         .create_session(selection.clone())
         .expect("steering session");
+    let initial_input = format!("begin {}", "historical context ".repeat(300));
     let run = fixture
         .engine
         .start_run(
@@ -10361,7 +10275,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
                 client_run_id: cookie_agent_protocol::ClientRunId::new("steering-compaction")
                     .expect("run ID"),
                 selection,
-                input: "begin".into(),
+                input: initial_input.clone(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -10456,7 +10370,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     }));
     assert!(!before_boundary.iter().any(|event| matches!(
         &event.payload,
-        EventPayload::UserInputSubmitted { input } if input != "begin"
+        EventPayload::UserInputSubmitted { input } if input != &initial_input
     )));
     approve_once(&fixture.engine, &approval, "steering-race-approval").await;
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
@@ -10518,7 +10432,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     let submitted = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::UserInputSubmitted { input } if input != "begin" => {
+            EventPayload::UserInputSubmitted { input } if input != &initial_input => {
                 Some((event.seq, input.as_str(), event.origin.as_ref()))
             }
             _ => None,
@@ -11083,6 +10997,10 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         .engine
         .create_session(selection.clone())
         .expect("steering race session");
+    let prime_input = format!(
+        "prime predictor {}",
+        "compressible historical context ".repeat(300)
+    );
     fixture
         .engine
         .start_run(
@@ -11090,7 +11008,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
                 selection: selection.clone(),
-                input: "prime predictor".into(),
+                input: prime_input,
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
@@ -12565,6 +12483,23 @@ enum AnthropicReplayResponse {
     Thinking(Option<&'static str>),
     Status400,
     Text(&'static str),
+    TextWithInputTokens(&'static str, u64),
+    RejectUnsignedThinkingElseText(&'static str),
+}
+
+fn anthropic_request_has_unsigned_thinking(request: &str) -> bool {
+    request_body(request)["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .any(|block| {
+            block["type"] == "thinking"
+                && block
+                    .get("signature")
+                    .is_none_or(|signature| signature.as_str() == Some(""))
+        })
 }
 
 async fn anthropic_replay_server(
@@ -12580,11 +12515,15 @@ async fn anthropic_replay_server(
         let mut requests = Vec::new();
         for response in responses {
             let (mut socket, _) = listener.accept().await.expect("Anthropic replay accept");
-            requests.push(
-                String::from_utf8(read_scripted_http_request(&mut socket).await)
-                    .expect("UTF-8 Anthropic replay request"),
-            );
-            if matches!(response, AnthropicReplayResponse::Status400) {
+            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
+                .expect("UTF-8 Anthropic replay request");
+            let reject = matches!(response, AnthropicReplayResponse::Status400)
+                || matches!(
+                    response,
+                    AnthropicReplayResponse::RejectUnsignedThinkingElseText(_)
+                ) && anthropic_request_has_unsigned_thinking(&request);
+            requests.push(request);
+            if reject {
                 let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid signature"}}"#;
                 let wire = format!(
                     "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -12599,7 +12538,13 @@ async fn anthropic_replay_server(
                     AnthropicReplayResponse::Thinking(signature) => {
                         anthropic_thinking_body(signature)
                     }
-                    AnthropicReplayResponse::Text(text) => anthropic_usage_body(text, 1, 0, 0),
+                    AnthropicReplayResponse::Text(text)
+                    | AnthropicReplayResponse::RejectUnsignedThinkingElseText(text) => {
+                        anthropic_usage_body(text, 1, 0, 0)
+                    }
+                    AnthropicReplayResponse::TextWithInputTokens(text, input_tokens) => {
+                        anthropic_usage_body(text, input_tokens, 0, 0)
+                    }
                     AnthropicReplayResponse::Status400 => unreachable!(),
                 };
                 write_scripted_sse(&mut socket, &body).await;
@@ -12860,6 +12805,155 @@ async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_40
             ..
         }
     )));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn compaction_prefix_honors_replay_rejection_metadata_after_recent_tail_boundary() {
+    const OLD_PREFIX: &str = "UNSIGNED_REPLAY_OLD_PREFIX";
+    const RECENT_TAIL: &str = "UNSIGNED_REPLAY_RECENT_TAIL";
+
+    let (endpoint, captured) = anthropic_replay_server(vec![
+        AnthropicReplayResponse::Thinking(None),
+        AnthropicReplayResponse::Status400,
+        AnthropicReplayResponse::TextWithInputTokens("recovered answer", 5_000),
+        AnthropicReplayResponse::RejectUnsignedThinkingElseText("checkpoint summary"),
+    ])
+    .await;
+    let primary = "---\ndescription: Replay compaction regression\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest replay compaction.\n";
+    let capabilities =
+        ANTHROPIC_REPLAY_CAPABILITIES.replace("context_tokens = 4096", "context_tokens = 8192");
+    let (mut fixture, selection) = custom_fixture_with_capabilities(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        8_192,
+        None,
+        "anthropic-compatible",
+        Some(&capabilities),
+    );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.context_compaction.max_summary_bytes = 256;
+    fixture.config.runtime.context_compaction.keep_recent_tokens = 300;
+    fixture.engine = reopen_engine(&fixture);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("unsigned-compaction-seed").unwrap(),
+                selection: selection.clone(),
+                input: format!("{OLD_PREFIX} {}", "old context ".repeat(1_500)),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    run_replay_test_turn(&fixture, session.session_id, &selection, RECENT_TAIL).await;
+
+    let before = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let recent_seq = before
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::UserInputSubmitted { input } if input == RECENT_TAIL => Some(event.seq),
+            _ => None,
+        })
+        .expect("recent-tail user event");
+    let rejected_seq = before
+        .iter()
+        .find_map(|event| {
+            match &event.payload {
+                EventPayload::ModelReplayEvaluated {
+                    ordered_decisions, ..
+                } if ordered_decisions.iter().any(|decision| matches!(
+                    &decision.disposition,
+                    cookie_agent_protocol::ReplayDisposition::DiscardedInvalidPayload { reason }
+                        if reason.as_str().starts_with("rejected unsigned Anthropic replay artifact ")
+                )) => Some(event.seq),
+                _ => None,
+            }
+        })
+        .expect("unsigned replay rejection metadata");
+    let abandoned_seq = before
+        .iter()
+        .find_map(|event| {
+            matches!(event.payload, EventPayload::AttemptAbandoned { .. }).then_some(event.seq)
+        })
+        .expect("abandoned rejected attempt");
+    assert!(recent_seq < rejected_seq && rejected_seq < abandoned_seq);
+    assert!(
+        crate::model_history::compaction_tail_candidates(&before).contains(&recent_seq),
+        "subsequent user must be an eligible recent-tail boundary"
+    );
+
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .expect("manual compaction")
+    );
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let commit = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
+            _ => None,
+        })
+        .expect("compaction checkpoint");
+    assert_eq!(
+        commit.boundaries.recent_from_seq,
+        Some(recent_seq),
+        "unexpected compaction commit: {commit:?}"
+    );
+
+    let requests = captured.await.expect("unsigned replay compaction requests");
+    assert_eq!(requests.len(), 4);
+    let rejected_artifact = request_body(&requests[1])["messages"][1]["content"][0].clone();
+    assert_eq!(
+        rejected_artifact,
+        serde_json::json!({"type":"thinking","thinking":"reason","signature":""})
+    );
+    let summary_request = requests.last().expect("internal summary request");
+    let summary_body = request_body(summary_request);
+    assert!(
+        !summary_body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .any(|block| block == &rejected_artifact),
+        "internal summary request replayed the known rejected artifact"
+    );
+    assert!(summary_request.contains(OLD_PREFIX));
+    assert!(!summary_request.contains(RECENT_TAIL));
+    assert!(!anthropic_request_has_unsigned_thinking(summary_request));
     fixture.engine.shutdown().await;
 }
 
@@ -18900,7 +18994,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
 }
 
 #[test]
-fn test_providers_expose_permission_resources() {
+fn test_write_provider_exposes_permission_resources() {
     let write = TestWriteProvider {
         executed: Arc::new(TestFlag::default()),
     };
@@ -18910,29 +19004,11 @@ fn test_providers_expose_permission_resources() {
             .expect("write resource"),
         ("write", Some("approval-test.txt".into()))
     );
-    let read = TestRehydrationReadProvider {
-        executed: Arc::new(TestFlag::default()),
-        swap_after_prepare: false,
-    };
-    assert_eq!(
-        read.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
-            .expect("read resource"),
-        ("read", Some("src/lib.rs".into()))
-    );
-    assert!(
-        read.get_permission_resource("read", &serde_json::json!({}))
-            .is_err()
-    );
     assert_eq!(
         write
             .get_display_argument("write", &serde_json::json!({}))
             .expect("write display"),
         "approval-test.txt"
-    );
-    assert_eq!(
-        read.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
-            .expect("read display"),
-        "src/lib.rs"
     );
 }
 

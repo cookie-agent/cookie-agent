@@ -951,6 +951,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 1,
             source_through_seq: 2,
+            recent_from_seq: Some(2),
             input_through_seq: 2,
             prior_checkpoint_seq: None,
         },
@@ -959,6 +960,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
             trigger_tokens: 70,
             input_tokens_before: 60,
             input_tokens_after: 2,
+            keep_recent_tokens: 20,
             max_summary_bytes: SummaryByteLimit::new(1024).unwrap(),
         },
     };
@@ -969,6 +971,107 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
         commit.validate(),
         Err(EventSchemaError::InvalidCheckpointBoundaries)
     );
+}
+
+#[test]
+fn checkpoint_recent_tail_defaults_for_old_events_and_stays_within_source() {
+    let checkpoint = InternalSummaryCheckpoint::new(
+        "summary".into(),
+        InternalAgentInvocationId::new_v7(),
+        InternalAgentRunId::new_v7(),
+        SummaryByteLimit::new(1024).unwrap(),
+    )
+    .unwrap();
+    let commit = ContextCheckpointCommit {
+        checkpoint: ContextCheckpoint::InternalSummary { checkpoint },
+        boundaries: ContextCheckpointBoundaries {
+            source_from_seq: 2,
+            source_through_seq: 4,
+            recent_from_seq: Some(3),
+            input_through_seq: 4,
+            prior_checkpoint_seq: None,
+        },
+        budgets: ContextCheckpointBudgets {
+            context_limit_tokens: 100,
+            trigger_tokens: 70,
+            input_tokens_before: 60,
+            input_tokens_after: 20,
+            keep_recent_tokens: 10,
+            max_summary_bytes: SummaryByteLimit::new(1024).unwrap(),
+        },
+    };
+
+    let mut old = serde_json::to_value(&commit).unwrap();
+    old["boundaries"]
+        .as_object_mut()
+        .unwrap()
+        .remove("recent_from_seq");
+    old["budgets"]
+        .as_object_mut()
+        .unwrap()
+        .remove("keep_recent_tokens");
+    let decoded: ContextCheckpointCommit = serde_json::from_value(old).unwrap();
+    assert_eq!(decoded.boundaries.recent_from_seq, None);
+    assert_eq!(decoded.budgets.keep_recent_tokens, 0);
+
+    for recent_from_seq in [Some(2), Some(4), None] {
+        let mut candidate = commit.clone();
+        candidate.boundaries.recent_from_seq = recent_from_seq;
+        assert!(candidate.validate().is_ok());
+    }
+    for recent_from_seq in [Some(1), Some(5)] {
+        let mut candidate = commit.clone();
+        candidate.boundaries.recent_from_seq = recent_from_seq;
+        assert_eq!(
+            candidate.validate(),
+            Err(EventSchemaError::InvalidCheckpointBoundaries)
+        );
+    }
+}
+
+#[test]
+fn native_checkpoint_rejects_recent_tail_boundary_and_budget() {
+    let window = NativeContextWindow::new(
+        SafeCode::new("openai-responses").unwrap(),
+        Sha256Digest::of_bytes(b"selection"),
+        NativeContextScope {
+            provider_id: ProviderId::new("openai").unwrap(),
+            model_id: ProviderModelId::new("gpt-5").unwrap(),
+            resource_id: SafeDisplayText::new("response-1").unwrap(),
+        },
+        json!({"id": "response-1"}),
+    )
+    .unwrap();
+    let mut commit = ContextCheckpointCommit {
+        checkpoint: ContextCheckpoint::NativeWindow { window },
+        boundaries: ContextCheckpointBoundaries {
+            source_from_seq: 1,
+            source_through_seq: 2,
+            recent_from_seq: Some(2),
+            input_through_seq: 2,
+            prior_checkpoint_seq: None,
+        },
+        budgets: ContextCheckpointBudgets {
+            context_limit_tokens: 100,
+            trigger_tokens: 70,
+            input_tokens_before: 60,
+            input_tokens_after: 20,
+            keep_recent_tokens: 10,
+            max_summary_bytes: SummaryByteLimit::new(1024).unwrap(),
+        },
+    };
+
+    assert_eq!(
+        commit.validate(),
+        Err(EventSchemaError::InvalidCheckpointBoundaries)
+    );
+    commit.boundaries.recent_from_seq = None;
+    assert_eq!(
+        commit.validate(),
+        Err(EventSchemaError::InvalidCheckpointBoundaries)
+    );
+    commit.budgets.keep_recent_tokens = 0;
+    assert!(commit.validate().is_ok());
 }
 
 #[test]

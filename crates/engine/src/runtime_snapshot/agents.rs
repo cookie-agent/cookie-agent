@@ -199,7 +199,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
             AgentLimits {
                 timeout_ms: 30_000,
-                max_output_tokens: 2_048,
+                max_output_tokens: 4_096,
             },
         ),
         (
@@ -439,10 +439,10 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{ResolvedAgent, delegation_targets, fingerprint};
+    use super::{ResolvedAgent, built_in_internal_documents, delegation_targets, fingerprint};
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
-        AgentModelFallback, AgentModelRef,
+        AgentModelFallback, AgentModelRef, BUILT_IN_COMPACTION_AGENT_ID,
     };
     use cookie_agent_identity::AgentId as IdentityAgentId;
 
@@ -465,6 +465,25 @@ mod tests {
             delegation_targets(&permissions, &known),
             [cookie_agent_protocol::AgentId::new("reviewer").unwrap()]
         );
+    }
+
+    #[test]
+    fn built_in_compaction_output_limit_does_not_change_authored_internal_default() {
+        let authored: AgentFrontmatter = serde_json::from_value(serde_json::json!({
+            "description": "Authored internal",
+            "mode": "internal",
+            "enabled": true,
+            "models": [{ "model": "${parent_model}" }]
+        }))
+        .expect("authored internal frontmatter");
+        assert_eq!(authored.limits.max_output_tokens, 2_048);
+
+        let documents = built_in_internal_documents().expect("built-in internal documents");
+        let compaction = documents
+            .values()
+            .find(|document| document.id.as_str() == BUILT_IN_COMPACTION_AGENT_ID)
+            .expect("built-in compaction document");
+        assert_eq!(compaction.frontmatter.limits.max_output_tokens, 4_096);
     }
 
     fn test_agent(id: &str, mode: AgentMode, enabled: bool) -> ResolvedAgent {

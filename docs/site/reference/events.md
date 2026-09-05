@@ -59,7 +59,7 @@ origin class. This keeps the origin grammar restricted to `user`, `engine`,
 | Delegation durability | `delegation_reserved`, `delegation_started`, `delegation_run_started`, `delegation_run_attached`, `delegation_finished` |
 | Approvals | `approval_requested`, `approval_evaluated`, `approval_escalated`, `approval_user_decision_recorded`, `approval_finalized`, `approval_cancelled`, `approval_doom_loop_detected`, `tree_approval_grant_committed` |
 | Internal agents | `internal_agent_started`, `internal_agent_usage_recorded`, `internal_agent_completed`, `internal_agent_failed`, `internal_agent_cancelled`, `internal_agent_interrupted`, `internal_agent_fallback` |
-| Compaction | `context_checkpoint_committed`, `context_rehydrated` |
+| Compaction | `context_checkpoint_committed`; legacy read/render only: `context_rehydrated` |
 
 `agent_md_loaded` is a run-scoped root-session event stamped
 `engine:agent-md`. It contains one or two discovered `AGENTS.md` entries,
@@ -191,6 +191,35 @@ Running-resume rollback appends `user_input_recalled_v2` with the exact
 `user_input_seq` of its admission. Replay removes that specific pending input
 and preserves direct steers admitted after it. Legacy `user_input_recalled`
 continues to recall the newest pending input.
+
+## Compaction checkpoints
+
+`context_checkpoint_committed` carries a `commit` containing the text summary or
+opaque native checkpoint, `boundaries`, and `budgets`. Internal summaries cover
+only the discarded history prefix; retained recent messages are replayed from
+the original saved history after the summary. System and tool context comes
+first, followed by pinned `AGENTS.md`, loaded skills, the summary, and the recent
+suffix. See [Compaction](../guide/compaction.md) for selection and fit rules.
+
+The additive retention fields are optional in saved events:
+
+| Field within `commit` | Type | Legacy absent value | Meaning |
+|---|---|---|---|
+| `boundaries.recent_from_seq` | optional `u64` | `None` | Inclusive starting sequence of the retained original-message suffix. No value means no retained suffix. |
+| `budgets.keep_recent_tokens` | `u64` | `0` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
+
+The effective budget is at most `min(configured keep_recent_tokens,
+context_limit / 4)` and is further limited by actual post-checkpoint available
+space. Complete tool-call/result groups can leave the retained suffix smaller
+than that budget; an oversized newest indivisible group yields no tail rather
+than exceeding the budget. An absent legacy retention boundary does not cause
+the reader to infer a suffix from current configuration.
+
+Native compacted windows retain their existing replay behavior, with no
+independently appended recent-message suffix. Neither checkpoint path triggers
+new file rereads or emits `context_rehydrated`. That legacy payload
+(`ContextRehydrated` in Rust) remains decodable and renderable for saved logs;
+its persisted contents do not require a new filesystem read.
 
 ## Subscriptions
 

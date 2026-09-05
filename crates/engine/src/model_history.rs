@@ -44,14 +44,13 @@ pub(crate) fn checkpoint_retained_history(
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
         .count();
     let pinned_agent_md = usize::from(latest_agent_md_event(events).is_some());
+    let pinned_count = pinned_agent_md.saturating_add(pinned_skills);
     let mut history = history.iter();
     let mut retained = history.next().cloned().into_iter().collect::<Vec<_>>();
-    if history.clone().next().is_some_and(is_framed_summary_turn) {
-        history.next();
-    }
     retained.extend(
         history
-            .take(pinned_agent_md.saturating_add(pinned_skills))
+            .filter(|turn| !is_framed_summary_turn(turn))
+            .take(pinned_count)
             .cloned(),
     );
     if let Some(summary) = summary {
@@ -416,6 +415,355 @@ pub(crate) struct ModelContext {
     pub(crate) replay_decisions: Vec<ReplayDecision>,
 }
 
+fn latest_checkpoint(
+    events: &[StoredEvent],
+) -> Option<&cookie_agent_protocol::ContextCheckpointCommit> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
+        _ => None,
+    })
+}
+
+fn is_pinned_event(
+    event: &StoredEvent,
+    latest_agent_md_seq: Option<u64>,
+    through_seq: u64,
+) -> bool {
+    event.seq <= through_seq
+        && (matches!(event.payload, EventPayload::SkillLoaded { .. })
+            || latest_agent_md_seq == Some(event.seq))
+}
+
+fn selected_checkpoint_events(
+    events: &[StoredEvent],
+    source_through_seq: u64,
+    recent_from_seq: Option<u64>,
+    close_dependencies: bool,
+) -> Vec<StoredEvent> {
+    let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
+    let mut selected = events
+        .iter()
+        .filter(|event| {
+            is_pinned_event(event, latest_agent_md_seq, source_through_seq)
+                || recent_from_seq
+                    .is_some_and(|from| (from..=source_through_seq).contains(&event.seq))
+                || event.seq > source_through_seq
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if close_dependencies {
+        close_event_dependencies(events, &mut selected);
+    }
+    selected.sort_by_key(|event| event.seq);
+    selected.dedup_by_key(|event| event.seq);
+    selected
+}
+
+fn close_event_dependencies(events: &[StoredEvent], selected: &mut Vec<StoredEvent>) {
+    // Applied inputs and late tool completions can refer to events before the retained range.
+    loop {
+        let selected_seqs = selected
+            .iter()
+            .map(|event| event.seq)
+            .collect::<HashSet<_>>();
+        let mut required_seqs = HashSet::new();
+        for event in selected.iter() {
+            match &event.payload {
+                EventPayload::UserInputApplied { user_input_seq } => {
+                    required_seqs.insert(*user_input_seq);
+                }
+                EventPayload::ToolCallStarted { start } => {
+                    if let Some(commit) = events.iter().rev().find(|candidate| {
+                        candidate.seq <= event.seq
+                            && candidate.run_id == event.run_id
+                            && matches!(&candidate.payload,
+                                EventPayload::ModelTurnCommitted { model_turn_seq, turn, .. }
+                                    if *model_turn_seq == start.owner.model_turn_seq
+                                        && turn.content.iter().any(|part| matches!(part,
+                                            PersistedAssistantPart::ToolCall { id, .. }
+                                                if id == &start.owner.model_call_id)))
+                    }) {
+                        required_seqs.insert(commit.seq);
+                    }
+                }
+                EventPayload::ToolCallTerminated { termination } => {
+                    if let Some(start) = events.iter().rev().find(|candidate| {
+                        candidate.seq <= event.seq
+                            && candidate.run_id == event.run_id
+                            && matches!(&candidate.payload,
+                                EventPayload::ToolCallStarted { start }
+                                    if start.tool_call_id == termination.tool_call_id)
+                    }) {
+                        required_seqs.insert(start.seq);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let additions = events
+            .iter()
+            .filter(|event| {
+                required_seqs.contains(&event.seq) && !selected_seqs.contains(&event.seq)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if additions.is_empty() {
+            break;
+        }
+        selected.extend(additions);
+    }
+}
+
+fn pinned_history_len(events: &[StoredEvent]) -> usize {
+    usize::from(latest_agent_md_event(events).is_some())
+        + events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
+            .count()
+}
+
+fn insert_summary(assembled: &mut AssembledHistory, events: &[StoredEvent], summary: &str) {
+    let history_index = 1 + pinned_history_len(events);
+    assembled.history.insert(
+        history_index,
+        HistoryTurn::user(user_text(&framed_compaction_summary(summary))),
+    );
+    for decision in &mut assembled.replay_decisions {
+        if decision.history_index >= history_index as u64 {
+            decision.history_index += 1;
+        }
+    }
+}
+
+pub(crate) fn project_summary_context(
+    events: &[StoredEvent],
+    store: &ArtifactStore,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+    source_through_seq: u64,
+    recent_from_seq: Option<u64>,
+    summary: &str,
+) -> Result<ModelContext, HistoryError> {
+    let selected = selected_checkpoint_events(events, source_through_seq, recent_from_seq, true);
+    let mut assembled =
+        assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
+    insert_summary(&mut assembled, events, summary);
+    Ok(ModelContext {
+        history: assembled.history,
+        native_context: None,
+        replay_decisions: assembled.replay_decisions,
+    })
+}
+
+pub(crate) fn compaction_prefix_history(
+    events: &[StoredEvent],
+    store: &ArtifactStore,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+    recent_from_seq: Option<u64>,
+) -> Result<Vec<HistoryTurn>, HistoryError> {
+    let Some(recent_from_seq) = recent_from_seq else {
+        return Ok(assemble_model_context(events, store, binding, composed_prompt)?.history);
+    };
+    let (mut visible, prior_summary) = if let Some(commit) = latest_checkpoint(events) {
+        let retained_from = match commit.checkpoint {
+            ContextCheckpoint::InternalSummary { .. } => commit.boundaries.recent_from_seq,
+            ContextCheckpoint::NativeWindow { .. } => None,
+        };
+        let summary = match &commit.checkpoint {
+            ContextCheckpoint::InternalSummary { checkpoint } => Some(checkpoint.summary()),
+            ContextCheckpoint::NativeWindow { .. } => None,
+        };
+        (
+            selected_checkpoint_events(
+                events,
+                commit.boundaries.source_through_seq,
+                retained_from,
+                true,
+            ),
+            summary,
+        )
+    } else {
+        (events.to_vec(), None)
+    };
+    let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
+    visible.retain(|event| {
+        event.seq < recent_from_seq || is_pinned_event(event, latest_agent_md_seq, u64::MAX)
+    });
+    close_event_dependencies(events, &mut visible);
+    visible.sort_by_key(|event| event.seq);
+    visible.dedup_by_key(|event| event.seq);
+    let mut assembled =
+        assemble_history_with_replay(&visible, events, store, binding, composed_prompt)?;
+    if let Some(summary) = prior_summary {
+        insert_summary(&mut assembled, events, summary);
+    }
+    Ok(assembled.history)
+}
+
+pub(crate) fn compaction_tail_candidates(events: &[StoredEvent]) -> Vec<u64> {
+    #[derive(Default)]
+    struct Group {
+        start: u64,
+        end: u64,
+        unresolved_calls: usize,
+    }
+
+    let visible = if let Some(commit) = latest_checkpoint(events) {
+        let recent_from = match &commit.checkpoint {
+            ContextCheckpoint::InternalSummary { .. } => commit.boundaries.recent_from_seq,
+            ContextCheckpoint::NativeWindow { .. } => None,
+        };
+        selected_checkpoint_events(
+            events,
+            commit.boundaries.source_through_seq,
+            recent_from,
+            true,
+        )
+    } else {
+        events.to_vec()
+    };
+    let visible_seqs = visible
+        .iter()
+        .map(|event| event.seq)
+        .collect::<HashSet<_>>();
+    let submitted = events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::UserInputSubmitted { .. } => Some(event.seq),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut groups = Vec::<Group>::new();
+    let mut pending = HashMap::<
+        (
+            cookie_agent_protocol::RunId,
+            cookie_agent_protocol::ModelCallId,
+        ),
+        VecDeque<usize>,
+    >::new();
+    let mut started = HashMap::<(cookie_agent_protocol::RunId, ToolCallId), usize>::new();
+    let mut terminated = HashSet::new();
+
+    for event in &visible {
+        match &event.payload {
+            EventPayload::UserInputApplied { user_input_seq }
+                if submitted.contains(user_input_seq) =>
+            {
+                groups.push(Group {
+                    start: *user_input_seq,
+                    end: event.seq,
+                    ..Group::default()
+                });
+            }
+            EventPayload::MessageInjected { role, .. }
+                if *role != cookie_agent_protocol::ExtensionMessageRole::Tool =>
+            {
+                groups.push(Group {
+                    start: event.seq,
+                    end: event.seq,
+                    ..Group::default()
+                });
+            }
+            EventPayload::DelegatedContextSeeded { turns, .. } if !turns.is_empty() => {
+                groups.push(Group {
+                    start: event.seq,
+                    end: event.seq,
+                    ..Group::default()
+                });
+            }
+            EventPayload::ModelTurnCommitted { turn, .. } => {
+                let in_stream_results = turn
+                    .content
+                    .iter()
+                    .filter_map(|part| match part {
+                        PersistedAssistantPart::ToolResult { tool_call_id, .. } => {
+                            Some(tool_call_id.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect::<HashSet<_>>();
+                let index = groups.len();
+                let mut unresolved_calls = 0;
+                if let Some(run_id) = event.run_id {
+                    for id in turn.content.iter().filter_map(|part| match part {
+                        PersistedAssistantPart::ToolCall { id, .. }
+                            if !in_stream_results.contains(id.as_str()) =>
+                        {
+                            Some(id)
+                        }
+                        _ => None,
+                    }) {
+                        unresolved_calls += 1;
+                        pending
+                            .entry((run_id, id.clone()))
+                            .or_default()
+                            .push_back(index);
+                    }
+                }
+                groups.push(Group {
+                    start: event.seq,
+                    end: event.seq,
+                    unresolved_calls,
+                });
+            }
+            EventPayload::ToolCallStarted { start } => {
+                let Some(run_id) = event.run_id else { continue };
+                if let Some(index) = pending
+                    .get_mut(&(run_id, start.owner.model_call_id.clone()))
+                    .and_then(VecDeque::pop_front)
+                {
+                    started.insert((run_id, start.tool_call_id), index);
+                }
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                let Some(run_id) = event.run_id else { continue };
+                if terminated.insert((run_id, termination.tool_call_id))
+                    && let Some(index) = started.get(&(run_id, termination.tool_call_id))
+                {
+                    groups[*index].unresolved_calls =
+                        groups[*index].unresolved_calls.saturating_sub(1);
+                    groups[*index].end = groups[*index].end.max(event.seq);
+                }
+            }
+            EventPayload::ContextRehydrated { .. }
+            | EventPayload::PluginEventAdded { .. }
+            | EventPayload::DelegateFinished { .. }
+            | EventPayload::DelegateFinishedV2 { .. } => groups.push(Group {
+                start: event.seq,
+                end: event.seq,
+                ..Group::default()
+            }),
+            _ => {}
+        }
+    }
+
+    groups.sort_by_key(|group| group.start);
+    groups.dedup_by_key(|group| group.start);
+    let unresolved_from = groups
+        .iter()
+        .filter(|group| group.unresolved_calls != 0)
+        .map(|group| group.start)
+        .min();
+    let spans = groups
+        .iter()
+        .filter(|group| group.end > group.start)
+        .map(|group| (group.start, group.end))
+        .collect::<Vec<_>>();
+    groups
+        .into_iter()
+        .skip(1)
+        .filter(|group| unresolved_from.is_none_or(|start| group.start <= start))
+        .filter(|group| {
+            !spans
+                .iter()
+                .any(|(start, end)| *start < group.start && group.start <= *end)
+        })
+        .filter(|group| visible_seqs.contains(&group.start))
+        .map(|group| group.start)
+        .collect()
+}
+
 struct AssembledHistory {
     history: Vec<HistoryTurn>,
     replay_decisions: Vec<ReplayDecision>,
@@ -427,61 +775,38 @@ pub(crate) fn assemble_model_context(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<ModelContext, HistoryError> {
-    let checkpoint = events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
-        _ => None,
-    });
+    let checkpoint = latest_checkpoint(events);
     let Some(commit) = checkpoint else {
-        let assembled = assemble_history_with_replay(events, store, binding, composed_prompt)?;
+        let assembled =
+            assemble_history_with_replay(events, events, store, binding, composed_prompt)?;
         return Ok(ModelContext {
             history: assembled.history,
             native_context: None,
             replay_decisions: assembled.replay_decisions,
         });
     };
-    let mut after = events
-        .iter()
-        .filter(|event| event.seq > commit.boundaries.source_through_seq)
-        .cloned()
-        .collect::<Vec<_>>();
-    let agent_md_seq = latest_agent_md_event(events)
-        .filter(|event| event.seq <= commit.boundaries.source_through_seq)
-        .map(|event| event.seq);
-    let mut pinned_context = events
-        .iter()
-        .filter(|event| {
-            event.seq <= commit.boundaries.source_through_seq
-                && (matches!(event.payload, EventPayload::SkillLoaded { .. })
-                    || agent_md_seq == Some(event.seq))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    pinned_context.append(&mut after);
-    let after = pinned_context;
     match &commit.checkpoint {
-        ContextCheckpoint::InternalSummary { checkpoint } => {
-            let mut assembled =
-                assemble_history_with_replay(&after, store, binding, composed_prompt)?;
-            assembled.history.insert(
-                1,
-                HistoryTurn::user(user_text(&framed_compaction_summary(checkpoint.summary()))),
-            );
-            for decision in &mut assembled.replay_decisions {
-                if decision.history_index >= 1 {
-                    decision.history_index += 1;
-                }
-            }
-            Ok(ModelContext {
-                history: assembled.history,
-                native_context: None,
-                replay_decisions: assembled.replay_decisions,
-            })
-        }
+        ContextCheckpoint::InternalSummary { checkpoint } => project_summary_context(
+            events,
+            store,
+            binding,
+            composed_prompt,
+            commit.boundaries.source_through_seq,
+            commit.boundaries.recent_from_seq,
+            checkpoint.summary(),
+        ),
         ContextCheckpoint::NativeWindow { window } => {
             commit
                 .validate_for_binding(binding)
                 .map_err(|error| HistoryError::Corrupt(error.to_string()))?;
-            let assembled = assemble_history_with_replay(&after, store, binding, composed_prompt)?;
+            let selected = selected_checkpoint_events(
+                events,
+                commit.boundaries.source_through_seq,
+                None,
+                false,
+            );
+            let assembled =
+                assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
             Ok(ModelContext {
                 history: assembled.history,
                 native_context: Some(restore_native_context(window)?),
@@ -497,24 +822,27 @@ pub(crate) fn assemble_full_history(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
-    Ok(assemble_history_with_replay(events, store, binding, composed_prompt)?.history)
+    Ok(assemble_history_with_replay(events, events, store, binding, composed_prompt)?.history)
 }
 
+// Message selection must not roll back session-wide replay decisions or pinned context.
+// context_events is the full visible snapshot, before checkpoint or summary-prefix filtering.
 fn assemble_history_with_replay(
     events: &[StoredEvent],
+    context_events: &[StoredEvent],
     store: &ArtifactStore,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
-    let rejected_unsigned_replays = rejected_unsigned_replay_fingerprints(events);
-    let loaded_skills = events
+    let rejected_unsigned_replays = rejected_unsigned_replay_fingerprints(context_events);
+    let loaded_skills = context_events
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::SkillLoaded { rendered_body, .. } => Some(rendered_body.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
-    let loaded_agent_md = latest_agent_md_event(events).and_then(|event| {
+    let loaded_agent_md = latest_agent_md_event(context_events).and_then(|event| {
         let EventPayload::AgentMdLoaded { entries } = &event.payload else {
             return None;
         };
@@ -531,7 +859,7 @@ fn assemble_history_with_replay(
     >::new();
     let mut engine_calls =
         HashMap::<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>::new();
-    let elisions = events
+    let elisions = context_events
         .iter()
         .filter_map(|event| match &event.payload {
             EventPayload::ToolOutputElided {
@@ -1713,9 +2041,10 @@ mod tests {
     use super::{
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
         assemble_full_history, assemble_model_context, checkpoint_retained_history,
-        framed_compaction_summary, oven_native_replay_fingerprint,
-        persisted_native_replay_fingerprint, replay_decisions, replay_decisions_with_preflight,
-        restore_replay, tool_output_elision_marker, tool_result_part, wire_model,
+        compaction_prefix_history, compaction_tail_candidates, framed_compaction_summary,
+        oven_native_replay_fingerprint, persisted_native_replay_fingerprint,
+        project_summary_context, replay_decisions, replay_decisions_with_preflight, restore_replay,
+        tool_output_elision_marker, tool_result_part, wire_model,
     };
 
     #[test]
@@ -1846,10 +2175,10 @@ mod tests {
             HistoryTurn::system(SystemMessage::new(vec![SystemPart::Text(TextPart::new(
                 "system",
             ))])),
+            HistoryTurn::user(super::user_text("pinned AGENTS.md context")),
             HistoryTurn::user(super::user_text(&framed_compaction_summary(
                 "stale summary",
             ))),
-            HistoryTurn::user(super::user_text("pinned AGENTS.md context")),
             HistoryTurn::user(super::user_text("first pinned body")),
             HistoryTurn::user(super::user_text("second pinned body")),
             HistoryTurn::user(super::user_text("discarded conversation")),
@@ -1967,6 +2296,61 @@ mod tests {
             seq,
             timestamp: jiff::Timestamp::new(seq as i64, 0).expect("timestamp"),
             payload,
+        }
+    }
+
+    fn user_events(seq: u64, run: RunId, input: &str) -> [StoredEvent; 2] {
+        [
+            event(
+                seq,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: input.into(),
+                },
+            ),
+            event(
+                seq + 1,
+                run,
+                EventPayload::UserInputApplied {
+                    user_input_seq: seq,
+                },
+            ),
+        ]
+    }
+
+    fn summary_commit(
+        summary: &str,
+        source_from_seq: u64,
+        source_through_seq: u64,
+        recent_from_seq: Option<u64>,
+        prior_checkpoint_seq: Option<u64>,
+    ) -> ContextCheckpointCommit {
+        let max_summary_bytes = SummaryByteLimit::new(1024).expect("limit");
+        ContextCheckpointCommit {
+            checkpoint: ContextCheckpoint::InternalSummary {
+                checkpoint: InternalSummaryCheckpoint::new(
+                    summary.into(),
+                    InternalAgentInvocationId::new_v7(),
+                    InternalAgentRunId::new_v7(),
+                    max_summary_bytes,
+                )
+                .expect("checkpoint"),
+            },
+            boundaries: ContextCheckpointBoundaries {
+                source_from_seq,
+                source_through_seq,
+                recent_from_seq,
+                input_through_seq: source_through_seq,
+                prior_checkpoint_seq,
+            },
+            budgets: ContextCheckpointBudgets {
+                context_limit_tokens: 100,
+                trigger_tokens: 70,
+                input_tokens_before: 60,
+                input_tokens_after: 20,
+                keep_recent_tokens: u64::from(recent_from_seq.is_some()) * 10,
+                max_summary_bytes,
+            },
         }
     }
 
@@ -2600,6 +2984,7 @@ mod tests {
                         boundaries: ContextCheckpointBoundaries {
                             source_from_seq: 1,
                             source_through_seq: 1,
+                            recent_from_seq: None,
                             input_through_seq: 1,
                             prior_checkpoint_seq: None,
                         },
@@ -2608,6 +2993,7 @@ mod tests {
                             trigger_tokens: 70,
                             input_tokens_before: 60,
                             input_tokens_after: 5,
+                            keep_recent_tokens: 0,
                             max_summary_bytes: summary_limit,
                         },
                     },
@@ -2711,6 +3097,7 @@ mod tests {
                         boundaries: ContextCheckpointBoundaries {
                             source_from_seq: 1,
                             source_through_seq: 1,
+                            recent_from_seq: None,
                             input_through_seq: 1,
                             prior_checkpoint_seq: None,
                         },
@@ -2719,6 +3106,7 @@ mod tests {
                             trigger_tokens: 70,
                             input_tokens_before: 60,
                             input_tokens_after: 5,
+                            keep_recent_tokens: 0,
                             max_summary_bytes: summary_limit,
                         },
                     },
@@ -2765,6 +3153,7 @@ mod tests {
             boundaries: ContextCheckpointBoundaries {
                 source_from_seq: 1,
                 source_through_seq: through_seq,
+                recent_from_seq: None,
                 input_through_seq: through_seq,
                 prior_checkpoint_seq: None,
             },
@@ -2773,6 +3162,7 @@ mod tests {
                 trigger_tokens: 70,
                 input_tokens_before: 60,
                 input_tokens_after: 5,
+                keep_recent_tokens: 0,
                 max_summary_bytes: summary_limit,
             },
         };
@@ -2823,6 +3213,387 @@ mod tests {
         assert!(serialized.contains("older summary"));
         assert!(!serialized.contains("void summary"));
         assert!(!serialized.contains("void input"));
+    }
+
+    #[test]
+    fn projected_summary_matches_persisted_checkpoint_replay() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let mut events = Vec::from(user_events(1, run, "discarded"));
+        events.extend(user_events(3, run, "retained tail"));
+
+        let projected = project_summary_context(
+            &events,
+            &store,
+            &binding,
+            "System prompt.",
+            4,
+            Some(3),
+            "projected summary",
+        )
+        .expect("projection");
+        events.push(event(
+            5,
+            run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: summary_commit("projected summary", 1, 4, Some(3), None),
+            },
+        ));
+        let replayed = assemble_model_context(&events, &store, &binding, "System prompt.")
+            .expect("persisted replay");
+
+        assert_eq!(projected.history, replayed.history);
+        assert_eq!(projected.replay_decisions, replayed.replay_decisions);
+    }
+
+    #[test]
+    fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run_a = RunId::new_v7();
+        let run_b = RunId::new_v7();
+        let run_started = |seq, run| {
+            let agent = crate::test_support::agent_snapshot(
+                "test",
+                cookie_agent_protocol::AgentMode::Primary,
+            );
+            let revision = format!("sha256:{}", "0".repeat(64));
+            event(
+                seq,
+                run,
+                EventPayload::RunStarted {
+                    client_run_id: cookie_agent_protocol::ClientRunId::new(format!("run-{seq}"))
+                        .unwrap(),
+                    selection: crate::test_support::run_selection("test"),
+                    runtime_revision: cookie_agent_protocol::RuntimeRevision::new(revision.clone())
+                        .unwrap(),
+                    catalog_revision: cookie_agent_protocol::CatalogRevision::new(revision.clone())
+                        .unwrap(),
+                    provider_state_revision: cookie_agent_protocol::ProviderStateRevision::new(
+                        revision.clone(),
+                    )
+                    .unwrap(),
+                    model_revision: cookie_agent_protocol::ModelRevision::new(revision.clone())
+                        .unwrap(),
+                    agent_revision: cookie_agent_protocol::AgentRevision::new(revision.clone())
+                        .unwrap(),
+                    recipe_registry_revision: cookie_agent_protocol::RecipeRegistryRevision::new(
+                        revision,
+                    )
+                    .unwrap(),
+                    manifest_revision: binding.manifest_revision.clone(),
+                    selected_suffix: agent.fallback_chain.clone(),
+                    internal_agents: Vec::new(),
+                    agent: Box::new(agent),
+                    input_through_seq: seq,
+                },
+            )
+        };
+        let agent_md = |seq, run, content: &str| {
+            event(
+                seq,
+                run,
+                EventPayload::AgentMdLoaded {
+                    entries: vec![AgentMdEntry {
+                        source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                        content: content.into(),
+                        truncated: false,
+                        original_bytes: content.len() as u64,
+                    }],
+                },
+            )
+        };
+        for current_instructions in [Some("run B instructions"), None] {
+            let mut events = vec![
+                run_started(1, run_a),
+                agent_md(2, run_a, "stale run A instructions"),
+            ];
+            events.extend(user_events(3, run_a, "discarded run A user"));
+            let mut assistant = replay_turn_event(&binding);
+            assistant.seq = 5;
+            assistant.run_id = Some(run_a);
+            events.push(assistant);
+            events.push(run_started(6, run_b));
+            if let Some(instructions) = current_instructions {
+                events.push(agent_md(7, run_b, instructions));
+            }
+            events.extend(user_events(8, run_b, "retained run B user"));
+            assert!(compaction_tail_candidates(&events).contains(&5));
+
+            let prefix = compaction_prefix_history(&events, &store, &binding, "system", Some(5))
+                .expect("cross-run summarizer prefix");
+            let encoded = serde_json::to_string(&prefix).unwrap();
+            assert!(!encoded.contains("stale run A instructions"), "{encoded}");
+            assert_eq!(
+                encoded.contains("run B instructions"),
+                current_instructions.is_some()
+            );
+            assert!(encoded.contains("discarded run A user"));
+            assert!(!encoded.contains("retained run B user"));
+            assert!(!encoded.contains("historical reasoning"));
+
+            let projected =
+                project_summary_context(&events, &store, &binding, "system", 9, Some(5), "summary")
+                    .expect("projected checkpoint");
+            let encoded = serde_json::to_string(&projected.history).unwrap();
+            assert!(!encoded.contains("stale run A instructions"));
+            assert_eq!(
+                encoded.contains("run B instructions"),
+                current_instructions.is_some()
+            );
+            let summary_index = 1 + usize::from(current_instructions.is_some());
+            assert!(
+                serde_json::to_string(&projected.history[summary_index])
+                    .unwrap()
+                    .contains("<summary>")
+            );
+            events.push(event(
+                10,
+                run_b,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: summary_commit("summary", 1, 9, Some(5), None),
+                },
+            ));
+            let replayed = assemble_model_context(&events, &store, &binding, "system").unwrap();
+            assert_eq!(projected.history, replayed.history);
+            assert_eq!(projected.replay_decisions, replayed.replay_decisions);
+        }
+    }
+
+    #[test]
+    fn summary_projection_orders_and_deduplicates_pinned_context() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let mut events = vec![
+            event(
+                1,
+                run,
+                EventPayload::AgentMdLoaded {
+                    entries: vec![AgentMdEntry {
+                        source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                        content: "pinned agent rules".into(),
+                        truncated: false,
+                        original_bytes: 18,
+                    }],
+                },
+            ),
+            event(
+                2,
+                run,
+                EventPayload::SkillLoaded {
+                    name: "tail-skill".into(),
+                    rendered_body: "pinned skill body".into(),
+                    source_path: "/tail-skill/SKILL.md".into(),
+                    args: String::new(),
+                    base_dir: "/tail-skill".into(),
+                    supporting_files: Vec::new(),
+                },
+            ),
+        ];
+        events.extend(user_events(3, run, "tail user"));
+
+        let context =
+            project_summary_context(&events, &store, &binding, "system", 4, Some(2), "summary")
+                .expect("projection");
+        let turns = context
+            .history
+            .iter()
+            .map(|turn| serde_json::to_string(turn).unwrap())
+            .collect::<Vec<_>>();
+        assert!(turns[1].contains("pinned agent rules"));
+        assert!(turns[2].contains("pinned skill body"));
+        assert!(turns[3].contains("<summary>\\nsummary"));
+        assert!(turns[4].contains("tail user"));
+        let encoded = turns.join("\n");
+        assert_eq!(encoded.matches("pinned agent rules").count(), 1);
+        assert_eq!(encoded.matches("pinned skill body").count(), 1);
+    }
+
+    #[test]
+    fn repeated_checkpoint_skips_old_tail_as_first_candidate_but_summarizes_it() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let mut events = Vec::from(user_events(1, run, "first discarded"));
+        events.extend(user_events(3, run, "old retained tail"));
+        events.push(event(
+            5,
+            run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: summary_commit("first summary", 1, 4, Some(3), None),
+            },
+        ));
+        events.extend(user_events(6, run, "new retained tail"));
+
+        assert_eq!(compaction_tail_candidates(&events), vec![6]);
+        let prefix = compaction_prefix_history(&events, &store, &binding, "system", Some(6))
+            .expect("summary prefix");
+        let prefix = serde_json::to_string(&prefix).unwrap();
+        assert!(prefix.contains("first summary"));
+        assert!(prefix.contains("old retained tail"));
+        assert!(!prefix.contains("new retained tail"));
+
+        events.push(event(
+            8,
+            run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: summary_commit("second summary", 3, 7, Some(6), Some(5)),
+            },
+        ));
+        let replayed = assemble_model_context(&events, &store, &binding, "system")
+            .expect("second checkpoint replay");
+        let replayed = serde_json::to_string(&replayed.history).unwrap();
+        assert!(replayed.contains("second summary"));
+        assert!(replayed.contains("new retained tail"));
+        assert!(!replayed.contains("first summary"));
+        assert!(!replayed.contains("old retained tail"));
+    }
+
+    #[test]
+    fn tail_candidates_do_not_split_queued_user_application() {
+        let run = RunId::new_v7();
+        let mut events = Vec::from(user_events(1, run, "older prefix"));
+        events.push(event(
+            3,
+            run,
+            EventPayload::UserInputSubmitted {
+                input: "queued input".into(),
+            },
+        ));
+        events.push(event(
+            4,
+            run,
+            EventPayload::MessageInjected {
+                role: cookie_agent_protocol::ExtensionMessageRole::Assistant,
+                input: "interleaved assistant".into(),
+            },
+        ));
+        events.push(event(
+            5,
+            run,
+            EventPayload::UserInputApplied { user_input_seq: 3 },
+        ));
+        events.extend(user_events(6, run, "newest input"));
+        assert_eq!(compaction_tail_candidates(&events), vec![3, 6]);
+    }
+
+    #[test]
+    fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let binding = binding();
+        let run = RunId::new_v7();
+        let tool_call_id = ToolCallId::new_v7();
+        let model_call_id = ModelCallId::new("pending-call").unwrap();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: model_call_id.clone(),
+            provider_item_id: None,
+        };
+        let mut events = Vec::from(user_events(1, run, "before tool"));
+        events.push(event(
+            3,
+            run,
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: wire_model(&binding),
+                input_through_seq: 2,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::ToolCall {
+                        id: model_call_id,
+                        provider_item_id: None,
+                        name: SafeCode::new("read").unwrap(),
+                        input: serde_json::json!({}),
+                        raw_input: None,
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::ToolCalls,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        ));
+        events.push(event(
+            4,
+            run,
+            EventPayload::ToolCallStarted {
+                start: ToolCallStart {
+                    tool_call_id,
+                    owner: owner.clone(),
+                    presentation: ToolCallPresentation {
+                        title: SafeDisplayText::new("pending").unwrap(),
+                        primary_argument: None,
+                    },
+                    operation_fingerprint: OperationFingerprint::from_prepared_operation(
+                        &operation(),
+                    ),
+                },
+            },
+        ));
+        events.extend(user_events(5, run, "after pending tool"));
+        assert_eq!(compaction_tail_candidates(&events), vec![3]);
+
+        events.push(event(
+            7,
+            run,
+            EventPayload::ToolCallTerminated {
+                termination: ToolCallTermination {
+                    tool_call_id,
+                    owner,
+                    outcome: ToolTerminationOutcome::Completed,
+                    result: Some(PersistedToolResult {
+                        title: SafeDisplayText::new("late result").unwrap(),
+                        output: "late tool output".into(),
+                        metadata: serde_json::Value::Null,
+                        truncation: None,
+                        attachments: Vec::new(),
+                        additional_messages: Vec::new(),
+                    }),
+                    error: None,
+                },
+            },
+        ));
+        assert_eq!(compaction_tail_candidates(&events), vec![3]);
+        events.extend(user_events(8, run, "after late termination"));
+        assert_eq!(compaction_tail_candidates(&events), vec![3, 8]);
+        for recent_from_seq in [None, Some(3)] {
+            let replay = project_summary_context(
+                &events,
+                &store,
+                &binding,
+                "system",
+                6,
+                recent_from_seq,
+                "summary",
+            )
+            .expect("late termination replay");
+            let encoded = serde_json::to_string(&replay.history).unwrap();
+            assert!(encoded.contains("late tool output"));
+            let result_index = replay
+                .history
+                .iter()
+                .position(|turn| matches!(turn, HistoryTurn::Tool(_)))
+                .expect("late tool result");
+            assert!(matches!(
+                replay.history[result_index - 1],
+                HistoryTurn::Assistant(_)
+            ));
+            oven_sdk::Request::new(replay.history)
+                .validate_for(&binding.descriptor.capabilities)
+                .expect("paired late result");
+        }
     }
 
     #[test]
@@ -2978,6 +3749,13 @@ mod tests {
         events.push(event(
             8,
             run,
+            EventPayload::ContextCheckpointCommitted {
+                commit: summary_commit("tool checkpoint", 1, 7, Some(3), None),
+            },
+        ));
+        events.push(event(
+            9,
+            run,
             EventPayload::ToolOutputElided {
                 tool_call_id: call,
                 original_bytes: 8,
@@ -2995,6 +3773,18 @@ mod tests {
         let encoded = serde_json::to_string(&elided).expect("elided history JSON");
         assert!(!encoded.contains("emitted system context"));
         assert!(!encoded.contains("emitted user context"));
+        assert!(encoded.contains("2 tool-emitted message(s) were elided"));
+
+        let prefix = compaction_prefix_history(
+            &events,
+            &restarted_store,
+            &binding,
+            "System prompt.",
+            Some(7),
+        )
+        .expect("elided compaction prefix");
+        let encoded = serde_json::to_string(&prefix).expect("prefix JSON");
+        assert!(!encoded.contains("contents"));
         assert!(encoded.contains("2 tool-emitted message(s) were elided"));
     }
 }

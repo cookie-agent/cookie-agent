@@ -72,4 +72,6 @@ compaction. Set `context_compaction.auto = false` to disable automatic signals;
 manual and context-overflow recovery compaction remain available.
 
 See [Compaction](compaction.md) for the trigger math, the internal agent that
-performs it, and rehydration.
+summarizes the discarded history prefix, and the bounded recent-message suffix
+retained alongside that summary. Compaction does not reread files; native
+provider windows remain unchanged and receive no independent recent-message tail.

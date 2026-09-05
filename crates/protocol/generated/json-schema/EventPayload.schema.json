@@ -2581,6 +2581,15 @@
           "format": "uint64",
           "minimum": 0
         },
+        "recent_from_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
         "source_from_seq": {
           "type": "integer",
           "format": "uint64",
@@ -2617,6 +2626,12 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 1
+        },
+        "keep_recent_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 0,
+          "minimum": 0
         },
         "max_summary_bytes": {
           "type": "integer",
