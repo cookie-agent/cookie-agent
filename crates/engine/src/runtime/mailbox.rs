@@ -509,6 +509,24 @@ impl Engine {
         session: SessionId,
         run: RunId,
     ) -> Result<super::producer_claims::ClaimedPrompt, EngineError> {
+        #[cfg(test)]
+        if let Some(hook) = {
+            self.inner
+                .prompt_before_claim_hook
+                .lock()
+                .expect("prompt before-claim hook lock poisoned")
+                .take()
+        } {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("prompt before-claim reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
         let events = self
             .request(session, |reply| SessionCommand::PromotePendingInputs {
                 run,
@@ -537,6 +555,24 @@ impl Engine {
     }
 
     #[cfg(test)]
+    pub(crate) fn install_prompt_before_claim_hook_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, std::sync::Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .prompt_before_claim_hook
+            .lock()
+            .expect("before-claim hook lock") =
+            Some(std::sync::Arc::new(super::PromptSnapshotHook {
+                reached: std::sync::Mutex::new(Some(reached)),
+                release: release.clone(),
+            }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_prompt_snapshot_hook_for_test(
         &self,
     ) -> (oneshot::Receiver<()>, std::sync::Arc<tokio::sync::Notify>) {
@@ -551,6 +587,14 @@ impl Engine {
             release: release.clone(),
         }));
         (receiver, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn reconcile_producers_for_test(
+        &self,
+        session: SessionId,
+    ) -> Result<(), EngineError> {
+        self.reconcile_producers(session).await
     }
 
     #[cfg(test)]

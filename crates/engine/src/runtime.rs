@@ -1164,6 +1164,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     #[cfg(test)]
+    prompt_before_claim_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
+    #[cfg(test)]
     janitor_before_barrier_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     #[cfg(test)]
     compaction_execution_hook: Mutex<Option<Arc<PagingRaceHook>>>,
@@ -1337,6 +1339,8 @@ impl Engine {
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
                 prompt_snapshot_hook: Mutex::new(None),
+                #[cfg(test)]
+                prompt_before_claim_hook: Mutex::new(None),
                 #[cfg(test)]
                 janitor_before_barrier_hook: Mutex::new(None),
                 #[cfg(test)]

@@ -1297,6 +1297,18 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
             .contains(&format!("\"revision\":{}", goal.revision))
     );
 
+    await_event(
+        &fixture.engine,
+        session_id,
+        "first goal request prepared",
+        |event| {
+            event.run_id == Some(first_run)
+                && matches!(event.payload, EventPayload::ModelRequestPrepared { .. })
+        },
+    )
+    .await;
+    let (before_claim, release_claim) = fixture.engine.install_prompt_before_claim_hook_for_test();
+
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "Deliver the complete release candidate",
@@ -1334,6 +1346,29 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
             .body,
         first_record.body
     );
+
+    // Hold the next request before it claims the already-admitted reminder.
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), before_claim)
+        .await
+        .expect("second reminder before-claim gate")
+        .expect("second reminder reached before-claim gate");
+    assert!(
+        producer_projection(&fixture.engine, session_id)
+            .messages
+            .iter()
+            .find(|message| message.message_id == second_id)
+            .expect("unclaimed second reminder")
+            .claims
+            .is_empty()
+    );
+    release_claim.notify_one();
+
+    // Admission alone is still retractable; pause only after the request owns it.
+    await_event(&fixture.engine, session_id, "second goal reminder claimed", |event| {
+        event.run_id == Some(second_run)
+            && matches!(&event.payload, EventPayload::ProducerMessagesClaimed { message_ids } if message_ids.contains(&second_id))
+    })
+    .await;
 
     let paused = fixture
         .engine
@@ -1420,7 +1455,16 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     })
     .await;
     wait_for_session_not_running(&fixture.engine, session_id).await;
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_run_inactive(&fixture.engine, second_run).await;
+    fixture
+        .engine
+        .reconcile_producers_for_test(session_id)
+        .await
+        .expect("reconcile paused goal after the run completes");
+    assert_eq!(
+        producer_projection(&fixture.engine, session_id).goal,
+        Some(paused)
+    );
     assert_eq!(
         producer_projection(&fixture.engine, session_id)
             .messages
