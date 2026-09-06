@@ -7771,8 +7771,11 @@ impl App {
         let cursor = if cursor { "> " } else { "  " };
         let status = match session.status {
             SessionStatus::Running => "⏳ ",
-            SessionStatus::Idle | SessionStatus::Completed => "✅ ",
-            SessionStatus::Failed | SessionStatus::Cancelled | SessionStatus::Interrupted => "   ",
+            SessionStatus::Idle => "✅ ",
+            SessionStatus::Completed
+            | SessionStatus::Failed
+            | SessionStatus::Cancelled
+            | SessionStatus::Interrupted => "   ",
         };
         let title = session
             .title

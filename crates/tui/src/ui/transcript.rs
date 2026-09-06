@@ -11061,7 +11061,7 @@ mod tests {
         let statuses = [
             (SessionStatus::Running, "⏳ "),
             (SessionStatus::Idle, "✅ "),
-            (SessionStatus::Completed, "✅ "),
+            (SessionStatus::Completed, "   "),
             (SessionStatus::Failed, "   "),
             (SessionStatus::Cancelled, "   "),
             (SessionStatus::Interrupted, "   "),
@@ -11086,7 +11086,19 @@ mod tests {
         });
         let entries = app.tree_entries();
         for (entry, (_, icon)) in entries.iter().zip(statuses) {
-            assert!(app.tree_row_label(entry, false).contains(icon));
+            let label = app.tree_row_label(entry, false);
+            assert!(label.contains(&format!("{icon}primary:")));
+            if icon == "   " {
+                assert!(!label.contains(['✅', '⏳', '✓', '✗']));
+            }
+            let mut running = entry.clone();
+            running.1.status = SessionStatus::Running;
+            let running_label = app.tree_row_label(&running, false);
+            assert_eq!(
+                UnicodeWidthStr::width(label.split_once("primary:").unwrap().0),
+                UnicodeWidthStr::width(running_label.split_once("primary:").unwrap().0),
+                "status changes must not move the agent name"
+            );
         }
         frame_rows(&mut app, 80, 30);
         assert_eq!(app.hit_map.tree_rows.len(), statuses.len());
@@ -11096,6 +11108,38 @@ mod tests {
                 .iter()
                 .all(|hit| hit.rect.width == app.hit_map.tree.expect("tree rect").width)
         );
+        app.run_command(SlashCommand::ShowAgentPanel).await;
+        for width in [20, 80] {
+            frame_rows(&mut app, width, 30);
+            let hits = app
+                .hit_map
+                .tree_rows
+                .iter()
+                .map(|hit| (hit.session_id, hit.rect))
+                .collect::<Vec<_>>();
+            for status in [
+                SessionStatus::Running,
+                SessionStatus::Completed,
+                SessionStatus::Failed,
+                SessionStatus::Cancelled,
+                SessionStatus::Interrupted,
+            ] {
+                let tree = app.tree.as_mut().unwrap();
+                tree.session.status = status;
+                for child in &mut tree.children {
+                    child.session.status = status;
+                }
+                frame_rows(&mut app, width, 30);
+                assert_eq!(
+                    app.hit_map
+                        .tree_rows
+                        .iter()
+                        .map(|hit| (hit.session_id, hit.rect))
+                        .collect::<Vec<_>>(),
+                    hits
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -11174,7 +11218,9 @@ mod tests {
                 .find(|entry| entry.0 == session_id)
                 .expect("tree meta");
             assert_eq!(completed_entry.1.status, SessionStatus::Completed);
-            assert!(app.tree_row_label(&completed_entry, false).contains("✅ "));
+            let completed_label = app.tree_row_label(&completed_entry, false);
+            assert!(!completed_label.contains(['✅', '⏳']));
+            assert!(completed_label.contains("   primary:"));
         }
 
         let merged = app.merge_session_meta(session_meta(watched));
