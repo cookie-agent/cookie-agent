@@ -170,6 +170,7 @@ export * from "./GoalId.js";
 export * from "./GoalItem.js";
 export * from "./GoalLifecycleAction.js";
 export * from "./GoalReminderIdentity.js";
+export * from "./GoalReminderKind.js";
 export * from "./GoalState.js";
 export * from "./GoalStatus.js";
 export * from "./GoalUpdateParams.js";

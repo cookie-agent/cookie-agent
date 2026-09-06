@@ -6169,11 +6169,12 @@ impl App {
                 ProducerDeliveryMode::Steer => "steer",
                 ProducerDeliveryMode::Queue => "queue",
             };
-            let body = if reminder.is_some() {
-                "Goal continuation reminder"
-            } else {
-                body.as_str()
-            };
+            let body = reminder
+                .as_ref()
+                .map_or(body.as_str(), |reminder| match reminder.kind {
+                    cookie_agent_protocol::GoalReminderKind::Started => "Goal started",
+                    cookie_agent_protocol::GoalReminderKind::Continuation => "Continue",
+                });
             entries.push(PendingQueueEntry {
                 kind: QueueEntryKind::Producer(*message_id),
                 seq: *seq,

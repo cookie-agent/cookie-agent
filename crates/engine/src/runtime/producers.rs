@@ -455,10 +455,16 @@ impl Engine {
                 .iter()
                 .any(|message| pending(message) && message.reminder.is_some())
         {
+            let kind = projection.next_reminder_kind(goal.goal_id);
             let body = format!(
-                "Continue the root goal. Verify evidence directly or through subagents before marking items finished.\n{}\n{}",
+                "{} Verify evidence directly or through subagents before marking items finished.\n{}\n{}",
+                match kind {
+                    GoalReminderKind::Started =>
+                        "Goal started. Pursue the new root objective below.",
+                    GoalReminderKind::Continuation => "Continue the root goal.",
+                },
                 if goal.items.is_empty() {
-                    "Establish the checklist with goal_update before continuing."
+                    "Establish the checklist with goal_update, then pursue its unfinished work."
                 } else {
                     "Continue unfinished checklist work; unchanged revision is not completion."
                 },
@@ -485,6 +491,7 @@ impl Engine {
                 Some(GoalReminderIdentity {
                     goal_id: goal.goal_id,
                     revision: goal.revision,
+                    kind,
                 }),
             )?;
         }

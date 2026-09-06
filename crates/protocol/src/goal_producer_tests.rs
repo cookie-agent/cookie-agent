@@ -266,6 +266,7 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
     let reminder = GoalReminderIdentity {
         goal_id,
         revision: 2,
+        kind: GoalReminderKind::Started,
     };
     for payload in [
         EventPayload::GoalActivated {
@@ -576,6 +577,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
         *reminder = Some(GoalReminderIdentity {
             goal_id,
             revision: 1,
+            kind: Default::default(),
         });
     }
     assert_eq!(
@@ -585,11 +587,55 @@ fn goal_control_messages_are_real_steers_not_reminders() {
 }
 
 #[test]
+fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
+    for kind in [GoalReminderKind::Started, GoalReminderKind::Continuation] {
+        let goal_id = GoalId::new_v7();
+        let payload = EventPayload::ProducerMessageAccepted {
+            message_id: ProducerMessageId::new_v7(),
+            producer_owner: ProducerOwner::Goal { goal_id },
+            mode: ProducerDeliveryMode::Queue,
+            idempotency_key: ProducerIdempotencyKey::new("reminder-kind").unwrap(),
+            body: "goal reminder".into(),
+            reminder: Some(GoalReminderIdentity {
+                goal_id,
+                revision: 0,
+                kind,
+            }),
+        };
+        assert!(stored(payload.clone(), None).validate().is_ok());
+        round_trip(payload.clone());
+        let mut wire = serde_json::to_value(payload).unwrap();
+        assert_eq!(
+            wire["reminder"]["kind"],
+            match kind {
+                GoalReminderKind::Started => "started",
+                GoalReminderKind::Continuation => "continuation",
+            }
+        );
+        wire["reminder"].as_object_mut().unwrap().remove("kind");
+        let recovered = deserialize_event_payload_best_effort(wire).unwrap();
+        assert!(recovered.degraded_fields.is_empty());
+        assert!(stored(recovered.payload.clone(), None).validate().is_ok());
+        assert!(matches!(
+            recovered.payload,
+            EventPayload::ProducerMessageAccepted {
+                reminder: Some(GoalReminderIdentity {
+                    kind: GoalReminderKind::Continuation,
+                    ..
+                }),
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
     let goal_id = GoalId::new_v7();
     let reminder = GoalReminderIdentity {
         goal_id,
         revision: 7,
+        kind: Default::default(),
     };
     let make = |message_id, key: &str| EventPayload::ProducerMessageAccepted {
         message_id,

@@ -3,8 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use cookie_agent_protocol::{
-    EventPayload, GoalReminderIdentity, GoalState, GoalStatus, ProducerDeliveryMode,
-    ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, RunId, RunSelection, StoredEvent,
+    EventPayload, GoalId, GoalReminderIdentity, GoalReminderKind, GoalState, GoalStatus,
+    ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, RunId,
+    RunSelection, StoredEvent,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +42,20 @@ pub(crate) struct GoalProducerProjection {
 }
 
 impl GoalProducerProjection {
+    pub(crate) fn next_reminder_kind(&self, goal_id: GoalId) -> GoalReminderKind {
+        // Acceptance and claims are retractable; only committed input coverage introduces a goal.
+        if self.messages.iter().any(|message| {
+            message.consumed
+                && message
+                    .reminder
+                    .is_some_and(|reminder| reminder.goal_id == goal_id)
+        }) {
+            GoalReminderKind::Continuation
+        } else {
+            GoalReminderKind::Started
+        }
+    }
+
     #[must_use]
     pub(crate) fn from_events(events: &[StoredEvent]) -> Self {
         let mut projection = Self::default();
@@ -611,6 +626,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 4,
+            kind: Default::default(),
         };
         let message_id = ProducerMessageId::new_v7();
         let events = vec![
@@ -834,6 +850,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 1,
+            kind: Default::default(),
         };
         let message_id = ProducerMessageId::new_v7();
         let run = RunId::new_v7();
@@ -867,6 +884,74 @@ mod tests {
         assert!(projection.messages[0].consumed);
         assert_eq!(projection.messages[0].consumed_run, Some(run));
         assert_eq!(projection.messages[0].discarded_seq, None);
+    }
+
+    #[test]
+    fn reminder_kind_requires_committed_goal_input_not_acceptance_claims_or_controls() {
+        use cookie_agent_protocol::GoalReminderKind::{Continuation, Started};
+
+        let goal_id = GoalId::new_v7();
+        let run = RunId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let control_id = ProducerMessageId::new_v7();
+        let mut events = vec![
+            accepted(
+                1,
+                control_id,
+                ProducerOwner::GoalControl { goal_id },
+                "pause",
+                "paused",
+                None,
+            ),
+            event(
+                2,
+                Some(run),
+                EventPayload::ProducerMessageAdmitted {
+                    message_id: control_id,
+                },
+            ),
+            committed(3, run, 2),
+            accepted(
+                4,
+                message_id,
+                ProducerOwner::Goal { goal_id },
+                "first",
+                "Goal started",
+                Some(GoalReminderIdentity {
+                    goal_id,
+                    revision: 0,
+                    kind: Started,
+                }),
+            ),
+            event(
+                5,
+                Some(run),
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            event(
+                6,
+                Some(run),
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![message_id],
+                },
+            ),
+        ];
+        let projection = GoalProducerProjection::from_events(&events);
+        assert!(projection.invalid.is_empty());
+        assert!(projection.messages[0].consumed);
+        assert_eq!(projection.next_reminder_kind(goal_id), Started);
+
+        events.push(committed(7, run, 2));
+        assert_eq!(
+            GoalProducerProjection::from_events(&events).next_reminder_kind(goal_id),
+            Started
+        );
+        events.push(committed(8, run, 6));
+        let projection = GoalProducerProjection::from_events(&events);
+        assert!(projection.invalid.is_empty());
+        assert!(!projection.messages[1].consumption_recorded);
+        assert_eq!(projection.next_reminder_kind(goal_id), Continuation);
+        assert_eq!(projection.next_reminder_kind(GoalId::new_v7()), Started);
     }
 
     fn committed(seq: u64, run: RunId, input_through_seq: u64) -> StoredEvent {

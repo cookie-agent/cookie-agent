@@ -71,11 +71,26 @@ pub struct GoalUpdateResult {
     pub goal: GoalState,
 }
 
-/// Pending reminder coalescing identity, NOT a durable send idempotency key.
+/// Whether a reminder introduces the objective or continues previously consumed work.
+/// Legacy reminder events always represented continuations.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalReminderKind {
+    Started,
+    #[default]
+    Continuation,
+}
+
+/// Pending reminder metadata, NOT a durable send idempotency key.
+/// Coalescing uses the goal ID and revision, independently of the presentation kind.
 /// After consumption another continuation at the same revision uses a fresh send.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct GoalReminderIdentity {
     pub goal_id: GoalId,
     pub revision: u64,
+    #[serde(default)]
+    pub kind: GoalReminderKind,
 }

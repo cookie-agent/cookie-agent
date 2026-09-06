@@ -803,6 +803,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_activation_action_is_event_owned_regardless_of_rpc_response_order() {
+        for response_first in [false, true] {
+            let (mut app, requests) = app_with_replies(Vec::new()).await;
+            let session_id = SessionId::new_v7();
+            let current = goal(GoalStatus::Active);
+            app.selected = Some(session_id);
+            if response_first {
+                app.finish_goal_command(session_id, Ok(Some(current.clone())));
+            }
+            assert!(app.store.apply_event(cookie_agent_protocol::StoredEvent {
+                engine_version: None,
+                origin: None,
+                session_id,
+                run_id: None,
+                seq: 1,
+                timestamp: jiff::Timestamp::new(1, 0).unwrap(),
+                payload: cookie_agent_protocol::EventPayload::GoalActivated {
+                    goal_id: current.goal_id,
+                    objective: current.objective.clone(),
+                    revision: current.revision,
+                    selection: None,
+                },
+            }));
+            app.finish_goal_command(session_id, Ok(Some(current)));
+            let state = &app.store.sessions[&session_id];
+            assert!(matches!(
+                state.transcript.as_slice(),
+                [crate::state::TranscriptItem::Goal {
+                    activation: true,
+                    ..
+                }]
+            ));
+            assert!(state.pending_inputs.is_empty());
+            assert!(app.goal_bar_visible());
+            assert!(!app.goal_notices.contains_key(&session_id));
+            assert!(requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn goal_activation_uses_exact_set_request_without_starting_a_run() {
         let expected = goal(GoalStatus::Active);
         let (mut app, requests) =
@@ -1289,6 +1329,7 @@ mod tests {
                 reminder: Some(GoalReminderIdentity {
                     goal_id,
                     revision: 1,
+                    kind: cookie_agent_protocol::GoalReminderKind::Continuation,
                 }),
             },
             EventPayload::UserInputAdmitted {

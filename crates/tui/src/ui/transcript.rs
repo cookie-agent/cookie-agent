@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     markdown::{Highlighter, MarkdownLine, MarkdownLineKind},
-    state::{AssistantChild, SessionState, ToolStatus, TranscriptItem},
+    state::{AssistantChild, ProducerMessageStatus, SessionState, ToolStatus, TranscriptItem},
     theme::{Theme, ThemeKey},
 };
 
@@ -1006,6 +1006,7 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
 #[derive(Clone, Copy)]
 enum Role {
     User,
+    Action,
     Goal,
     Producer,
     ToolRunning,
@@ -1180,8 +1181,14 @@ fn transcript_item_layout(
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),
-        TranscriptItem::Goal { goal, .. } => ItemLayout {
-            lines: goal_layout(goal, context.width, context.theme),
+        TranscriptItem::Goal {
+            goal, activation, ..
+        } => ItemLayout {
+            lines: if *activation {
+                goal_activation_layout(goal, context.width, context.theme)
+            } else {
+                goal_layout(goal, context.width, context.theme)
+            },
             regions: Vec::new(),
             user_seq: None,
         },
@@ -1193,6 +1200,25 @@ fn transcript_item_layout(
             status,
             ..
         } => match status {
+            // The initial start must precede streaming, without duplicating its
+            // queue preview. Claims leave the queue before the request starts;
+            // the row was already anchored at admission by the reducer.
+            ProducerMessageStatus::Claimed
+                if matches!(producer_owner, ProducerOwner::Goal { .. })
+                    && reminder.is_some_and(|reminder| {
+                        reminder.kind == cookie_agent_protocol::GoalReminderKind::Started
+                    }) =>
+            {
+                producer_message_layout(
+                    producer_owner,
+                    *mode,
+                    body,
+                    reminder.as_ref(),
+                    *status,
+                    context.width,
+                    context.theme,
+                )
+            }
             crate::state::ProducerMessageStatus::Pending
             | crate::state::ProducerMessageStatus::Admitted
             | crate::state::ProducerMessageStatus::Claimed => ItemLayout::default(),
@@ -1201,6 +1227,7 @@ fn transcript_item_layout(
                 *mode,
                 body,
                 reminder.as_ref(),
+                *status,
                 context.width,
                 context.theme,
             ),
@@ -1217,6 +1244,20 @@ fn transcript_item_layout(
             crate::state::ProducerMessageStatus::Discarded => ItemLayout::default(),
         },
     }
+}
+
+fn goal_activation_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    // Canonical action reconstructed from GoalActivated, not a local command
+    // echo or UserInputSubmitted. It has no prompt recall/revert hit target.
+    role_block(
+        Role::Action,
+        format!("/goal {}", goal.objective)
+            .lines()
+            .map(|line| Line::from(line.to_owned()))
+            .collect(),
+        width,
+        theme,
+    )
 }
 
 fn goal_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -1248,6 +1289,7 @@ fn producer_message_layout(
     mode: ProducerDeliveryMode,
     body: &str,
     reminder: Option<&cookie_agent_protocol::GoalReminderIdentity>,
+    status: ProducerMessageStatus,
     width: u16,
     theme: &Theme,
 ) -> ItemLayout {
@@ -1256,15 +1298,26 @@ fn producer_message_layout(
         ProducerOwner::Delegation { invocation_id } => {
             (format!("delegation {invocation_id}"), Some(body.to_owned()))
         }
-        ProducerOwner::Goal { .. } if reminder.is_some() => (
+        ProducerOwner::Goal { .. } => (
             "goal controller".to_owned(),
-            Some("Goal continuation reminder".to_owned()),
+            Some(
+                reminder
+                    .map_or(body, |reminder| match reminder.kind {
+                        cookie_agent_protocol::GoalReminderKind::Started => "Goal started",
+                        cookie_agent_protocol::GoalReminderKind::Continuation => "Continue",
+                    })
+                    .to_owned(),
+            ),
         ),
-        ProducerOwner::Goal { .. } => ("goal controller".to_owned(), Some(body.to_owned())),
         ProducerOwner::GoalControl { .. } => ("goal control".to_owned(), Some(body.to_owned())),
     };
+    let status = match status {
+        ProducerMessageStatus::Claimed => "claimed",
+        ProducerMessageStatus::Consumed => "consumed",
+        _ => unreachable!("only claimed starts or consumed messages enter the transcript"),
+    };
     let mut lines = vec![Line::styled(
-        format!("{owner} · {} · consumed", producer_mode_label(mode)),
+        format!("{owner} · {} · {status}", producer_mode_label(mode)),
         theme.internal(),
     )];
     if let Some(content) = content {
@@ -3387,6 +3440,7 @@ fn role_block_lines(
 ) -> Vec<Line<'static>> {
     let (label, marker, gutter, style) = match role {
         Role::User => ("USER", "┌─", "│ ", theme.user()),
+        Role::Action => ("ACTION", "--", "│ ", theme.user()),
         Role::Goal => ("GOAL", "◆─", "│ ", theme.assistant()),
         Role::Producer => ("PRODUCER", "◇─", "│ ", theme.internal()),
         Role::ToolRunning => ("TOOL RUNNING", "┏…", "┃ ", theme.tool_running()),
@@ -3397,12 +3451,19 @@ fn role_block_lines(
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
-    if matches!(role, Role::Goal | Role::Producer) {
+    if matches!(role, Role::Goal | Role::Producer | Role::Action) {
         if width == 0 {
             return Vec::new();
         }
         let header = if width < 8 {
-            format!("[{}]", if matches!(role, Role::Goal) { "G" } else { "P" })
+            format!(
+                "[{}]",
+                match role {
+                    Role::Goal => "G",
+                    Role::Action => "A",
+                    _ => "P",
+                }
+            )
         } else {
             format!("{marker} {label}")
         };
@@ -3419,6 +3480,7 @@ fn role_block_lines(
     if width < 8 {
         let short = match role {
             Role::User => "U",
+            Role::Action => "A",
             Role::Goal => "G",
             Role::Producer => "P",
             Role::ToolRunning => "T…",
@@ -4488,6 +4550,7 @@ mod tests {
             transcript: vec![TranscriptItem::Goal {
                 id: 1,
                 seq: 7,
+                activation: false,
                 goal: goal.clone(),
             }],
             ..SessionState::default()
@@ -4506,6 +4569,19 @@ mod tests {
         assert!(rendered.contains("status: active · 1/2 finished"));
         assert!(rendered.contains("[x] Render the objective"));
         assert!(rendered.contains("[ ] Verify narrow panes"));
+    }
+
+    #[test]
+    fn goal_activation_action_fits_narrow_viewports() {
+        let mut goal = test_goal(GoalStatus::Active, Vec::new());
+        goal.objective = "finish  the parser\nthen verify a-very-long-objective-token".into();
+        for width in [0, 1, 3, 7, 8, 18, 80] {
+            let lines = goal_activation_layout(&goal, width, &Theme::default());
+            assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+            if width == 0 {
+                assert!(lines.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -4567,6 +4643,7 @@ mod tests {
             TranscriptItem::Goal {
                 id: 1,
                 seq: 1,
+                activation: false,
                 goal,
             },
             TranscriptItem::ProducerMessage {
@@ -4670,7 +4747,7 @@ mod tests {
             );
             assert_eq!(rendered.matches(body).count(), 1, "{rendered}");
             assert!(rendered.contains("goal control · steer · consumed"));
-            assert!(!rendered.contains("Goal continuation reminder"));
+            assert!(!rendered.contains("Continue"));
         }
     }
 
@@ -4699,6 +4776,7 @@ mod tests {
                     reminder: Some(cookie_agent_protocol::GoalReminderIdentity {
                         goal_id: goal.goal_id,
                         revision: goal.revision,
+                        kind: cookie_agent_protocol::GoalReminderKind::Continuation,
                     }),
                     status,
                 }],
@@ -4716,7 +4794,7 @@ mod tests {
             if status == crate::state::ProducerMessageStatus::Consumed {
                 assert_eq!(rendered.matches("PRODUCER").count(), 1);
                 assert!(rendered.contains("goal controller · steer · consumed"));
-                assert!(rendered.contains("Goal continuation reminder"));
+                assert!(rendered.contains("Continue"));
             } else {
                 assert!(rendered.is_empty(), "{status:?}: {rendered}");
             }
@@ -4728,7 +4806,7 @@ mod tests {
                 assert!(debug.contains("producer message discarded"));
                 assert!(debug.contains("goal controller · steer"));
                 assert!(!debug.contains("FULL REMINDER BODY"));
-                assert!(!debug.contains("Goal continuation reminder"));
+                assert!(!debug.contains("Continue"));
             }
         }
 
@@ -4739,6 +4817,7 @@ mod tests {
             ProducerDeliveryMode::Steer,
             "plugin payload",
             None,
+            ProducerMessageStatus::Consumed,
             60,
             &Theme::default(),
         );
@@ -4749,6 +4828,7 @@ mod tests {
             ProducerDeliveryMode::Queue,
             "delegation payload",
             None,
+            ProducerMessageStatus::Consumed,
             60,
             &Theme::default(),
         );
@@ -8547,6 +8627,1061 @@ mod tests {
                 && thought == "turn two thought"
                 && second.as_str() == "turn two"
         ));
+    }
+
+    #[test]
+    fn retry_started_before_input_promotion_rebinds_without_losing_committed_tools() {
+        for variant in [None, Some("high")] {
+            let mut retry_model = resolved_model(variant);
+            if variant.is_some() {
+                retry_model.selection.model = "gateway/fallback-model".parse().unwrap();
+                retry_model.model_id =
+                    cookie_agent_protocol::ProviderModelId::new("fallback-model").unwrap();
+                retry_model.selection_fingerprint = Sha256Digest::of_bytes(b"fallback selection");
+            }
+            let suffix = if variant.is_some() {
+                vec![resolved_model(None), retry_model.clone()]
+            } else {
+                vec![resolved_model(None)]
+            };
+            let session = SessionId::new_v7();
+            let run = run_id();
+            let first = AttemptId::new_v7();
+            let failed = AttemptId::new_v7();
+            let retry = AttemptId::new_v7();
+            let next = AttemptId::new_v7();
+            let call = ToolCallId::new_v7();
+            let control = ProducerMessageId::new_v7();
+            let plugin = ProducerMessageId::new_v7();
+            let mut events = vec![
+                session_created(session, 1),
+                run_started_with_suffix(session, 2, run, suffix),
+                attempt_started(session, 3, run, first, None),
+                text_delta(session, 4, run, first, "before steering"),
+                turn_committed(
+                    session,
+                    5,
+                    run,
+                    first,
+                    5,
+                    vec![text_part("before steering"), tool_part("call-one")],
+                    Vec::new(),
+                    None,
+                ),
+                tool_started_at(session, 6, run, call, 5, "call-one", 1, "bash", None),
+                tool_terminated(
+                    session,
+                    7,
+                    run,
+                    call,
+                    5,
+                    "call-one",
+                    cookie_agent_protocol::ToolTerminationOutcome::Completed,
+                ),
+                attempt_started(session, 8, run, failed, None),
+                text_delta(session, 9, run, failed, "abandoned partial"),
+                event(
+                    session,
+                    10,
+                    run,
+                    EventPayload::AttemptAbandoned { attempt_id: failed },
+                ),
+                producer_accepted(
+                    session,
+                    11,
+                    control,
+                    ProducerOwner::GoalControl {
+                        goal_id: GoalId::new_v7(),
+                    },
+                    ProducerDeliveryMode::Steer,
+                    "cancel steering",
+                    None,
+                ),
+                producer_accepted(
+                    session,
+                    12,
+                    plugin,
+                    ProducerOwner::Plugin {
+                        plugin: "test".into(),
+                    },
+                    ProducerDeliveryMode::Steer,
+                    "plugin steering",
+                    None,
+                ),
+                event(
+                    session,
+                    13,
+                    run,
+                    EventPayload::UserInputAdmitted {
+                        input: "user steering".into(),
+                    },
+                ),
+                // stream_attempt emits retry/fallback metadata BEFORE prompt_events
+                // promotes inputs received during backoff (model_loop.rs:1346).
+                attempt_started(session, 14, run, retry, variant),
+                event(
+                    session,
+                    15,
+                    run,
+                    EventPayload::ProducerMessageAdmitted {
+                        message_id: control,
+                    },
+                ),
+                event(
+                    session,
+                    16,
+                    run,
+                    EventPayload::UserInputSubmitted {
+                        input: "user steering".into(),
+                    },
+                ),
+                event(
+                    session,
+                    17,
+                    run,
+                    EventPayload::UserInputApplied { user_input_seq: 16 },
+                ),
+                event(
+                    session,
+                    18,
+                    run,
+                    EventPayload::ProducerMessageAdmitted { message_id: plugin },
+                ),
+                event(
+                    session,
+                    19,
+                    run,
+                    EventPayload::ProducerMessagesClaimed {
+                        message_ids: vec![control, plugin],
+                    },
+                ),
+                reasoning_delta(session, 20, run, retry, "retry reasoning"),
+                text_delta(session, 21, run, retry, "after steering"),
+                turn_committed(
+                    session,
+                    22,
+                    run,
+                    retry,
+                    22,
+                    vec![
+                        reasoning_part("retry reasoning"),
+                        text_part("after steering"),
+                    ],
+                    Vec::new(),
+                    variant,
+                ),
+                usage_recorded(session, 23, run, 5, Some(10)),
+                usage_recorded(session, 24, run, 22, Some(20)),
+                attempt_started(session, 25, run, next, variant),
+                text_delta(session, 26, run, next, "latest response"),
+                turn_committed(
+                    session,
+                    27,
+                    run,
+                    next,
+                    27,
+                    vec![text_part("latest response")],
+                    Vec::new(),
+                    variant,
+                ),
+            ];
+            for stored in &mut events {
+                stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+                if let EventPayload::ModelAttemptStarted {
+                    attempt_id,
+                    attempt_ordinal,
+                    retry_ordinal,
+                    fallback_index,
+                    resolved_model,
+                    ..
+                } = &mut stored.payload
+                {
+                    *attempt_ordinal = match stored.seq {
+                        3 => 1,
+                        8 => 2,
+                        14 => 3,
+                        25 => 4,
+                        _ => unreachable!(),
+                    };
+                    if *attempt_id == retry || *attempt_id == next {
+                        *resolved_model = retry_model.clone();
+                        *fallback_index = u32::from(variant.is_some());
+                        *retry_ordinal = u32::from(*attempt_id == retry && variant.is_none());
+                    }
+                }
+                if let EventPayload::ModelTurnCommitted {
+                    input_through_seq,
+                    resolved_model,
+                    ..
+                } = &mut stored.payload
+                {
+                    *input_through_seq = match stored.seq {
+                        5 => 2,
+                        22 => 19,
+                        27 => 22,
+                        _ => unreachable!(),
+                    };
+                    if stored.seq != 5 {
+                        *resolved_model = retry_model.clone();
+                    }
+                }
+                if stored.seq == 24
+                    && let EventPayload::ModelUsageRecorded { resolved_model, .. } =
+                        &mut stored.payload
+                {
+                    *resolved_model = retry_model.clone();
+                }
+            }
+            let mut live = StateStore::default();
+            let mut cache = LayoutCache::default();
+            let expanded = HashSet::from([BlockId::Tool(call)]);
+            let mut split_id = None;
+            for (index, stored) in events.iter().enumerate() {
+                assert!(live.apply_event(stored.clone()));
+                let state = &live.sessions[&session];
+                let mut replay = StateStore::default();
+                assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+                ensure_cached_transcript_layout(
+                    &mut cache,
+                    session,
+                    state,
+                    None,
+                    Some(&expanded),
+                    80,
+                    &Theme::default(),
+                    &PlainHighlighter,
+                    crate::state::EventLevel::Warning,
+                    0,
+                );
+                let layout = |state: &SessionState| {
+                    transcript_layout_with_level(
+                        state,
+                        Some(&expanded),
+                        80,
+                        &Theme::default(),
+                        &PlainHighlighter,
+                        crate::state::EventLevel::Warning,
+                    )
+                };
+                let fresh = layout(state);
+                let rebuilt = layout(&replay.sessions[&session]);
+                assert_eq!(cache.layout.lines, fresh.lines);
+                assert_eq!(cache.layout.regions, fresh.regions);
+                assert_eq!(cache.layout.user_regions, fresh.user_regions);
+                assert_eq!(fresh.lines, rebuilt.lines);
+                assert_eq!(fresh.regions, rebuilt.regions);
+                assert_eq!(fresh.user_regions, rebuilt.user_regions);
+                if stored.seq >= 15 {
+                    let assistants = state
+                        .transcript
+                        .iter()
+                        .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        assistants.len(),
+                        2,
+                        "retry must own a post-input block before streaming"
+                    );
+                    let old = assistants[0];
+                    let new = assistants[1];
+                    assert_eq!(
+                        *split_id.get_or_insert(new.id()),
+                        new.id(),
+                        "multiple boundaries reuse the empty retry block"
+                    );
+                    assert!(
+                        matches!(old, TranscriptItem::Assistant { children, attribution, .. }
+                        if attribution.variant_label() == "base" && matches!(children.as_slice(), [AssistantChild::Text { markdown, .. }, AssistantChild::Tool { call_id }]
+                            if markdown.as_str() == "before steering" && *call_id == call))
+                    );
+                    assert!(
+                        matches!(new, TranscriptItem::Assistant { attribution, .. } if attribution.resolved_model == retry_model)
+                    );
+                    assert_eq!(state.turn_items[&5], old.id());
+                }
+                if stored.seq == 19 {
+                    let ordered = state
+                        .transcript
+                        .iter()
+                        .filter(|item| {
+                            matches!(
+                                item,
+                                TranscriptItem::Assistant { .. }
+                                    | TranscriptItem::ProducerMessage { .. }
+                                    | TranscriptItem::User { .. }
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(
+                        matches!(ordered.as_slice(), [TranscriptItem::Assistant { .. }, TranscriptItem::ProducerMessage { message_id: a, .. }, TranscriptItem::User { .. }, TranscriptItem::ProducerMessage { message_id: b, .. }, TranscriptItem::Assistant { .. }] if *a == control && *b == plugin)
+                    );
+                }
+            }
+            let state = &live.sessions[&session];
+            let before = state.turn_items[&5];
+            let after = state.turn_items[&22];
+            assert_ne!(before, after);
+            assert_eq!(after, state.turn_items[&27]);
+            assert_eq!(state.assistant_metrics.len(), 2);
+            assert_eq!(state.assistant_metrics[&before].timed_turns, 1);
+            assert_eq!(state.assistant_metrics[&before].timed_output_tokens, 4);
+            assert_eq!(
+                state.assistant_metrics[&before].estimated_cost_pico_usd,
+                Some(10)
+            );
+            assert_eq!(state.assistant_metrics[&after].timed_turns, 2);
+            assert_eq!(state.assistant_metrics[&after].timed_output_tokens, 8);
+            assert_eq!(
+                state.assistant_metrics[&after].estimated_cost_pico_usd,
+                Some(20)
+            );
+            assert_eq!(state.tools[&call].status, ToolStatus::Completed);
+            assert!(state.pending_inputs.is_empty());
+            let rendered = snapshot_lines(&cache.layout.lines);
+            let mut cursor = 0;
+            for text in [
+                "before steering",
+                "cancel steering",
+                "user steering",
+                "plugin steering",
+                "after steering",
+                "latest response",
+            ] {
+                cursor += rendered[cursor..]
+                    .find(text)
+                    .unwrap_or_else(|| panic!("missing ordered {text}: {rendered}"))
+                    + text.len();
+            }
+            assert!(!rendered.contains("abandoned partial"));
+        }
+    }
+
+    #[test]
+    fn input_boundary_does_not_relocate_an_already_streaming_attempt() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let streaming = AttemptId::new_v7();
+        let next = AttemptId::new_v7();
+        let message_id = ProducerMessageId::new_v7();
+        let mut events = vec![
+            attempt_started(session, 1, run, first, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                first,
+                2,
+                vec![text_part("committed prefix")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 3, run, streaming, None),
+            text_delta(session, 4, run, streaming, "already streaming"),
+            producer_accepted(
+                session,
+                5,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "test".into(),
+                },
+                ProducerDeliveryMode::Steer,
+                "late input",
+                None,
+            ),
+            event(
+                session,
+                6,
+                run,
+                EventPayload::ProducerMessageAdmitted { message_id },
+            ),
+            text_delta(session, 7, run, streaming, " complete"),
+            turn_committed(
+                session,
+                8,
+                run,
+                streaming,
+                8,
+                vec![text_part("already streaming complete")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 9, run, next, None),
+            turn_committed(
+                session,
+                10,
+                run,
+                next,
+                10,
+                vec![text_part("next response")],
+                Vec::new(),
+                None,
+            ),
+        ];
+        if let EventPayload::ModelTurnCommitted {
+            input_through_seq, ..
+        } = &mut events[7].payload
+        {
+            *input_through_seq = 3;
+        }
+        let mut live = StateStore::default();
+        for stored in &events {
+            assert!(live.apply_event(stored.clone()));
+        }
+        let state = &live.sessions[&session];
+        let projection = assistant_projection(state);
+        assert_eq!(projection.len(), 2);
+        assert!(
+            projection[0]
+                .2
+                .iter()
+                .any(|text| text.contains("committed prefix"))
+        );
+        assert!(
+            projection[0]
+                .2
+                .iter()
+                .any(|text| text.contains("already streaming complete"))
+        );
+        assert_eq!(state.turn_items[&2], state.turn_items[&8]);
+        assert_ne!(state.turn_items[&8], state.turn_items[&10]);
+        let mut replay = StateStore::default();
+        assert!(replay.rebuild_session(session, 0, events));
+        assert_eq!(projection, assistant_projection(&replay.sessions[&session]));
+    }
+
+    #[test]
+    fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() {
+        for existing_run in [false, true] {
+            let session = SessionId::new_v7();
+            let run = run_id();
+            let goal_id = GoalId::new_v7();
+            let reminder_id = ProducerMessageId::new_v7();
+            let attempts = std::array::from_fn::<_, 4, _>(|_| AttemptId::new_v7());
+            let commit = |attempt, turn_seq, input, text| {
+                let mut stored = turn_committed(
+                    session,
+                    0,
+                    run,
+                    attempt,
+                    turn_seq,
+                    vec![text_part(text)],
+                    Vec::new(),
+                    None,
+                );
+                let EventPayload::ModelTurnCommitted {
+                    input_through_seq, ..
+                } = &mut stored.payload
+                else {
+                    unreachable!()
+                };
+                *input_through_seq = input;
+                stored
+            };
+            let mut events = vec![session_created(session, 0)];
+            if existing_run {
+                events.extend([
+                    run_started_with_suffix(session, 0, run, vec![resolved_model(None)]),
+                    attempt_started(session, 0, run, attempts[0], None),
+                    text_delta(session, 0, run, attempts[0], "old committed"),
+                    commit(attempts[0], 1, 2, "old committed"),
+                    attempt_started(session, 0, run, attempts[1], None),
+                    text_delta(session, 0, run, attempts[1], "old partial"),
+                ]);
+            }
+            let activation_index = events.len();
+            events.push(runless_event(
+                session,
+                0,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "finish  the parser".into(),
+                    revision: 1,
+                    selection: None,
+                },
+            ));
+            if existing_run {
+                // This response was already in flight before activation. Its
+                // prior committed prefix and partial must not migrate or vanish.
+                events.extend([
+                    text_delta(session, 0, run, attempts[1], " finished"),
+                    commit(attempts[1], 2, 5, "old partial finished"),
+                ]);
+            }
+            events.push(runless_event(
+                session,
+                0,
+                EventPayload::ProducerMessageAccepted {
+                    message_id: reminder_id,
+                    producer_owner: ProducerOwner::Goal { goal_id },
+                    mode: ProducerDeliveryMode::Steer,
+                    idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new(
+                        "initial goal input",
+                    )
+                    .unwrap(),
+                    body: "INTERNAL GOAL INPUT".into(),
+                    reminder: Some(cookie_agent_protocol::GoalReminderIdentity {
+                        goal_id,
+                        revision: 1,
+                        kind: cookie_agent_protocol::GoalReminderKind::Started,
+                    }),
+                },
+            ));
+            if !existing_run {
+                events.push(run_started_with_suffix(
+                    session,
+                    0,
+                    run,
+                    vec![resolved_model(None)],
+                ));
+            }
+            events.extend([
+                event(
+                    session,
+                    0,
+                    run,
+                    EventPayload::ProducerMessageAdmitted {
+                        message_id: reminder_id,
+                    },
+                ),
+                event(
+                    session,
+                    0,
+                    run,
+                    EventPayload::ProducerMessagesClaimed {
+                        message_ids: vec![reminder_id],
+                    },
+                ),
+            ]);
+            let input = events.len() as u64;
+            events.extend([
+                attempt_started(session, 0, run, attempts[2], None),
+                text_delta(session, 0, run, attempts[2], "new response"),
+                commit(attempts[2], 3, input, "new response"),
+                event(
+                    session,
+                    0,
+                    run,
+                    EventPayload::ProducerMessageConsumed {
+                        message_id: reminder_id,
+                        run_id: run,
+                    },
+                ),
+                event(
+                    session,
+                    0,
+                    run,
+                    EventPayload::ProducerMessagesReleased { claim_seq: input },
+                ),
+                attempt_started(session, 0, run, attempts[3], None),
+                text_delta(session, 0, run, attempts[3], "next response"),
+                commit(attempts[3], 4, input + 5, "next response"),
+            ]);
+            for (index, stored) in events.iter_mut().enumerate() {
+                stored.seq = index as u64 + 1;
+                stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+            }
+            let mut live = StateStore::default();
+            let mut caches = [LayoutCache::default(), LayoutCache::default()];
+            for (index, stored) in events.iter().enumerate() {
+                assert!(live.apply_event(stored.clone()));
+                let mut replay = StateStore::default();
+                assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+                let state = &live.sessions[&session];
+                for (width, cache) in [18, 80].into_iter().zip(&mut caches) {
+                    ensure_cached_transcript_layout(
+                        cache,
+                        session,
+                        state,
+                        None,
+                        None,
+                        width,
+                        &Theme::default(),
+                        &PlainHighlighter,
+                        crate::state::EventLevel::Warning,
+                        0,
+                    );
+                    let rebuilt = transcript_layout_with_level(
+                        &replay.sessions[&session],
+                        None,
+                        width,
+                        &Theme::default(),
+                        &PlainHighlighter,
+                        crate::state::EventLevel::Warning,
+                    );
+                    assert_eq!(
+                        cache.layout.lines, rebuilt.lines,
+                        "seq {} existing {existing_run}",
+                        stored.seq
+                    );
+                    assert_eq!(cache.layout.regions, rebuilt.regions);
+                    assert!(
+                        cache.layout.user_regions.is_empty(),
+                        "goal action is not a model prompt"
+                    );
+                    assert!(
+                        cache
+                            .layout
+                            .lines
+                            .iter()
+                            .all(|line| line.width() <= usize::from(width))
+                    );
+                }
+                if index >= activation_index {
+                    let rendered = snapshot_lines(&caches[1].layout.lines);
+                    let action = rendered.find("/goal finish  the parser").unwrap();
+                    assert_eq!(rendered.matches("/goal finish  the parser").count(), 1);
+                    assert!(rendered.contains("ACTION"));
+                    if stored.seq >= input {
+                        let started = rendered.find("Goal started").unwrap();
+                        assert_eq!(rendered.matches("Goal started").count(), 1);
+                        assert!(action < started);
+                        for text in ["new response", "next response"] {
+                            if let Some(response) = rendered.find(text) {
+                                assert!(started < response);
+                            }
+                        }
+                    } else {
+                        assert!(
+                            !rendered.contains("Goal started"),
+                            "start remains in the pending queue before claim"
+                        );
+                    }
+                    if existing_run {
+                        assert!(rendered.find("old committed").unwrap() < action);
+                        assert!(rendered.find("old partial").unwrap() < action);
+                    }
+                }
+            }
+            let state = &live.sessions[&session];
+            let assistants = assistant_projection(state);
+            let rendered = snapshot_lines(&caches[1].layout.lines);
+            assert_eq!(rendered.matches("Goal started").count(), 1);
+            assert!(!rendered.contains("Continue"));
+            assert_eq!(assistants.len(), if existing_run { 2 } else { 1 });
+            assert!(
+                assistants
+                    .last()
+                    .unwrap()
+                    .2
+                    .iter()
+                    .any(|part| part.contains("new response"))
+            );
+            assert!(
+                assistants
+                    .last()
+                    .unwrap()
+                    .2
+                    .iter()
+                    .any(|part| part.contains("next response"))
+            );
+            assert!(state.pending_inputs.is_empty());
+            assert!(state.voided_inputs.is_empty());
+            assert_eq!(state.goal.as_ref().unwrap().status, GoalStatus::Active);
+            let version = state.version;
+            let item_count = state.transcript.len();
+            assert!(live.apply_event(events[activation_index].clone()));
+            assert_eq!(live.sessions[&session].version, version);
+            assert_eq!(live.sessions[&session].transcript.len(), item_count);
+        }
+    }
+
+    #[test]
+    fn steering_boundaries_split_assistants_in_model_input_order_live_and_replay() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempts = std::array::from_fn::<_, 5, _>(|_| AttemptId::new_v7());
+        let call = ToolCallId::new_v7();
+        let goal_id = GoalId::new_v7();
+        let pause = ProducerMessageId::new_v7();
+        let cancel = ProducerMessageId::new_v7();
+        let control = |message_id, body: &str| EventPayload::ProducerMessageAccepted {
+            message_id,
+            producer_owner: ProducerOwner::GoalControl { goal_id },
+            mode: ProducerDeliveryMode::Steer,
+            idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new(body).unwrap(),
+            body: body.into(),
+            reminder: None,
+        };
+        let commit = |seq, attempt, input, content, variant| {
+            let mut stored = turn_committed(
+                session,
+                seq,
+                run,
+                attempt,
+                seq,
+                content,
+                Vec::new(),
+                variant,
+            );
+            let EventPayload::ModelTurnCommitted {
+                input_through_seq, ..
+            } = &mut stored.payload
+            else {
+                unreachable!()
+            };
+            *input_through_seq = input;
+            stored
+        };
+        let mut events = vec![
+            session_created(session, 1),
+            run_started_with_suffix(session, 2, run, vec![resolved_model(None)]),
+            event(
+                session,
+                3,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "initial request".into(),
+                },
+            ),
+            event(
+                session,
+                4,
+                run,
+                EventPayload::UserInputApplied { user_input_seq: 3 },
+            ),
+            attempt_started(session, 5, run, attempts[0], None),
+            text_delta(session, 6, run, attempts[0], "before steering"),
+            commit(
+                7,
+                attempts[0],
+                4,
+                vec![text_part("before steering"), tool_part("call-one")],
+                None,
+            ),
+            tool_started_at(session, 8, run, call, 7, "call-one", 1, "bash", None),
+            runless_event(
+                session,
+                9,
+                EventPayload::GoalActivated {
+                    goal_id,
+                    objective: "test objective".into(),
+                    revision: 1,
+                    selection: None,
+                },
+            ),
+            runless_event(
+                session,
+                10,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Paused,
+                    revision: 2,
+                    selection: None,
+                },
+            ),
+            // Receipt during tool work is not the model-visible boundary.
+            runless_event(session, 11, control(pause, "pause steering")),
+            event(
+                session,
+                12,
+                run,
+                EventPayload::GoalChecklistRevised {
+                    goal_id,
+                    items: Vec::new(),
+                    revision: 3,
+                },
+            ),
+            tool_terminated(
+                session,
+                13,
+                run,
+                call,
+                7,
+                "call-one",
+                cookie_agent_protocol::ToolTerminationOutcome::Completed,
+            ),
+            event(
+                session,
+                14,
+                run,
+                EventPayload::ProducerMessageAdmitted { message_id: pause },
+            ),
+            event(
+                session,
+                15,
+                run,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![pause],
+                },
+            ),
+            attempt_started(session, 16, run, attempts[1], None),
+            text_delta(session, 17, run, attempts[1], "after pause"),
+            runless_event(
+                session,
+                18,
+                EventPayload::GoalLifecycleChanged {
+                    goal_id,
+                    status: GoalStatus::Cancelled,
+                    revision: 4,
+                    selection: None,
+                },
+            ),
+            runless_event(session, 19, control(cancel, "cancel steering")),
+            text_delta(session, 20, run, attempts[1], " still before cancel"),
+            commit(
+                21,
+                attempts[1],
+                15,
+                vec![text_part("after pause still before cancel")],
+                None,
+            ),
+            // Consumption is recorded after the response, not where it belongs visually.
+            event(
+                session,
+                22,
+                run,
+                EventPayload::ProducerMessageConsumed {
+                    message_id: pause,
+                    run_id: run,
+                },
+            ),
+            event(
+                session,
+                23,
+                run,
+                EventPayload::ProducerMessagesReleased { claim_seq: 15 },
+            ),
+            event(
+                session,
+                24,
+                run,
+                EventPayload::ProducerMessageAdmitted { message_id: cancel },
+            ),
+            event(
+                session,
+                25,
+                run,
+                EventPayload::ProducerMessagesClaimed {
+                    message_ids: vec![cancel],
+                },
+            ),
+            attempt_started(session, 26, run, attempts[2], None),
+            event(
+                session,
+                27,
+                run,
+                EventPayload::UserInputAdmitted {
+                    input: "user steering".into(),
+                },
+            ),
+            commit(28, attempts[2], 25, vec![text_part("after cancel")], None),
+            event(
+                session,
+                29,
+                run,
+                EventPayload::ProducerMessageConsumed {
+                    message_id: cancel,
+                    run_id: run,
+                },
+            ),
+            event(
+                session,
+                30,
+                run,
+                EventPayload::ProducerMessagesReleased { claim_seq: 25 },
+            ),
+            event(
+                session,
+                31,
+                run,
+                EventPayload::UserInputSubmitted {
+                    input: "user steering".into(),
+                },
+            ),
+            event(
+                session,
+                32,
+                run,
+                EventPayload::UserInputApplied { user_input_seq: 31 },
+            ),
+            attempt_started(session, 33, run, attempts[3], Some("high")),
+            text_delta(session, 34, run, attempts[3], "after user"),
+            text_delta(session, 35, run, attempts[3], " appended"),
+            commit(
+                36,
+                attempts[3],
+                32,
+                vec![text_part("after user appended")],
+                Some("high"),
+            ),
+            attempt_started(session, 37, run, attempts[4], Some("high")),
+            text_delta(session, 38, run, attempts[4], "latest turn"),
+            commit(
+                39,
+                attempts[4],
+                36,
+                vec![text_part("latest turn")],
+                Some("high"),
+            ),
+        ];
+        for stored in &mut events {
+            stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+        }
+        let mut live = StateStore::default();
+        let mut caches = [LayoutCache::default(), LayoutCache::default()];
+        let expanded = HashSet::from([BlockId::Tool(call)]);
+        for (index, stored) in events.iter().enumerate() {
+            assert!(live.apply_event(stored.clone()));
+            let state = &live.sessions[&session];
+            let mut replay = StateStore::default();
+            assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+            assert_eq!(
+                assistant_projection(state),
+                assistant_projection(&replay.sessions[&session])
+            );
+            for (width, cache) in [18, 80].into_iter().zip(&mut caches) {
+                ensure_cached_transcript_layout(
+                    cache,
+                    session,
+                    state,
+                    None,
+                    Some(&expanded),
+                    width,
+                    &Theme::default(),
+                    &PlainHighlighter,
+                    crate::state::EventLevel::Warning,
+                    0,
+                );
+                let layout = |state: &SessionState| {
+                    transcript_layout_with_level(
+                        state,
+                        Some(&expanded),
+                        width,
+                        &Theme::default(),
+                        &PlainHighlighter,
+                        crate::state::EventLevel::Warning,
+                    )
+                };
+                let fresh = layout(state);
+                let rebuilt = layout(&replay.sessions[&session]);
+                assert_eq!(
+                    cache.layout.lines, fresh.lines,
+                    "cached seq {} width {width}",
+                    stored.seq
+                );
+                assert_eq!(cache.layout.regions, fresh.regions);
+                assert_eq!(cache.layout.user_regions, fresh.user_regions);
+                assert_eq!(
+                    fresh.lines, rebuilt.lines,
+                    "replay seq {} width {width}",
+                    stored.seq
+                );
+                assert_eq!(fresh.regions, rebuilt.regions);
+                assert_eq!(fresh.user_regions, rebuilt.user_regions);
+                for line in &fresh.lines {
+                    assert!(
+                        line.width() <= usize::from(width),
+                        "seq {} width {width}: {line}",
+                        stored.seq
+                    );
+                }
+            }
+            if stored.seq == 13 {
+                assert_eq!(assistant_projection(state).len(), 1);
+                assert!(state.open_run_assistant.is_some());
+                assert!(state.pending_inputs.is_empty());
+            }
+            if stored.seq == 20 {
+                let projection = assistant_projection(state);
+                assert_eq!(projection.len(), 2, "acceptance must not split streaming");
+                assert!(
+                    projection[1]
+                        .2
+                        .iter()
+                        .any(|text| text.contains("after pause still before cancel"))
+                );
+                let rendered = snapshot_lines(&caches[1].layout.lines);
+                assert!(
+                    !rendered.contains("pause steering"),
+                    "claimed is not consumed"
+                );
+            }
+        }
+        let state = &live.sessions[&session];
+        let conversation = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::User { text, .. } => Some(format!("user: {text}")),
+                TranscriptItem::Assistant {
+                    children,
+                    attribution,
+                    id,
+                    ..
+                } => {
+                    assert_eq!(attribution.agent, agent_id());
+                    let texts = children
+                        .iter()
+                        .filter_map(|child| match child {
+                            AssistantChild::Text { markdown, .. } => Some(markdown.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let metrics = state.assistant_metrics[id];
+                    assert_eq!(metrics.timed_turns, if texts.len() == 2 { 2 } else { 1 });
+                    assert_eq!(metrics.context_tokens, Some(14));
+                    Some(format!("assistant: {}", texts.join(" | ")))
+                }
+                TranscriptItem::ProducerMessage { body, status, .. } => {
+                    assert_eq!(*status, crate::state::ProducerMessageStatus::Consumed);
+                    Some(format!("producer: {body}"))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            conversation,
+            [
+                "user: initial request",
+                "assistant: before steering",
+                "producer: pause steering",
+                "assistant: after pause still before cancel",
+                "producer: cancel steering",
+                "assistant: after cancel",
+                "user: user steering",
+                "assistant: after user appended | latest turn",
+            ]
+        );
+        let first_assistant = state
+            .transcript
+            .iter()
+            .find(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .unwrap();
+        assert!(children_has_tool(first_assistant, call));
+        assert_eq!(state.tools[&call].status, ToolStatus::Completed);
+        assert_eq!(state.turn_items[&7], first_assistant.id());
+        assert_ne!(state.turn_items[&7], state.turn_items[&21]);
+        assert_eq!(state.turn_items[&36], state.turn_items[&39]);
+        assert!(state.pending_inputs.is_empty());
+        assert!(state.voided_inputs.is_empty());
+        let layout = &caches[1].layout;
+        assert_eq!(
+            layout
+                .user_regions
+                .iter()
+                .map(|region| region.seq)
+                .collect::<Vec<_>>(),
+            [3, 31]
+        );
+        let rendered = snapshot_lines(&layout.lines);
+        assert_eq!(
+            rendered.matches("goal control · steer · consumed").count(),
+            2
+        );
+        assert!(!rendered.contains("Continue"));
+        assert_eq!(
+            rendered
+                .matches("primary • gateway/arbitrary-model[base]")
+                .count(),
+            3
+        );
+        assert_eq!(
+            rendered
+                .matches("primary • gateway/arbitrary-model[high]")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -12436,6 +13571,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics() {
+        use cookie_agent_protocol::{GoalReminderIdentity, GoalReminderKind};
+
+        for (kind, label, body) in [
+            (
+                GoalReminderKind::Started,
+                "Goal started",
+                "Continue the root goal.",
+            ),
+            (
+                GoalReminderKind::Continuation,
+                "Continue",
+                "Goal started. Pursue the new root objective below.",
+            ),
+        ] {
+            let (mut app, session, run) = app_with_active_run().await;
+            let message_id = ProducerMessageId::new_v7();
+            let goal_id = GoalId::new_v7();
+            let events = [
+                producer_accepted(
+                    session,
+                    1,
+                    message_id,
+                    ProducerOwner::Goal { goal_id },
+                    ProducerDeliveryMode::Steer,
+                    body,
+                    Some(GoalReminderIdentity {
+                        goal_id,
+                        revision: 1,
+                        kind,
+                    }),
+                ),
+                event(
+                    session,
+                    2,
+                    run,
+                    EventPayload::ProducerMessageAdmitted { message_id },
+                ),
+                event(
+                    session,
+                    3,
+                    run,
+                    EventPayload::ProducerMessagesClaimed {
+                        message_ids: vec![message_id],
+                    },
+                ),
+                event(
+                    session,
+                    4,
+                    run,
+                    EventPayload::ProducerMessagesReleased { claim_seq: 3 },
+                ),
+                event(
+                    session,
+                    5,
+                    run,
+                    EventPayload::ProducerMessagesClaimed {
+                        message_ids: vec![message_id],
+                    },
+                ),
+                turn_committed(
+                    session,
+                    6,
+                    run,
+                    AttemptId::new_v7(),
+                    1,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                ),
+                event(
+                    session,
+                    7,
+                    run,
+                    EventPayload::ProducerMessagesReleased { claim_seq: 5 },
+                ),
+                event(
+                    session,
+                    8,
+                    run,
+                    EventPayload::ProducerMessageConsumed {
+                        message_id,
+                        run_id: run,
+                    },
+                ),
+            ];
+            let mut cache = LayoutCache::default();
+            for stored in events {
+                assert!(app.store.apply_event(stored));
+                let state = &app.store.sessions[&session];
+                let status = state
+                    .transcript
+                    .iter()
+                    .find_map(|item| match item {
+                        TranscriptItem::ProducerMessage { status, .. } => Some(*status),
+                        _ => None,
+                    })
+                    .unwrap();
+                let entries = app.selected_queue_entries();
+                let queued = matches!(
+                    status,
+                    ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted
+                );
+                assert_eq!(entries.len(), usize::from(queued));
+                if queued {
+                    assert_eq!(entries[0].kind, QueueEntryKind::Producer(message_id));
+                    assert!(entries[0].preview.ends_with(label));
+                }
+                ensure_cached_transcript_layout(
+                    &mut cache,
+                    session,
+                    state,
+                    None,
+                    None,
+                    80,
+                    &Theme::default(),
+                    &PlainHighlighter,
+                    crate::state::EventLevel::Warning,
+                    0,
+                );
+                let rendered = snapshot_lines(&cache.layout.lines);
+                let visible = status == ProducerMessageStatus::Consumed
+                    || (kind == GoalReminderKind::Started
+                        && status == ProducerMessageStatus::Claimed);
+                assert_eq!(rendered.matches(label).count(), usize::from(visible));
+                assert!(
+                    !rendered.contains(body),
+                    "metadata, not the opposite body prefix, selects the label"
+                );
+                assert!(cache.layout.user_regions.is_empty());
+                assert!(state.pending_inputs.is_empty());
+                assert!(state.voided_inputs.is_empty());
+                if visible {
+                    assert!(
+                        entries.is_empty(),
+                        "start cannot appear twice across queue and transcript"
+                    );
+                    assert!(
+                        rendered.contains(if status == ProducerMessageStatus::Claimed {
+                            "claimed"
+                        } else {
+                            "consumed"
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn selected_queue_entries_merge_users_and_all_producer_sources_by_sequence() {
         let (mut app, session, run) = app_with_active_run().await;
         let plugin_id = ProducerMessageId::new_v7();
@@ -12484,6 +13769,7 @@ mod tests {
             Some(cookie_agent_protocol::GoalReminderIdentity {
                 goal_id,
                 revision: 3,
+                kind: cookie_agent_protocol::GoalReminderKind::Continuation,
             }),
         )));
         assert!(app.store.apply_event(producer_accepted(
@@ -12528,10 +13814,7 @@ mod tests {
             entries[2].preview,
             format!("delegation {invocation_short} | queue | admitted: delegation body")
         );
-        assert_eq!(
-            entries[3].preview,
-            "goal | queue | pending: Goal continuation reminder"
-        );
+        assert_eq!(entries[3].preview, "goal | queue | pending: Continue");
         assert_eq!(
             entries[4].preview,
             "goal control | steer | pending: Goal paused. Stop pursuing the objective."
@@ -12555,7 +13838,7 @@ mod tests {
         assert!(frame.contains(&format!(
             "delegation {invocation_short} | queue | admitted: delegation body"
         )));
-        assert!(frame.contains("goal | queue | pending: Goal continuation reminder"));
+        assert!(frame.contains("goal | queue | pending: Continue"));
         assert!(!frame.contains("NOISY REMINDER BODY"));
     }
 
@@ -12717,7 +14000,7 @@ mod tests {
             1
         );
         assert!(history.contains("goal control"));
-        assert!(!history.contains("Goal continuation reminder"));
+        assert!(!history.contains("Continue"));
         assert!(!history.contains("plugin pending body"));
         assert!(app.input.as_str().is_empty());
     }

@@ -225,10 +225,15 @@ pub enum TranscriptItem {
     Goal {
         id: u64,
         seq: u64,
+        /// The activation event projects the accepted goal action, not a user
+        /// prompt sent to the model. Its producer owns the start message.
+        activation: bool,
         goal: GoalState,
     },
     ProducerMessage {
         id: u64,
+        /// Acceptance sequence for queue ordering. The row itself moves to
+        /// the effective admission boundary in the conversation.
         seq: u64,
         /// Durable timestamp of the accepting event, retained independently
         /// from the pruned generation-timing index for stable queue age.
@@ -378,9 +383,14 @@ impl TranscriptItem {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AttemptProjection {
     item_id: u64,
+    run_id: Option<RunId>,
+    /// Retained independently of the currently open run segment so a later
+    /// input boundary cannot make this attempt erase older committed children.
+    committed_prefix: usize,
+    attribution_marker: Option<usize>,
 }
 
-/// The single assistant transcript item accumulating attempts for one run.
+/// The assistant item accumulating attempts until the run's next input boundary.
 #[derive(Clone, Debug)]
 pub(crate) struct RunAssistantProjection {
     pub(crate) run_id: RunId,
@@ -536,6 +546,8 @@ pub struct SessionState {
     pub(crate) assistant_metrics: HashMap<u64, AssistantTurnMetrics>,
     pub(crate) open_run_assistant: Option<RunAssistantProjection>,
     pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
+    /// The latest attempt until its first delta, commit, or abandonment.
+    pub(crate) pending_attempt: Option<AttemptId>,
     pub tools: HashMap<ToolCallId, ToolCallState>,
     /// Buffered tool rows awaiting their committed placeholder, keyed by
     /// the owning turn's content index so starts/completions cannot reorder.
@@ -1274,6 +1286,7 @@ fn reduce_event(
             push_item(state, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
+                activation: true,
                 goal,
             });
         }
@@ -1300,6 +1313,7 @@ fn reduce_event(
             push_item(state, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
+                activation: false,
                 goal: snapshot,
             });
         }
@@ -1326,6 +1340,7 @@ fn reduce_event(
             push_item(state, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
+                activation: false,
                 goal: snapshot,
             });
         }
@@ -1406,7 +1421,9 @@ fn reduce_event(
             } else {
                 ProducerMessageStatus::Claimed
             };
+            let transcript_index = message.transcript_index;
             update_producer_message_status(state, message_id, status);
+            move_input_to_boundary(state, transcript_index, Some(run_id), timestamp);
         }
         EventPayload::ProducerMessagesClaimed { message_ids } => {
             let Some(run_id) = run_id else {
@@ -1545,6 +1562,7 @@ fn reduce_event(
         } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
+            state.pending_attempt = None;
             state.active_run = run_id;
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
@@ -1605,6 +1623,7 @@ fn reduce_event(
                 .run_agent
                 .clone()
                 .unwrap_or_else(|| AgentId::new("unknown").expect("static agent id"));
+            let mut attribution_marker = None;
             let item_id = if let Some(run_id) = run_id {
                 if let Some(projection) = state
                     .open_run_assistant
@@ -1614,7 +1633,8 @@ fn reduce_event(
                     let item_id = projection.item_id;
                     let changed = projection.current_model != resolved_model;
                     if changed {
-                        append_attribution(state, item_id, resolved_model.clone());
+                        attribution_marker =
+                            append_attribution(state, item_id, resolved_model.clone());
                     }
                     state
                         .open_run_assistant
@@ -1647,11 +1667,26 @@ fn reduce_event(
                     },
                 )
             };
-            state
-                .attempts
-                .insert(attempt_id, AttemptProjection { item_id });
+            let committed_prefix = state
+                .open_run_assistant
+                .as_ref()
+                .filter(|projection| projection.item_id == item_id)
+                .map_or(0, |projection| projection.committed_prefix);
+            state.attempts.insert(
+                attempt_id,
+                AttemptProjection {
+                    item_id,
+                    run_id,
+                    committed_prefix,
+                    attribution_marker,
+                },
+            );
+            state.pending_attempt = Some(attempt_id);
         }
         EventPayload::TextDelta { attempt_id, text } => {
+            if state.pending_attempt == Some(attempt_id) {
+                state.pending_attempt = None;
+            }
             let Some(item_id) = state
                 .attempts
                 .get(&attempt_id)
@@ -1669,6 +1704,9 @@ fn reduce_event(
             );
         }
         EventPayload::ReasoningDelta { attempt_id, text } => {
+            if state.pending_attempt == Some(attempt_id) {
+                state.pending_attempt = None;
+            }
             let Some(item_id) = state
                 .attempts
                 .get(&attempt_id)
@@ -1687,15 +1725,13 @@ fn reduce_event(
         }
         EventPayload::AttemptAbandoned { attempt_id } => {
             close_open_assistant(state, timestamp);
-            if let Some(attempt) = state.attempts.remove(&attempt_id) {
-                let committed_prefix = state
-                    .open_run_assistant
-                    .as_ref()
-                    .filter(|projection| projection.item_id == attempt.item_id)
-                    .map(|projection| projection.committed_prefix);
-                if let Some(committed_prefix) = committed_prefix {
-                    prune_abandoned_attempt(state, attempt.item_id, committed_prefix);
-                }
+            if state.pending_attempt == Some(attempt_id) {
+                state.pending_attempt = None;
+            }
+            if let Some(attempt) = state.attempts.remove(&attempt_id)
+                && attempt.run_id.is_some()
+            {
+                prune_abandoned_attempt(state, attempt.item_id, attempt.committed_prefix);
             }
             push_event(state, EventLevel::Warning, "model attempt abandoned".into());
         }
@@ -1708,6 +1744,9 @@ fn reduce_event(
             warnings,
             ..
         } => {
+            if state.pending_attempt == Some(attempt_id) {
+                state.pending_attempt = None;
+            }
             if let Some(run_id) = run_id {
                 consume_producer_messages_through(state, run_id, input_through_seq);
             }
@@ -1740,6 +1779,7 @@ fn reduce_event(
             // event arrives.
             if let Some(projection) = state.attempts.get(&attempt_id) {
                 let item_id = projection.item_id;
+                let committed_prefix = projection.committed_prefix;
                 let metrics = state.assistant_metrics.entry(item_id).or_default();
                 if let Some(generation) = generation {
                     metrics.timed_output_tokens = metrics
@@ -1758,7 +1798,14 @@ fn reduce_event(
                 }
                 mark_committed(state, item_id, model_turn_seq, &resolved_model);
                 index_turn_tool_content(state, model_turn_seq, &turn);
-                rebuild_committed_children(state, item_id, model_turn_seq, sequence, &turn);
+                rebuild_committed_children(
+                    state,
+                    item_id,
+                    model_turn_seq,
+                    sequence,
+                    committed_prefix,
+                    &turn,
+                );
             } else {
                 index_turn_tool_content(state, model_turn_seq, &turn);
             }
@@ -2043,6 +2090,7 @@ fn reduce_event(
         EventPayload::RunCompleted { .. } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
+            state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -2056,6 +2104,7 @@ fn reduce_event(
         EventPayload::RunFailed { error } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
+            state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -2069,6 +2118,7 @@ fn reduce_event(
         EventPayload::RunCancelled { reason } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
+            state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -2089,6 +2139,7 @@ fn reduce_event(
         EventPayload::RunInterrupted { reason } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
+            state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
             state.pending_tool_rows.clear();
@@ -2262,7 +2313,13 @@ fn reduce_event(
             close_open_assistant(state, timestamp);
             state.active_run = None;
         }
-        EventPayload::UserInputApplied { .. } => close_open_assistant(state, timestamp),
+        EventPayload::UserInputApplied { user_input_seq } => {
+            if let Some(index) = state.transcript.iter().position(
+                |item| matches!(item, TranscriptItem::User { seq, .. } if *seq == user_input_seq),
+            ) {
+                move_input_to_boundary(state, index, run_id, timestamp);
+            }
+        }
         EventPayload::SessionCreated {
             cwd_identity,
             creation_agent,
@@ -2288,6 +2345,13 @@ fn reduce_event(
                     .entry(item_id)
                     .or_default()
                     .record_cost(estimated_cost_pico_usd);
+                if let Some(TranscriptItem::Assistant { version, .. }) = state
+                    .transcript
+                    .iter_mut()
+                    .find(|item| item.id() == item_id)
+                {
+                    *version = version.wrapping_add(1);
+                }
             }
         }
         EventPayload::MessageInjected { role, input } => {
@@ -2369,6 +2433,91 @@ fn valid_producer_reminder_owner(
     }
 }
 
+/// Inputs end run-level grouping. Retries can start before input promotion;
+/// only a retry with no output can move to the new segment.
+fn move_input_to_boundary(
+    state: &mut SessionState,
+    index: usize,
+    run_id: Option<RunId>,
+    timestamp: jiff::Timestamp,
+) {
+    close_open_assistant(state, timestamp);
+    let pending = state.pending_attempt.and_then(|attempt_id| {
+        let attempt = *state.attempts.get(&attempt_id)?;
+        let projection = state.open_run_assistant.as_ref()?;
+        (Some(projection.run_id) == run_id && projection.item_id == attempt.item_id)
+            .then(|| (attempt_id, attempt, projection.clone()))
+    });
+    state.open_run_assistant = None;
+    move_transcript_item_to_end(state, index);
+    if let Some((attempt_id, attempt, projection)) = pending {
+        rebind_pending_attempt(state, attempt_id, attempt, projection);
+    }
+}
+
+fn rebind_pending_attempt(
+    state: &mut SessionState,
+    attempt_id: AttemptId,
+    attempt: AttemptProjection,
+    mut projection: RunAssistantProjection,
+) {
+    let index = state
+        .transcript
+        .iter()
+        .position(|item| item.id() == attempt.item_id)
+        .expect("pending attempt owns an assistant item");
+    let TranscriptItem::Assistant {
+        attribution,
+        children,
+        committed_turn_seq,
+        version,
+        ..
+    } = &mut state.transcript[index]
+    else {
+        unreachable!("pending attempt owns an assistant item")
+    };
+    let new_attribution = FrozenAssistantAttribution {
+        agent: attribution.agent.clone(),
+        resolved_model: projection.current_model.clone(),
+    };
+    // A fallback marker belongs to this unstreamed retry, not the old block.
+    if let Some(marker) = attempt.attribution_marker {
+        children.remove(marker);
+        *version = version.wrapping_add(1);
+    }
+    let reuse_empty = children.is_empty() && committed_turn_seq.is_none();
+    if reuse_empty {
+        *attribution = new_attribution;
+        *version = version.wrapping_add(1);
+        move_transcript_item_to_end(state, index);
+    } else {
+        projection.item_id = open_assistant_item(state, new_attribution);
+    }
+    projection.committed_prefix = 0;
+    state.attempts.insert(
+        attempt_id,
+        AttemptProjection {
+            item_id: projection.item_id,
+            run_id: Some(projection.run_id),
+            committed_prefix: 0,
+            attribution_marker: None,
+        },
+    );
+    state.open_run_assistant = Some(projection);
+}
+
+fn move_transcript_item_to_end(state: &mut SessionState, index: usize) {
+    state.transcript[index..].rotate_left(1);
+    let last = state.transcript.len() - 1;
+    for message in state.producer_messages.values_mut() {
+        if message.transcript_index == index {
+            message.transcript_index = last;
+        } else if message.transcript_index > index {
+            message.transcript_index -= 1;
+        }
+    }
+}
+
 fn producer_message_status(message: &ProducerMessageProjection) -> ProducerMessageStatus {
     if message.consumed_run.is_some() {
         ProducerMessageStatus::Consumed
@@ -2439,7 +2588,7 @@ fn consume_producer_messages_through(
     }
 }
 
-/// Open a fresh assistant item for a run or run-less streaming attempt.
+/// Open a fresh assistant item for a run segment or run-less streaming attempt.
 fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAttribution) -> u64 {
     state.open_assistant = None;
     push_item(state, |id| TranscriptItem::Assistant {
@@ -2456,7 +2605,11 @@ fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAtt
         .id()
 }
 
-fn append_attribution(state: &mut SessionState, item_id: u64, resolved_model: ResolvedModelRef) {
+fn append_attribution(
+    state: &mut SessionState,
+    item_id: u64,
+    resolved_model: ResolvedModelRef,
+) -> Option<usize> {
     if let Some(TranscriptItem::Assistant {
         version, children, ..
     }) = state
@@ -2464,9 +2617,12 @@ fn append_attribution(state: &mut SessionState, item_id: u64, resolved_model: Re
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
+        let index = children.len();
         children.push(AssistantChild::Attribution { resolved_model });
         *version = version.wrapping_add(1);
+        return Some(index);
     }
+    None
 }
 
 fn prune_abandoned_attempt(state: &mut SessionState, item_id: u64, committed_prefix: usize) {
@@ -2552,6 +2708,7 @@ fn rebuild_committed_children(
     item_id: u64,
     model_turn_seq: u64,
     sequence: u64,
+    committed_prefix: usize,
     turn: &PersistedModelTurn,
 ) {
     state.open_assistant = None;
@@ -2617,12 +2774,7 @@ fn rebuild_committed_children(
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
-        let committed_prefix = state
-            .open_run_assistant
-            .as_ref()
-            .filter(|projection| projection.item_id == item_id)
-            .map_or(0, |projection| projection.committed_prefix)
-            .min(existing.len());
+        let committed_prefix = committed_prefix.min(existing.len());
         // Streamed thinking parts are superseded by their committed
         // counterparts; their sealed durations transfer to the committed
         // thinking children in order so "thought for Ns" survives the swap.
@@ -3798,6 +3950,74 @@ mod tests {
     }
 
     #[test]
+    fn input_rows_follow_application_order_without_changing_queue_identity() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let first = ProducerMessageId::new_v7();
+        let second = ProducerMessageId::new_v7();
+        let owner = ProducerOwner::Plugin {
+            plugin: "test".into(),
+        };
+        let events = [
+            accepted_message(first, owner.clone(), "first", None),
+            accepted_message(second, owner, "second", None),
+            EventPayload::UserInputSubmitted {
+                input: "user input".into(),
+            },
+            EventPayload::ProducerMessageAdmitted { message_id: second },
+            EventPayload::UserInputApplied { user_input_seq: 3 },
+            EventPayload::ProducerMessageAdmitted { message_id: first },
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![second, first],
+            },
+            committed_turn(7),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, payload)| stored_event(session_id, Some(run_id), index as u64 + 1, payload))
+        .collect::<Vec<_>>();
+        let state = reduce_session_events(session_id, 0, &events);
+        let inputs = state
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::User { .. } | TranscriptItem::ProducerMessage { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(inputs.as_slice(), [
+            TranscriptItem::ProducerMessage { message_id: a, seq: 2, status: ProducerMessageStatus::Consumed, .. },
+            TranscriptItem::User { seq: 3, .. },
+            TranscriptItem::ProducerMessage { message_id: b, seq: 1, status: ProducerMessageStatus::Consumed, .. },
+        ] if *a == second && *b == first));
+        // Rotation changes positions, not IDs, queue ages, or the producer index.
+        for message_id in [first, second] {
+            let message = &state.producer_messages[&message_id];
+            let TranscriptItem::ProducerMessage {
+                message_id: row_id,
+                accepted_at,
+                ..
+            } = &state.transcript[message.transcript_index]
+            else {
+                panic!("producer row")
+            };
+            assert_eq!(*row_id, message_id);
+            assert_eq!(
+                *accepted_at,
+                jiff::Timestamp::new(message.accepted_seq as i64, 0).unwrap()
+            );
+        }
+        assert_eq!(
+            inputs.iter().map(|item| item.id()).collect::<Vec<_>>(),
+            [2, 3, 1]
+        );
+        assert!(state.pending_inputs.is_empty());
+        assert!(state.voided_inputs.is_empty());
+    }
+
+    #[test]
     fn valid_producer_admission_marks_initial_input_and_promotes_pending_user_input() {
         let session_id = SessionId::new_v7();
         let run_id = RunId::new_v7();
@@ -4076,6 +4296,7 @@ mod tests {
                     reminder: Some(GoalReminderIdentity {
                         goal_id,
                         revision: 1,
+                        kind: cookie_agent_protocol::GoalReminderKind::Continuation,
                     }),
                     producer_owner: None,
                 },
@@ -4103,6 +4324,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 7,
+            kind: cookie_agent_protocol::GoalReminderKind::Continuation,
         };
         let mut state = SessionState::default();
 
@@ -4170,6 +4392,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 3,
+            kind: cookie_agent_protocol::GoalReminderKind::Continuation,
         };
         let events = vec![
             stored_event(
@@ -4240,6 +4463,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 4,
+            kind: cookie_agent_protocol::GoalReminderKind::Continuation,
         };
         let state = reduce_session_events(
             session_id,
@@ -4541,6 +4765,7 @@ mod tests {
         let reminder = GoalReminderIdentity {
             goal_id,
             revision: 8,
+            kind: cookie_agent_protocol::GoalReminderKind::Continuation,
         };
         let plugin = ProducerOwner::Plugin {
             plugin: "jobs".into(),
@@ -4932,7 +5157,7 @@ mod tests {
     }
 
     #[test]
-    fn producer_acceptance_time_and_order_survive_timing_pruning_and_replay() {
+    fn producer_queue_identity_survives_admission_reordering_timing_pruning_and_replay() {
         let session_id = SessionId::new_v7();
         let run_id = RunId::new_v7();
         let first_message_id = ProducerMessageId::new_v7();
@@ -4986,19 +5211,19 @@ mod tests {
             producer_rows(&state).as_slice(),
             [
                 TranscriptItem::ProducerMessage {
-                    id: 1,
-                    seq: 1,
-                    accepted_at: first_accepted_at,
-                    message_id: row_first_id,
-                    status: ProducerMessageStatus::Consumed,
-                    ..
-                },
-                TranscriptItem::ProducerMessage {
                     id: 2,
                     seq: 2,
                     accepted_at: second_accepted_at,
                     message_id: row_second_id,
                     status: ProducerMessageStatus::Pending,
+                    ..
+                },
+                TranscriptItem::ProducerMessage {
+                    id: 1,
+                    seq: 1,
+                    accepted_at: first_accepted_at,
+                    message_id: row_first_id,
+                    status: ProducerMessageStatus::Consumed,
                     ..
                 }
             ] if *row_first_id == first_message_id
@@ -5177,7 +5402,7 @@ mod tests {
             provider_metadata: BTreeMap::new(),
             native_replay: None,
         };
-        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+        rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
         state.open_assistant = Some(stale_open);
 
         append_assistant_delta(
@@ -5348,7 +5573,7 @@ mod tests {
             native_replay: None,
         };
 
-        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+        rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
 
         let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
             panic!("assistant item")
@@ -5609,7 +5834,7 @@ mod tests {
             provider_metadata: BTreeMap::new(),
             native_replay: None,
         };
-        rebuild_committed_children(&mut state, item_id, 1, 20, &turn);
+        rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
         // The streamed part id is gone; the committed child carries the time.
         assert_eq!(state.thinking_duration(item_id, 10), None);
         let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {

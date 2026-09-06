@@ -316,6 +316,19 @@ checklist edit is not completion. Durable send idempotency uses a fresh
 message ID for each continuation attempt, distinct from the pending
 reminder's coalescing key.
 
+`GoalReminderIdentity.kind` distinguishes `Started` from `Continuation` (wire
+values `started` and `continuation`). The initial message begins "Goal started.
+Pursue the new root objective below." Subsequent messages begin "Continue the
+root goal." Both retain the full state, checklist bootstrap instruction when
+needed, and evidence-verification guidance.
+
+A same-goal reminder must be consumed through committed model-input coverage
+before subsequent messages become continuations. Acceptance, admission, claims,
+discarded messages, and `GoalControl` notifications do not establish this fact.
+The projection therefore preserves the distinction across restart and resume
+and resets it for a new goal ID. Missing `kind` in legacy stored reminders
+defaults to `Continuation`; coalescing remains keyed by goal ID and revision.
+
 ### 4.4 Pause / cancel / complete
 
 `pause`, `cancel`, and `completed` each unregister the goal producer and

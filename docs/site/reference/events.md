@@ -112,11 +112,16 @@ sends while a run is active. Registration records are never session events.
 continuation reminders. These accepted messages survive goal-controller teardown
 and reminder invalidation.
 
-The optional accepted-event `reminder: GoalReminderIdentity { goal_id, revision }`
-identifies a goal reminder; if present, its goal must match the goal owner. Its
+The optional accepted-event
+`reminder: GoalReminderIdentity { goal_id, revision, kind }` identifies a goal
+reminder; if present, its goal must match the goal owner. `kind` is `started` or
+`continuation`, defaulting to `continuation` when absent from legacy events. Its
 body must contain the full objective and checklist, including finished items and
 revision. Each continuation attempt has a fresh message ID/idempotency key even
 at an unchanged revision. A consumed reminder cannot suppress later continuation.
+New goals use `started` until a same-goal reminder is covered by committed model
+input; acceptance, claims, discarded startup messages, and lifecycle-control
+notifications alone do not switch subsequent reminders to `continuation`.
 
 `producer_message_admitted` links the accepted body to a run without duplicating
 user-input storage or changing existing input events. Its physical sequence is

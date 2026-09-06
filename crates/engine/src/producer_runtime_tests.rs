@@ -1,12 +1,15 @@
 use super::*;
 
 use cookie_agent_protocol::{
-    EventOrigin, GoalItem, GoalLifecycleAction, GoalStatus, ProducerDeliveryMode,
+    EventOrigin, GoalItem, GoalLifecycleAction, GoalReminderKind, GoalStatus, ProducerDeliveryMode,
     ProducerIdempotencyKey, ProducerOwner, SessionGoalGetParams, SessionGoalLifecycleParams,
     SessionGoalSetParams, SessionProducersParams,
 };
 
 use crate::runtime::producers::ProducerAuthority;
+
+#[path = "goal_reminder_runtime_tests.rs"]
+mod goal_reminder_runtime_tests;
 
 fn producer_authority() -> ProducerAuthority {
     ProducerAuthority {
@@ -1276,6 +1279,7 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         Some(cookie_agent_protocol::GoalReminderIdentity {
             goal_id: goal.goal_id,
             revision: goal.revision,
+            kind: GoalReminderKind::Started,
         })
     );
     let reminder_json: serde_json::Value = serde_json::from_str(
@@ -1288,6 +1292,7 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     .expect("goal reminder JSON");
     assert_eq!(reminder_json, serde_json::to_value(&goal).unwrap());
     assert!(first_record.body.contains(&goal.objective));
+    assert!(first_record.body.starts_with("Goal started."));
     assert!(first_record.body.contains("Build release artifacts"));
     assert!(first_record.body.contains("Verify production smoke tests"));
     assert!(first_record.body.contains(&goal.goal_id.to_string()));
@@ -1324,7 +1329,7 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         session_id,
         "fresh unchanged-revision reminder",
         |event| {
-            matches!(event.payload, EventPayload::ProducerMessageAdmitted { message_id } if message_id != first_id && producer_projection(&fixture.engine, session_id).messages.iter().any(|message| message.message_id == message_id && message.reminder == first_record.reminder))
+            matches!(event.payload, EventPayload::ProducerMessageAdmitted { message_id } if message_id != first_id && producer_projection(&fixture.engine, session_id).messages.iter().any(|message| message.message_id == message_id && message.reminder.is_some_and(|reminder| reminder.goal_id == goal.goal_id && reminder.revision == goal.revision && reminder.kind == GoalReminderKind::Continuation)))
         },
     )
     .await;
@@ -1337,14 +1342,15 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     };
     assert_ne!(second_id, first_id);
     assert_ne!(second_run, first_run);
+    let second_record = producer_projection(&fixture.engine, session_id)
+        .messages
+        .into_iter()
+        .find(|message| message.message_id == second_id)
+        .expect("second reminder record");
+    assert!(second_record.body.starts_with("Continue the root goal."));
     assert_eq!(
-        producer_projection(&fixture.engine, session_id)
-            .messages
-            .iter()
-            .find(|message| message.message_id == second_id)
-            .expect("second reminder record")
-            .body,
-        first_record.body
+        second_record.body.lines().skip(1).collect::<Vec<_>>(),
+        first_record.body.lines().skip(1).collect::<Vec<_>>()
     );
 
     // Hold the next request before it claims the already-admitted reminder.
@@ -1504,6 +1510,22 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     );
     let requests = captured.await.expect("goal reminder requests");
     assert_eq!(requests.len(), 3);
+    for (request, expected) in requests[..2]
+        .iter()
+        .zip([&first_record.body, &second_record.body])
+    {
+        let last =
+            scripted_effective_last_message(request.as_bytes()).expect("model request message");
+        let text = match &last["content"] {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>(),
+            content => panic!("unexpected message content: {content}"),
+        };
+        assert!(text.contains(expected), "model-visible reminder: {text}");
+    }
     for request in &requests[..2] {
         assert!(request.contains(&goal.objective));
         assert!(request.contains("Build release artifacts"));

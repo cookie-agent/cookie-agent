@@ -72,7 +72,7 @@ Completion has one automatic rule. When a checklist update leaves the
 checklist **non-empty and every item finished**, the goal is recorded as
 completed. An empty checklist preserves the current active or paused state and
 never completes a goal: activating a goal with no checklist yet still starts
-work, and the continuation reminder asks the agent to establish the checklist.
+work, and the initial goal message asks the agent to establish the checklist.
 
 Checklist updates are also preserved while a goal is paused, including an
 all-finished update, which records completion without scheduling any further
@@ -80,10 +80,17 @@ work.
 
 ## Continuations
 
-While a goal is active, the engine can wake an idle session with a goal
-continuation reminder that carries the full objective and the entire
-checklist. A continuation is scheduled only when **all** of the following
-hold:
+While a goal is active, the engine can wake an idle session with a message
+carrying the full objective and the entire checklist. The first delivery says
+**Goal started** and asks the agent to establish the checklist if it is empty.
+Later reminders say **Continue the root goal**.
+
+The distinction comes from committed model input, not from merely accepting or
+claiming a queued reminder. If the startup message is discarded before delivery,
+the next eligible message still says **Goal started**. A consumed introduction
+survives restart and pause/resume, while activating a new goal starts fresh.
+
+A goal message is scheduled only when **all** of the following hold:
 
 - the goal is active, and the checklist is empty or has unfinished items;
 - the session is idle (no active run);

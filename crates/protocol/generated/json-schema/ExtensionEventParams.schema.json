@@ -4058,12 +4058,16 @@
       ]
     },
     "GoalReminderIdentity": {
-      "description": "Pending reminder coalescing identity, NOT a durable send idempotency key.\nAfter consumption another continuation at the same revision uses a fresh send.",
+      "description": "Pending reminder metadata, NOT a durable send idempotency key.\nCoalescing uses the goal ID and revision, independently of the presentation kind.\nAfter consumption another continuation at the same revision uses a fresh send.",
       "type": "object",
       "properties": {
         "goal_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/GoalReminderKind",
+          "default": "continuation"
         },
         "revision": {
           "type": "integer",
@@ -4075,6 +4079,14 @@
       "required": [
         "goal_id",
         "revision"
+      ]
+    },
+    "GoalReminderKind": {
+      "description": "Whether a reminder introduces the objective or continues previously consumed work.\nLegacy reminder events always represented continuations.",
+      "type": "string",
+      "enum": [
+        "started",
+        "continuation"
       ]
     },
     "GoalStatus": {
