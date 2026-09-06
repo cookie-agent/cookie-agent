@@ -2093,9 +2093,8 @@ fn assistant_child_layout(
 fn tool_icon(title: &str) -> &'static str {
     match title {
         "bash" => "💻",
-        "read" => ">",
-        "write" => "📝",
-        "edit" => "✏️",
+        "read" => "📖",
+        "write" | "edit" => "✏️",
         "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => "🤖",
         "skill" => "✨",
         "goal_get" | "goal_update" => "🎯",
@@ -16418,8 +16417,8 @@ mod tests {
     fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
         for (name, icon) in [
             ("bash", "💻"),
-            ("read", ">"),
-            ("write", "📝"),
+            ("read", "📖"),
+            ("write", "✏️"),
             ("edit", "✏️"),
             ("delegate_subagent", "🤖"),
             ("get_subagent_result", "🤖"),
@@ -16504,7 +16503,7 @@ mod tests {
     }
 
     #[test]
-    fn read_rows_render_arrow_header_and_hide_duplicate_argument_lines() {
+    fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
         let mut state = read_tool_state(
             "src/main.rs",
             ToolStatus::Completed,
@@ -16513,11 +16512,11 @@ mod tests {
         let id = read_tool_id(&state);
         state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/main.rs"));
         let collapsed = transcript_layout(&state, None, 80);
-        assert!(snapshot_lines(&collapsed.lines).contains("> ▸ Read src/main.rs"));
+        assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ Read src/main.rs"));
         let expanded = HashSet::from([BlockId::Tool(id)]);
         let layout = transcript_layout(&state, Some(&expanded), 80);
         let text = snapshot_lines(&layout.lines);
-        assert!(text.contains("> ▾ Read src/main.rs"));
+        assert!(text.contains("📖 ▾ Read src/main.rs"));
         assert!(!text.contains("arguments:"));
         assert!(!text.contains("Read file src/main.rs"));
         assert_eq!(text.matches("src/main.rs").count(), 1);
@@ -16535,7 +16534,7 @@ mod tests {
             (layout.lines.len(), 0),
             &Theme::default(),
         );
-        assert!(copied.contains("> ▾ Read src/main.rs"));
+        assert!(copied.contains("📖 ▾ Read src/main.rs"));
     }
 
     #[tokio::test]

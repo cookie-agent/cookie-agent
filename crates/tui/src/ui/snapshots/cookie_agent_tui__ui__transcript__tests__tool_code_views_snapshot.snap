@@ -3,7 +3,7 @@ source: crates/tui/src/ui/transcript.rs
 expression: "snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines)"
 ---
 ╭─ primary • gateway/arbitrary-model[base]
-│ > ▾ Read src/main.rs
+│ 📖 ▾ Read src/main.rs
 │    1 │ fn main() {
 │ 1000 │     println!("hi");
 │ metadata: {"kind":"text"}
