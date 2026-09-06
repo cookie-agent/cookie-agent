@@ -51,6 +51,7 @@ struct Swatch {
 #[derive(Debug)]
 struct Palette {
     cream: Swatch,
+    terminal: Swatch,
     parchment: Swatch,
     glaze: Swatch,
     toasted: Swatch,
@@ -78,9 +79,10 @@ struct Palette {
 }
 
 impl Palette {
-    fn swatches(&self) -> [Swatch; 25] {
+    fn swatches(&self) -> [Swatch; 26] {
         [
             self.cream,
+            self.terminal,
             self.parchment,
             self.glaze,
             self.toasted,
@@ -125,6 +127,7 @@ const fn swatch(rgb: (u8, u8, u8), ansi256: u8, ansi16: Color) -> Swatch {
 // the v2 palette; the dark table re-lights those roles for an espresso surface.
 const LIGHT: Palette = Palette {
     cream: swatch((0xFB, 0xF4, 0xE6), 231, Color::White),
+    terminal: swatch((0xF9, 0xF1, 0xE1), 230, Color::White),
     parchment: swatch((0xF2, 0xE5, 0xCC), 230, Color::Gray),
     glaze: swatch((0xEB, 0xD8, 0xAE), 223, Color::Gray),
     toasted: swatch((0xE6, 0xCE, 0x9E), 222, Color::Gray),
@@ -153,6 +156,7 @@ const LIGHT: Palette = Palette {
 
 const DARK: Palette = Palette {
     cream: swatch((0x20, 0x1C, 0x16), 234, Color::Black),
+    terminal: swatch((0x29, 0x25, 0x1D), 235, Color::Black),
     parchment: swatch((0x39, 0x33, 0x26), 236, Color::DarkGray),
     glaze: swatch((0x4C, 0x43, 0x30), 238, Color::DarkGray),
     toasted: swatch((0x63, 0x56, 0x3B), 240, Color::Gray),
@@ -417,12 +421,12 @@ impl Theme {
         self.background_color(self.palette().parchment, None)
     }
 
-    /// Distinct terminal band for shell commands and their output.
+    /// Barely tinted terminal band for shell commands and their output.
     pub fn terminal_background(&self) -> Option<Color> {
         if !self.is_bakery_palette() {
             return None;
         }
-        self.background_color(self.palette().glaze, None)
+        self.background_color(self.palette().terminal, None)
     }
 
     /// Interactive block hover preserves foregrounds and never underlines.
@@ -929,7 +933,7 @@ mod tests {
         default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
         default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
         default.block_hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
-        default.terminal_background: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
+        default.terminal_background: fg=None bg=Some(Rgb(249, 241, 225)) bold=false italic=false underline=false dim=false reverse=false
         default.decision.allow: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
         contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -1008,7 +1012,7 @@ mod tests {
         dark.selected: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(99, 86, 59)) bold=true italic=false underline=false dim=false reverse=false
         dark.hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
         dark.block_hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
-        dark.terminal_background: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
+        dark.terminal_background: fg=None bg=Some(Rgb(41, 37, 29)) bold=false italic=false underline=false dim=false reverse=false
         dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
         dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -1089,6 +1093,38 @@ mod tests {
     }
 
     #[test]
+    fn terminal_bands_stay_close_to_the_surface_and_below_hover() {
+        for (kind, rgb, indexed, ansi16) in [
+            (ThemeKind::Default, (249, 241, 225), 230, Color::White),
+            (ThemeKind::Dark, (41, 37, 29), 235, Color::Black),
+        ] {
+            for (level, expected) in [
+                (ColorLevel::TrueColor, Some(Color::Rgb(rgb.0, rgb.1, rgb.2))),
+                (ColorLevel::Ansi256, Some(Color::Indexed(indexed))),
+                (ColorLevel::Ansi16, Some(ansi16)),
+                (ColorLevel::None, None),
+            ] {
+                let theme = Theme::new(kind, level);
+                assert_eq!(theme.terminal_background(), expected);
+                if level != ColorLevel::None {
+                    assert_ne!(theme.terminal_background(), theme.block_hover().bg);
+                }
+                for flat in [ThemeKind::Mono, ThemeKind::HighContrast] {
+                    assert_eq!(Theme::new(flat, level).terminal_background(), None);
+                }
+            }
+            let palette = Theme::new(kind, ColorLevel::TrueColor).palette();
+            for (band, surface) in [rgb.0, rgb.1, rgb.2].into_iter().zip([
+                palette.cream.rgb.0,
+                palette.cream.rgb.1,
+                palette.cream.rgb.2,
+            ]) {
+                assert!(band.abs_diff(surface) <= 10);
+            }
+        }
+    }
+
+    #[test]
     fn warm_background_bands_hand_pick_ansi256_cells() {
         // Each light band names its cell explicitly, and the ladder steps
         // from light to deep: cream surface, parchment code band, glaze
@@ -1097,7 +1133,7 @@ mod tests {
         assert_eq!(theme.surface().bg, Some(Color::Indexed(231)));
         assert_eq!(theme.panel().bg, Some(Color::Indexed(231)));
         assert_eq!(theme.code_background(), Some(Color::Indexed(230)));
-        assert_eq!(theme.terminal_background(), Some(Color::Indexed(223)));
+        assert_eq!(theme.terminal_background(), Some(Color::Indexed(230)));
         assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));
@@ -1135,6 +1171,7 @@ mod tests {
         let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi256);
         for (rgb, cell) in [
             (super::LIGHT.cream.rgb, 231),
+            (super::LIGHT.terminal.rgb, 230),
             (super::LIGHT.parchment.rgb, 230),
             (super::LIGHT.glaze.rgb, 223),
             (super::LIGHT.toasted.rgb, 222),
@@ -1203,6 +1240,7 @@ mod tests {
 
         let names = [
             "cream",
+            "terminal",
             "parchment",
             "glaze",
             "toasted",

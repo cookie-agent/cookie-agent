@@ -4382,19 +4382,14 @@ impl App {
         };
         match hover {
             HoverTarget::TranscriptBlock(id) => {
-                if matches!(id, BlockId::Tool(_) | BlockId::CommittedTool { .. })
-                    && self.layout_cache.layout.regions.iter().any(|region| {
-                        region.id == id && region.start_line < self.conversation_scroll.offset
-                    })
+                if let Some(rect) = self
+                    .hit_map
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == id)
+                    .and_then(|hit| hit.hover_rect)
                 {
-                    return;
-                }
-                if let Some(hit) = self.hit_map.blocks.iter().find(|hit| hit.id == id) {
-                    patch(
-                        frame,
-                        Rect::new(hit.rect.x, hit.rect.y, hit.rect.width, 1),
-                        self.theme.block_hover(),
-                    );
+                    patch(frame, rect, self.theme.block_hover());
                 }
             }
             HoverTarget::GoalAction(action) => {

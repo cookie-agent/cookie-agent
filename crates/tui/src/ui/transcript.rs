@@ -162,6 +162,7 @@ impl ConversationScroll {
                 id: BlockId::Thinking(0),
                 start_line: target,
                 end_line: target,
+                header_lines: None,
             },
             1,
         );
@@ -236,6 +237,8 @@ pub struct BlockRegion {
     pub(super) id: BlockId,
     pub(super) start_line: usize,
     pub(super) end_line: usize,
+    /// Tool header height before viewport clipping; other blocks retain single-row hover.
+    pub(super) header_lines: Option<usize>,
 }
 
 /// The logical-line range of one user message row, paired with the physical
@@ -378,6 +381,7 @@ struct TranscriptRenderContext<'a> {
 pub(super) struct BlockHit {
     pub(super) rect: Rect,
     pub(super) id: BlockId,
+    pub(super) hover_rect: Option<Rect>,
 }
 
 // Layout cache validity depends on each independent render input; grouping them
@@ -994,6 +998,7 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
             id: region.id,
             start_line: start_line + region.start_line,
             end_line: start_line + region.end_line,
+            header_lines: region.header_lines,
         });
     }
     if let Some(seq) = item_layout.user_seq {
@@ -1369,6 +1374,7 @@ fn producer_message_layout(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
+            header_lines: None,
         }],
         lines,
         user_seq: None,
@@ -1454,6 +1460,7 @@ fn system_prompt_layout(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
+            header_lines: None,
         }],
         lines,
         user_seq: None,
@@ -1564,6 +1571,7 @@ fn collapsible_event_block(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
+            header_lines: None,
         }],
         lines,
         user_seq: None,
@@ -1630,6 +1638,7 @@ fn media_file_layout(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
+            header_lines: None,
         }],
         lines,
         user_seq: None,
@@ -1782,6 +1791,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
+                        header_lines: region.header_lines,
                     }));
                 context.assistant_part_ranges.push(AssistantPartRange {
                     id: child.id(),
@@ -1800,6 +1810,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
+                        header_lines: region.header_lines,
                     }));
             }
             AssistantChild::Attribution { resolved_model } => {
@@ -1830,6 +1841,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
+                        header_lines: region.header_lines,
                     }));
             }
             AssistantChild::MediaFile {
@@ -1846,6 +1858,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
+                        header_lines: region.header_lines,
                     }));
             }
         }
@@ -1962,6 +1975,7 @@ fn splice_active_assistant_part(
             id: region.id,
             start_line: old.lines.start + region.start_line,
             end_line: old.lines.start + region.end_line,
+            header_lines: region.header_lines,
         })
         .collect::<Vec<_>>();
     let old_region_len = old.regions.len();
@@ -2070,6 +2084,7 @@ fn assistant_child_layout(
                     id: block_id,
                     start_line: 0,
                     end_line: lines.len(),
+                    header_lines: None,
                 }],
                 lines,
                 user_seq: None,
@@ -2084,12 +2099,6 @@ fn assistant_child_layout(
     }
 }
 
-/// A compact or expanded tool row inside its owning assistant item. Compact
-/// rows render the persisted sanitized title and display argument: running
-/// pulses a `…`/dot suffix with the animation clock, success adds no
-/// suffix, and failed/cancelled/interrupted use their exact concise
-/// markers. `COMPLETED` is never rendered. Exactly one chevron per row,
-/// after the tool emoji.
 fn tool_icon(title: &str) -> &'static str {
     match title {
         "bash" => "💻",
@@ -2102,6 +2111,53 @@ fn tool_icon(title: &str) -> &'static str {
     }
 }
 
+fn abbreviate_tool_argument(title: &str, argument: &str, width: u16) -> String {
+    let cap = (usize::from(width) / 2).clamp(1, 60);
+    let argument = argument.split_whitespace().collect::<Vec<_>>().join(" ");
+    if UnicodeWidthStr::width(argument.as_str()) <= cap {
+        return argument;
+    }
+    if matches!(title, "read" | "write" | "edit") {
+        if let Some((head, _)) = argument.split_once(['/', '\\']) {
+            let tail = argument.rsplit(['/', '\\']).next().unwrap_or_default();
+            let abbreviated = format!("{head}/…/{tail}");
+            if UnicodeWidthStr::width(abbreviated.as_str()) <= cap {
+                return abbreviated;
+            }
+        }
+        let mut used = 1;
+        let suffix = argument
+            .graphemes(true)
+            .rev()
+            .take_while(|grapheme| {
+                used += UnicodeWidthStr::width(*grapheme);
+                used <= cap
+            })
+            .collect::<Vec<_>>();
+        return format!("…{}", suffix.into_iter().rev().collect::<String>());
+    }
+    super::app::truncate_with_ellipsis(&argument, cap)
+}
+
+fn tool_header_title(tool: &crate::state::ToolCallState, width: u16) -> String {
+    let title = tool.presentation.title.as_str();
+    if tool_icon(title) == "🔨" {
+        return tool.compact_title();
+    }
+    let label = if title == "read" { "Read" } else { title };
+    tool.presentation.primary_argument.as_ref().map_or_else(
+        || label.to_owned(),
+        |argument| {
+            format!(
+                "{label} {}",
+                abbreviate_tool_argument(title, argument.as_str(), width)
+            )
+        },
+    )
+}
+
+/// A compact or expanded tool row inside its owning assistant item. Running
+/// pulses a suffix; terminal failures retain their exact concise markers.
 fn tool_child_layout(
     state: &SessionState,
     call_id: Option<cookie_agent_protocol::ToolCallId>,
@@ -2134,6 +2190,7 @@ fn tool_child_layout(
                 id: block_id,
                 start_line: 0,
                 end_line: lines.len(),
+                header_lines: None,
             }],
             lines,
             user_seq: None,
@@ -2199,19 +2256,18 @@ fn tool_child_layout(
     let mut remaining_sections = section_count;
     let tool_name = tool.presentation.title.as_str();
     let icon = tool_icon(tool_name);
-    let title = if tool_name == "read" {
-        tool.presentation
-            .primary_argument
-            .as_ref()
-            .map_or_else(|| "Read".to_owned(), |path| format!("Read {path}"))
-    } else {
-        tool.compact_title()
-    };
+    let title = tool_header_title(tool, context.width);
     let chevron = if is_expanded { '▾' } else { '▸' };
     let mut body = vec![ToolBodyLine::wrapped(Line::from(format!(
         "{icon} {chevron} {title}{suffix}"
     )))];
     if is_expanded {
+        if tool_name == "read"
+            && let Some(path) = tool.presentation.primary_argument.as_ref()
+            && title != format!("Read {path}")
+        {
+            body.push(ToolBodyLine::wrapped(Line::from(format!("path: {path}"))));
+        }
         if tool_name != "read" {
             let command = arguments.as_ref().and_then(|args| args.command.as_deref());
             let arguments_line = if tool_name == "bash"
@@ -2261,8 +2317,8 @@ fn tool_child_layout(
             ));
         }
     }
-    if tool_name == "bash" {
-        for line in body.iter_mut().skip(1) {
+    if tool_name == "bash" && is_expanded {
+        for line in &mut body {
             line.banded = line.output_toggle.is_none();
         }
     }
@@ -2271,6 +2327,7 @@ fn tool_child_layout(
         id: block_id,
         start_line: 0,
         end_line: rendered.lines.len(),
+        header_lines: Some(rendered.header_lines),
     }];
     if let Some(call_id) = call_id {
         regions.extend(rendered.output_toggles.into_iter().map(
@@ -2278,6 +2335,7 @@ fn tool_child_layout(
                 id: BlockId::ToolOutput { call_id, section },
                 start_line,
                 end_line,
+                header_lines: None,
             },
         ));
     }
@@ -3413,6 +3471,7 @@ fn role_block(
 struct ToolBlockLayout {
     lines: Vec<Line<'static>>,
     output_toggles: Vec<(ToolOutputSection, usize, usize)>,
+    header_lines: usize,
 }
 
 fn tool_block_lines(
@@ -3430,6 +3489,7 @@ fn tool_block_lines(
     let mut lines = Vec::new();
     let mut output_toggles = Vec::new();
     let mut banded_rows = Vec::new();
+    let mut header_lines = 0;
     for (index, body_line) in body.into_iter().enumerate() {
         let banded = body_line.banded;
         let output_toggle = body_line.output_toggle;
@@ -3511,6 +3571,9 @@ fn tool_block_lines(
                 }
             }
         }
+        if index == 0 {
+            header_lines = lines.len();
+        }
         if let Some(section) = output_toggle {
             output_toggles.push((section, start, lines.len()));
         }
@@ -3548,6 +3611,7 @@ fn tool_block_lines(
     ToolBlockLayout {
         lines,
         output_toggles,
+        header_lines,
     }
 }
 
@@ -3808,6 +3872,12 @@ pub(super) fn block_hit(
     let viewport_end = scroll_offset.saturating_add(usize::from(viewport.height));
     let start = region.start_line.max(scroll_offset);
     let end = region.end_line.min(viewport_end);
+    let header_end = region
+        .header_lines
+        .map_or(start.saturating_add(1), |height| {
+            region.start_line.saturating_add(height)
+        })
+        .min(end);
     (start < end).then(|| BlockHit {
         rect: Rect::new(
             viewport.x,
@@ -3816,6 +3886,14 @@ pub(super) fn block_hit(
             u16::try_from(end - start).unwrap_or(u16::MAX),
         ),
         id: region.id,
+        hover_rect: (start < header_end).then(|| {
+            Rect::new(
+                viewport.x,
+                viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
+                viewport.width,
+                u16::try_from(header_end - start).unwrap_or(u16::MAX),
+            )
+        }),
     })
 }
 
@@ -16448,6 +16526,91 @@ mod tests {
     }
 
     #[test]
+    fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
+        let path = "src/very/deeply/nested/module/transcript.rs";
+        assert_eq!(
+            abbreviate_tool_argument("read", path, 40),
+            "src/…/transcript.rs"
+        );
+        assert_eq!(abbreviate_tool_argument("edit", path, 20), "…script.rs");
+        assert_eq!(
+            abbreviate_tool_argument("bash", "printf hello\n  && true", 80),
+            "printf hello && true"
+        );
+        for name in [
+            "bash",
+            "read",
+            "write",
+            "edit",
+            "delegate_subagent",
+            "get_subagent_result",
+            "steer_subagent",
+            "cancel_subagent",
+            "skill",
+            "goal_get",
+            "goal_update",
+        ] {
+            let argument = if matches!(name, "read" | "write" | "edit") {
+                path.to_owned()
+            } else {
+                format!("command {} done", "long-argument ".repeat(12))
+            };
+            let mut state = read_tool_state(path, ToolStatus::Completed, "result");
+            let id = read_tool_id(&state);
+            let tool = state.tools.get_mut(&id).unwrap();
+            tool.presentation = presentation(name, Some(&argument));
+            tool.arguments = serde_json::json!({"command": argument, "filePath": path}).to_string();
+            let expanded = HashSet::from([BlockId::Tool(id)]);
+            for width in [8, 12, 20, 40, 80, 160] {
+                let abbreviated = abbreviate_tool_argument(name, &argument, width);
+                assert!(
+                    UnicodeWidthStr::width(abbreviated.as_str())
+                        <= (usize::from(width) / 2).min(60)
+                );
+                assert!(!abbreviated.contains(['\n', '\r', '\t']));
+                for blocks in [None, Some(&expanded)] {
+                    let layout = transcript_layout_with(
+                        &state,
+                        blocks,
+                        width,
+                        &Theme::default(),
+                        &PlainHighlighter,
+                    );
+                    assert!(
+                        layout
+                            .lines
+                            .iter()
+                            .all(|line| line.width() <= usize::from(width))
+                    );
+                    let region = layout
+                        .regions
+                        .iter()
+                        .find(|region| region.id == BlockId::Tool(id))
+                        .unwrap();
+                    if width >= 40 {
+                        assert!(region.header_lines.unwrap() <= 2);
+                    }
+                }
+            }
+            if matches!(name, "read" | "write" | "edit") {
+                let text = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
+                assert!(text.contains(path), "{name}: {text}");
+            }
+        }
+        let unicode = "src/目录/文件👩‍💻.rs";
+        for width in [2, 8, 16, 24] {
+            let short = abbreviate_tool_argument("read", unicode, width);
+            assert!(UnicodeWidthStr::width(short.as_str()) <= usize::from(width) / 2);
+            assert!(!short.starts_with("…\u{200d}"));
+        }
+        let mut plugin = read_tool_state(path, ToolStatus::Completed, "result");
+        let id = read_tool_id(&plugin);
+        let tool = plugin.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("plugin.tool", Some(path));
+        assert_eq!(tool_header_title(tool, 20), tool.compact_title());
+    }
+
+    #[test]
     fn bash_expanded_rows_sit_on_the_terminal_band() {
         let mut state = read_tool_state(
             "unused",
@@ -16463,8 +16626,24 @@ mod tests {
         let expanded = HashSet::from([BlockId::Tool(id)]);
         for theme in [
             Theme::default(),
+            Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
+            Theme::new(ThemeKind::Dark, ColorLevel::Ansi256),
             Theme::new(ThemeKind::Mono, ColorLevel::None),
+            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
         ] {
+            let collapsed = transcript_layout_with(&state, None, 80, &theme, &PlainHighlighter);
+            let region = collapsed
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            assert!(
+                collapsed.lines[region.start_line..region.end_line]
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .all(|span| span.style.bg.is_none())
+            );
             let layout =
                 transcript_layout_with(&state, Some(&expanded), 80, &theme, &PlainHighlighter);
             let region = layout
@@ -16478,7 +16657,7 @@ mod tests {
             assert!(!snapshot_lines(rows).contains("arguments:"));
             let body_width = rows[1].width();
             for (index, row) in rows.iter().enumerate() {
-                let banded = index > 0 && !row.to_string().contains("more lines");
+                let banded = !row.to_string().contains("more lines");
                 for span in row.spans.iter().filter(|span| span.content != "│ ") {
                     assert_eq!(
                         span.style.bg,
@@ -16535,6 +16714,99 @@ mod tests {
             &Theme::default(),
         );
         assert!(copied.contains("📖 ▾ Read src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn wrapped_bash_header_hover_covers_visible_header_only() {
+        use ratatui::style::Modifier;
+
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        let mut state = read_tool_state("unused", ToolStatus::Completed, &"output\n".repeat(40));
+        let id = read_tool_id(&state);
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("bash", Some("printf a-very-long-command"));
+        tool.arguments = r#"{"command":"printf a-very-long-command"}"#.into();
+        app.store.sessions.insert(session, state);
+        app.expanded_blocks
+            .insert(session, HashSet::from([BlockId::Tool(id)]));
+        for (kind, level) in [
+            (ThemeKind::Default, ColorLevel::TrueColor),
+            (ThemeKind::Dark, ColorLevel::TrueColor),
+            (ThemeKind::Default, ColorLevel::Ansi256),
+            (ThemeKind::Dark, ColorLevel::Ansi256),
+            (ThemeKind::Mono, ColorLevel::None),
+            (ThemeKind::HighContrast, ColorLevel::Ansi16),
+        ] {
+            app.theme = Theme::new(kind, level);
+            app.conversation_scroll.following = false;
+            app.conversation_scroll.offset = 0;
+            app.hover = None;
+            let mut terminal = Terminal::new(TestBackend::new(24, 24)).unwrap();
+            terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+            let region = *app
+                .layout_cache
+                .layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            let header_lines = region.header_lines.unwrap();
+            assert!(header_lines > 1);
+            for (offset, visible_header_lines) in [
+                (0, header_lines),
+                (region.start_line + 1, header_lines - 1),
+                (region.start_line + header_lines, 0),
+            ] {
+                app.conversation_scroll.following = false;
+                app.conversation_scroll.offset = offset;
+                app.hover = None;
+                terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                let before = terminal.backend().buffer().clone();
+                let hit = *app
+                    .hit_map
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == BlockId::Tool(id))
+                    .unwrap();
+                assert_eq!(
+                    hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
+                    visible_header_lines
+                );
+                app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
+                assert_eq!(
+                    app.hover,
+                    Some(HoverTarget::TranscriptBlock(BlockId::Tool(id)))
+                );
+                terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                let after = terminal.backend().buffer();
+                for y in hit.rect.y..hit.rect.bottom() {
+                    for x in hit.rect.x..hit.rect.right() {
+                        // Wide glyph continuation cells are reset by the test backend.
+                        if x > hit.rect.x && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1
+                        {
+                            continue;
+                        }
+                        let cell = &after[(x, y)];
+                        assert!(!cell.modifier.contains(Modifier::UNDERLINED));
+                        assert_eq!(cell.fg, before[(x, y)].fg);
+                        if hit
+                            .hover_rect
+                            .is_some_and(|rect| rect.contains(ratatui::layout::Position::new(x, y)))
+                        {
+                            assert_eq!(
+                                cell.bg,
+                                app.theme.block_hover().bg.unwrap_or(before[(x, y)].bg),
+                                "header at {x},{y}, offset {offset}: {cell:?}"
+                            );
+                        } else {
+                            assert_eq!(cell, &before[(x, y)], "body changed at {x},{y}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -17036,11 +17308,30 @@ mod tests {
             id: BlockId::Thinking(1),
             start_line: 10,
             end_line: 20,
+            header_lines: None,
         };
         let viewport = Rect::new(0, 0, 40, 5);
         let hit = block_hit(region, viewport, 8).expect("hit");
         assert_eq!(hit.rect.y, 2);
         assert_eq!(hit.rect.height, 3);
+        assert_eq!(hit.hover_rect.unwrap(), Rect::new(0, 2, 40, 1));
+        let tool = BlockRegion {
+            header_lines: Some(3),
+            ..region
+        };
+        assert_eq!(
+            block_hit(tool, viewport, 8).unwrap().hover_rect,
+            Some(Rect::new(0, 2, 40, 3))
+        );
+        assert_eq!(
+            block_hit(tool, viewport, 11).unwrap().hover_rect,
+            Some(Rect::new(0, 0, 40, 2))
+        );
+        assert_eq!(block_hit(tool, viewport, 13).unwrap().hover_rect, None);
+        assert_eq!(
+            block_hit(region, viewport, 13).unwrap().hover_rect,
+            Some(Rect::new(0, 0, 40, 1))
+        );
         assert!(block_hit(region, viewport, 25).is_none());
     }
 
