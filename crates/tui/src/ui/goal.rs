@@ -158,7 +158,7 @@ impl App {
             .min(usize::from(area.width));
         let details_width = usize::from(area.width).saturating_sub(controls_width);
         let prefix = if area.width >= 12 && details_width >= 8 {
-            "goal: "
+            "🎯: "
         } else {
             ""
         };
@@ -166,7 +166,7 @@ impl App {
         if matches!(goal.status, GoalStatus::Completed | GoalStatus::Cancelled) {
             summary.push_str(&format!(" · {}", status_name(goal.status)));
         }
-        let objective_width = details_width.saturating_sub(prefix.len());
+        let objective_width = details_width.saturating_sub(UnicodeWidthStr::width(prefix));
         let mut details = truncate_with_ellipsis(&summary, objective_width);
         details.push_str(
             &" ".repeat(objective_width.saturating_sub(UnicodeWidthStr::width(details.as_str()))),
@@ -1209,13 +1209,15 @@ mod tests {
             terminal
                 .draw(|frame| app.render_goal_bar(frame, frame.area()))
                 .unwrap();
+            // Skip the continuation cell occupied by the double-width emoji.
             let line = (0..80)
+                .filter(|&x| x != 1)
                 .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
                 .collect::<String>();
-            assert!(line.starts_with("goal: finish the parser"), "{line}");
+            assert!(line.starts_with("🎯: finish the parser"), "{line}");
             assert!(line.trim_end().ends_with(suffix), "{line}");
             assert!(!line.contains('/'));
-            for x in 0..23 {
+            for x in 0..21 {
                 assert!(
                     !terminal.backend().buffer()[(x, 0)]
                         .modifier
@@ -1234,27 +1236,43 @@ mod tests {
         let mut current = goal(GoalStatus::Paused);
         current.objective = "Long objective\nwith\ttabs and a long sequence of work ".repeat(10);
         mount_goal(&mut app, session_id, current);
-        for width in [1, 3, 7, 8, 20, 40, 80] {
+        for width in [1, 3, 7, 8, 11, 12, 13, 20, 25, 26, 40, 80] {
             let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
             terminal
                 .draw(|frame| app.render_goal_bar(frame, Rect::new(0, 0, width, 1)))
                 .unwrap();
+            // Skip the emoji continuation cell only while the prefix is visible.
             let line = (0..width)
+                .filter(|&x| x != 1 || width < 12)
                 .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
                 .collect::<String>();
             assert!(UnicodeWidthStr::width(line.as_str()) <= usize::from(width));
             assert!(!line.contains(['\n', '\t']));
-            if width >= 20 {
-                assert!(line.starts_with("goal: Long"), "{line}");
+            if width >= 12 {
+                assert!(line.starts_with("🎯: Lon"), "{line}");
             }
+            assert_eq!(line.starts_with("🎯: "), width >= 12, "{line}");
             assert!(
                 app.hit_map
                     .goal_actions
                     .iter()
                     .any(|(_, action)| *action == GoalBarAction::Details)
             );
-            for (index, (rect, _)) in app.hit_map.goal_actions.iter().enumerate() {
+            for (index, (rect, action)) in app.hit_map.goal_actions.iter().enumerate() {
                 assert!(rect.right() <= width, "{width}: {rect:?}");
+                if *action != GoalBarAction::Details {
+                    let label = (rect.x..rect.right())
+                        .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                        .collect::<String>();
+                    let expected = match (action, width >= 26) {
+                        (GoalBarAction::Resume, true) => " [Resume]",
+                        (GoalBarAction::Resume, false) => " >",
+                        (GoalBarAction::Cancel, true) => " [Cancel]",
+                        (GoalBarAction::Cancel, false) => " x",
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(label, expected, "width {width}");
+                }
                 for (other, _) in app.hit_map.goal_actions.iter().skip(index + 1) {
                     assert!(
                         rect.intersection(*other).is_empty(),

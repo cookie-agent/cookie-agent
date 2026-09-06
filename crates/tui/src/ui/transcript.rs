@@ -15278,7 +15278,7 @@ mod tests {
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                insta::assert_snapshot!(bar, @"goal: Ship transcript rendering without regressions [Resume] [Cancel]");
+                insta::assert_snapshot!(bar, @"🎯 : Ship transcript rendering without regressions [Resume] [Cancel]");
             }
         }
         app.store.sessions.get_mut(&session).unwrap().goal = None;
