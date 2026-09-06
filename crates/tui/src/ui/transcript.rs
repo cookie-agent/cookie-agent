@@ -237,7 +237,7 @@ pub struct BlockRegion {
     pub(super) id: BlockId,
     pub(super) start_line: usize,
     pub(super) end_line: usize,
-    /// Tool header height before viewport clipping; other blocks retain single-row hover.
+    /// Item header height before viewport clipping; None retains single-row hover.
     pub(super) header_lines: Option<usize>,
 }
 
@@ -1374,7 +1374,7 @@ fn producer_message_layout(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
-            header_lines: None,
+            header_lines: Some(1),
         }],
         lines,
         user_seq: None,
@@ -1454,17 +1454,7 @@ fn system_prompt_layout(
             MAX_SYSTEM_PROMPT_BODY_BYTES,
         ));
     }
-    let lines = role_block(Role::Internal, body, width, theme);
-    ItemLayout {
-        regions: vec![BlockRegion {
-            id: block_id,
-            start_line: 0,
-            end_line: lines.len(),
-            header_lines: None,
-        }],
-        lines,
-        user_seq: None,
-    }
+    collapsible_event_block(block_id, body, width, theme)
 }
 
 fn compaction_layout(
@@ -1522,7 +1512,7 @@ fn compaction_layout(
             context.theme.muted(),
         ));
     }
-    collapsible_event_block(block_id, body, context)
+    collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
 fn plugin_message_layout(
@@ -1557,21 +1547,25 @@ fn plugin_message_layout(
             MAX_EXPANDED_BODY_BYTES,
         ));
     }
-    collapsible_event_block(block_id, body, context)
+    collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
 fn collapsible_event_block(
     block_id: BlockId,
     body: Vec<Line<'static>>,
-    context: &TranscriptRenderContext<'_>,
+    width: u16,
+    theme: &Theme,
 ) -> ItemLayout {
-    let lines = role_block(Role::Internal, body, context.width, context.theme);
+    let header_lines = body.first().map_or(0, |header| {
+        role_block(Role::Internal, vec![header.clone()], width, theme).len()
+    });
+    let lines = role_block(Role::Internal, body, width, theme);
     ItemLayout {
         regions: vec![BlockRegion {
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
-            header_lines: None,
+            header_lines: Some(header_lines),
         }],
         lines,
         user_seq: None,
@@ -3683,13 +3677,17 @@ fn role_block_lines(
         }
         return lines;
     }
-    let mut lines = wrapped_line(
-        Line::from(vec![
-            Span::styled(format!("{marker} {label}"), style),
-            Span::raw(" "),
-        ]),
-        width,
-    );
+    let mut lines = if matches!(role, Role::Internal) {
+        Vec::new()
+    } else {
+        wrapped_line(
+            Line::from(vec![
+                Span::styled(format!("{marker} {label}"), style),
+                Span::raw(" "),
+            ]),
+            width,
+        )
+    };
     for line in body {
         lines.extend(prefixed_wrapped_line(gutter.into(), style, line, width));
     }
@@ -4897,6 +4895,19 @@ mod tests {
             "◇ ▾ Build completed: parser\n· plugin build · queue · consumed\n· ACTUAL MODEL BODY"
         ));
         assert_eq!(text.matches("ACTUAL MODEL BODY").count(), 1);
+        let region = cache
+            .layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::ProducerMessage(first))
+            .unwrap();
+        assert_eq!(region.header_lines, Some(1));
+        assert!(
+            block_hit(*region, Rect::new(0, 0, 80, 20), region.start_line + 1)
+                .unwrap()
+                .hover_rect
+                .is_none()
+        );
         assert!(text.ends_with("◇ ▸ Build completed: parser"));
         assert!(cache.layout.lines.len() <= MAX_EXPANDED_BODY_LINES + 6);
         assert!(text.len() < MAX_EXPANDED_BODY_BYTES);
@@ -7196,6 +7207,163 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
+    fn internal_blocks_are_headerless_without_changing_other_role_headers() {
+        let theme = Theme::default();
+        let lines = role_block(
+            Role::Internal,
+            vec![Line::from("⚙ ▸ system prompt"), Line::from("expanded body")],
+            80,
+            &theme,
+        );
+        insta::assert_snapshot!(snapshot_lines(&lines), @"
+        · ⚙ ▸ system prompt
+        · expanded body
+        ");
+        assert_eq!(
+            snapshot_lines(&role_block(
+                Role::Internal,
+                vec![Line::from("row")],
+                7,
+                &theme
+            )),
+            "[I] row"
+        );
+        for (role, header) in [
+            (Role::User, "┌─ USER"),
+            (Role::Action, "-- ACTION"),
+            (Role::Goal, "◆─ GOAL"),
+            (Role::ToolRunning, "┏… TOOL RUNNING"),
+            (Role::ToolSuccess, "┏✓ TOOL SUCCESS"),
+            (Role::ToolFailure, "┏! TOOL FAILURE"),
+            (Role::Debug, "·· DEBUG [D]"),
+            (Role::Warning, "⚠─ WARNING [W]"),
+            (Role::Error, "!! ERROR [E]"),
+        ] {
+            let rendered = snapshot_lines(&role_block(role, vec![Line::from("row")], 80, &theme));
+            assert_eq!(rendered.lines().next(), Some(header));
+        }
+    }
+
+    #[tokio::test]
+    async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
+        use ratatui::style::Modifier;
+
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        assert!(app.store.apply_event(session_created(session, 1)));
+        assert!(app.store.apply_event(run_started_with_suffix(
+            session,
+            2,
+            run_id(),
+            vec![resolved_model(None)]
+        )));
+        app.store
+            .sessions
+            .get_mut(&session)
+            .unwrap()
+            .run_snapshot
+            .as_mut()
+            .unwrap()
+            .composed_prompt = "expanded body\n".repeat(40);
+        for (kind, level) in [
+            (ThemeKind::Default, ColorLevel::TrueColor),
+            (ThemeKind::Dark, ColorLevel::TrueColor),
+            (ThemeKind::Mono, ColorLevel::None),
+            (ThemeKind::HighContrast, ColorLevel::Ansi16),
+        ] {
+            app.theme = Theme::new(kind, level);
+            for width in [24, 100] {
+                for expanded in [false, true] {
+                    app.expanded_blocks.insert(
+                        session,
+                        if expanded {
+                            HashSet::from([BlockId::SystemPrompt])
+                        } else {
+                            HashSet::new()
+                        },
+                    );
+                    app.conversation_scroll.following = false;
+                    app.conversation_scroll.offset = 0;
+                    app.hover = None;
+                    let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                    terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                    let region = *app
+                        .layout_cache
+                        .layout
+                        .regions
+                        .iter()
+                        .find(|region| region.id == BlockId::SystemPrompt)
+                        .unwrap();
+                    let header_lines = region.header_lines.unwrap();
+                    assert!(
+                        app.layout_cache.layout.lines[region.start_line]
+                            .to_string()
+                            .starts_with("· ⚙")
+                    );
+                    assert!(!snapshot_lines(&app.layout_cache.layout.lines).contains("EVENT [I]"));
+                    assert_eq!(header_lines > 1, width == 24);
+                    if !expanded {
+                        assert_eq!(header_lines, region.end_line - region.start_line);
+                    }
+                    let mut offsets = vec![0];
+                    if expanded {
+                        offsets.extend([region.start_line + 1, region.start_line + header_lines]);
+                    }
+                    for offset in offsets {
+                        app.conversation_scroll.following = false;
+                        app.conversation_scroll.offset = offset;
+                        app.hover = None;
+                        terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                        let before = terminal.backend().buffer().clone();
+                        let hit = *app
+                            .hit_map
+                            .blocks
+                            .iter()
+                            .find(|hit| hit.id == BlockId::SystemPrompt)
+                            .unwrap();
+                        assert_eq!(
+                            hit.hover_rect.map_or(0, |rect| usize::from(rect.height)),
+                            (region.start_line + header_lines).saturating_sub(offset)
+                        );
+                        app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
+                        assert_eq!(
+                            app.hover,
+                            Some(HoverTarget::TranscriptBlock(BlockId::SystemPrompt))
+                        );
+                        terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                        let after = terminal.backend().buffer();
+                        for y in hit.rect.y..hit.rect.bottom() {
+                            for x in hit.rect.x..hit.rect.right() {
+                                let cell = &after[(x, y)];
+                                if hit.hover_rect.is_some_and(|rect| {
+                                    rect.contains(ratatui::layout::Position::new(x, y))
+                                }) {
+                                    assert_eq!(
+                                        cell.bg,
+                                        app.theme.block_hover().bg.unwrap_or(before[(x, y)].bg)
+                                    );
+                                    assert_eq!(cell.fg, before[(x, y)].fg);
+                                    assert!(!cell.modifier.contains(Modifier::UNDERLINED));
+                                    if level == ColorLevel::None {
+                                        assert!(cell.modifier.contains(Modifier::BOLD));
+                                    }
+                                } else {
+                                    assert_eq!(
+                                        cell,
+                                        &before[(x, y)],
+                                        "expanded body changed at {x},{y}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
         let session = SessionId::new_v7();
         let run = run_id();
@@ -7257,6 +7425,7 @@ mod tests {
             crate::state::EventLevel::Warning,
         );
         let rendered = snapshot_lines(&collapsed.lines);
+        assert!(!rendered.contains("EVENT [I]"));
         assert!(
             rendered.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
             "{rendered}"
@@ -7299,6 +7468,27 @@ mod tests {
                 content_index: 0,
             },
         ]);
+        for width in [7, 24, 100] {
+            let collapsed = transcript_layout(state, None, width);
+            let open = transcript_layout(state, Some(&expanded), width);
+            for id in [
+                BlockId::SystemPrompt,
+                BlockId::PluginMessage(2),
+                BlockId::Compaction(3),
+            ] {
+                let closed_region = collapsed
+                    .regions
+                    .iter()
+                    .find(|region| region.id == id)
+                    .unwrap();
+                let open_region = open.regions.iter().find(|region| region.id == id).unwrap();
+                let header_lines = closed_region.end_line - closed_region.start_line;
+                assert_eq!(closed_region.header_lines, Some(header_lines));
+                assert_eq!(open_region.header_lines, Some(header_lines));
+                assert!(open_region.end_line > open_region.start_line + header_lines);
+            }
+            assert!(!snapshot_lines(&open.lines).contains("EVENT [I]"));
+        }
         let rendered = snapshot_lines(
             &transcript_layout_with_level(
                 state,
@@ -16182,7 +16372,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn event_badges_render_textually_for_every_level_and_theme() {
+    fn diagnostic_rows_keep_badges_except_headerless_info() {
         for level in [
             crate::state::EventLevel::Debug,
             crate::state::EventLevel::Info,
@@ -16211,7 +16401,11 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-            assert!(rendered.contains(level.badge()), "{}", level.name());
+            if level == crate::state::EventLevel::Info {
+                assert_eq!(rendered, "· diagnostic");
+            } else {
+                assert!(rendered.contains(level.badge()), "{}", level.name());
+            }
         }
     }
 
