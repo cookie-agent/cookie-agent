@@ -25,7 +25,10 @@ pub struct ReadTool {
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
-    #[serde(rename = "filePath")]
+    #[serde(
+        rename = "filePath",
+        deserialize_with = "crate::path_args::deserialize"
+    )]
     file_path: String,
     /// Maximum number of entries or lines to return. Defaults to 2000.
     limit: Option<usize>,

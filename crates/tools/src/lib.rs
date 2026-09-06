@@ -20,6 +20,7 @@ pub mod delegate;
 pub mod edit;
 pub mod fs_cap;
 pub mod goal;
+mod path_args;
 pub mod read;
 pub mod read_tool_result;
 pub mod skill;

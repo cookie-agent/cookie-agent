@@ -18,7 +18,10 @@ pub struct WriteTool {
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct WriteArgs {
-    #[serde(rename = "filePath")]
+    #[serde(
+        rename = "filePath",
+        deserialize_with = "crate::path_args::deserialize"
+    )]
     file_path: String,
     content: String,
 }

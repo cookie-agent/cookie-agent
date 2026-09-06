@@ -18,7 +18,10 @@ pub struct EditTool {
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 struct EditArgs {
-    #[serde(rename = "filePath")]
+    #[serde(
+        rename = "filePath",
+        deserialize_with = "crate::path_args::deserialize"
+    )]
     file_path: String,
     #[serde(rename = "oldString")]
     old_string: String,
