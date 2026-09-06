@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use cookie_agent_protocol::{
     EventPayload, GoalId, GoalReminderIdentity, GoalReminderKind, GoalState, GoalStatus,
     ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, RunId,
-    RunSelection, StoredEvent,
+    RunSelection, SafeDisplayText, StoredEvent,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,6 +14,7 @@ pub(crate) struct ProducerMessageRecord {
     pub producer_owner: ProducerOwner,
     pub mode: ProducerDeliveryMode,
     pub idempotency_key: ProducerIdempotencyKey,
+    pub description: SafeDisplayText,
     pub body: String,
     pub reminder: Option<GoalReminderIdentity>,
     pub accepted_seq: u64,
@@ -145,6 +146,7 @@ impl GoalProducerProjection {
                     producer_owner,
                     mode,
                     idempotency_key,
+                    description,
                     body,
                     reminder,
                 } => {
@@ -157,6 +159,7 @@ impl GoalProducerProjection {
                         let prior = &projection.messages[index];
                         let exact = prior.message_id == *message_id
                             && prior.mode == *mode
+                            && prior.description == *description
                             && prior.body == *body
                             && prior.reminder == *reminder;
                         if exact {
@@ -175,6 +178,7 @@ impl GoalProducerProjection {
                         producer_owner: producer_owner.clone(),
                         mode: *mode,
                         idempotency_key: idempotency_key.clone(),
+                        description: description.clone(),
                         body: body.clone(),
                         reminder: *reminder,
                         accepted_seq: event.seq,
@@ -432,6 +436,8 @@ mod tests {
                 producer_owner: owner,
                 mode: ProducerDeliveryMode::Steer,
                 idempotency_key: ProducerIdempotencyKey::new(key).unwrap(),
+                description: cookie_agent_protocol::SafeDisplayText::new("Producer result")
+                    .unwrap(),
                 body: body.into(),
                 reminder,
             },

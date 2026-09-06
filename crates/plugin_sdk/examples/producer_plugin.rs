@@ -30,7 +30,11 @@ async fn restore_external_work(context: cookie_agent_plugin_sdk::PluginContext) 
     let key = ProducerIdempotencyKey::new("restored-work").expect("static key is valid");
     let producer = context.register_producer(session).await?;
     producer
-        .steer("Restored external work completed", key)
+        .steer(
+            "Restored external work completed",
+            "External work completed",
+            key,
+        )
         .await?;
     producer.unregister().await?;
     Ok(())

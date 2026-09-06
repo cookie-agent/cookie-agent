@@ -14,6 +14,10 @@ use ts_rs::TS;
 
 use crate::*;
 
+fn producer_description_is_empty(description: &SafeDisplayText) -> bool {
+    description.as_str().is_empty()
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
 #[ts(type = "string")]
 pub struct SessionTitle(String);
@@ -1866,6 +1870,8 @@ pub enum EventPayload {
         producer_owner: ProducerOwner,
         mode: ProducerDeliveryMode,
         idempotency_key: ProducerIdempotencyKey,
+        #[serde(default, skip_serializing_if = "producer_description_is_empty")]
+        description: SafeDisplayText,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional = nullable)]

@@ -1299,6 +1299,13 @@
             "body": {
               "type": "string"
             },
+            "description": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+            },
             "idempotency_key": {
               "description": "Sender-chosen idempotency key scoped to a session and stable producer owner.",
               "type": "string",

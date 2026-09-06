@@ -75,7 +75,7 @@ even before its first model request.
 | `goal_activated` | `goal_id`, `objective`, `revision` | Runless allowed |
 | `goal_checklist_revised` | `goal_id`, `items`, `revision` | Runless allowed |
 | `goal_lifecycle_changed` | `goal_id`, `status`, `revision` | Runless allowed |
-| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `body`; optional `reminder` | Runless allowed, including during an active run |
+| `producer_message_accepted` | `message_id`, `producer_owner`, `mode`, `idempotency_key`, `description`, `body`; optional `reminder` | Runless allowed, including during an active run |
 | `producer_message_admitted` | `message_id` | Requires the destination run |
 | `producer_messages_claimed` | Nonempty `message_ids` | Requires the admission run; envelope `seq` identifies the claim |
 | `producer_messages_released` | Positive `claim_seq` | Requires the claimed run |
@@ -122,6 +122,10 @@ at an unchanged revision. A consumed reminder cannot suppress later continuation
 New goals use `started` until a same-goal reminder is covered by committed model
 input; acceptance, claims, discarded startup messages, and lifecycle-control
 notifications alone do not switch subsequent reminders to `continuation`.
+
+Producer descriptions are compact, human-facing text; the full `body` remains
+model-facing. Legacy history without a description defaults to empty, allowing
+clients to fall back to a truncated body.
 
 `producer_message_admitted` links the accepted body to a run without duplicating
 user-input storage or changing existing input events. Its physical sequence is

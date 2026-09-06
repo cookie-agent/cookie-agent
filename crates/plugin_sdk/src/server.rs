@@ -1311,9 +1311,17 @@ impl ProducerHandle {
     pub async fn send(
         &self,
         message: impl Into<String>,
+        description: impl Into<String>,
         mode: ProducerDeliveryMode,
         key: ProducerIdempotencyKey,
     ) -> Result<ProducerMessageId, PluginError> {
+        let description = cookie_agent_protocol::SafeDisplayText::new(description)
+            .map_err(|error| PluginError::Protocol(format!("invalid description: {error}")))?;
+        if description.as_str().trim().is_empty() {
+            return Err(PluginError::Protocol(
+                "description must not be blank".into(),
+            ));
+        }
         let result: ExtensionProducerSendResult = context_request(
             &self.context,
             PLUGIN_PRODUCER_SEND_METHOD,
@@ -1322,6 +1330,7 @@ impl ProducerHandle {
                 producer_id: self.producer_id,
                 mode,
                 idempotency_key: key,
+                description,
                 body: message.into(),
             },
         )
@@ -1333,18 +1342,22 @@ impl ProducerHandle {
     pub async fn steer(
         &self,
         message: impl Into<String>,
+        description: impl Into<String>,
         key: ProducerIdempotencyKey,
     ) -> Result<ProducerMessageId, PluginError> {
-        self.send(message, ProducerDeliveryMode::Steer, key).await
+        self.send(message, description, ProducerDeliveryMode::Steer, key)
+            .await
     }
 
     /// Durably sends a message for a subsequent normal run.
     pub async fn queue(
         &self,
         message: impl Into<String>,
+        description: impl Into<String>,
         key: ProducerIdempotencyKey,
     ) -> Result<ProducerMessageId, PluginError> {
-        self.send(message, ProducerDeliveryMode::Queue, key).await
+        self.send(message, description, ProducerDeliveryMode::Queue, key)
+            .await
     }
 
     /// Discards an owned waiting message in this handle's session.
@@ -2284,10 +2297,16 @@ mod tests {
                 let finished_tx = finished_tx.clone();
                 async move {
                     let producer = context.register_producer(session_id).await?;
+                    for description in ["", "   ", "bad\ntext", &"x".repeat(1025)] {
+                        assert!(matches!(
+                            producer.steer("body", description, ProducerIdempotencyKey::new("invalid").unwrap()).await,
+                            Err(PluginError::Protocol(_))
+                        ));
+                    }
                     let (steer, queue) = tokio::join!(
                         producer
-                            .steer("steered", ProducerIdempotencyKey::new("steer-key").unwrap()),
-                        producer.queue("queued", ProducerIdempotencyKey::new("queue-key").unwrap())
+                            .steer("steered", "Steered result", ProducerIdempotencyKey::new("steer-key").unwrap()),
+                        producer.queue("queued", "Queued result", ProducerIdempotencyKey::new("queue-key").unwrap())
                     );
                     let receipts = (steer?, queue?);
                     assert!(matches!(
@@ -2349,6 +2368,16 @@ mod tests {
         let second_send = read_wire(&mut engine_read).await;
         assert_eq!(first_send["method"], PLUGIN_PRODUCER_SEND_METHOD);
         assert_eq!(second_send["method"], PLUGIN_PRODUCER_SEND_METHOD);
+        for request in [&first_send, &second_send] {
+            let expected = if request["params"]["mode"] == "steer" {
+                "Steered result"
+            } else {
+                "Queued result"
+            };
+            assert_eq!(request["params"]["description"], expected);
+            serde_json::from_value::<ExtensionProducerSendParams>(request["params"].clone())
+                .unwrap();
+        }
         let receipt_for = |request: &Value| match request["params"]["mode"].as_str().unwrap() {
             "steer" => ProducerMessageId::new_v7(),
             "queue" => ProducerMessageId::new_v7(),

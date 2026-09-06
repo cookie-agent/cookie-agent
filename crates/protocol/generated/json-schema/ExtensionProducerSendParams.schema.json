@@ -1,11 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExtensionProducerSendParams",
-  "description": "Send requires a live registration owned by this connection and session.\nIdentical (session, stable owner, key) retries return the original receipt;\ndifferent body or mode is rejected. A missing ACK is commit-uncertain.",
+  "description": "Send requires a live registration owned by this connection and session.\nIdentical (session, stable owner, key) retries return the original receipt;\ndifferent description, body, or mode is rejected. A missing ACK is commit-uncertain.",
   "type": "object",
   "properties": {
     "body": {
       "type": "string"
+    },
+    "description": {
+      "description": "Control-free bounded presentation text.",
+      "type": "string",
+      "maxLength": 1024,
+      "minLength": 1,
+      "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
     },
     "idempotency_key": {
       "description": "Sender-chosen idempotency key scoped to a session and stable producer owner.",
@@ -32,6 +39,7 @@
     "producer_id",
     "mode",
     "idempotency_key",
+    "description",
     "body"
   ],
   "$defs": {

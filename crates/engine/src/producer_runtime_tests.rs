@@ -893,6 +893,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
             first_registration,
             ProducerDeliveryMode::Steer,
             steer_key.clone(),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "steer into active run".into(),
         )
         .await
@@ -906,15 +907,29 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                 second_registration,
                 ProducerDeliveryMode::Steer,
                 steer_key.clone(),
+                cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
                 "steer into active run".into(),
             )
             .await
             .expect("stable owner dedup"),
         steer_id
     );
-    for (mode, body) in [
-        (ProducerDeliveryMode::Queue, "steer into active run"),
-        (ProducerDeliveryMode::Steer, "different payload"),
+    for (mode, body, description) in [
+        (
+            ProducerDeliveryMode::Queue,
+            "steer into active run",
+            "Producer result",
+        ),
+        (
+            ProducerDeliveryMode::Steer,
+            "different payload",
+            "Producer result",
+        ),
+        (
+            ProducerDeliveryMode::Steer,
+            "steer into active run",
+            "Different description",
+        ),
     ] {
         assert!(
             fixture
@@ -925,6 +940,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                     second_registration,
                     mode,
                     steer_key.clone(),
+                    cookie_agent_protocol::SafeDisplayText::new(description).unwrap(),
                     body.into(),
                 )
                 .await
@@ -944,6 +960,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                 first_registration,
                 ProducerDeliveryMode::Steer,
                 producer_key("foreign-owner"),
+                cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
                 "foreign".into(),
             )
             .await
@@ -964,6 +981,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                 first_registration,
                 ProducerDeliveryMode::Steer,
                 producer_key("wrong-session"),
+                cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
                 "wrong session".into(),
             )
             .await
@@ -980,6 +998,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
             second_registration,
             ProducerDeliveryMode::Queue,
             producer_key("queued-follow-up"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "queue for subsequent run".into(),
         )
         .await
@@ -1003,6 +1022,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
                 second_registration,
                 ProducerDeliveryMode::Queue,
                 producer_key("closed-registration"),
+                cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
                 "closed".into(),
             )
             .await
@@ -1095,6 +1115,7 @@ async fn idle_send_auto_runs_and_recovery_restores_missing_consumption_marker() 
             registration,
             ProducerDeliveryMode::Queue,
             producer_key("idle-auto-run"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "idle producer model input".into(),
         )
         .await
@@ -1423,6 +1444,10 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
     assert_eq!(control.mode, ProducerDeliveryMode::Steer);
     assert_eq!(control.reminder, None);
     assert!(control.body.contains("paused by the user"));
+    assert_eq!(
+        control.description.as_str(),
+        format!("Goal paused: {}", goal.objective)
+    );
     assert!(control.body.contains(&format!("\"{}\"", goal.objective)));
     assert!(control.body.contains("Stop pursuing it autonomously"));
     assert!(control.body.contains("Wrap up current work"));
@@ -1598,6 +1623,7 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
             registration,
             ProducerDeliveryMode::Queue,
             producer_key("work-after-cancel-notice"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "ordinary queued producer work".into(),
         )
         .await
@@ -1634,6 +1660,10 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
     assert_eq!(control.mode, ProducerDeliveryMode::Steer);
     assert_eq!(control.reminder, None);
     assert!(control.body.contains("cancelled by the user"));
+    assert_eq!(
+        control.description.as_str(),
+        format!("Goal cancelled: {}", goal.objective)
+    );
     assert!(control.body.contains(&format!("\"{}\"", goal.objective)));
     assert!(control.body.contains("Stop pursuing this cancelled goal"));
     assert!(control.body.contains("do not call goal_update"));
@@ -1838,6 +1868,7 @@ async fn idle_goal_pause_and_cancel_notify_live_producer_before_its_later_result
                 registration,
                 ProducerDeliveryMode::Steer,
                 producer_key(&format!("later-idle-result-{index}")),
+                cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
                 later_body.clone(),
             )
             .await
@@ -1996,6 +2027,7 @@ async fn pending_message_without_registration_is_goal_control_audience() {
             registration,
             ProducerDeliveryMode::Queue,
             producer_key("pending-only-audience"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "producer work accepted before pause".into(),
         )
         .await
@@ -2382,6 +2414,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
             blocker,
             ProducerDeliveryMode::Steer,
             producer_key("frozen-terminal-steer"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "continue the already admitted frozen run".into(),
         )
         .await
@@ -2523,6 +2556,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
             blocker,
             ProducerDeliveryMode::Steer,
             producer_key("forked-branch-message"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "retain this producer message across branches".into(),
         )
         .await

@@ -71,11 +71,13 @@ or recovery callback, call `ctx.register_producer(session_id).await` to obtain a
 `ProducerHandle`. Keep the handle for the lifetime of external work; it is not a
 one-shot context grant and remains usable after the triggering callback or turn.
 
-- `handle.send(message, ProducerDeliveryMode::{Steer, Queue}, key).await` returns
+- `handle.send(message, description, ProducerDeliveryMode::{Steer, Queue}, key).await` returns
   the durable `ProducerMessageId` receipt.
-- `handle.steer(message, key).await` and `handle.queue(message, key).await` are
+- `handle.steer(message, description, key).await` and `handle.queue(message, description, key).await` are
   per-send conveniences. Construct a validated key with
   `ProducerIdempotencyKey::new(stable_message_key)`.
+- Every send requires a nonblank, control-free description of at most 1024 UTF-8
+  bytes for compact display. The message body remains the full model-facing input.
 - `handle.id()` and `handle.session_id()` expose the runtime registration and
   destination. Do not persist registration IDs for reuse after reconnect.
 - `handle.unregister().await` explicitly closes the registration. Zero-send
@@ -170,7 +172,7 @@ the live connection's ownership; senders cannot choose or impersonate an owner.
 | Wire method | Direction | Parameters | Result |
 |---|---|---|---|
 | `plugin/producer/register` | Plugin to engine | `ExtensionProducerRegisterParams { session_id }` | `ExtensionProducerRegisterResult { producer_id }` |
-| `plugin/producer/send` | Plugin to engine | `ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, body }` | `ExtensionProducerSendResult { message_id }` |
+| `plugin/producer/send` | Plugin to engine | `ExtensionProducerSendParams { session_id, producer_id, mode, idempotency_key, description, body }` | `ExtensionProducerSendResult { message_id }` |
 | `plugin/producer/unregister` | Plugin to engine | `ExtensionProducerUnregisterParams { session_id, producer_id }` | `ExtensionProducerUnregisterResult {}` |
 | `plugin/producer/discard` | Plugin to engine | `ExtensionProducerDiscardParams { session_id, message_id }` | `ExtensionProducerDiscardResult {}` |
 | `plugin/recovery/start` | Engine to plugin notification | `ExtensionRecoveryStartParams {}` | None; no request ID or response |
@@ -209,7 +211,7 @@ or undoes model execution or external effects.
 
 The ACK follows durable acceptance only. Identical retries scoped to
 `(session, stable producer owner, idempotency_key)` return the original message ID;
-different body or mode rejects key reuse. Missing ACKs are commit-uncertain. These
+different description, body, or mode rejects key reuse. Missing ACKs are commit-uncertain. These
 contracts make no exactly-once claim about model calls or external effects.
 
 `PluginRecoveryStatus` has exactly `starting`, `ready`, `failed`, `disabled`.

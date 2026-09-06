@@ -2,11 +2,12 @@
 import type { ProducerDeliveryMode } from "./ProducerDeliveryMode.js";
 import type { ProducerId } from "./ProducerId.js";
 import type { ProducerIdempotencyKey } from "./ProducerIdempotencyKey.js";
+import type { SafeDisplayText } from "./SafeDisplayText.js";
 import type { SessionId } from "./SessionId.js";
 
 /**
  * Send requires a live registration owned by this connection and session.
  * Identical (session, stable owner, key) retries return the original receipt;
- * different body or mode is rejected. A missing ACK is commit-uncertain.
+ * different description, body, or mode is rejected. A missing ACK is commit-uncertain.
  */
-export type ExtensionProducerSendParams = { session_id: SessionId, producer_id: ProducerId, mode: ProducerDeliveryMode, idempotency_key: ProducerIdempotencyKey, body: string, };
+export type ExtensionProducerSendParams = { session_id: SessionId, producer_id: ProducerId, mode: ProducerDeliveryMode, idempotency_key: ProducerIdempotencyKey, description: SafeDisplayText, body: string, };

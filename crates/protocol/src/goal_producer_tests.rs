@@ -291,6 +291,7 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
             producer_owner: ProducerOwner::Goal { goal_id },
             mode: ProducerDeliveryMode::Queue,
             idempotency_key: ProducerIdempotencyKey::new("attempt-1").unwrap(),
+            description: SafeDisplayText::new("Goal reminder: Ship the change").unwrap(),
             body: "Ship the change\n[ ] Verify the root's test results\nrevision: 2".into(),
             reminder: Some(reminder),
         },
@@ -510,11 +511,30 @@ fn producer_identity_and_send_contracts_are_strict() {
             producer_id,
             mode,
             idempotency_key: ProducerIdempotencyKey::new("external-job:42").unwrap(),
+            description: SafeDisplayText::new("External job completed").unwrap(),
             body: "Result\ncomplete".into(),
         };
         let value = serde_json::to_value(&send).unwrap();
         strict::<ExtensionProducerSendParams>(value.clone());
         round_trip(send);
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("description");
+        assert!(serde_json::from_value::<ExtensionProducerSendParams>(missing).is_err());
+        for description in [
+            "".into(),
+            "   ".into(),
+            "\u{2003}".into(),
+            "bad\ntext".into(),
+            "x".repeat(1025),
+            "\u{e9}".repeat(513),
+        ] {
+            let mut invalid = value.clone();
+            invalid["description"] = json!(description);
+            assert!(serde_json::from_value::<ExtensionProducerSendParams>(invalid).is_err());
+        }
+        let mut boundary = value.clone();
+        boundary["description"] = json!("x".repeat(1024));
+        assert!(serde_json::from_value::<ExtensionProducerSendParams>(boundary).is_ok());
         for field in ["producer_owner", "connection_epoch", "reminder", "priority"] {
             let mut forged = value.clone();
             forged[field] = json!("forged");
@@ -563,6 +583,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
         producer_owner: ProducerOwner::GoalControl { goal_id },
         mode: ProducerDeliveryMode::Steer,
         idempotency_key: ProducerIdempotencyKey::new("goal-control:1").unwrap(),
+        description: SafeDisplayText::new("Goal paused: Verify tests").unwrap(),
         body: "The goal was paused by the user.".into(),
         reminder: None,
     };
@@ -595,6 +616,7 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
             producer_owner: ProducerOwner::Goal { goal_id },
             mode: ProducerDeliveryMode::Queue,
             idempotency_key: ProducerIdempotencyKey::new("reminder-kind").unwrap(),
+            description: SafeDisplayText::new("Goal reminder: Verify tests").unwrap(),
             body: "goal reminder".into(),
             reminder: Some(GoalReminderIdentity {
                 goal_id,
@@ -630,6 +652,37 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
 }
 
 #[test]
+fn producer_description_round_trips_and_legacy_events_default_to_empty() {
+    let payload = EventPayload::ProducerMessageAccepted {
+        message_id: ProducerMessageId::new_v7(),
+        producer_owner: ProducerOwner::Plugin {
+            plugin: "jobs".into(),
+        },
+        mode: ProducerDeliveryMode::Queue,
+        idempotency_key: ProducerIdempotencyKey::new("legacy-description").unwrap(),
+        description: SafeDisplayText::new("External work completed").unwrap(),
+        body: "Full model-facing result\nwith details".into(),
+        reminder: None,
+    };
+    round_trip(payload.clone());
+    let mut wire = serde_json::to_value(payload).unwrap();
+    wire.as_object_mut().unwrap().remove("description");
+    let recovered = deserialize_event_payload_best_effort(wire.clone()).unwrap();
+    assert!(recovered.degraded_fields.is_empty());
+    assert!(stored(recovered.payload.clone(), None).validate().is_ok());
+    assert!(matches!(
+        &recovered.payload,
+        EventPayload::ProducerMessageAccepted { description, body, .. }
+            if description.as_str().is_empty() && body == "Full model-facing result\nwith details"
+    ));
+    round_trip(recovered.payload);
+    let strict: EventPayload = serde_json::from_value(wire).unwrap();
+    assert!(
+        matches!(strict, EventPayload::ProducerMessageAccepted { description, .. } if description.as_str().is_empty())
+    );
+}
+
+#[test]
 fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
     let goal_id = GoalId::new_v7();
     let reminder = GoalReminderIdentity {
@@ -642,6 +695,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
         producer_owner: ProducerOwner::Goal { goal_id },
         mode: ProducerDeliveryMode::Queue,
         idempotency_key: ProducerIdempotencyKey::new(key).unwrap(),
+        description: SafeDisplayText::new("Goal reminder: Establish checklist").unwrap(),
         body: "Establish checklist".into(),
         reminder: Some(reminder),
     };

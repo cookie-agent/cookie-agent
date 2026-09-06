@@ -6,6 +6,41 @@ use tokio::sync::oneshot;
 use super::{Engine, EngineError, Event, SessionCommand, event_origin};
 use crate::goal_projection::{GoalProducerProjection, ProducerMessageRecord};
 
+fn producer_description(prefix: &str, detail: &str) -> SafeDisplayText {
+    let mut text = String::from(prefix);
+    for character in detail.trim().chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if text.len() + character.len_utf8() > SafeDisplayText::MAX_BYTES {
+            break;
+        }
+        text.push(character);
+    }
+    SafeDisplayText::new(text).expect("bounded control-free producer description")
+}
+
+#[test]
+fn producer_descriptions_are_control_free_and_utf8_bounded() {
+    assert_eq!(
+        producer_description("Goal started: ", "  first\nsecond\tstep  ").as_str(),
+        "Goal started: first second step"
+    );
+    for prefix in [
+        "Goal reminder: ",
+        "Goal paused: ",
+        "Goal cancelled: ",
+        "Delegation completed: ",
+    ] {
+        let text = producer_description(prefix, &"\u{e9}".repeat(1024));
+        assert!(text.as_str().starts_with(prefix));
+        assert!(text.as_str().len() <= SafeDisplayText::MAX_BYTES);
+        assert!(text.as_str().len() >= SafeDisplayText::MAX_BYTES - 1);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProducerAuthority {
     pub owner: ProducerOwner,
@@ -58,6 +93,7 @@ pub(super) enum ProducerCommand {
         producer_id: ProducerId,
         mode: ProducerDeliveryMode,
         key: ProducerIdempotencyKey,
+        description: SafeDisplayText,
         body: String,
         reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
     },
@@ -167,6 +203,7 @@ impl Engine {
                     params.producer_id,
                     params.mode,
                     params.idempotency_key,
+                    params.description,
                     params.body,
                 )
                 .await
@@ -290,6 +327,7 @@ impl Engine {
                 producer_id,
                 mode,
                 key,
+                description,
                 body,
                 reply,
             } => {
@@ -300,6 +338,7 @@ impl Engine {
                         producer_id,
                         mode,
                         idempotency_key: key,
+                        description,
                         body,
                     },
                     None,
@@ -486,6 +525,13 @@ impl Engine {
                         ProducerMessageId::new_v7().to_string(),
                     )
                     .expect("UUID idempotency key"),
+                    description: producer_description(
+                        match kind {
+                            GoalReminderKind::Started => "Goal started: ",
+                            GoalReminderKind::Continuation => "Goal reminder: ",
+                        },
+                        &goal.objective,
+                    ),
                     body,
                 },
                 Some(GoalReminderIdentity {
@@ -837,6 +883,7 @@ impl Engine {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_producer_message(
         &self,
         session: SessionId,
@@ -844,6 +891,7 @@ impl Engine {
         producer_id: ProducerId,
         mode: ProducerDeliveryMode,
         key: ProducerIdempotencyKey,
+        description: SafeDisplayText,
         body: String,
     ) -> Result<ProducerMessageId, EngineError> {
         self.request(session, |reply| {
@@ -852,6 +900,7 @@ impl Engine {
                 producer_id,
                 mode,
                 key,
+                description,
                 body,
                 reply,
             })
@@ -1093,6 +1142,15 @@ impl Engine {
                 mode: ProducerDeliveryMode::Steer,
                 idempotency_key: ProducerIdempotencyKey::new(format!("goal-control:{revision}"))
                     .expect("goal control idempotency key"),
+                description: producer_description(
+                    match status {
+                        GoalStatus::Paused => "Goal paused: ",
+                        GoalStatus::Active => "Goal resumed: ",
+                        GoalStatus::Cancelled => "Goal cancelled: ",
+                        GoalStatus::Completed => unreachable!("no completion control message"),
+                    },
+                    &goal.objective,
+                ),
                 body,
             },
             None,
@@ -1252,9 +1310,15 @@ impl Engine {
             producer_id,
             mode,
             idempotency_key: key,
+            description,
             body,
         } = params;
         self.require_registration(session, producer_id, authority)?;
+        if description.as_str().trim().is_empty() {
+            return Err(EngineError::Producer(
+                "description must not be blank".into(),
+            ));
+        }
         if let Some(existing) = self
             .goal_producer_projection(session)?
             .messages
@@ -1263,7 +1327,11 @@ impl Engine {
                 message.producer_owner == authority.owner && message.idempotency_key == key
             })
         {
-            if existing.mode != mode || existing.body != body || existing.reminder != reminder {
+            if existing.mode != mode
+                || existing.description != description
+                || existing.body != body
+                || existing.reminder != reminder
+            {
                 return Err(EngineError::Producer(
                     "idempotency key already accepted with different payload".into(),
                 ));
@@ -1281,6 +1349,7 @@ impl Engine {
                 producer_owner: authority.owner.clone(),
                 mode,
                 idempotency_key: key,
+                description,
                 body,
                 reminder,
             },
@@ -1302,6 +1371,7 @@ impl Engine {
             ));
         }
         let body = super::delegation::render_background_completion(&teaser);
+        let description = producer_description("Delegation completed: ", &teaser.preview);
         let super::delegation::DelegateTeaser {
             status,
             preview,
@@ -1374,6 +1444,7 @@ impl Engine {
                     mode: ProducerDeliveryMode::Steer,
                     idempotency_key: ProducerIdempotencyKey::new("delegation-completion")
                         .expect("static delegation idempotency key is valid"),
+                    description,
                     body,
                 },
                 None,

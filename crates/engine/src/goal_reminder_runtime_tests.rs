@@ -48,6 +48,15 @@ async fn consumed_goal_reminder_stays_continuation_across_pause_restart_and_resu
     })
     .await;
     let first_run = first_admission.run_id.expect("started reminder run");
+    let started = producer_projection(&fixture.engine, session_id)
+        .messages
+        .into_iter()
+        .find(|message| message.reminder.is_some())
+        .unwrap();
+    assert_eq!(
+        started.description.as_str(),
+        format!("Goal started: {}", goal.objective)
+    );
     let EventPayload::ProducerMessageAdmitted {
         message_id: first_id,
     } = first_admission.payload
@@ -100,6 +109,10 @@ async fn consumed_goal_reminder_stays_continuation_across_pause_restart_and_resu
         })
         .expect("unclaimed continuation before pause");
     assert!(pending_continuation.claims.is_empty());
+    assert_eq!(
+        pending_continuation.description.as_str(),
+        format!("Goal reminder: {}", goal.objective)
+    );
     let paused = fixture
         .engine
         .change_session_goal_lifecycle(
@@ -374,6 +387,7 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
             boundary_registration,
             ProducerDeliveryMode::Steer,
             producer_key("discarded-reminder-revision-boundary"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "finish the run that lost its stale reminder".into(),
         )
         .await

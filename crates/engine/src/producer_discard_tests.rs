@@ -46,6 +46,7 @@ for line in sys.stdin:
             send({'jsonrpc':'2.0','id':'send','method':'plugin/producer/send','params':{
                 'session_id':session,'producer_id':producer_id,'mode':'queue',
                 'idempotency_key':'discard-after-unregister',
+                'description':'Discardable plugin result',
                 'body':'plugin callback body must never reach the model'}})
     elif request_id == 'send':
         message_id = frame['result']['message_id']
@@ -133,6 +134,8 @@ fn append_accepted_message(
                 producer_owner: owner,
                 mode: ProducerDeliveryMode::Steer,
                 idempotency_key: discard_key(&format!("direct-{message_id}")),
+                description: cookie_agent_protocol::SafeDisplayText::new("Producer result")
+                    .unwrap(),
                 body: body.into(),
                 reminder: None,
             },
@@ -231,6 +234,7 @@ async fn queued_message_can_be_discarded_after_unregister_by_its_stable_owner() 
             registration,
             ProducerDeliveryMode::Queue,
             discard_key("queued-after-snapshot"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "discarded queued body".into(),
         )
         .await
@@ -400,6 +404,7 @@ async fn inflight_steer_is_too_late_once_claimed_and_after_commit() {
             registration,
             ProducerDeliveryMode::Steer,
             discard_key("claimed-steer"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "claimed steer body".into(),
         )
         .await
@@ -489,6 +494,7 @@ async fn cancelling_a_claimed_request_releases_only_that_request_lease() {
             registration,
             ProducerDeliveryMode::Steer,
             discard_key("cancelled-claim"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "cancelled attempt input".into(),
         )
         .await
@@ -555,6 +561,7 @@ async fn failed_request_releases_claim_so_owner_can_discard_before_retry() {
             registration,
             ProducerDeliveryMode::Steer,
             discard_key("failed-request"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "input seen by the failed request".into(),
         )
         .await

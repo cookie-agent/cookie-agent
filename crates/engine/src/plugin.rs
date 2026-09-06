@@ -2563,7 +2563,7 @@ mod producer_tests {
             ),
             (
                 PLUGIN_PRODUCER_SEND_METHOD,
-                json!({"session_id": session, "producer_id": producer, "body": "hello", "mode": "queue", "idempotency_key": "key"}),
+                json!({"session_id": session, "producer_id": producer, "description": "Greeting", "body": "hello", "mode": "queue", "idempotency_key": "key"}),
                 PluginProducerResponse::Send(ExtensionProducerSendResult {
                     message_id: message,
                 }),

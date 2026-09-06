@@ -161,10 +161,15 @@ bounded_control_free_type!(
 );
 bounded_control_free_type!(ProviderItemId, 512, "Bounded provider item identity.");
 bounded_control_free_type!(CwdIdentity, 4096, "Opaque canonical workspace identity.");
-bounded_control_free_type!(
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+#[ts(type = "string")]
+pub struct SafeDisplayText(String);
+string_wire_impl!(
     SafeDisplayText,
     1024,
-    "Control-free bounded presentation text."
+    "^[^\\p{Cc}\\p{Cf}]+$",
+    "Control-free bounded presentation text.",
+    |value: &str| validate_control_free(value, SafeDisplayText::MAX_BYTES)
 );
 bounded_control_free_type!(
     SafeErrorMessage,

@@ -256,6 +256,26 @@ async fn surviving_background_reservation_publishes_completion_once() {
         .expect("completed parent")
         .log
         .all_events();
+    let description = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ProducerMessageAccepted {
+                producer_owner:
+                    cookie_agent_protocol::ProducerOwner::Delegation {
+                        invocation_id: accepted,
+                    },
+                description,
+                body,
+                ..
+            } if *accepted == invocation_id => {
+                assert!(body.starts_with("<subagent_notification>"));
+                Some(description)
+            }
+            _ => None,
+        })
+        .expect("delegation producer description");
+    assert!(description.as_str().starts_with("Delegation completed: "));
+    assert!(description.as_str().len() <= cookie_agent_protocol::SafeDisplayText::MAX_BYTES);
     assert_eq!(
         events
             .iter()

@@ -194,7 +194,7 @@ pub struct ExtensionProducerRegisterResult {
 
 /// Send requires a live registration owned by this connection and session.
 /// Identical (session, stable owner, key) retries return the original receipt;
-/// different body or mode is rejected. A missing ACK is commit-uncertain.
+/// different description, body, or mode is rejected. A missing ACK is commit-uncertain.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerSendParams {
@@ -202,7 +202,22 @@ pub struct ExtensionProducerSendParams {
     pub producer_id: crate::ProducerId,
     pub mode: crate::ProducerDeliveryMode,
     pub idempotency_key: crate::ProducerIdempotencyKey,
+    #[serde(deserialize_with = "deserialize_producer_description")]
+    pub description: crate::SafeDisplayText,
     pub body: String,
+}
+
+fn deserialize_producer_description<'de, D>(
+    deserializer: D,
+) -> Result<crate::SafeDisplayText, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let description = crate::SafeDisplayText::deserialize(deserializer)?;
+    if description.as_str().trim().is_empty() {
+        return Err(serde::de::Error::custom("description must not be blank"));
+    }
+    Ok(description)
 }
 
 /// Returned only after durable ProducerMessageAccepted append. Retries return

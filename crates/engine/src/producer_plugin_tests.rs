@@ -35,6 +35,7 @@ for line in sys.stdin:
         producer_id = frame['result']['producer_id']
         send({'jsonrpc':'2.0','id':'send','method':'plugin/producer/send','params':{
             'session_id':session,'producer_id':producer_id,'mode':'queue',
+            'description':'External plugin work completed',
             'idempotency_key':'plugin-engine-integration','body':'real plugin producer input'}})
     elif frame.get('id') == 'send':
         message_id = frame['result']['message_id']
@@ -185,13 +186,17 @@ async fn installed_plugin_producer_callbacks_are_durable_and_drive_a_model_turn(
             EventPayload::ProducerMessageAccepted {
                 message_id,
                 producer_owner,
+                description,
                 body,
                 ..
-            } if body == "real plugin producer input" => Some((message_id, producer_owner)),
+            } if body == "real plugin producer input" => {
+                Some((message_id, producer_owner, description))
+            }
             _ => None,
         })
         .expect("durable producer acceptance before send ACK");
     assert_eq!(receipt["message_id"], accepted.0.to_string());
+    assert_eq!(accepted.2.as_str(), "External plugin work completed");
     assert_eq!(
         accepted.1,
         ProducerOwner::Plugin {

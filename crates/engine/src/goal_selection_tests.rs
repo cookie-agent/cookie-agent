@@ -516,6 +516,7 @@ async fn none_and_terminal_goal_choices_preserve_ordinary_selection_fallbacks() 
             producer,
             ProducerDeliveryMode::Queue,
             ProducerIdempotencyKey::new("producer-only-selection").expect("producer key"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "ordinary producer-only wake".into(),
         )
         .await
@@ -570,6 +571,7 @@ async fn none_and_terminal_goal_choices_preserve_ordinary_selection_fallbacks() 
             terminal_producer,
             ProducerDeliveryMode::Queue,
             ProducerIdempotencyKey::new("terminal-generic-selection").expect("producer key"),
+            cookie_agent_protocol::SafeDisplayText::new("Producer result").unwrap(),
             "generic work after selected goal completes".into(),
         )
         .await

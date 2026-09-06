@@ -2408,6 +2408,8 @@ mod tests {
                 producer_owner: owner,
                 mode: ProducerDeliveryMode::Steer,
                 idempotency_key: ProducerIdempotencyKey::new(key).unwrap(),
+                description: cookie_agent_protocol::SafeDisplayText::new("Producer result")
+                    .unwrap(),
                 body: body.into(),
                 reminder: None,
             },
