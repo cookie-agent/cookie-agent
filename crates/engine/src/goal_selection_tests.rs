@@ -157,6 +157,39 @@ async fn next_request(seen: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -
         .expect("goal selection HTTP request")
 }
 
+async fn hold_compaction(
+    engine: &Engine,
+    session_id: SessionId,
+) -> (
+    tokio::sync::oneshot::Receiver<
+        Result<cookie_agent_protocol::SessionCompactResult, EngineError>,
+    >,
+    std::sync::Arc<tokio::sync::Notify>,
+) {
+    let (reached, release) = engine.install_compaction_execution_hook_for_test();
+    let completion = engine
+        .enqueue_compact_without_residency_for_test(session_id)
+        .await
+        .expect("enqueue held goal selection compaction");
+    tokio::time::timeout(test_timeout(5), reached)
+        .await
+        .expect("goal selection compaction hook timeout")
+        .expect("goal selection compaction reached hook");
+    (completion, release)
+}
+
+async fn release_compaction(
+    completion: tokio::sync::oneshot::Receiver<
+        Result<cookie_agent_protocol::SessionCompactResult, EngineError>,
+    >,
+    release: std::sync::Arc<tokio::sync::Notify>,
+) {
+    release.notify_waiters();
+    let _ = tokio::time::timeout(test_timeout(5), completion)
+        .await
+        .expect("goal selection compaction completion timeout");
+}
+
 async fn complete_goal(engine: &Engine, session_id: SessionId) {
     engine
         .goal_update(
@@ -288,14 +321,9 @@ async fn assert_active_run_keeps_selection(change: SelectionChange) {
         .create_session(selection_a.clone())
         .expect("active attribution session");
     let session_id = session.session_id;
-    let blocker_authority = authority();
-    let blocker = fixture
-        .engine
-        .register_producer(session_id, blocker_authority.clone())
-        .await
-        .expect("goal wake blocker");
 
     let paused = if matches!(change, SelectionChange::Resume) {
+        let (compaction, compaction_release) = hold_compaction(&fixture.engine, session_id).await;
         let goal = fixture
             .engine
             .set_session_goal(
@@ -309,26 +337,41 @@ async fn assert_active_run_keeps_selection(change: SelectionChange) {
             .await
             .expect("set resumable goal")
             .goal;
-        Some(
-            fixture
-                .engine
-                .change_session_goal_lifecycle(
-                    SessionGoalLifecycleParams {
-                        session_id,
-                        goal_id: goal.goal_id,
-                        expected_revision: goal.revision,
-                        action: GoalLifecycleAction::Pause,
-                        selection: None,
-                    },
-                    origin(),
-                )
-                .await
-                .expect("pause goal")
-                .goal,
-        )
+        let paused = fixture
+            .engine
+            .change_session_goal_lifecycle(
+                SessionGoalLifecycleParams {
+                    session_id,
+                    goal_id: goal.goal_id,
+                    expected_revision: goal.revision,
+                    action: GoalLifecycleAction::Pause,
+                    selection: None,
+                },
+                origin(),
+            )
+            .await
+            .expect("pause goal")
+            .goal;
+        assert!(!events(&fixture.engine, session_id).iter().any(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ProducerMessageAccepted {
+                    producer_owner: ProducerOwner::GoalControl { .. },
+                    ..
+                }
+            )
+        }));
+        release_compaction(compaction, compaction_release).await;
+        Some(paused)
     } else {
         None
     };
+    let blocker_authority = authority();
+    let blocker = fixture
+        .engine
+        .register_producer(session_id, blocker_authority.clone())
+        .await
+        .expect("goal wake blocker");
 
     let active_run = fixture
         .engine
@@ -545,6 +588,8 @@ async fn none_and_terminal_goal_choices_preserve_ordinary_selection_fallbacks() 
         .engine
         .create_session(selection_a.clone())
         .expect("terminal goal session");
+    let (compaction, compaction_release) =
+        hold_compaction(&fixture.engine, terminal.session_id).await;
     let terminal_authority = authority();
     let terminal_producer = fixture
         .engine
@@ -582,6 +627,12 @@ async fn none_and_terminal_goal_choices_preserve_ordinary_selection_fallbacks() 
         .unregister_producer(terminal.session_id, terminal_authority, terminal_producer)
         .await
         .expect("release terminal generic wake");
+    assert!(
+        !events(&fixture.engine, terminal.session_id)
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+    );
+    release_compaction(compaction, compaction_release).await;
     let terminal_run = wait_for_run_started(&fixture.engine, terminal.session_id, None).await;
     assert_eq!(
         run_selection_for(&fixture.engine, terminal.session_id, terminal_run),
