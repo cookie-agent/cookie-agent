@@ -417,6 +417,24 @@ impl Theme {
         self.background_color(self.palette().parchment, None)
     }
 
+    /// Distinct terminal band for shell commands and their output.
+    pub fn terminal_background(&self) -> Option<Color> {
+        if !self.is_bakery_palette() {
+            return None;
+        }
+        self.background_color(self.palette().glaze, None)
+    }
+
+    /// Interactive block hover preserves foregrounds and never underlines.
+    pub fn block_hover(&self) -> Style {
+        let style = self.hover_fill().remove_modifier(Modifier::UNDERLINED);
+        if self.key.colors == ColorLevel::None {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+
     /// One approval decision button. `active` (hover) fills the button with
     /// a decision-tinted background; the border/label color and the button
     /// glyphs carry the meaning, never color alone.
@@ -854,6 +872,11 @@ mod tests {
             signature("default.tool_failure", default.tool_failure()),
             signature("default.selected", default.selected()),
             signature("default.hover", default.hover()),
+            signature("default.block_hover", default.block_hover()),
+            signature(
+                "default.terminal_background",
+                Style::default().bg(default.terminal_background().unwrap()),
+            ),
             signature(
                 "default.decision.allow",
                 default.decision(DecisionTone::Allow, false),
@@ -877,36 +900,58 @@ mod tests {
             signature("mono.inline_code", mono.inline_code()),
             signature("mono.selected", mono.selected()),
             signature("mono.hover", mono.hover()),
+            signature("mono.block_hover", mono.block_hover()),
+            signature(
+                "mono.terminal_background",
+                Style {
+                    bg: mono.terminal_background(),
+                    ..Style::default()
+                },
+            ),
+            signature("contrast.block_hover", contrast.block_hover()),
+            signature(
+                "contrast.terminal_background",
+                Style {
+                    bg: contrast.terminal_background(),
+                    ..Style::default()
+                },
+            ),
         ]
         .join("\n");
-        assert_snapshot!(snapshot, @r#"
-default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
-default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
-default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_success: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.tool_failure: fg=Some(Rgb(174, 51, 39)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
-default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
-default.decision.allow: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
-default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
-contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.assistant: fg=Some(White) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.tool_success: fg=Some(LightGreen) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.error: fg=Some(LightRed) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.selected: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
-default.warning: fg=Some(Rgb(122, 82, 6)) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
-mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=None bold=true italic=false underline=false dim=false reverse=false
-contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
-mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
-mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
-mono.selected: fg=None bg=None bold=false italic=false underline=false dim=false reverse=true
-mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false reverse=false
-"#);
+        assert_snapshot!(snapshot, @"
+        default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
+        default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
+        default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.tool_success: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.tool_failure: fg=Some(Rgb(174, 51, 39)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
+        default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
+        default.block_hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
+        default.terminal_background: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
+        default.decision.allow: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
+        contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.assistant: fg=Some(White) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.tool_success: fg=Some(LightGreen) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.error: fg=Some(LightRed) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.selected: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
+        default.warning: fg=Some(Rgb(122, 82, 6)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
+        mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
+        default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
+        mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
+        mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
+        mono.selected: fg=None bg=None bold=false italic=false underline=false dim=false reverse=true
+        mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false reverse=false
+        mono.block_hover: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
+        mono.terminal_background: fg=None bg=None bold=false italic=false underline=false dim=false reverse=false
+        contrast.block_hover: fg=None bg=Some(DarkGray) bold=false italic=false underline=false dim=false reverse=false
+        contrast.terminal_background: fg=None bg=None bold=false italic=false underline=false dim=false reverse=false
+        ");
     }
 
     #[test]
@@ -935,6 +980,11 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
             signature("dark.tool_failure", dark.tool_failure()),
             signature("dark.selected", dark.selected()),
             signature("dark.hover", dark.hover()),
+            signature("dark.block_hover", dark.block_hover()),
+            signature(
+                "dark.terminal_background",
+                Style::default().bg(dark.terminal_background().unwrap()),
+            ),
             signature(
                 "dark.decision.allow",
                 dark.decision(DecisionTone::Allow, false),
@@ -947,21 +997,23 @@ mono.hover: fg=None bg=None bold=false italic=false underline=true dim=false rev
             signature("dark.inline_code", dark.inline_code()),
         ]
         .join("\n");
-        assert_snapshot!(snapshot, @r#"
-dark.surface: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
-dark.panel: fg=None bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
-dark.user: fg=Some(Rgb(199, 119, 30)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.assistant: fg=Some(Rgb(96, 151, 64)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.tool_running: fg=Some(Rgb(217, 130, 70)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.tool_success: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.tool_failure: fg=Some(Rgb(242, 110, 97)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.selected: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(99, 86, 59)) bold=true italic=false underline=false dim=false reverse=false
-dark.hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
-dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
-dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
-dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=None bold=true italic=false underline=false dim=false reverse=false
-"#);
+        assert_snapshot!(snapshot, @"
+        dark.surface: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
+        dark.panel: fg=None bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
+        dark.user: fg=Some(Rgb(199, 119, 30)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.assistant: fg=Some(Rgb(96, 151, 64)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.tool_running: fg=Some(Rgb(217, 130, 70)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.tool_success: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.tool_failure: fg=Some(Rgb(242, 110, 97)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.selected: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(99, 86, 59)) bold=true italic=false underline=false dim=false reverse=false
+        dark.hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
+        dark.block_hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
+        dark.terminal_background: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
+        dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
+        dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        ");
     }
 
     #[test]
@@ -999,6 +1051,44 @@ dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=None bold=true italic=false unde
     }
 
     #[test]
+    fn block_hover_never_underlines_at_any_capability() {
+        for kind in [
+            ThemeKind::Default,
+            ThemeKind::Dark,
+            ThemeKind::Mono,
+            ThemeKind::HighContrast,
+        ] {
+            for level in [
+                ColorLevel::None,
+                ColorLevel::Ansi16,
+                ColorLevel::Ansi256,
+                ColorLevel::TrueColor,
+            ] {
+                let theme = Theme::new(kind, level);
+                let hover = theme.block_hover();
+                assert_eq!(hover.fg, None);
+                assert_eq!(hover.bg, theme.hover_fill().bg);
+                assert!(!hover.add_modifier.contains(Modifier::UNDERLINED));
+                assert!(
+                    !Style::default()
+                        .add_modifier(Modifier::UNDERLINED)
+                        .patch(hover)
+                        .add_modifier
+                        .contains(Modifier::UNDERLINED)
+                );
+                if level == ColorLevel::None {
+                    assert!(hover.add_modifier.contains(Modifier::BOLD));
+                }
+                if matches!(kind, ThemeKind::Mono | ThemeKind::HighContrast)
+                    || level == ColorLevel::None
+                {
+                    assert_eq!(theme.terminal_background(), None);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn warm_background_bands_hand_pick_ansi256_cells() {
         // Each light band names its cell explicitly, and the ladder steps
         // from light to deep: cream surface, parchment code band, glaze
@@ -1007,6 +1097,7 @@ dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=None bold=true italic=false unde
         assert_eq!(theme.surface().bg, Some(Color::Indexed(231)));
         assert_eq!(theme.panel().bg, Some(Color::Indexed(231)));
         assert_eq!(theme.code_background(), Some(Color::Indexed(230)));
+        assert_eq!(theme.terminal_background(), Some(Color::Indexed(223)));
         assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
         assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));

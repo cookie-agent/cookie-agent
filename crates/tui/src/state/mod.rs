@@ -242,6 +242,8 @@ pub enum TranscriptItem {
         producer_owner: ProducerOwner,
         mode: ProducerDeliveryMode,
         body: String,
+        /// Backend description or legacy goal summary, frozen at acceptance.
+        summary: Option<String>,
         reminder: Option<GoalReminderIdentity>,
         status: ProducerMessageStatus,
     },
@@ -595,6 +597,19 @@ impl SessionState {
         self.tools
             .values()
             .any(|tool| tool.status == ToolStatus::Running)
+    }
+
+    /// Whether any producer message is waiting for a model run to claim it.
+    pub fn has_pending_producers(&self) -> bool {
+        self.transcript.iter().any(|item| {
+            matches!(
+                item,
+                TranscriptItem::ProducerMessage {
+                    status: ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted,
+                    ..
+                }
+            )
+        })
     }
 
     /// The sealed elapsed thinking duration for one part, when known.
@@ -1350,6 +1365,7 @@ fn reduce_event(
             mode,
             idempotency_key,
             body,
+            description,
             reminder,
         } => {
             if !valid_producer_reminder_owner(&producer_owner, reminder.as_ref())
@@ -1360,6 +1376,31 @@ fn reduce_event(
             {
                 return;
             }
+            let summary = (!description.as_str().trim().is_empty())
+                .then(|| description.as_str().to_owned())
+                .or_else(|| {
+                    let ProducerOwner::Goal { goal_id } = &producer_owner else {
+                        return None;
+                    };
+                    let reminder = reminder.as_ref()?;
+                    let goal = state
+                        .goal
+                        .as_ref()
+                        .filter(|goal| goal.goal_id == *goal_id)
+                        .or_else(|| {
+                            state.transcript.iter().find_map(|item| match item {
+                                TranscriptItem::Goal { goal, .. } if goal.goal_id == *goal_id => {
+                                    Some(goal)
+                                }
+                                _ => None,
+                            })
+                        })?;
+                    let label = match reminder.kind {
+                        cookie_agent_protocol::GoalReminderKind::Started => "GoalStarted",
+                        cookie_agent_protocol::GoalReminderKind::Continuation => "GoalContinue",
+                    };
+                    Some(format!("{label}: {}", goal.objective))
+                });
             let transcript_index = state.transcript.len();
             push_item(state, |id| TranscriptItem::ProducerMessage {
                 id,
@@ -1369,6 +1410,7 @@ fn reduce_event(
                 producer_owner: producer_owner.clone(),
                 mode,
                 body,
+                summary,
                 reminder,
                 status: ProducerMessageStatus::Pending,
             });
@@ -3563,6 +3605,7 @@ mod tests {
         reminder: Option<GoalReminderIdentity>,
     ) -> EventPayload {
         EventPayload::ProducerMessageAccepted {
+            description: Default::default(),
             message_id,
             producer_owner,
             mode: ProducerDeliveryMode::Queue,
@@ -3857,6 +3900,7 @@ mod tests {
                 None,
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: owner.clone(),
                     mode: ProducerDeliveryMode::Queue,
@@ -3870,6 +3914,7 @@ mod tests {
                 None,
                 2,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: owner.clone(),
                     mode: ProducerDeliveryMode::Queue,
@@ -4273,6 +4318,7 @@ mod tests {
                 None,
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::GoalControl { goal_id },
                     mode: ProducerDeliveryMode::Steer,
@@ -4332,6 +4378,7 @@ mod tests {
             (
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::Goal { goal_id },
                     mode: ProducerDeliveryMode::Queue,
@@ -4400,6 +4447,7 @@ mod tests {
                 None,
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::Goal { goal_id },
                     mode: ProducerDeliveryMode::Steer,
@@ -5036,6 +5084,7 @@ mod tests {
                 None,
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::Plugin {
                         plugin: "worker".into(),
@@ -5125,6 +5174,7 @@ mod tests {
             (
                 2,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::Plugin {
                         plugin: "worker".into(),
@@ -5168,6 +5218,7 @@ mod tests {
                 None,
                 1,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id: first_message_id,
                     producer_owner: ProducerOwner::Plugin {
                         plugin: "worker".into(),
@@ -5183,6 +5234,7 @@ mod tests {
                 None,
                 2,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id: second_message_id,
                     producer_owner: ProducerOwner::Delegation {
                         invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
@@ -5211,6 +5263,7 @@ mod tests {
             producer_rows(&state).as_slice(),
             [
                 TranscriptItem::ProducerMessage {
+                    summary: None,
                     id: 2,
                     seq: 2,
                     accepted_at: second_accepted_at,
@@ -5219,6 +5272,7 @@ mod tests {
                     ..
                 },
                 TranscriptItem::ProducerMessage {
+                    summary: None,
                     id: 1,
                     seq: 1,
                     accepted_at: first_accepted_at,

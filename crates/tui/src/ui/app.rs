@@ -331,7 +331,7 @@ pub(super) enum ScrollbarTarget {
 /// from the same per-frame hit map that click handling consults, in the same
 /// priority order, and only ever changes styling — never selection state.
 /// Only elements with a real click action are hover targets at all: passive
-/// surfaces (the composer, the scrollbar, transcript blocks) stay quiet even
+/// surfaces (the composer and scrollbar) stay quiet even
 /// though clicks on them still work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HoverTarget {
@@ -349,6 +349,13 @@ pub(super) enum HoverTarget {
     ProviderCancel,
     GoalAction(GoalBarAction),
     GoalClose,
+    TranscriptBlock(BlockId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkingState {
+    Working,
+    Queued(usize),
 }
 
 /// Per-frame hit targets built from the same geometry and transcript layout
@@ -4288,6 +4295,15 @@ impl App {
         if let Some(hit) = self.hit_map.tree_rows.iter().find(|hit| over(hit.rect)) {
             return Some(HoverTarget::TreeRow(hit.session_id));
         }
+        if self.hit_map.conversation.is_some_and(over) {
+            return self
+                .hit_map
+                .blocks
+                .iter()
+                .rev()
+                .find(|hit| over(hit.rect))
+                .map(|hit| HoverTarget::TranscriptBlock(hit.id));
+        }
         None
     }
 
@@ -4365,6 +4381,22 @@ impl App {
             }
         };
         match hover {
+            HoverTarget::TranscriptBlock(id) => {
+                if matches!(id, BlockId::Tool(_) | BlockId::CommittedTool { .. })
+                    && self.layout_cache.layout.regions.iter().any(|region| {
+                        region.id == id && region.start_line < self.conversation_scroll.offset
+                    })
+                {
+                    return;
+                }
+                if let Some(hit) = self.hit_map.blocks.iter().find(|hit| hit.id == id) {
+                    patch(
+                        frame,
+                        Rect::new(hit.rect.x, hit.rect.y, hit.rect.width, 1),
+                        self.theme.block_hover(),
+                    );
+                }
+            }
             HoverTarget::GoalAction(action) => {
                 if let Some((rect, _)) = self
                     .hit_map
@@ -4372,7 +4404,12 @@ impl App {
                     .iter()
                     .find(|(_, candidate)| *candidate == action)
                 {
-                    patch(frame, *rect, text_style);
+                    let style = if action == GoalBarAction::Details {
+                        self.theme.block_hover()
+                    } else {
+                        text_style
+                    };
+                    patch(frame, *rect, style);
                 }
             }
             HoverTarget::GoalClose => {
@@ -4484,16 +4521,39 @@ impl App {
         u8::try_from((self.animation_ticks / 12) % 4).unwrap_or(0)
     }
 
-    /// Animation frames run only while the visible session has live content
-    /// — streaming thinking or a running tool; everything else is
-    /// event-driven.
+    /// Animate live runs, streaming parts, tools, and waiting producers.
     pub(super) fn animation_active(&self) -> bool {
         self.selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
             .is_some_and(|state| {
-                crate::state::SessionState::has_open_thinking(state)
+                state.active_run.is_some()
+                    || crate::state::SessionState::has_open_thinking(state)
                     || crate::state::SessionState::has_running_tool(state)
+                    || state.has_pending_producers()
             })
+    }
+
+    fn working_state(&self) -> Option<WorkingState> {
+        let state = self.selected.and_then(|id| self.store.sessions.get(&id))?;
+        if state.active_run.is_some() {
+            return Some(WorkingState::Working);
+        }
+        let count = state.pending_inputs.len()
+            + state
+                .transcript
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item,
+                        TranscriptItem::ProducerMessage {
+                            status: crate::state::ProducerMessageStatus::Pending
+                                | crate::state::ProducerMessageStatus::Admitted,
+                            ..
+                        }
+                    )
+                })
+                .count();
+        (count > 0).then_some(WorkingState::Queued(count))
     }
 
     pub(super) fn animation_tick(&mut self) {
@@ -6115,7 +6175,6 @@ impl App {
 
     pub(super) fn selected_queue_entries(&self) -> Vec<PendingQueueEntry> {
         use crate::state::ProducerMessageStatus;
-        use cookie_agent_protocol::{ProducerDeliveryMode, ProducerOwner};
 
         let Some(state) = self.selected.and_then(|id| self.store.sessions.get(&id)) else {
             return Vec::new();
@@ -6137,49 +6196,28 @@ impl App {
                 message_id,
                 producer_owner,
                 mode,
-                body,
-                reminder,
+                summary,
                 status,
                 ..
             } = item
             else {
                 continue;
             };
-            let status = match status {
-                ProducerMessageStatus::Pending => "pending",
-                ProducerMessageStatus::Admitted => "admitted",
+            match status {
+                ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted => {}
                 ProducerMessageStatus::Claimed
                 | ProducerMessageStatus::Consumed
                 | ProducerMessageStatus::Discarded => continue,
             };
-            let owner = match producer_owner {
-                ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
-                ProducerOwner::Delegation { invocation_id } => format!(
-                    "delegation {}",
-                    invocation_id
-                        .to_string()
-                        .chars()
-                        .take(8)
-                        .collect::<String>()
-                ),
-                ProducerOwner::Goal { .. } => "goal".into(),
-                ProducerOwner::GoalControl { .. } => "goal control".into(),
-            };
-            let mode = match mode {
-                ProducerDeliveryMode::Steer => "steer",
-                ProducerDeliveryMode::Queue => "queue",
-            };
-            let body = reminder
-                .as_ref()
-                .map_or(body.as_str(), |reminder| match reminder.kind {
-                    cookie_agent_protocol::GoalReminderKind::Started => "Goal started",
-                    cookie_agent_protocol::GoalReminderKind::Continuation => "Continue",
-                });
             entries.push(PendingQueueEntry {
                 kind: QueueEntryKind::Producer(*message_id),
                 seq: *seq,
                 accepted_at: *accepted_at,
-                preview: format!("{owner} | {mode} | {status}: {body}"),
+                preview: super::transcript::producer_summary(
+                    producer_owner,
+                    *mode,
+                    summary.as_deref(),
+                ),
             });
         }
         entries.sort_by_key(|entry| entry.seq);
@@ -7450,6 +7488,15 @@ impl App {
             })
             .map(shorten_home)
             .unwrap_or_else(|| "—".into());
+
+        let cwd = self.working_state().map_or(cwd, |working| {
+            let glyph = ['◐', '◓', '◑', '◒'][usize::from(self.clock_bucket())];
+            let label = match working {
+                WorkingState::Working => "working".to_owned(),
+                WorkingState::Queued(count) => format!("{count} queued"),
+            };
+            format!("{glyph} {label}")
+        });
 
         let state = self
             .selected

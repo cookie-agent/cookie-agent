@@ -157,20 +157,29 @@ impl App {
             .sum::<usize>()
             .min(usize::from(area.width));
         let details_width = usize::from(area.width).saturating_sub(controls_width);
-        let finished = goal.items.iter().filter(|item| item.finished).count();
-        let summary = format!(
-            "{} | {} {finished}/{}",
-            single_line(&goal.objective),
-            status_name(goal.status),
-            goal.items.len(),
-        );
-        let mut details = truncate_with_ellipsis(&summary, details_width);
+        let prefix = if area.width >= 12 && details_width >= 8 {
+            "goal: "
+        } else {
+            ""
+        };
+        let mut summary = single_line(&goal.objective);
+        if matches!(goal.status, GoalStatus::Completed | GoalStatus::Cancelled) {
+            summary.push_str(&format!(" · {}", status_name(goal.status)));
+        }
+        let objective_width = details_width.saturating_sub(prefix.len());
+        let mut details = truncate_with_ellipsis(&summary, objective_width);
         details.push_str(
-            &" ".repeat(details_width.saturating_sub(UnicodeWidthStr::width(details.as_str()))),
+            &" ".repeat(objective_width.saturating_sub(UnicodeWidthStr::width(details.as_str()))),
         );
-        let details_style =
-            action_style(&self.theme, self.goal_focus == Some(GoalBarAction::Details));
-        let mut spans = vec![Span::styled(details, details_style)];
+        let details_style = if self.goal_focus == Some(GoalBarAction::Details) {
+            self.theme.assistant().patch(self.theme.block_hover())
+        } else {
+            self.theme.assistant()
+        };
+        let mut spans = vec![
+            Span::styled(prefix, self.theme.internal()),
+            Span::styled(details, details_style),
+        ];
         if details_width > 0 {
             self.hit_map.goal_actions.push((
                 Rect::new(area.x, area.y, details_width as u16, 1),
@@ -1182,6 +1191,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_bar_formats_each_status_without_progress() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut app, _) = app_with_replies(Vec::new()).await;
+        let session = SessionId::new_v7();
+        for (status, suffix) in [
+            (GoalStatus::Active, "[Pause] [Cancel]"),
+            (GoalStatus::Paused, "[Resume] [Cancel]"),
+            (GoalStatus::Completed, " · completed"),
+            (GoalStatus::Cancelled, " · cancelled"),
+        ] {
+            let mut goal = goal(status);
+            goal.objective = "finish\n the parser".into();
+            mount_goal(&mut app, session, goal);
+            let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+            terminal
+                .draw(|frame| app.render_goal_bar(frame, frame.area()))
+                .unwrap();
+            let line = (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                .collect::<String>();
+            assert!(line.starts_with("goal: finish the parser"), "{line}");
+            assert!(line.trim_end().ends_with(suffix), "{line}");
+            assert!(!line.contains('/'));
+            for x in 0..23 {
+                assert!(
+                    !terminal.backend().buffer()[(x, 0)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::UNDERLINED)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn goal_bar_is_bounded_and_has_non_overlapping_hits_at_tiny_widths() {
         use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
@@ -1201,7 +1245,7 @@ mod tests {
             assert!(UnicodeWidthStr::width(line.as_str()) <= usize::from(width));
             assert!(!line.contains(['\n', '\t']));
             if width >= 20 {
-                assert!(line.starts_with("Long objective"), "{line}");
+                assert!(line.starts_with("goal: Long"), "{line}");
             }
             assert!(
                 app.hit_map
@@ -1321,6 +1365,7 @@ mod tests {
         app.selected = Some(session_id);
         for (index, payload) in [
             EventPayload::ProducerMessageAccepted {
+                description: Default::default(),
                 message_id: ProducerMessageId::new_v7(),
                 producer_owner: ProducerOwner::Goal { goal_id },
                 mode: ProducerDeliveryMode::Queue,

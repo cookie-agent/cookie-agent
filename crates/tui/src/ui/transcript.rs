@@ -8,7 +8,8 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, GoalState, GoalStatus, ProducerDeliveryMode, ProducerOwner, SessionId,
+    AgentId, GoalState, GoalStatus, ProducerDeliveryMode, ProducerMessageId, ProducerOwner,
+    SessionId,
 };
 use ratatui::{
     layout::Rect,
@@ -203,6 +204,7 @@ pub(super) enum BlockId {
     SystemPrompt,
     Compaction(u64),
     PluginMessage(u64),
+    ProducerMessage(ProducerMessageId),
     MediaFile {
         turn_seq: u64,
         content_index: u32,
@@ -1008,7 +1010,6 @@ enum Role {
     User,
     Action,
     Goal,
-    Producer,
     ToolRunning,
     ToolSuccess,
     ToolFailure,
@@ -1059,10 +1060,12 @@ fn for_each_item_block_id(item: &TranscriptItem, mut visit: impl FnMut(BlockId) 
         }
         TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
+        TranscriptItem::ProducerMessage { message_id, .. } => {
+            visit(BlockId::ProducerMessage(*message_id))
+        }
         TranscriptItem::User { .. }
         | TranscriptItem::Event { .. }
-        | TranscriptItem::Goal { .. }
-        | TranscriptItem::ProducerMessage { .. } => true,
+        | TranscriptItem::Goal { .. } => true,
     }
 }
 
@@ -1193,9 +1196,11 @@ fn transcript_item_layout(
             user_seq: None,
         },
         TranscriptItem::ProducerMessage {
+            message_id,
             producer_owner,
             mode,
             body,
+            summary,
             reminder,
             status,
             ..
@@ -1210,26 +1215,26 @@ fn transcript_item_layout(
                     }) =>
             {
                 producer_message_layout(
+                    *message_id,
                     producer_owner,
                     *mode,
                     body,
-                    reminder.as_ref(),
+                    &producer_summary(producer_owner, *mode, summary.as_deref()),
                     *status,
-                    context.width,
-                    context.theme,
+                    context,
                 )
             }
             crate::state::ProducerMessageStatus::Pending
             | crate::state::ProducerMessageStatus::Admitted
             | crate::state::ProducerMessageStatus::Claimed => ItemLayout::default(),
             crate::state::ProducerMessageStatus::Consumed => producer_message_layout(
+                *message_id,
                 producer_owner,
                 *mode,
                 body,
-                reminder.as_ref(),
+                &producer_summary(producer_owner, *mode, summary.as_deref()),
                 *status,
-                context.width,
-                context.theme,
+                context,
             ),
             crate::state::ProducerMessageStatus::Discarded
                 if context.minimum_event_level == crate::state::EventLevel::Debug =>
@@ -1284,48 +1289,88 @@ fn goal_layout(goal: &GoalState, width: u16, theme: &Theme) -> Vec<Line<'static>
     role_block(Role::Goal, body, width, theme)
 }
 
+pub(super) fn producer_summary(
+    owner: &ProducerOwner,
+    mode: ProducerDeliveryMode,
+    description: Option<&str>,
+) -> String {
+    if let Some(description) = description.filter(|text| !text.trim().is_empty()) {
+        return description.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    format!(
+        "{} · {}",
+        producer_owner_label(owner),
+        producer_mode_label(mode)
+    )
+}
+
+fn producer_owner_label(owner: &ProducerOwner) -> String {
+    match owner {
+        ProducerOwner::Plugin { plugin } => format!("plugin {plugin}"),
+        ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
+        ProducerOwner::Goal { .. } => "goal controller".to_owned(),
+        ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
+    }
+}
+
 fn producer_message_layout(
+    message_id: ProducerMessageId,
     owner: &ProducerOwner,
     mode: ProducerDeliveryMode,
     body: &str,
-    reminder: Option<&cookie_agent_protocol::GoalReminderIdentity>,
+    summary: &str,
     status: ProducerMessageStatus,
-    width: u16,
-    theme: &Theme,
+    context: &TranscriptRenderContext<'_>,
 ) -> ItemLayout {
-    let (owner, content) = match owner {
-        ProducerOwner::Plugin { plugin } => (format!("plugin {plugin}"), Some(body.to_owned())),
-        ProducerOwner::Delegation { invocation_id } => {
-            (format!("delegation {invocation_id}"), Some(body.to_owned()))
-        }
-        ProducerOwner::Goal { .. } => (
-            "goal controller".to_owned(),
-            Some(
-                reminder
-                    .map_or(body, |reminder| match reminder.kind {
-                        cookie_agent_protocol::GoalReminderKind::Started => "Goal started",
-                        cookie_agent_protocol::GoalReminderKind::Continuation => "Continue",
-                    })
-                    .to_owned(),
-            ),
-        ),
-        ProducerOwner::GoalControl { .. } => ("goal control".to_owned(), Some(body.to_owned())),
+    let block_id = BlockId::ProducerMessage(message_id);
+    let expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if expanded { '▾' } else { '▸' };
+    let header = if context.width < 8 {
+        format!("[P] {chevron} …")
+    } else {
+        format!("◇ {chevron} {summary}")
     };
+    let mut lines = vec![Line::styled(
+        super::app::truncate_with_ellipsis(&header, usize::from(context.width)),
+        context.theme.internal(),
+    )];
     let status = match status {
         ProducerMessageStatus::Claimed => "claimed",
         ProducerMessageStatus::Consumed => "consumed",
         _ => unreachable!("only claimed starts or consumed messages enter the transcript"),
     };
-    let mut lines = vec![Line::styled(
-        format!("{owner} · {} · {status}", producer_mode_label(mode)),
-        theme.internal(),
-    )];
-    if let Some(content) = content {
-        lines.extend(content.lines().map(|line| Line::from(line.to_owned())));
+    if expanded {
+        let mut body_lines = vec![Line::styled(
+            format!(
+                "{} · {} · {status}",
+                producer_owner_label(owner),
+                producer_mode_label(mode)
+            ),
+            context.theme.internal(),
+        )];
+        body_lines.extend(bounded_safe_display_text(
+            body,
+            context.theme.internal(),
+            MAX_EXPANDED_BODY_LINES,
+            MAX_EXPANDED_BODY_BYTES,
+        ));
+        for line in body_lines {
+            lines.extend(repeated_prefixed_wrapped_line(
+                vec![Span::styled("· ", context.theme.internal())],
+                line,
+                context.width,
+            ));
+        }
     }
     ItemLayout {
-        lines: role_block(Role::Producer, lines, width, theme),
-        regions: Vec::new(),
+        regions: vec![BlockRegion {
+            id: block_id,
+            start_line: 0,
+            end_line: lines.len(),
+        }],
+        lines,
         user_seq: None,
     }
 }
@@ -2045,6 +2090,19 @@ fn assistant_child_layout(
 /// suffix, and failed/cancelled/interrupted use their exact concise
 /// markers. `COMPLETED` is never rendered. Exactly one chevron per row,
 /// after the tool emoji.
+fn tool_icon(title: &str) -> &'static str {
+    match title {
+        "bash" => "💻",
+        "read" => ">",
+        "write" => "📝",
+        "edit" => "✏️",
+        "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => "🤖",
+        "skill" => "✨",
+        "goal_get" | "goal_update" => "🎯",
+        _ => "🔨",
+    }
+}
+
 fn tool_child_layout(
     state: &SessionState,
     call_id: Option<cookie_agent_protocol::ToolCallId>,
@@ -2140,21 +2198,36 @@ fn tool_child_layout(
     };
     let mut budget = RenderBudget::new(limits);
     let mut remaining_sections = section_count;
-    let title = tool.compact_title();
-    let mut body = if is_expanded {
-        vec![
-            ToolBodyLine::wrapped(Line::from(format!("🔨 ▾ {title}{suffix}"))),
-            ToolBodyLine::wrapped(Line::from(format!(
-                "arguments: {}",
-                display_tool_arguments(tool, arguments.as_ref())
-            ))),
-        ]
+    let tool_name = tool.presentation.title.as_str();
+    let icon = tool_icon(tool_name);
+    let title = if tool_name == "read" {
+        tool.presentation
+            .primary_argument
+            .as_ref()
+            .map_or_else(|| "Read".to_owned(), |path| format!("Read {path}"))
     } else {
-        vec![ToolBodyLine::wrapped(Line::from(format!(
-            "🔨 ▸ {title}{suffix}"
-        )))]
+        tool.compact_title()
     };
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let mut body = vec![ToolBodyLine::wrapped(Line::from(format!(
+        "{icon} {chevron} {title}{suffix}"
+    )))];
     if is_expanded {
+        if tool_name != "read" {
+            let command = arguments.as_ref().and_then(|args| args.command.as_deref());
+            let arguments_line = if tool_name == "bash"
+                && let Some(command) = command
+            {
+                let (command, complete) = sanitized_display_prefix(command, 2 * 1024);
+                format!("❯ {command}{}", if complete { "" } else { "…" })
+            } else {
+                format!(
+                    "arguments: {}",
+                    display_tool_arguments(tool, arguments.as_ref())
+                )
+            };
+            body.push(ToolBodyLine::wrapped(Line::from(arguments_line)));
+        }
         if !tool.detail.is_empty() {
             remaining_sections -= 1;
             body.extend(tool_body_lines(
@@ -2187,6 +2260,11 @@ fn tool_child_layout(
                 remaining_sections,
                 context.theme,
             ));
+        }
+    }
+    if tool_name == "bash" {
+        for line in body.iter_mut().skip(1) {
+            line.banded = line.output_toggle.is_none();
         }
     }
     let rendered = tool_block_lines(role, body, context.width, context.theme);
@@ -2225,6 +2303,8 @@ struct ParsedToolArguments<'a> {
     after: Option<Cow<'a, str>>,
     #[serde(borrow)]
     content: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    command: Option<Cow<'a, str>>,
 }
 
 impl<'a> ParsedToolArguments<'a> {
@@ -2279,6 +2359,7 @@ struct ToolBodyLine {
     line: Line<'static>,
     kind: ToolBodyLineKind,
     output_toggle: Option<ToolOutputSection>,
+    banded: bool,
 }
 
 impl ToolBodyLine {
@@ -2287,6 +2368,7 @@ impl ToolBodyLine {
             line,
             kind: ToolBodyLineKind::Wrapped,
             output_toggle: None,
+            banded: false,
         }
     }
 
@@ -2306,6 +2388,7 @@ impl ToolBodyLine {
                 continuation_gutter,
             },
             output_toggle: None,
+            banded: false,
         }
     }
 
@@ -2314,6 +2397,7 @@ impl ToolBodyLine {
             line,
             kind: ToolBodyLineKind::Wrapped,
             output_toggle: Some(section),
+            banded: false,
         }
     }
 }
@@ -2515,7 +2599,11 @@ fn render_read_output(
     future_sections: usize,
     context: &TranscriptRenderContext<'_>,
 ) -> Vec<ToolBodyLine> {
-    let preamble = || read.preamble.lines().filter(|line| !line.starts_with('<'));
+    let preamble = || {
+        read.preamble
+            .lines()
+            .filter(|line| !line.starts_with('<') && !line.starts_with("Read file "))
+    };
     let metadata = || read.metadata.lines().filter(|line| !line.is_empty());
     let total_lines = preamble().count() + read.content.lines().count() + metadata().count();
     let number_width = read
@@ -3342,7 +3430,9 @@ fn tool_block_lines(
     };
     let mut lines = Vec::new();
     let mut output_toggles = Vec::new();
+    let mut banded_rows = Vec::new();
     for (index, body_line) in body.into_iter().enumerate() {
+        let banded = body_line.banded;
         let output_toggle = body_line.output_toggle;
         let line_style = body_line.line.style;
         let spans = body_line
@@ -3425,6 +3515,36 @@ fn tool_block_lines(
         if let Some(section) = output_toggle {
             output_toggles.push((section, start, lines.len()));
         }
+        if banded {
+            banded_rows.extend(start..lines.len());
+        }
+    }
+    if let Some(background) = theme.terminal_background() {
+        let band_width = banded_rows
+            .iter()
+            .map(|&index| lines[index].width())
+            .max()
+            .unwrap_or(0);
+        for index in banded_rows {
+            let line = &mut lines[index];
+            let padding = band_width.saturating_sub(line.width());
+            line.spans.push(Span::raw(" ".repeat(padding)));
+            for span in &mut line.spans {
+                if span.content != "│ " {
+                    span.style = span.style.bg(background);
+                }
+            }
+        }
+    }
+    for line in &mut lines {
+        line.style = line
+            .style
+            .remove_modifier(ratatui::style::Modifier::UNDERLINED);
+        for span in &mut line.spans {
+            span.style = span
+                .style
+                .remove_modifier(ratatui::style::Modifier::UNDERLINED);
+        }
     }
     ToolBlockLayout {
         lines,
@@ -3442,7 +3562,6 @@ fn role_block_lines(
         Role::User => ("USER", "┌─", "│ ", theme.user()),
         Role::Action => ("ACTION", "--", "│ ", theme.user()),
         Role::Goal => ("GOAL", "◆─", "│ ", theme.assistant()),
-        Role::Producer => ("PRODUCER", "◇─", "│ ", theme.internal()),
         Role::ToolRunning => ("TOOL RUNNING", "┏…", "┃ ", theme.tool_running()),
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
@@ -3451,7 +3570,7 @@ fn role_block_lines(
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
-    if matches!(role, Role::Goal | Role::Producer | Role::Action) {
+    if matches!(role, Role::Goal | Role::Action) {
         if width == 0 {
             return Vec::new();
         }
@@ -3482,7 +3601,6 @@ fn role_block_lines(
             Role::User => "U",
             Role::Action => "A",
             Role::Goal => "G",
-            Role::Producer => "P",
             Role::ToolRunning => "T…",
             Role::ToolSuccess => "T✓",
             Role::ToolFailure => "T!",
@@ -4627,6 +4745,348 @@ mod tests {
     }
 
     #[test]
+    fn producer_rows_collapse_to_summary_and_expand_to_model_body() {
+        let session = SessionId::new_v7();
+        let first = ProducerMessageId::new_v7();
+        let second = ProducerMessageId::new_v7();
+        let mut store = StateStore::default();
+        for (seq, message_id) in [(1, first), (2, second)] {
+            let mut event = producer_accepted(
+                session,
+                seq,
+                message_id,
+                ProducerOwner::Plugin {
+                    plugin: "build".into(),
+                },
+                ProducerDeliveryMode::Queue,
+                &format!("ACTUAL MODEL BODY\n{}", "bounded content\n".repeat(1000)),
+                None,
+            );
+            let EventPayload::ProducerMessageAccepted { description, .. } = &mut event.payload
+            else {
+                unreachable!()
+            };
+            *description =
+                cookie_agent_protocol::SafeDisplayText::new("Build completed: parser").unwrap();
+            assert!(store.apply_event(event));
+        }
+        let state = store.sessions.get_mut(&session).unwrap();
+        for item in &mut state.transcript {
+            let TranscriptItem::ProducerMessage {
+                status, summary, ..
+            } = item
+            else {
+                unreachable!()
+            };
+            assert_eq!(summary.as_deref(), Some("Build completed: parser"));
+            *status = ProducerMessageStatus::Consumed;
+        }
+        let mut cache = LayoutCache::default();
+        let mut expanded = HashSet::new();
+        let render = |cache: &mut LayoutCache, expanded: &HashSet<BlockId>, clock| {
+            ensure_cached_transcript_layout(
+                cache,
+                session,
+                state,
+                None,
+                Some(expanded),
+                80,
+                &Theme::default(),
+                &PlainHighlighter,
+                crate::state::EventLevel::Info,
+                clock,
+            )
+        };
+        render(&mut cache, &expanded, 0);
+        assert_eq!(cache.item_layout_passes, 2);
+        assert_eq!(
+            snapshot_lines(&cache.layout.lines),
+            "◇ ▸ Build completed: parser\n\n◇ ▸ Build completed: parser"
+        );
+        for (index, message_id) in [first, second].into_iter().enumerate() {
+            assert_eq!(
+                item_block_ids(&state.transcript[index]),
+                [BlockId::ProducerMessage(message_id)]
+            );
+        }
+        expanded.insert(BlockId::ProducerMessage(first));
+        render(&mut cache, &expanded, 1);
+        assert_eq!(
+            cache.item_layout_passes, 3,
+            "only the toggled producer is laid out again"
+        );
+        let text = snapshot_lines(&cache.layout.lines);
+        assert!(text.starts_with(
+            "◇ ▾ Build completed: parser\n· plugin build · queue · consumed\n· ACTUAL MODEL BODY"
+        ));
+        assert_eq!(text.matches("ACTUAL MODEL BODY").count(), 1);
+        assert!(text.ends_with("◇ ▸ Build completed: parser"));
+        assert!(cache.layout.lines.len() <= MAX_EXPANDED_BODY_LINES + 6);
+        assert!(text.len() < MAX_EXPANDED_BODY_BYTES);
+        assert!(render(&mut cache, &expanded, 2));
+        assert_eq!(
+            cache.item_layout_passes, 3,
+            "settled rows ignore the animation clock"
+        );
+        for width in [1, 3, 7, 8, 20, 80] {
+            for blocks in [None, Some(&expanded)] {
+                let layout = transcript_layout(state, blocks, width);
+                assert!(
+                    layout
+                        .lines
+                        .iter()
+                        .all(|line| line.width() <= usize::from(width))
+                );
+                if blocks.is_none() {
+                    assert_eq!(layout.lines.len(), 3, "collapsed rows never wrap");
+                }
+            }
+        }
+        let owner = ProducerOwner::Goal {
+            goal_id: GoalId::new_v7(),
+        };
+        assert_eq!(
+            producer_summary(
+                &owner,
+                ProducerDeliveryMode::Steer,
+                Some("  Goal started: parser\nwork  ")
+            ),
+            "Goal started: parser work"
+        );
+        assert_eq!(
+            producer_summary(&owner, ProducerDeliveryMode::Steer, Some("")),
+            "goal controller · steer"
+        );
+    }
+
+    #[test]
+    fn legacy_producer_summaries_stay_stable_across_successive_goals_and_replay() {
+        use cookie_agent_protocol::{GoalReminderIdentity, GoalReminderKind};
+
+        for missing_at_acceptance in [false, true] {
+            for (kind, mode, label) in [
+                (
+                    GoalReminderKind::Started,
+                    ProducerDeliveryMode::Queue,
+                    "GoalStarted",
+                ),
+                (
+                    GoalReminderKind::Continuation,
+                    ProducerDeliveryMode::Steer,
+                    "GoalContinue",
+                ),
+            ] {
+                let session = SessionId::new_v7();
+                let run = RunId::new_v7();
+                let first_goal = GoalId::new_v7();
+                let second_goal = GoalId::new_v7();
+                let first_message = ProducerMessageId::new_v7();
+                let late_message = ProducerMessageId::new_v7();
+                let second_message = ProducerMessageId::new_v7();
+                let activate = |seq, goal_id, objective: &str| {
+                    runless_event(
+                        session,
+                        seq,
+                        EventPayload::GoalActivated {
+                            goal_id,
+                            objective: objective.into(),
+                            revision: 1,
+                            selection: None,
+                        },
+                    )
+                };
+                let accepted = |seq, message_id, goal_id| {
+                    producer_accepted(
+                        session,
+                        seq,
+                        message_id,
+                        ProducerOwner::Goal { goal_id },
+                        mode,
+                        "model-facing reminder",
+                        Some(GoalReminderIdentity {
+                            goal_id,
+                            revision: 1,
+                            kind,
+                        }),
+                    )
+                };
+                let mut events = Vec::new();
+                if !missing_at_acceptance {
+                    events.push(activate(1, first_goal, "first objective"));
+                }
+                events.extend([
+                    accepted(2, first_message, first_goal),
+                    event(
+                        session,
+                        3,
+                        run,
+                        EventPayload::ProducerMessageAdmitted {
+                            message_id: first_message,
+                        },
+                    ),
+                    turn_committed(
+                        session,
+                        4,
+                        run,
+                        AttemptId::new_v7(),
+                        1,
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                    ),
+                ]);
+                if missing_at_acceptance {
+                    events.push(activate(5, first_goal, "first objective"));
+                }
+                events.extend([
+                    runless_event(
+                        session,
+                        6,
+                        EventPayload::GoalChecklistRevised {
+                            goal_id: first_goal,
+                            items: vec![goal_item("finished", true)],
+                            revision: 2,
+                        },
+                    ),
+                    runless_event(
+                        session,
+                        7,
+                        EventPayload::GoalLifecycleChanged {
+                            goal_id: first_goal,
+                            status: GoalStatus::Completed,
+                            revision: 3,
+                            selection: None,
+                        },
+                    ),
+                    activate(8, second_goal, "second objective"),
+                    accepted(9, late_message, first_goal),
+                    accepted(10, second_message, second_goal),
+                ]);
+                let mut consumed_seq = 0;
+                for (index, stored) in events.iter_mut().enumerate() {
+                    stored.seq = index as u64 + 1;
+                    if let EventPayload::ModelTurnCommitted {
+                        input_through_seq, ..
+                    } = &mut stored.payload
+                    {
+                        *input_through_seq = stored.seq;
+                        consumed_seq = stored.seq;
+                    }
+                }
+
+                let mut live = StateStore::default();
+                let mut replay = StateStore::default();
+                let mut cache = LayoutCache::default();
+                let expected_summary =
+                    (!missing_at_acceptance).then(|| format!("{label}: first objective"));
+                let expected_header = format!(
+                    "◇ ▸ {}",
+                    producer_summary(
+                        &ProducerOwner::Goal {
+                            goal_id: first_goal
+                        },
+                        mode,
+                        expected_summary.as_deref()
+                    )
+                );
+                let theme = Theme::default();
+                let render = |cache: &mut LayoutCache, state: &SessionState, expanded, width| {
+                    ensure_cached_transcript_layout(
+                        cache,
+                        session,
+                        state,
+                        None,
+                        expanded,
+                        width,
+                        &theme,
+                        &PlainHighlighter,
+                        crate::state::EventLevel::Debug,
+                        0,
+                    );
+                    let fresh =
+                        transcript_layout_with(state, expanded, width, &theme, &PlainHighlighter);
+                    assert_eq!(
+                        snapshot_lines(&cache.layout.lines),
+                        snapshot_lines(&fresh.lines)
+                    );
+                    assert_eq!(cache.layout.regions, fresh.regions);
+                };
+                for (index, stored) in events.iter().enumerate() {
+                    assert!(live.apply_event(stored.clone()));
+                    assert!(replay.rebuild_session(session, 0, events[..=index].to_vec()));
+                    let state = &live.sessions[&session];
+                    render(&mut cache, state, None, 80);
+                    let replayed = transcript_layout_with(
+                        &replay.sessions[&session],
+                        None,
+                        80,
+                        &theme,
+                        &PlainHighlighter,
+                    );
+                    assert_eq!(
+                        snapshot_lines(&cache.layout.lines),
+                        snapshot_lines(&replayed.lines)
+                    );
+                    assert_eq!(cache.layout.regions, replayed.regions);
+                    if stored.seq >= consumed_seq {
+                        let row = state.transcript.iter().find(|item| matches!(item,
+                            TranscriptItem::ProducerMessage { message_id, .. } if *message_id == first_message)).unwrap();
+                        let TranscriptItem::ProducerMessage {
+                            summary, status, ..
+                        } = row
+                        else {
+                            unreachable!()
+                        };
+                        assert_eq!(summary, &expected_summary);
+                        assert_eq!(*status, ProducerMessageStatus::Consumed);
+                        assert!(snapshot_lines(&cache.layout.lines).contains(&expected_header));
+                    }
+                }
+                let state = &live.sessions[&session];
+                assert_eq!(state.goal.as_ref().unwrap().goal_id, second_goal);
+                for (message_id, objective) in [
+                    (late_message, "first objective"),
+                    (second_message, "second objective"),
+                ] {
+                    let summary = state.transcript.iter().find_map(|item| match item {
+                        TranscriptItem::ProducerMessage {
+                            message_id: id,
+                            summary,
+                            ..
+                        } if *id == message_id => summary.as_deref(),
+                        _ => None,
+                    });
+                    assert_eq!(summary, Some(format!("{label}: {objective}").as_str()));
+                }
+                let expanded = HashSet::from([BlockId::ProducerMessage(first_message)]);
+                for width in [80, 40, 80] {
+                    for blocks in [Some(&expanded), None] {
+                        render(&mut cache, state, blocks, width);
+                        let replayed = transcript_layout_with(
+                            &replay.sessions[&session],
+                            blocks,
+                            width,
+                            &theme,
+                            &PlainHighlighter,
+                        );
+                        assert_eq!(
+                            snapshot_lines(&cache.layout.lines),
+                            snapshot_lines(&replayed.lines)
+                        );
+                        assert_eq!(cache.layout.regions, replayed.regions);
+                        let header = if blocks.is_some() {
+                            expected_header.replace('▸', "▾")
+                        } else {
+                            expected_header.clone()
+                        };
+                        assert!(snapshot_lines(&cache.layout.lines).contains(&header));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn goal_and_producer_rows_fit_narrow_viewports() {
         let goal = test_goal(
             GoalStatus::Active,
@@ -4647,6 +5107,7 @@ mod tests {
                 goal,
             },
             TranscriptItem::ProducerMessage {
+                summary: None,
                 id: 2,
                 seq: 2,
                 accepted_at: Timestamp::now(),
@@ -4691,6 +5152,7 @@ mod tests {
                 seq: 1,
                 timestamp: jiff::Timestamp::now(),
                 payload: EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id,
                     producer_owner: ProducerOwner::GoalControl {
                         goal_id: GoalId::new_v7(),
@@ -4745,8 +5207,12 @@ mod tests {
                 )
                 .lines,
             );
+            assert!(!rendered.contains(body), "{rendered}");
+            assert!(rendered.contains("◇ ▸ goal control · steer"));
+            let expanded = HashSet::from([BlockId::ProducerMessage(message_id)]);
+            let rendered = snapshot_lines(&transcript_layout(state, Some(&expanded), 80).lines);
             assert_eq!(rendered.matches(body).count(), 1, "{rendered}");
-            assert!(rendered.contains("goal control · steer · consumed"));
+            assert!(rendered.contains("· goal control · steer · consumed"));
             assert!(!rendered.contains("Continue"));
         }
     }
@@ -4764,6 +5230,7 @@ mod tests {
             let state = SessionState {
                 goal: Some(goal.clone()),
                 transcript: vec![TranscriptItem::ProducerMessage {
+                    summary: Some(format!("GoalContinue: {}", goal.objective)),
                     id: 1,
                     seq: 9,
                     accepted_at: Timestamp::now(),
@@ -4772,7 +5239,7 @@ mod tests {
                         goal_id: goal.goal_id,
                     },
                     mode: ProducerDeliveryMode::Steer,
-                    body: "FULL REMINDER BODY MUST NOT RENDER".to_owned(),
+                    body: "FULL REMINDER BODY RENDERS WHEN EXPANDED".to_owned(),
                     reminder: Some(cookie_agent_protocol::GoalReminderIdentity {
                         goal_id: goal.goal_id,
                         revision: goal.revision,
@@ -4792,9 +5259,12 @@ mod tests {
             );
             let rendered = snapshot_lines(&layout.lines);
             if status == crate::state::ProducerMessageStatus::Consumed {
-                assert_eq!(rendered.matches("PRODUCER").count(), 1);
-                assert!(rendered.contains("goal controller · steer · consumed"));
-                assert!(rendered.contains("Continue"));
+                assert_eq!(rendered.matches("◇ ▸ GoalContinue:").count(), 1);
+                let expanded = HashSet::from([layout.regions[0].id]);
+                let expanded =
+                    snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines);
+                assert!(expanded.contains("· goal controller · steer · consumed"));
+                assert!(expanded.contains("FULL REMINDER BODY RENDERS WHEN EXPANDED"));
             } else {
                 assert!(rendered.is_empty(), "{status:?}: {rendered}");
             }
@@ -4810,30 +5280,40 @@ mod tests {
             }
         }
 
-        let plugin = producer_message_layout(
-            &ProducerOwner::Plugin {
+        for producer_owner in [
+            ProducerOwner::Plugin {
                 plugin: "ci".to_owned(),
             },
-            ProducerDeliveryMode::Steer,
-            "plugin payload",
-            None,
-            ProducerMessageStatus::Consumed,
-            60,
-            &Theme::default(),
-        );
-        let delegation = producer_message_layout(
-            &ProducerOwner::Delegation {
+            ProducerOwner::Delegation {
                 invocation_id: InvocationId::new_v7(),
             },
-            ProducerDeliveryMode::Queue,
-            "delegation payload",
-            None,
-            ProducerMessageStatus::Consumed,
-            60,
-            &Theme::default(),
-        );
-        assert!(snapshot_lines(&plugin.lines).contains("plugin payload"));
-        assert!(snapshot_lines(&delegation.lines).contains("delegation payload"));
+        ] {
+            let message_id = ProducerMessageId::new_v7();
+            let state = SessionState {
+                transcript: vec![TranscriptItem::ProducerMessage {
+                    id: 1,
+                    seq: 1,
+                    accepted_at: Timestamp::now(),
+                    message_id,
+                    producer_owner,
+                    mode: ProducerDeliveryMode::Queue,
+                    body: "model payload".into(),
+                    summary: Some("Task completed".into()),
+                    reminder: None,
+                    status: ProducerMessageStatus::Consumed,
+                }],
+                ..SessionState::default()
+            };
+            let expanded = HashSet::from([BlockId::ProducerMessage(message_id)]);
+            assert!(
+                !snapshot_lines(&transcript_layout(&state, None, 60).lines)
+                    .contains("model payload")
+            );
+            assert!(
+                snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines)
+                    .contains("model payload")
+            );
+        }
     }
 
     #[test]
@@ -4841,6 +5321,7 @@ mod tests {
         let session_id = SessionId::new_v7();
         let mut state = SessionState {
             transcript: vec![TranscriptItem::ProducerMessage {
+                summary: None,
                 id: 41,
                 seq: 9,
                 accepted_at: Timestamp::now(),
@@ -4882,7 +5363,8 @@ mod tests {
         assert_eq!(*id, 41);
         *status = crate::state::ProducerMessageStatus::Consumed;
         assert!(!render(&mut cache, &state));
-        assert!(snapshot_lines(&cache.layout.lines).contains("cached payload"));
+        assert!(snapshot_lines(&cache.layout.lines).contains("◇ ▸ plugin ci · queue"));
+        assert!(!snapshot_lines(&cache.layout.lines).contains("cached payload"));
         assert_eq!(cache.item_layout_passes, 2);
         assert!(render(&mut cache, &state));
         assert_eq!(cache.item_layout_passes, 2);
@@ -5773,6 +6255,113 @@ mod tests {
             .estimated_cost_usd = None;
         let unpriced = rendered_row(&mut app, 100, 24, 23);
         assert!(!unpriced.contains('$'), "{unpriced}");
+    }
+
+    #[tokio::test]
+    async fn bottom_bar_working_indicator_tracks_running_queued_and_idle_states() {
+        let (mut app, session, run) = app_with_active_run().await;
+        app.sessions = vec![session_meta(session)];
+        app.animation_ticks = 0;
+        let row = rendered_row(&mut app, 100, 24, 23);
+        assert!(row.starts_with("◐ working"), "{row}");
+        assert!(!row.contains("/workspace"));
+        let initial_mode_hit = app.hit_map.permission_mode;
+        for glyph in ['◓', '◑', '◒', '◐'] {
+            for _ in 0..12 {
+                app.animation_tick();
+            }
+            assert!(rendered_row(&mut app, 100, 24, 23).starts_with(&format!("{glyph} working")));
+            assert_eq!(app.hit_map.permission_mode, initial_mode_hit);
+        }
+        app.store.sessions.get_mut(&session).unwrap().active_run = None;
+        let idle = rendered_row(&mut app, 100, 24, 23);
+        assert!(idle.starts_with("/workspace"), "{idle}");
+        assert!(!idle.contains("working"));
+        assert!(
+            app.store
+                .apply_event(admitted(session, 1, run, "user input"))
+        );
+        for (seq, status) in [
+            (2, ProducerMessageStatus::Pending),
+            (3, ProducerMessageStatus::Admitted),
+        ] {
+            let id = ProducerMessageId::new_v7();
+            let mut event = producer_accepted(
+                session,
+                seq,
+                id,
+                ProducerOwner::Plugin {
+                    plugin: "ci".into(),
+                },
+                ProducerDeliveryMode::Queue,
+                "raw body stays hidden",
+                None,
+            );
+            let EventPayload::ProducerMessageAccepted { description, .. } = &mut event.payload
+            else {
+                unreachable!()
+            };
+            *description = cookie_agent_protocol::SafeDisplayText::new("Build finished").unwrap();
+            assert!(app.store.apply_event(event));
+            set_producer_status(&mut app, session, id, status);
+        }
+        assert_eq!(app.selected_queue_entries()[1].preview, "Build finished");
+        let queued = rendered_row(&mut app, 100, 24, 23);
+        assert!(queued.starts_with("◐ 3 queued"), "{queued}");
+        assert!(!queued.contains("/workspace"));
+        assert_eq!(app.hit_map.permission_mode, initial_mode_hit);
+        app.store
+            .sessions
+            .get_mut(&session)
+            .unwrap()
+            .pending_inputs
+            .clear();
+        for item in &mut app.store.sessions.get_mut(&session).unwrap().transcript {
+            if let TranscriptItem::ProducerMessage { status, .. } = item {
+                *status = ProducerMessageStatus::Consumed;
+            }
+        }
+        assert_eq!(rendered_row(&mut app, 100, 24, 23), idle);
+    }
+
+    #[tokio::test]
+    async fn animation_active_covers_active_runs_and_pending_producers() {
+        let (mut app, session, _) = app_with_active_run().await;
+        assert!(app.animation_active());
+        app.store.sessions.get_mut(&session).unwrap().active_run = None;
+        assert!(!app.animation_active());
+        let id = ProducerMessageId::new_v7();
+        assert!(app.store.apply_event(producer_accepted(
+            session,
+            1,
+            id,
+            ProducerOwner::Plugin {
+                plugin: "ci".into()
+            },
+            ProducerDeliveryMode::Queue,
+            "body",
+            None
+        )));
+        for status in [
+            ProducerMessageStatus::Pending,
+            ProducerMessageStatus::Admitted,
+            ProducerMessageStatus::Claimed,
+            ProducerMessageStatus::Consumed,
+            ProducerMessageStatus::Discarded,
+        ] {
+            set_producer_status(&mut app, session, id, status);
+            let pending = matches!(
+                status,
+                ProducerMessageStatus::Pending | ProducerMessageStatus::Admitted
+            );
+            assert_eq!(
+                app.store.sessions[&session].has_pending_producers(),
+                pending
+            );
+            assert_eq!(app.animation_active(), pending);
+        }
+        app.selected = Some(SessionId::new_v7());
+        assert!(!app.animation_active());
     }
 
     #[tokio::test]
@@ -8013,10 +8602,10 @@ mod tests {
             );
             seen.push(snapshot_lines(&cache.layout.lines));
         }
-        assert!(seen[0].contains("🔨 ▸ bash sleep 2 …"), "{}", seen[0]);
-        assert!(seen[1].contains("🔨 ▸ bash sleep 2 ."), "{}", seen[1]);
-        assert!(seen[2].contains("🔨 ▸ bash sleep 2 .."), "{}", seen[2]);
-        assert!(seen[3].contains("🔨 ▸ bash sleep 2 ..."), "{}", seen[3]);
+        assert!(seen[0].contains("💻 ▸ bash sleep 2 …"), "{}", seen[0]);
+        assert!(seen[1].contains("💻 ▸ bash sleep 2 ."), "{}", seen[1]);
+        assert!(seen[2].contains("💻 ▸ bash sleep 2 .."), "{}", seen[2]);
+        assert!(seen[3].contains("💻 ▸ bash sleep 2 ..."), "{}", seen[3]);
         // Each bucket re-rendered the cached live item in place.
         assert!(seen.windows(2).all(|pair| pair[0] != pair[1]));
 
@@ -8033,7 +8622,7 @@ mod tests {
         assert!(!app.animation_active());
         let state = &app.store.sessions[&session];
         let settled = snapshot_lines(&transcript_layout(state, None, 60).lines);
-        assert!(settled.contains("🔨 ▸ bash sleep 2"), "{settled}");
+        assert!(settled.contains("💻 ▸ bash sleep 2"), "{settled}");
         assert!(!settled.contains('…'), "{settled}");
     }
 
@@ -8063,13 +8652,13 @@ mod tests {
 
         let collapsed = snapshot_lines(&transcript_layout(&state, None, 60).lines);
         assert!(collapsed.contains("💭 ▸ thought"));
-        assert!(collapsed.contains("🔨 ▸ bash true"));
+        assert!(collapsed.contains("💻 ▸ bash true"));
 
         let expanded = HashSet::from([BlockId::Thinking(10), BlockId::Tool(call_id)]);
         let expanded_layout = transcript_layout(&state, Some(&expanded), 60);
         let expanded_rendered = snapshot_lines(&expanded_layout.lines);
         assert!(expanded_rendered.contains("💭 ▾ thought"));
-        assert!(expanded_rendered.contains("🔨 ▾ bash true"));
+        assert!(expanded_rendered.contains("💻 ▾ bash true"));
         assert_eq!(expanded_layout.regions.len(), 2);
 
         let tiny = transcript_layout(&state, Some(&expanded), 4);
@@ -8079,7 +8668,7 @@ mod tests {
             assert_eq!(layout.regions.len(), 2);
             let rendered = snapshot_lines(&layout.lines);
             assert!(rendered.contains('💭'));
-            assert!(rendered.contains('🔨'));
+            assert!(rendered.contains('💻'));
             assert_eq!(rendered.matches('▾').count(), 2);
         }
         for width in [8, 12, 18] {
@@ -8173,7 +8762,7 @@ mod tests {
         assert!(
             rendered
                 .lines()
-                .any(|line| line.trim_end().ends_with("🔨 ▸ bash touch README.md …"))
+                .any(|line| line.trim_end().ends_with("💻 ▸ bash touch README.md …"))
         );
         assert!(!rendered.contains("COMPLETED"));
 
@@ -8187,8 +8776,8 @@ mod tests {
         assert!(
             rendered
                 .lines()
-                .any(|line| line.trim_end() == "🔨 ▸ bash touch README.md"
-                    || line.trim_end() == "│ 🔨 ▸ bash touch README.md")
+                .any(|line| line.trim_end() == "💻 ▸ bash touch README.md"
+                    || line.trim_end() == "│ 💻 ▸ bash touch README.md")
         );
         assert!(!rendered.contains('…'));
         assert!(!rendered.contains("failed"));
@@ -8200,7 +8789,7 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("🔨 ▸ bash touch README.md failed"));
+        assert!(rendered.contains("💻 ▸ bash touch README.md failed"));
     }
 
     #[test]
@@ -8941,9 +9530,9 @@ mod tests {
             let mut cursor = 0;
             for text in [
                 "before steering",
-                "cancel steering",
+                "◇ ▸ goal control · steer",
                 "user steering",
-                "plugin steering",
+                "◇ ▸ plugin test · steer",
                 "after steering",
                 "latest response",
             ] {
@@ -9112,6 +9701,7 @@ mod tests {
                 session,
                 0,
                 EventPayload::ProducerMessageAccepted {
+                    description: Default::default(),
                     message_id: reminder_id,
                     producer_owner: ProducerOwner::Goal { goal_id },
                     mode: ProducerDeliveryMode::Steer,
@@ -9233,8 +9823,8 @@ mod tests {
                     assert_eq!(rendered.matches("/goal finish  the parser").count(), 1);
                     assert!(rendered.contains("ACTION"));
                     if stored.seq >= input {
-                        let started = rendered.find("Goal started").unwrap();
-                        assert_eq!(rendered.matches("Goal started").count(), 1);
+                        let started = rendered.find("GoalStarted:").unwrap();
+                        assert_eq!(rendered.matches("GoalStarted:").count(), 1);
                         assert!(action < started);
                         for text in ["new response", "next response"] {
                             if let Some(response) = rendered.find(text) {
@@ -9243,7 +9833,7 @@ mod tests {
                         }
                     } else {
                         assert!(
-                            !rendered.contains("Goal started"),
+                            !rendered.contains("GoalStarted:"),
                             "start remains in the pending queue before claim"
                         );
                     }
@@ -9256,7 +9846,7 @@ mod tests {
             let state = &live.sessions[&session];
             let assistants = assistant_projection(state);
             let rendered = snapshot_lines(&caches[1].layout.lines);
-            assert_eq!(rendered.matches("Goal started").count(), 1);
+            assert_eq!(rendered.matches("GoalStarted:").count(), 1);
             assert!(!rendered.contains("Continue"));
             assert_eq!(assistants.len(), if existing_run { 2 } else { 1 });
             assert!(
@@ -9296,6 +9886,7 @@ mod tests {
         let pause = ProducerMessageId::new_v7();
         let cancel = ProducerMessageId::new_v7();
         let control = |message_id, body: &str| EventPayload::ProducerMessageAccepted {
+            description: Default::default(),
             message_id,
             producer_owner: ProducerOwner::GoalControl { goal_id },
             mode: ProducerDeliveryMode::Steer,
@@ -9665,10 +10256,7 @@ mod tests {
             [3, 31]
         );
         let rendered = snapshot_lines(&layout.lines);
-        assert_eq!(
-            rendered.matches("goal control · steer · consumed").count(),
-            2
-        );
+        assert_eq!(rendered.matches("◇ ▸ goal control · steer").count(), 2);
         assert!(!rendered.contains("Continue"));
         assert_eq!(
             rendered
@@ -13203,6 +13791,7 @@ mod tests {
             session,
             seq,
             EventPayload::ProducerMessageAccepted {
+                description: Default::default(),
                 message_id,
                 producer_owner: owner,
                 mode,
@@ -13577,18 +14166,25 @@ mod tests {
         for (kind, label, body) in [
             (
                 GoalReminderKind::Started,
-                "Goal started",
+                "GoalStarted: finish the parser",
                 "Continue the root goal.",
             ),
             (
                 GoalReminderKind::Continuation,
-                "Continue",
+                "GoalContinue: finish the parser",
                 "Goal started. Pursue the new root objective below.",
             ),
         ] {
             let (mut app, session, run) = app_with_active_run().await;
             let message_id = ProducerMessageId::new_v7();
             let goal_id = GoalId::new_v7();
+            app.store.sessions.get_mut(&session).unwrap().goal = Some(GoalState {
+                goal_id,
+                objective: "finish the parser".into(),
+                status: GoalStatus::Active,
+                items: Vec::new(),
+                revision: 1,
+            });
             let events = [
                 producer_accepted(
                     session,
@@ -13708,11 +14304,17 @@ mod tests {
                         entries.is_empty(),
                         "start cannot appear twice across queue and transcript"
                     );
+                    assert!(!rendered.contains(" · claimed"));
+                    assert!(!rendered.contains(" · consumed"));
+                    let expanded = HashSet::from([BlockId::ProducerMessage(message_id)]);
+                    let expanded =
+                        snapshot_lines(&transcript_layout(state, Some(&expanded), 80).lines);
+                    assert!(expanded.contains(body));
                     assert!(
-                        rendered.contains(if status == ProducerMessageStatus::Claimed {
-                            "claimed"
+                        expanded.contains(if status == ProducerMessageStatus::Claimed {
+                            " · claimed"
                         } else {
-                            "consumed"
+                            " · consumed"
                         })
                     );
                 }
@@ -13728,11 +14330,6 @@ mod tests {
         let reminder_id = ProducerMessageId::new_v7();
         let control_id = ProducerMessageId::new_v7();
         let invocation_id = InvocationId::new_v7();
-        let invocation_short = invocation_id
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>();
         let goal_id = GoalId::new_v7();
 
         assert!(
@@ -13806,19 +14403,13 @@ mod tests {
         assert_eq!(entries[4].kind, QueueEntryKind::Producer(control_id));
         assert_eq!(entries[5].kind, QueueEntryKind::User);
         assert_eq!(entries[0].preview, "user first");
-        assert_eq!(
-            entries[1].preview,
-            "plugin watcher | steer | pending: plugin body"
-        );
+        assert_eq!(entries[1].preview, "plugin watcher · steer");
         assert_eq!(
             entries[2].preview,
-            format!("delegation {invocation_short} | queue | admitted: delegation body")
+            format!("delegation {invocation_id} · queue")
         );
-        assert_eq!(entries[3].preview, "goal | queue | pending: Continue");
-        assert_eq!(
-            entries[4].preview,
-            "goal control | steer | pending: Goal paused. Stop pursuing the objective."
-        );
+        assert_eq!(entries[3].preview, "goal controller · queue");
+        assert_eq!(entries[4].preview, "goal control · steer");
         assert_eq!(entries[5].preview, "user last");
 
         app.store
@@ -13834,11 +14425,9 @@ mod tests {
             crate::state::ProducerMessageStatus::Consumed,
         );
         let frame = rendered_frame(&mut app, 120, 24);
-        assert!(frame.contains("plugin watcher | steer | pending: plugin body"));
-        assert!(frame.contains(&format!(
-            "delegation {invocation_short} | queue | admitted: delegation body"
-        )));
-        assert!(frame.contains("goal | queue | pending: Continue"));
+        assert!(frame.contains("plugin watcher · steer"));
+        assert!(frame.contains(&format!("delegation {invocation_id} · queue")));
+        assert!(frame.contains("goal controller · queue"));
         assert!(!frame.contains("NOISY REMINDER BODY"));
     }
 
@@ -13928,12 +14517,8 @@ mod tests {
             entries.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
             [1, 2, 3]
         );
-        assert!(entries[0].preview.contains("queue | admitted"));
-        assert!(
-            entries[2]
-                .preview
-                .contains("goal control | steer | admitted: Goal cancelled.")
-        );
+        assert!(entries[0].preview.ends_with(" · queue"));
+        assert!(entries[2].preview.contains("goal control · steer"));
 
         assert!(app.store.apply_event(runless_event(
             session,
@@ -13997,8 +14582,13 @@ mod tests {
             history
                 .matches("Goal cancelled. Stop pursuing the objective.")
                 .count(),
-            1
+            0
         );
+        let expanded = HashSet::from([BlockId::ProducerMessage(control_id)]);
+        let expanded = snapshot_lines(
+            &transcript_layout(&app.store.sessions[&session], Some(&expanded), 100).lines,
+        );
+        assert!(expanded.contains("Goal cancelled. Stop pursuing the objective."));
         assert!(history.contains("goal control"));
         assert!(!history.contains("Continue"));
         assert!(!history.contains("plugin pending body"));
@@ -14689,7 +15279,7 @@ mod tests {
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                insta::assert_snapshot!(bar, @"Ship transcript rendering without regressions | paused 0/1 [Resume] [Cancel]");
+                insta::assert_snapshot!(bar, @"goal: Ship transcript rendering without regressions [Resume] [Cancel]");
             }
         }
         app.store.sessions.get_mut(&session).unwrap().goal = None;
@@ -14750,10 +15340,10 @@ mod tests {
         }
         insta::assert_snapshot!(
             entries.iter().map(|entry| entry.preview.as_str()).collect::<Vec<_>>().join("\n"),
-            @r"
+            @"
         User follow-up
-        plugin build | queue | pending: Build finished successfully
-        goal control | steer | pending: Goal paused. Stop pursuing the objective.
+        plugin build · queue
+        goal control · steer
         "
         );
     }
@@ -15825,6 +16415,222 @@ mod tests {
     }
 
     #[test]
+    fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
+        for (name, icon) in [
+            ("bash", "💻"),
+            ("read", ">"),
+            ("write", "📝"),
+            ("edit", "✏️"),
+            ("delegate_subagent", "🤖"),
+            ("get_subagent_result", "🤖"),
+            ("steer_subagent", "🤖"),
+            ("cancel_subagent", "🤖"),
+            ("skill", "✨"),
+            ("goal_get", "🎯"),
+            ("goal_update", "🎯"),
+            ("plugin.build", "🔨"),
+            ("mcp__server__read", "🔨"),
+            ("unknown", "🔨"),
+        ] {
+            assert_eq!(tool_icon(name), icon, "{name}");
+        }
+        for name in ["goal_get", "goal_update"] {
+            let mut state = read_tool_state("unused", ToolStatus::Completed, "goal result");
+            let call_id = read_tool_id(&state);
+            state.tools.get_mut(&call_id).unwrap().presentation = presentation(name, None);
+            let expanded = HashSet::from([BlockId::Tool(call_id)]);
+            for (blocks, chevron) in [(None, '▸'), (Some(&expanded), '▾')] {
+                assert!(
+                    snapshot_lines(&transcript_layout(&state, blocks, 80).lines)
+                        .contains(&format!("🎯 {chevron} {name}"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bash_expanded_rows_sit_on_the_terminal_band() {
+        let mut state = read_tool_state(
+            "unused",
+            ToolStatus::Completed,
+            &(0..100)
+                .map(|index| format!("output {index}\n"))
+                .collect::<String>(),
+        );
+        let id = read_tool_id(&state);
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("bash", Some("printf hello"));
+        tool.arguments = r#"{"command":"printf hello"}"#.into();
+        let expanded = HashSet::from([BlockId::Tool(id)]);
+        for theme in [
+            Theme::default(),
+            Theme::new(ThemeKind::Mono, ColorLevel::None),
+        ] {
+            let layout =
+                transcript_layout_with(&state, Some(&expanded), 80, &theme, &PlainHighlighter);
+            let region = layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            let rows = &layout.lines[region.start_line..region.end_line];
+            assert!(rows[0].to_string().contains("💻 ▾ bash printf hello"));
+            assert!(rows[1].to_string().contains("❯ printf hello"));
+            assert!(!snapshot_lines(rows).contains("arguments:"));
+            let body_width = rows[1].width();
+            for (index, row) in rows.iter().enumerate() {
+                let banded = index > 0 && !row.to_string().contains("more lines");
+                for span in row.spans.iter().filter(|span| span.content != "│ ") {
+                    assert_eq!(
+                        span.style.bg,
+                        if banded {
+                            theme.terminal_background()
+                        } else {
+                            None
+                        },
+                        "{index}: {row}"
+                    );
+                }
+                if banded && theme.terminal_background().is_some() {
+                    assert_eq!(row.width(), body_width);
+                }
+            }
+        }
+        state.tools.get_mut(&id).unwrap().arguments = r#"{"command":42}"#.into();
+        assert!(
+            snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines)
+                .contains(r#"arguments: {"command":42}"#)
+        );
+    }
+
+    #[test]
+    fn read_rows_render_arrow_header_and_hide_duplicate_argument_lines() {
+        let mut state = read_tool_state(
+            "src/main.rs",
+            ToolStatus::Completed,
+            &read_detail(&[(1, "fn main() {}")]),
+        );
+        let id = read_tool_id(&state);
+        state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/main.rs"));
+        let collapsed = transcript_layout(&state, None, 80);
+        assert!(snapshot_lines(&collapsed.lines).contains("> ▸ Read src/main.rs"));
+        let expanded = HashSet::from([BlockId::Tool(id)]);
+        let layout = transcript_layout(&state, Some(&expanded), 80);
+        let text = snapshot_lines(&layout.lines);
+        assert!(text.contains("> ▾ Read src/main.rs"));
+        assert!(!text.contains("arguments:"));
+        assert!(!text.contains("Read file src/main.rs"));
+        assert_eq!(text.matches("src/main.rs").count(), 1);
+        assert!(text.contains("fn main() {}"));
+        assert!(
+            !layout
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.content == "> ")
+        );
+        let copied = extract_selection(
+            &layout.lines,
+            (0, 0),
+            (layout.lines.len(), 0),
+            &Theme::default(),
+        );
+        assert!(copied.contains("> ▾ Read src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn tool_rows_never_underline_across_themes_and_hover() {
+        use ratatui::style::Modifier;
+
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        let mut state = read_tool_state("src/main.rs", ToolStatus::Completed, "output");
+        let id = read_tool_id(&state);
+        state.tools.get_mut(&id).unwrap().arguments = r#"{"command":"true"}"#.into();
+        app.store.sessions.insert(session, state);
+        app.expanded_blocks
+            .insert(session, HashSet::from([BlockId::Tool(id)]));
+        for kind in [
+            ThemeKind::Default,
+            ThemeKind::Dark,
+            ThemeKind::Mono,
+            ThemeKind::HighContrast,
+        ] {
+            for level in [
+                ColorLevel::None,
+                ColorLevel::Ansi16,
+                ColorLevel::Ansi256,
+                ColorLevel::TrueColor,
+            ] {
+                app.theme = Theme::new(kind, level);
+                for name in ["bash", "read", "write", "edit", "plugin.build"] {
+                    let state = app.store.sessions.get_mut(&session).unwrap();
+                    state.tools.get_mut(&id).unwrap().presentation =
+                        presentation(name, Some("src/main.rs"));
+                    // The fixture changes persisted presentation directly, so rebuild its cache.
+                    app.layout_cache = LayoutCache::default();
+                    let layout = transcript_layout_with(
+                        state,
+                        app.expanded_blocks.get(&session),
+                        80,
+                        &app.theme,
+                        &PlainHighlighter,
+                    );
+                    let region = layout
+                        .regions
+                        .iter()
+                        .find(|region| region.id == BlockId::Tool(id))
+                        .unwrap();
+                    for line in &layout.lines[region.start_line..region.end_line] {
+                        assert!(!line.style.add_modifier.contains(Modifier::UNDERLINED));
+                        assert!(
+                            line.spans.iter().all(|span| !span
+                                .style
+                                .add_modifier
+                                .contains(Modifier::UNDERLINED))
+                        );
+                    }
+                    for hovered in [false, true] {
+                        app.hover =
+                            hovered.then_some(HoverTarget::TranscriptBlock(BlockId::Tool(id)));
+                        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                        terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+                        let hit = app
+                            .hit_map
+                            .blocks
+                            .iter()
+                            .find(|hit| hit.id == BlockId::Tool(id))
+                            .unwrap();
+                        assert_eq!(
+                            app.hover_target_at(hit.rect.x, hit.rect.y),
+                            Some(HoverTarget::TranscriptBlock(BlockId::Tool(id)))
+                        );
+                        for y in hit.rect.y..hit.rect.bottom() {
+                            for x in hit.rect.x..hit.rect.right() {
+                                assert!(
+                                    !terminal.backend().buffer()[(x, y)]
+                                        .modifier
+                                        .contains(Modifier::UNDERLINED),
+                                    "{kind:?} {level:?} {name} hover={hovered}"
+                                );
+                            }
+                        }
+                        if name == "bash"
+                            && let Some(bg) = app.theme.terminal_background()
+                        {
+                            assert_eq!(
+                                terminal.backend().buffer()[(hit.rect.x + 2, hit.rect.y + 1)].bg,
+                                bg
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn read_rust_output_is_syntax_highlighted_with_tool_gutter_preserved() {
         let state = read_tool_state(
             "src/main.rs",
@@ -16095,12 +16901,12 @@ mod tests {
         let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
 
         let collapsed = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
-        assert!(collapsed.contains("… 969 more lines (click to expand)"));
+        assert!(collapsed.contains("… 968 more lines (click to expand)"));
 
         expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
         let fully_expanded = transcript_layout(&state, Some(&expanded), 12);
         let rendered = snapshot_lines(&fully_expanded.lines);
-        assert!(rendered.contains("… 9 more"));
+        assert!(rendered.contains("… 8 more"));
         assert!(rendered.contains("maximum"));
         assert!(
             fully_expanded
@@ -16111,7 +16917,7 @@ mod tests {
 
         expanded.remove(&tool_output_id(call_id, ToolOutputSection::Detail));
         let collapsed_again = snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines);
-        assert!(collapsed_again.contains("… 969 more lines (click to expand)"));
+        assert!(collapsed_again.contains("… 968 more lines (click to expand)"));
     }
 
     #[test]
@@ -18506,8 +19312,8 @@ mod tests {
             );
         }
         let rendered = snapshot_lines(&transcript_layout(&state, None, 60).lines);
-        assert!(rendered.contains("🔨 ▸ bash make cancelled"));
-        assert!(rendered.contains("🔨 ▸ bash make interrupted"));
+        assert!(rendered.contains("💻 ▸ bash make cancelled"));
+        assert!(rendered.contains("💻 ▸ bash make interrupted"));
         assert!(!rendered.contains("failed"));
         assert!(!rendered.contains("COMPLETED"));
     }
@@ -18705,20 +19511,18 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
 
-        // Passive surfaces never resolve a hover target, even though clicks
-        // on them still work (focus the composer, drag the scrollbar,
-        // toggle a block).
+        // Passive surfaces stay quiet; collapsible blocks have a click action.
         let input = app.hit_map.input.expect("input hit").rect;
         assert!(
             !app.handle_mouse(moved(input.x.saturating_add(1), input.y.saturating_add(1)))
                 .await
         );
         assert_eq!(app.hover, None);
-        let block = app.hit_map.blocks.first().copied().expect("block hit").rect;
-        assert!(!app.handle_mouse(moved(block.x, block.y)).await);
-        assert_eq!(app.hover, None);
+        let block = app.hit_map.blocks.first().copied().expect("block hit");
+        assert!(app.handle_mouse(moved(block.rect.x, block.rect.y)).await);
+        assert_eq!(app.hover, Some(HoverTarget::TranscriptBlock(block.id)));
         let track = app.hit_map.scrollbar.expect("scrollbar reserved");
-        assert!(!app.handle_mouse(moved(track.x, track.y)).await);
+        assert!(app.handle_mouse(moved(track.x, track.y)).await);
         assert_eq!(app.hover, None);
 
         // Elements whose click performs a real action do hover: cycle the
