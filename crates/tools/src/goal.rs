@@ -234,15 +234,19 @@ impl PreparedExecutor for GoalExecutor {
                 )
             }
         };
-        Ok(ToolResult {
-            title: safe_title(title),
-            output: serde_json::to_string_pretty(&result).map_err(tool_error)?,
-            metadata: result,
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        })
+        goal_result(title, result)
     }
+}
+
+fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, ToolError> {
+    Ok(ToolResult {
+        title: safe_title(title),
+        output: serde_json::to_string_pretty(&result).map_err(tool_error)?,
+        metadata: serde_json::Value::Null,
+        truncation: None,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -250,6 +254,24 @@ mod tests {
     use cookie_agent_engine::ToolProvider;
 
     use super::GoalTools;
+
+    #[test]
+    fn goal_results_keep_pretty_json_only_in_output() {
+        let value = serde_json::json!({"goal": {"items": [{"description": "Verify checklist", "finished": false}]}});
+        for title in ["Current goal", "Updated goal checklist"] {
+            let result = super::goal_result(title, value.clone()).unwrap();
+            assert_eq!(result.title.as_str(), title);
+            assert_eq!(result.output, serde_json::to_string_pretty(&value).unwrap());
+            assert!(result.metadata.is_null());
+            assert_eq!(
+                serde_json::to_string(&result)
+                    .unwrap()
+                    .matches("Verify checklist")
+                    .count(),
+                1
+            );
+        }
+    }
 
     #[test]
     fn goal_specs_use_strict_protocol_schemas_and_root_authority_guidance() {

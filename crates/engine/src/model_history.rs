@@ -934,6 +934,16 @@ fn assemble_history_with_replay(
     >::new();
     let mut engine_calls =
         HashMap::<(cookie_agent_protocol::RunId, ToolCallId), (usize, usize)>::new();
+    let delegation_children = context_events
+        .iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ToolCallLinked {
+                tool_call_id,
+                child_session_id,
+            } => Some(((event.run_id, tool_call_id), child_session_id)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
     let elisions = context_events
         .iter()
         .filter_map(|event| match &event.payload {
@@ -1042,10 +1052,21 @@ fn assemble_history_with_replay(
                 }
             }
             EventPayload::ToolCallTerminated { termination }
-                if termination.outcome == ToolTerminationOutcome::Completed =>
+                if termination.outcome == ToolTerminationOutcome::Completed
+                    || (termination.outcome == ToolTerminationOutcome::Cancelled
+                        && termination
+                            .result
+                            .as_ref()
+                            .zip(
+                                delegation_children
+                                    .get(&(envelope.run_id, termination.tool_call_id)),
+                            )
+                            .is_some_and(|(result, child)| {
+                                crate::delegation_api::delegate_result_matches_child(result, *child)
+                            })) =>
             {
                 if let Some(result) = &termination.result {
-                    let (result_part, additional_messages) =
+                    let (mut result_part, additional_messages) =
                         if let Some((original_bytes, retained)) =
                             elisions.get(&termination.tool_call_id)
                         {
@@ -1066,6 +1087,7 @@ fn assemble_history_with_replay(
                                 result.additional_messages.clone(),
                             )
                         };
+                    result_part.is_error = termination.outcome != ToolTerminationOutcome::Completed;
                     attach_result(
                         &mut logical,
                         &engine_calls,
@@ -2187,6 +2209,34 @@ mod tests {
         assert_eq!(
             oven_native_replay_fingerprint(&oven_a),
             persisted_native_replay_fingerprint(&persisted_artifact("endpoint-a"))
+        );
+    }
+
+    #[test]
+    fn tool_result_materializes_output_and_metadata_as_separate_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let session_id = SessionId::new_v7();
+        let result = PersistedToolResult {
+            title: SafeDisplayText::new("Subagent steered").unwrap(),
+            output: format!("Subagent steered. [subagent session {session_id}; running]"),
+            metadata: serde_json::json!({"session_id": session_id, "status": "running"}),
+            truncation: None,
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+        };
+        let part = tool_result_part(&result, ToolCallId::new_v7(), &store).unwrap();
+        let oven_sdk::ToolContent::Mixed(values) = part.content else {
+            panic!("expected mixed tool content");
+        };
+        assert_eq!(values.len(), 2);
+        assert!(matches!(&values[0], oven_sdk::ContentValue::Text(text) if text == &result.output));
+        assert!(
+            matches!(&values[1], oven_sdk::ContentValue::Json(value) if value == &serde_json::json!({
+                "title": result.title,
+                "metadata": result.metadata,
+                "truncation": null,
+            }))
         );
     }
 

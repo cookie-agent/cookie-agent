@@ -177,7 +177,7 @@ impl Engine {
             code: ToolCallFailureCode::ExecutionFailed,
             message,
         });
-        self.submit_tool_result_status(session, run, tool_call_id, result)
+        self.submit_tool_result_status(session, run, tool_call_id, result, false)
             .await
             .and_then(|committed| {
                 committed.then_some(()).ok_or_else(|| {
@@ -192,11 +192,13 @@ impl Engine {
         run: RunId,
         tool_call_id: ToolCallId,
         result: Result<ToolResult, ToolFailure>,
+        cancelled: bool,
     ) -> Result<bool, EngineError> {
         self.request(session, |reply| SessionCommand::ToolResult {
             run,
             tool_call_id,
             result,
+            cancelled,
             reply,
         })
         .await
@@ -1580,6 +1582,7 @@ impl Engine {
                 run,
                 tool_call_id,
                 result,
+                cancelled,
                 reply,
             } => {
                 let pending = self
@@ -1599,9 +1602,16 @@ impl Engine {
                                 termination: ToolCallTermination {
                                     tool_call_id,
                                     owner,
-                                    outcome: ToolTerminationOutcome::Completed,
+                                    outcome: if cancelled {
+                                        ToolTerminationOutcome::Cancelled
+                                    } else {
+                                        ToolTerminationOutcome::Completed
+                                    },
                                     result: Some(result),
-                                    error: None,
+                                    error: cancelled.then(|| SafeToolError {
+                                        code: ToolCallFailureCode::ExecutionFailed.safe_code(),
+                                        message: safe_error("tool call cancelled after it started"),
+                                    }),
                                 },
                             },
                             Err(failure) => Event::ToolCallTerminated {

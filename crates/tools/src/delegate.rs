@@ -452,7 +452,10 @@ impl PreparedExecutor for DelegateExecutor {
                     let metadata = serde_json::json!({"session_id":handle.child_session_id});
                     Ok(ToolResult {
                         title: safe_title("Subagent started"),
-                        output: metadata.to_string(),
+                        output: format!(
+                            "Subagent started. [subagent session {}]",
+                            handle.child_session_id
+                        ),
                         metadata,
                         truncation: None,
                         attachments: Vec::new(),

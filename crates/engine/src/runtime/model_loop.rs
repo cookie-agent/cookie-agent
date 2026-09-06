@@ -1238,8 +1238,12 @@ impl Engine {
                 PendingTool::ImmediateFailure(failure) => (Err(failure), original_arguments),
             }
         };
+        let cancelled = active.cancellation.is_cancelled()
+            && result
+                .as_ref()
+                .is_ok_and(|result| self.is_delegate_call_result(active.session, run, id, result));
         let (mut result_content, is_error) = match &result {
-            Ok(result) => (result.output.clone(), false),
+            Ok(result) => (result.output.clone(), cancelled),
             Err(failure) => (failure.message.clone(), true),
         };
         let context_id = crate::plugin::plugin_context_id();
@@ -1298,7 +1302,7 @@ impl Engine {
                 }
             }
         }
-        self.submit_tool_result_status(active.session, run, id, result)
+        self.submit_tool_result_status(active.session, run, id, result, cancelled)
             .await?;
         Ok(())
     }

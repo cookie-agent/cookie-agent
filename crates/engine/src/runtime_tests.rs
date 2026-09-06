@@ -1358,6 +1358,23 @@ impl PreparedExecutor for TestStreamingBashExecutor {
             std::time::Duration::from_millis(25)
         })
         .await;
+        if matches!(
+            self.command.as_str(),
+            "session-shaped" | "null-session-shaped"
+        ) {
+            return Ok(cookie_agent_protocol::PersistedToolResult {
+                title: cookie_agent_protocol::SafeDisplayText::new("External result").unwrap(),
+                output: "external cleanup result".into(),
+                metadata: if self.command == "session-shaped" {
+                    serde_json::json!({"session_id": context.session, "child_session_id": context.session})
+                } else {
+                    serde_json::json!({"session_id": null, "child_session_id": null})
+                },
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            });
+        }
         Err(ToolError::execution("streaming bash cancelled"))
     }
 }
@@ -1826,7 +1843,10 @@ impl PreparedExecutor for TestDelegateExecutor {
             Ok(cookie_agent_protocol::PersistedToolResult {
                 title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
                     .expect("title"),
-                output: metadata.to_string(),
+                output: format!(
+                    "Subagent started. [subagent session {}]",
+                    handle.child_session_id
+                ),
                 metadata,
                 truncation: None,
                 attachments: Vec::new(),
@@ -6446,6 +6466,39 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             .count(),
         2
     );
+    for event in &events {
+        if let EventPayload::ToolCallTerminated {
+            termination:
+                cookie_agent_protocol::ToolCallTermination {
+                    result: Some(result),
+                    ..
+                },
+        } = &event.payload
+        {
+            let session_id = result.metadata["session_id"]
+                .as_str()
+                .expect("child session ID");
+            let preview = result.output.split_once("\n\n").expect("child preview").0;
+            assert!(["child 0 complete", "child 1 complete"].contains(&preview));
+            assert_eq!(result.title.as_str(), "Subagent finished");
+            assert_eq!(
+                result.metadata,
+                serde_json::json!({
+                    "session_id": session_id,
+                    "status": "completed",
+                    "total_lines": 1,
+                })
+            );
+            assert_eq!(
+                result.output,
+                format!(
+                    "{preview}\n\n[subagent session {session_id}; completed; 1 lines; use get_subagent_result with this session_id for the full output]"
+                )
+            );
+            assert_eq!(result.output.matches(session_id).count(), 1);
+            assert_eq!(result.output.matches(preview).count(), 1);
+        }
+    }
     let requests = server.await.expect("parallel delegate server");
     assert_eq!(requests.len(), 4);
     assert!(
@@ -6459,6 +6512,161 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             .any(|request| request.contains("parallel child two"))
     );
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and_history() {
+    let (endpoint, children_reached, _release_children, server) = parallel_delegate_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("parent session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("cancel-foreground-delegates").unwrap(),
+                selection,
+                input: "start both children".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run")
+        .run_id;
+    tokio::time::timeout(test_timeout(5), children_reached)
+        .await
+        .expect("child requests started")
+        .expect("child request signal");
+    fixture.engine.cancel_run(run).await.expect("cancel parent");
+    let parent = await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "delegate cancellation results",
+        |projection| {
+            projection
+                .runs
+                .get(&run)
+                .is_some_and(|run| run.pending_calls.is_empty())
+        },
+    )
+    .await;
+    let events = parent.log.events();
+    let terminations = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+                Some(termination)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 2);
+    let history = fixture
+        .engine
+        .get_history(parent.meta.session_id, EngineHistoryView::Assembled)
+        .await
+        .expect("assembled parent history");
+    let tool_turns = history
+        .iter()
+        .filter(|turn| matches!(turn, oven_sdk::HistoryTurn::Tool(_)))
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string(&tool_turns).unwrap();
+    assert_eq!(encoded.matches("\"is_error\":true").count(), 2);
+    for termination in terminations {
+        termination
+            .validate()
+            .expect("valid cancellation termination");
+        assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+        let result = termination
+            .result
+            .as_ref()
+            .expect("retained delegate result");
+        let child_id = result.metadata["session_id"]
+            .as_str()
+            .expect("child session ID");
+        assert_eq!(result.metadata["status"], "cancelled");
+        assert!(result.metadata.get("preview").is_none());
+        assert!(
+            result
+                .output
+                .contains(&format!("[subagent session {child_id}; cancelled;"))
+        );
+        assert!(encoded.contains(&serde_json::to_string(&result.output).unwrap()));
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ToolCallLinked { tool_call_id, child_session_id }
+                if *tool_call_id == termination.tool_call_id && child_session_id.to_string() == child_id
+        )));
+    }
+    fixture.engine.shutdown().await;
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+
+    let reopened = reopen_engine(&fixture);
+    reopened
+        .resume(parent.meta.session_id)
+        .await
+        .expect("adopt cancelled parent");
+    tokio::time::timeout(
+        test_timeout(5),
+        reopened.wait_for_delegation_reconciliation_for_test(),
+    )
+    .await
+    .expect("delegation reconciliation finished");
+    let recovered = reopened
+        .inner
+        .store
+        .get(parent.meta.session_id)
+        .expect("recovered parent");
+    assert_eq!(recovered.status, SessionStatus::Cancelled);
+    assert_eq!(
+        recovered.runs.len(),
+        1,
+        "recovery must not start an automatic run"
+    );
+    assert!(recovered.log.events().iter().all(|event| !matches!(
+        event.payload,
+        EventPayload::DelegateFinishedV2 { .. }
+            | EventPayload::ProducerMessageAccepted {
+                producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { .. },
+                ..
+            }
+    )));
+    assert!(
+        reopened
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: parent.meta.session_id,
+            })
+            .await
+            .expect("recovered producers")
+            .producers
+            .is_empty()
+    );
+    for entry in reopened.inner.delegation_events.entries() {
+        assert!(!entry.request.background);
+        assert!(
+            !reopened
+                .delegation_registry_snapshot(entry.reservation.child_session_id)
+                .expect("recovered foreground registry")
+                .2
+        );
+    }
+    let recovered_history = reopened
+        .get_history(parent.meta.session_id, EngineHistoryView::Assembled)
+        .await
+        .expect("recovered history");
+    assert_eq!(
+        serde_json::to_value(recovered_history).unwrap(),
+        serde_json::to_value(history).unwrap()
+    );
+    reopened.shutdown().await;
 }
 
 fn scripted_text_usage_body(
@@ -10926,6 +11134,12 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             EventPayload::ToolCallTerminated { termination }
                 if termination.tool_call_id == call_id =>
             {
+                assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+                assert!(termination.result.is_none());
+                assert_eq!(
+                    termination.error.as_ref().unwrap().message.as_str(),
+                    "tool call cancelled after it started"
+                );
                 Some(event.seq)
             }
             _ => None,
@@ -11045,6 +11259,53 @@ async fn start_streaming_bash_test_run(
 }
 
 #[tokio::test]
+async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
+    for command in ["session-shaped", "null-session-shaped"] {
+        let (fixture, session_id, run_id, call_id, stdin_received, _, captured) =
+            start_streaming_bash_test_run(command, true).await;
+        fixture
+            .engine
+            .tool_stdin(RunToolStdinParams {
+                run_id,
+                call_id,
+                data: Some(STANDARD.encode(b"input\n")),
+                eof: false,
+            })
+            .await
+            .expect("stdin accepted");
+        tokio::time::timeout(test_timeout(2), stdin_received.notified())
+            .await
+            .expect("executor received stdin");
+        fixture
+            .engine
+            .cancel_run(run_id)
+            .await
+            .expect("cancel external tool");
+        let terminal = await_event(
+            &fixture.engine,
+            session_id,
+            "external tool cancellation",
+            |event| {
+                matches!(&event.payload, EventPayload::ToolCallTerminated { termination }
+                if termination.tool_call_id == call_id)
+            },
+        )
+        .await;
+        let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
+            unreachable!("awaited tool termination");
+        };
+        assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+        assert!(termination.result.is_none());
+        assert_eq!(
+            termination.error.unwrap().message.as_str(),
+            "tool call cancelled after it started"
+        );
+        assert_eq!(captured.await.expect("scripted server").len(), 1);
+        fixture.engine.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured) =
         start_streaming_bash_test_run("wedge", true).await;
@@ -11087,6 +11348,8 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
         unreachable!("awaited tool termination")
     };
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+    assert!(termination.result.is_none());
     let error_message = termination
         .error
         .expect("termination error")

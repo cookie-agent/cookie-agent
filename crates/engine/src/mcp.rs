@@ -2679,8 +2679,6 @@ fn map_tool_result(
     tool_name: &str,
     result: rmcp::model::CallToolResult,
 ) -> Result<ToolResult, ToolError> {
-    let raw_content = serde_json::to_value(&result.content)
-        .map_err(|error| ToolError::execution(error.to_string()))?;
     let mut output = Vec::new();
     let mut attachments = Vec::new();
     let mut emitted_attachments = Vec::new();
@@ -2798,13 +2796,21 @@ fn map_tool_result(
             _ => output.push("[Unsupported MCP content block]".into()),
         }
     }
-    let metadata = serde_json::json!({
+    let text_output = output.join("\n");
+    let structured_content = result.structured_content.filter(|structured| {
+        !output
+            .iter()
+            .chain(std::iter::once(&text_output))
+            .any(|text| serde_json::from_str::<Value>(text).ok().as_ref() == Some(structured))
+    });
+    let mut metadata = serde_json::json!({
         "mcp": {
             "is_error": result.is_error.unwrap_or(false),
-            "structured_content": result.structured_content,
-            "content": raw_content,
         }
     });
+    if let Some(structured) = structured_content {
+        metadata["mcp"]["structured_content"] = structured;
+    }
     let additional_messages = if emitted_attachments.is_empty() {
         Vec::new()
     } else {
@@ -2821,7 +2827,7 @@ fn map_tool_result(
     };
     Ok(ToolResult {
         title: safe_title(tool_name),
-        output: output.join("\n"),
+        output: text_output,
         metadata,
         truncation: None,
         attachments,
@@ -3226,6 +3232,65 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn tool_result_retains_only_distinct_structured_content() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let call_id = ToolCallId::new_v7();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::channel(1);
+        let context = ToolExecutionContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            progress: ProgressSink::new(progress_tx, OutputHub::new(call_id, 1024)),
+            cancellation: CancellationToken::new(),
+            stdin: None,
+            turn_context: Arc::new(make_turn_context(
+                cookie_agent_protocol::AdaptorId::Anthropic,
+                false,
+            )),
+            artifacts: ArtifactStore::open(directory.path().join("artifacts")).unwrap(),
+        };
+        let structured = json!({"a": 1, "b": [2]});
+        for (texts, data, retain) in [
+            (vec!["plain text"], None, false),
+            (vec![r#"{"a":1,"b":[2]}"#], Some(structured.clone()), false),
+            (
+                vec!["{\n  \"b\": [2], \"a\": 1\n}"],
+                Some(structured.clone()),
+                false,
+            ),
+            (
+                vec!["summary", r#"{"a":1,"b":[2]}"#],
+                Some(structured.clone()),
+                false,
+            ),
+            (
+                vec!["{\"a\":1,", "\"b\":[2]}"],
+                Some(structured.clone()),
+                false,
+            ),
+            (vec![r#"{"a":3,"b":[2]}"#], Some(structured.clone()), true),
+            (vec!["plain text"], Some(structured.clone()), true),
+            (vec![], Some(structured), true),
+        ] {
+            let mut result = rmcp::model::CallToolResult::success(
+                texts
+                    .iter()
+                    .map(|text| rmcp::model::ContentBlock::text(*text))
+                    .collect(),
+            );
+            result.structured_content = data.clone();
+            let mapped = super::map_tool_result(&context, "structured", result).unwrap();
+            assert_eq!(mapped.output, texts.join("\n"));
+            let expected = if retain {
+                json!({"mcp": {"is_error": false, "structured_content": data}})
+            } else {
+                json!({"mcp": {"is_error": false}})
+            };
+            assert_eq!(mapped.metadata, expected);
+            assert!(mapped.attachments.is_empty());
+        }
+    }
+
+    #[test]
     fn base64_attachments_follow_the_media_gate() {
         use base64::Engine as _;
         use cookie_agent_protocol::AdaptorId;
@@ -3319,6 +3384,7 @@ for line in sys.stdin:
         .expect("MCP blob result");
         let mapped =
             super::map_tool_result(&video_context, "video", result).expect("map MCP video result");
+        assert_eq!(mapped.metadata, json!({"mcp": {"is_error": false}}));
         assert!(mapped.attachments.is_empty());
         assert!(matches!(
             mapped.additional_messages[0].content.as_slice(),
@@ -3375,6 +3441,8 @@ for line in sys.stdin:
         )
         .expect("sniffed octet-stream blob must map");
         assert_eq!(mapped.attachments[0].mime_type.as_str(), "image/png");
+        assert_eq!(mapped.metadata, json!({"mcp": {"is_error": false}}));
+        assert!(!mapped.output.contains(&data));
     }
 
     #[test]
@@ -3474,7 +3542,7 @@ for line in sys.stdin:
         )
         .await;
         assert_eq!(result.output, "refresh");
-        assert_eq!(result.metadata["mcp"]["is_error"], false);
+        assert_eq!(result.metadata, json!({"mcp": {"is_error": false}}));
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -3495,7 +3563,7 @@ for line in sys.stdin:
 
         let error = execute(&registry, &directory, "fixture_fail", json!({})).await;
         assert_eq!(error.output, "fixture failure");
-        assert_eq!(error.metadata["mcp"]["is_error"], true);
+        assert_eq!(error.metadata, json!({"mcp": {"is_error": true}}));
         registry.shutdown().await;
     }
 

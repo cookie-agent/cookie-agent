@@ -1029,6 +1029,7 @@ enum SessionCommand {
         run: RunId,
         tool_call_id: ToolCallId,
         result: Result<ToolResult, ToolFailure>,
+        cancelled: bool,
         reply: oneshot::Sender<Result<bool, EngineError>>,
     },
     ResolveDelegateFailureIfPending {

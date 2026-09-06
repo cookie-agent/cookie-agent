@@ -718,9 +718,13 @@ impl Engine {
                         tokio::pin!(cleanup);
                         let mut discarded_progress = 0;
                         let mut cleanup_timed_out = false;
+                        let mut delegate_result = None;
                         'cleanup: loop {
                             tokio::select! {
-                                _ = &mut invoke => {
+                                result = &mut invoke => {
+                                    delegate_result = result.ok().filter(|result| {
+                                        engine.is_delegate_call_result(active.session, run, call.id, result)
+                                    });
                                     while let Ok(progress) = progress_rx.try_recv() {
                                         if tokio::time::timeout_at(
                                             cleanup_deadline,
@@ -761,6 +765,16 @@ impl Engine {
                         }
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
+                        if !cleanup_timed_out && let Some(result) = delegate_result {
+                            return bound_tool_result(
+                                result,
+                                result_truncation,
+                                &engine.inner.artifacts,
+                                active.policy.result_limits.tool_output_max_lines,
+                                active.policy.result_limits.tool_output_max_bytes,
+                            )
+                            .map_err(ToolFailure::from);
+                        }
                         let message = if cleanup_timed_out {
                             format!(
                                 "tool call cancelled after it started; cleanup deadline elapsed and {discarded_progress} progress record(s) never entered the session mailbox and were discarded"

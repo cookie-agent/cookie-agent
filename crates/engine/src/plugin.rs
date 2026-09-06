@@ -2335,10 +2335,9 @@ impl PreparedExecutor for PluginExecutor {
         }?;
         Ok(cookie_agent_protocol::PersistedToolResult {
             title: safe_title(&self.call.name),
-            output: result.content.clone(),
+            output: result.content,
             metadata: serde_json::json!({
                 "plugin": {
-                    "content": result.content,
                     "is_error": result.is_error,
                 }
             }),
@@ -3319,14 +3318,20 @@ mod tests {
             .await
             .expect("plugin result");
         assert_eq!(result.output, "hello");
-        assert_eq!(result.metadata["plugin"]["is_error"], false);
+        assert_eq!(
+            result.metadata,
+            serde_json::json!({"plugin": {"is_error": false}})
+        );
         success.registry.shutdown().await;
 
         let error = harness(&[("FIXTURE_TOOL_ERROR", "1")], 1_000).await;
         let result = execute(&error, prepared(&error).await, CancellationToken::new())
             .await
             .expect("plugin error result");
-        assert_eq!(result.metadata["plugin"]["is_error"], true);
+        assert_eq!(
+            result.metadata,
+            serde_json::json!({"plugin": {"is_error": true}})
+        );
         error.registry.shutdown().await;
     }
 
