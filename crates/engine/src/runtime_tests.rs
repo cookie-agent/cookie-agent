@@ -6546,18 +6546,20 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         .expect("child requests started")
         .expect("child request signal");
     fixture.engine.cancel_run(run).await.expect("cancel parent");
+    // Tool results precede RunCancelled. Do not shut down before the parent
+    // commits its terminal event, or adoption correctly treats it as interrupted.
     let parent = await_projection(
         &fixture.engine,
         parent.session_id,
-        "delegate cancellation results",
+        "cancelled parent and delegate results",
         |projection| {
-            projection
-                .runs
-                .get(&run)
-                .is_some_and(|run| run.pending_calls.is_empty())
+            projection.runs.get(&run).is_some_and(|run| {
+                run.status == SessionStatus::Cancelled && run.pending_calls.is_empty()
+            })
         },
     )
     .await;
+    wait_for_run_inactive(&fixture.engine, run).await;
     let events = parent.log.events();
     let terminations = events
         .iter()
