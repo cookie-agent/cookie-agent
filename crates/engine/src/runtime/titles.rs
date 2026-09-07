@@ -257,9 +257,9 @@ pub(crate) fn active_fallback_index(events: &[StoredEvent], run_id: RunId) -> us
 pub(super) fn validate_generated_title(value: &str, max_chars: usize) -> Option<SessionTitle> {
     let value = value
         .lines()
-        .next()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
         .unwrap_or_default()
-        .trim()
         .trim_matches(['"', '\'', '`'])
         .trim();
     if value.is_empty() {
@@ -319,7 +319,31 @@ pub(super) fn delegated_title(
 
 #[cfg(test)]
 mod tests {
-    use super::{delegated_title, title_prompt};
+    use super::{delegated_title, title_prompt, validate_generated_title};
+
+    #[test]
+    fn validate_generated_title_skips_leading_blank_lines_and_strips_quotes() {
+        assert_eq!(
+            validate_generated_title("\n\nPineapple Instruction", 80)
+                .expect("leading blank lines")
+                .as_str(),
+            "Pineapple Instruction"
+        );
+        assert_eq!(
+            validate_generated_title("  \n  \"Quoted Title\"  ", 80)
+                .expect("quoted title after blanks")
+                .as_str(),
+            "Quoted Title"
+        );
+        assert_eq!(
+            validate_generated_title("First line\nignored second line", 80)
+                .expect("first content line wins")
+                .as_str(),
+            "First line"
+        );
+        assert!(validate_generated_title("\n\n  \n", 80).is_none());
+        assert!(validate_generated_title("\"\"", 80).is_none());
+    }
 
     #[test]
     fn title_prompt_limits_opening_user_messages() {
