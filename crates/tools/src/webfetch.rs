@@ -48,7 +48,7 @@ impl ToolProvider for WebfetchTool {
         Ok(vec![ToolSpec {
             name: "webfetch".into(),
             permission_name: "webfetch".into(),
-            description: "Fetch an HTTP or HTTPS URL. Returns HTML as plaintext unless raw is true; other text passes through. Long results can be paged with read_tool_result.".into(),
+            description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_tool_result to page retained output by line, including the body.".into(),
             parameters: schema::<WebfetchArgs>(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
@@ -181,11 +181,11 @@ impl WebfetchArgs {
             "content_type": content_type,
             "truncated": truncated,
         });
-        let mut output = metadata.clone();
-        output["text"] = text.into();
         Ok(PersistedToolResult {
             title: safe_title(&self.url),
-            output: serde_json::to_string(&output).map_err(tool_error)?,
+            output: format!(
+                "final_url: {final_url}\nstatus_code: {status_code}\ncontent_type: {content_type}\ntruncated: {truncated}\n\n{text}"
+            ),
             metadata,
             truncation: None,
             attachments: Vec::new(),
@@ -258,6 +258,11 @@ mod tests {
                         vec![b'x'; DOWNLOAD_CAP],
                     ),
                     "/binary" => ("200 OK", "Content-Type: image/png\r\n", vec![0, 255]),
+                    "/lines" => (
+                        "200 OK",
+                        "Content-Type: text/plain\r\n",
+                        b"first\nsecond\r\nlast".to_vec(),
+                    ),
                     _ => (
                         "404 Not Found",
                         "Content-Type: application/json\r\n",
@@ -275,24 +280,52 @@ mod tests {
         format!("http://{address}")
     }
 
-    async fn fetch(url: String, raw: bool) -> Result<serde_json::Value, ToolError> {
-        let result = WebfetchArgs { url, raw }.fetch().await?;
-        let value: serde_json::Value = serde_json::from_str(&result.output).unwrap();
-        assert_eq!(result.metadata["final_url"], value["final_url"]);
-        assert_eq!(result.metadata["truncated"], value["truncated"]);
+    async fn fetch(url: String, raw: bool) -> Result<PersistedToolResult, ToolError> {
+        let result = WebfetchArgs {
+            url: url.clone(),
+            raw,
+        }
+        .fetch()
+        .await?;
+        assert_eq!(result.metadata["url"], url);
+        let header = format!(
+            "final_url: {}\nstatus_code: {}\ncontent_type: {}\ntruncated: {}\n\n",
+            result.metadata["final_url"].as_str().unwrap(),
+            result.metadata["status_code"].as_u64().unwrap(),
+            result.metadata["content_type"].as_str().unwrap(),
+            result.metadata["truncated"].as_bool().unwrap(),
+        );
+        assert!(result.output.starts_with(&header));
+        assert_eq!(result.metadata.as_object().unwrap().len(), 5);
         assert!(result.truncation.is_none());
-        Ok(value)
+        Ok(result)
+    }
+
+    fn body(result: &PersistedToolResult) -> &str {
+        result.output.split_once("\n\n").unwrap().1
+    }
+
+    #[test]
+    fn webfetch_keeps_standard_bounded_retention() {
+        let spec = WebfetchTool
+            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            spec.result_truncation,
+            cookie_agent_engine::ToolResultTruncationPolicy::Bounded
+        );
     }
 
     #[tokio::test]
     async fn redirects_preserve_initial_url_and_record_final_url() {
         let base = server();
         let result = fetch(format!("{base}/first"), false).await.unwrap();
-        assert_eq!(result["url"], format!("{base}/first"));
-        assert_eq!(result["final_url"], format!("{base}/html"));
-        assert_eq!(result["status_code"], 200);
-        assert_eq!(result["content_type"], "text/html; charset=utf-8");
-        assert_eq!(result["truncated"], false);
+        assert_eq!(result.metadata["url"], format!("{base}/first"));
+        assert_eq!(result.metadata["final_url"], format!("{base}/html"));
+        assert_eq!(result.metadata["status_code"], 200);
+        assert_eq!(result.metadata["content_type"], "text/html; charset=utf-8");
+        assert_eq!(result.metadata["truncated"], false);
         assert!(matches!(
             fetch(format!("{base}/loop"), false).await,
             Err(ToolError::RedirectError(_))
@@ -303,15 +336,18 @@ mod tests {
     async fn html_raw_and_plaintext_and_http_errors() {
         let base = server();
         let rendered = fetch(format!("{base}/html"), false).await.unwrap();
-        let text = rendered["text"].as_str().unwrap();
+        let text = body(&rendered);
         assert!(text.contains("Hello") && text.contains("World"));
         assert!(!text.contains("<h1>") && !text.contains("<b>"));
         let raw = fetch(format!("{base}/html"), true).await.unwrap();
-        assert_eq!(raw["text"], "<h1>Hello</h1><p>World <b>wide</b> web.</p>");
+        assert_eq!(body(&raw), "<h1>Hello</h1><p>World <b>wide</b> web.</p>");
         for raw in [false, true] {
             let json = fetch(format!("{base}/missing?q=1"), raw).await.unwrap();
-            assert_eq!(json["status_code"], 404);
-            assert_eq!(json["text"], "{\"error\":\"missing\"}");
+            assert_eq!(json.metadata["status_code"], 404);
+            assert_eq!(body(&json), "{\"error\":\"missing\"}");
+            let lines = fetch(format!("{base}/lines"), raw).await.unwrap();
+            assert_eq!(body(&lines), "first\nsecond\r\nlast");
+            assert_eq!(lines.output.lines().count(), 8);
             assert!(
                 matches!(fetch(format!("{base}/binary"), raw).await, Err(ToolError::UnsupportedContentType(content_type)) if content_type == "image/png")
             );
@@ -323,8 +359,8 @@ mod tests {
         let base = server();
         for (path, truncated) in [("cap", true), ("exact", false)] {
             let result = fetch(format!("{base}/{path}"), false).await.unwrap();
-            assert_eq!(result["truncated"], truncated);
-            assert_eq!(result["text"].as_str().unwrap(), "x".repeat(DOWNLOAD_CAP));
+            assert_eq!(result.metadata["truncated"], truncated);
+            assert_eq!(body(&result), "x".repeat(DOWNLOAD_CAP));
         }
     }
 

@@ -8250,6 +8250,123 @@ fn append_compaction_tool_history(
 }
 
 #[tokio::test]
+async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
+    use crate::{ToolResultTruncationPolicy, runtime::tool_execution::bound_tool_result};
+    use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText};
+
+    let response = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(vec![response.into()], usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("webfetch-result-readback").unwrap(),
+                selection: selection.clone(),
+                input: "prepare webfetch result history".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let policy = frozen_root_policy(&fixture, &selection);
+
+    // Construct the response at the tool-result boundary, then use real retention,
+    // event persistence, and engine readback rather than pre-seeding an artifact.
+    let url = "https://docs.quantumcookie.xyz/large.txt";
+    let mut output = format!(
+        "final_url: {url}\nstatus_code: 200\ncontent_type: text/plain\ntruncated: false\n\n"
+    );
+    for line in 0..25_000 {
+        output.push_str(&format!("{line:05} {}\n", "x".repeat(100)));
+    }
+    assert!(output.len() > PersistedToolResult::MAX_OUTPUT_BYTES);
+    let metadata = serde_json::json!({
+        "url": url, "final_url": url, "status_code": 200,
+        "content_type": "text/plain", "truncated": false,
+    });
+    let result = |output: String| PersistedToolResult {
+        title: SafeDisplayText::new("Webfetch output").unwrap(),
+        output,
+        metadata: metadata.clone(),
+        truncation: None,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    };
+    let bounded = bound_tool_result(
+        result(output.clone()),
+        ToolResultTruncationPolicy::Bounded,
+        &fixture.engine.inner.artifacts,
+        10,
+        1024,
+    )
+    .unwrap();
+    assert!(bounded.output.len() <= 1024);
+    assert!(output.starts_with(&bounded.output));
+    assert_eq!(bounded.metadata, metadata);
+    let truncation = bounded.truncation.as_ref().unwrap();
+    assert_eq!(truncation.original_bytes, output.len() as u64);
+    assert_eq!(truncation.original_lines, output.split('\n').count() as u64);
+    let call = append_compaction_tool_history(
+        &fixture,
+        session.session_id,
+        run.run_id,
+        policy.selected_suffix.first().unwrap(),
+        bounded,
+        1,
+    );
+
+    let lines = output.split_inclusive('\n').collect::<Vec<_>>();
+    let mut reconstructed = String::new();
+    for offset in (0..lines.len()).step_by(2_000) {
+        let page = fixture
+            .engine
+            .read_tool_result(session.session_id, call, None, offset as u64, 2_000)
+            .unwrap();
+        assert_eq!(page.source, "truncation");
+        assert!(!page.content.is_empty());
+        assert!(page.content.len() < PersistedToolResult::MAX_OUTPUT_BYTES);
+        assert_eq!(
+            page.content,
+            lines[offset..lines.len().min(offset + 2_000)].concat()
+        );
+        assert_eq!(
+            page.next_offset_lines,
+            (offset + 2_000 < lines.len()).then_some((offset + 2_000) as u64)
+        );
+        reconstructed.push_str(&page.content);
+        // Readback opts out of preview truncation, so each page must fit that path.
+        assert!(
+            bound_tool_result(
+                result(page.content),
+                ToolResultTruncationPolicy::OptOut,
+                &fixture.engine.inner.artifacts,
+                10,
+                1024,
+            )
+            .unwrap()
+            .truncation
+            .is_none()
+        );
+    }
+    assert_eq!(reconstructed, output);
+    for offset in [lines.len(), lines.len() + 2_000] {
+        let page = fixture
+            .engine
+            .read_tool_result(session.session_id, call, None, offset as u64, 2_000)
+            .unwrap();
+        assert!(page.content.is_empty());
+        assert_eq!(page.next_offset_lines, None);
+    }
+    fixture.engine.shutdown().await;
+    assert_eq!(captured.await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn retained_tool_results_page_across_truncation_elision_revert_and_sessions() {
     let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let (endpoint, captured, _reached, _release) =

@@ -1015,7 +1015,7 @@ pub(super) fn truncate_tool_output(
     Some(TruncatedToolOutput { content: preview })
 }
 
-pub(super) fn bound_tool_result(
+pub(crate) fn bound_tool_result(
     mut result: ToolResult,
     policy: crate::ToolResultTruncationPolicy,
     artifacts: &ArtifactStore,

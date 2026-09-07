@@ -34,7 +34,10 @@ check uses the initial URL including its query string. Without a matching rule
 the call is denied, and without any Allow or Ask rule for `webfetch` the tool is
 not advertised. Explicit `ask` rules still use the normal approval flow.
 
-The JSON output is `{url, final_url, status_code, content_type, text, truncated}`.
+Output starts with four header lines (`final_url`, `status_code`, `content_type`,
+and `truncated`), followed by a blank line and the text body verbatim. Body
+newlines are physical newlines, not JSON escapes. Structured `url`, `final_url`,
+`status_code`, `content_type`, and `truncated` fields remain in result metadata.
 HTML (`text/html` or `application/xhtml+xml`) is rendered by html2text at width
 80 unless `raw` is true. Text types, JSON, XML, JavaScript, form data, and
 `+json`/`+xml` types pass through as text; raw and non-HTML text use UTF-8 lossy
@@ -49,8 +52,11 @@ There are no additional SSRF, host/IP, DNS, or userinfo checks.
 Downloads are streamed to a fixed 16 MiB cap. Over-cap responses return the
 fetched prefix with `truncated: true`, not an error. The cap has no input or
 configuration parameter. Full results use the standard event log and result
-store; model-facing truncation and `read_tool_result` paging work as for other
-tools. Grant `read: {"tool_result:*": allow}` for result paging.
+store. The standard Bounded policy retains oversized output and sends a preview
+to the model. `read_tool_result` pages the retained header and body by physical
+line; its zero-based offset 5 starts at the body. Follow `next_offset` for
+successive pages. Metadata is separate and is not paged. Grant
+`read: {"tool_result:*": allow}` for result paging.
 
 Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `transport_error`, and `unsupported_content_type` (which names the content type).
