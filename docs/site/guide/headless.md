@@ -50,9 +50,10 @@ automatically. Other escalations anywhere in the session tree are rejected;
 the runner cancels the root run and waits for the matching terminal event.
 
 `--allowed-tools` may be repeated or comma-delimited and accepts `read`,
-`write`, `bash`, `delegate`, `mcp`, and `skill:<name>`. It adds an `allow` overlay for each
-listed permission action. It does not deny omitted actions or replace existing
-agent policy.
+`write`, `bash`, `delegate`, `mcp`, `plugin`, `plugin:<name>`, and
+`skill:<name>` — each entry adds an `allow` overlay rule (resource `*`, or the
+given name). It does not deny omitted actions or replace existing agent policy.
+`webfetch` is not accepted; grant web access in the agent document.
 
 ## Skills
 

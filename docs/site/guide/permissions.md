@@ -107,11 +107,11 @@ resource-name exceptions.
 Tools are opt-in. A permission action must have at least one `allow`
 or `ask` rule in the agent document or session overlay before that action's
 tools are visible. Any resource pattern counts, not just `"*"`. Visibility does
-not resolve rule precedence: an overlay deny does not hide a tool if the agent
-still declares an Allow or Ask rule for that action. An action omitted from both
-layers, or with only Deny rules, has no advertised tools. The engine applies this
-gate when assembling model tool specs, across all providers. Resource patterns
-and overlay precedence still decide individual calls once tools are visible.
+not resolve rule precedence: an overlay `deny` does not hide a tool if the agent
+still declares an `allow` or `ask` rule for that action. An action omitted from
+both layers, or with only `deny` rules, advertises no tools for any provider.
+Resource patterns and overlay precedence still decide individual calls once
+tools are visible.
 
 For example, this agent exposes read, write/edit, and bash with granular write
 and command policies while leaving delegation and MCP tools hidden:
@@ -171,7 +171,8 @@ Old tool calls and prepared-operation grants therefore fail closed. The
 
 ## Web fetching
 
-For the rule `webfetch *https://*.quantumcookie.xyz/* allow`, use this agent map:
+Web access uses the `webfetch` action, matched against the exact initial URL as
+requested, including its query string:
 
 ```yaml
 permissions:
@@ -182,14 +183,13 @@ permissions:
     "tool_result:*": allow
 ```
 
-`webfetch` checks permission exactly once against the initial URL, as given,
-including the query string. Redirect destinations are not checked; reqwest's
-default redirect policy allows up to 10 hops. Results include `final_url`.
-No SSRF protection, host/IP blocklist, DNS pinning, or extra userinfo restriction
-is applied. Limit rules accordingly, including access to local network services.
-Requests inherit the cookie-agent process's proxy environment and have a
-30-second overall request timeout. See the [tool reference](../reference/tools.md#webfetch)
-for text conversion, the fixed download cap, and result paging.
+The `read` rule exposes `read_tool_result` so the model can page long responses.
+Permission is checked once, against the initial URL; redirect destinations are
+not checked, and there is no SSRF protection, host/IP blocklist, or DNS
+pinning, so scope patterns accordingly, including access to local network
+services. Requests inherit the cookie-agent process's proxy environment and
+have a 30-second timeout. See the [tool reference](../reference/tools.md#webfetch)
+for the output format, HTML rendering, the download cap, and result paging.
 
 ## Live permission modes
 

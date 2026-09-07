@@ -28,11 +28,12 @@ events are persisted in completion order.
 ## Webfetch
 
 `webfetch` accepts `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
-`url` is required; `raw` defaults to false. Only `http://` and `https://` prefixes
-are accepted; otherwise the URL is passed to reqwest unchanged. One permission
-check uses the initial URL including its query string. Without a matching rule
-the call is denied, and without any Allow or Ask rule for `webfetch` the tool is
-not advertised. Explicit `ask` rules still use the normal approval flow.
+`url` is required; `raw` defaults to false. The URL must start with a lowercase
+`http://` or `https://` prefix; any other scheme is rejected with `invalid_url`
+before a request is sent. One permission check uses the initial URL including
+its query string. Without a matching rule the call is denied, and without any
+`allow` or `ask` rule for `webfetch` the tool is not advertised. Explicit `ask`
+rules still use the normal approval flow.
 
 Output starts with four header lines (`final_url`, `status_code`, `content_type`,
 and `truncated`), followed by a blank line and the text body verbatim. Body

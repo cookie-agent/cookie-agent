@@ -67,9 +67,9 @@ grant one skill with `--allowed-tools skill:release-check`.
 string of bare `Tool` names or `Tool(pattern)` entries. Patterns may contain
 spaces and parentheses; a bare tool means `*`. Tool names are case-insensitive,
 and `Edit` maps to the `write` permission just like the builtin edit tool.
-Accepted names are `Read`, `Write`, `Edit`, `Bash`, `Delegate`, `Skill`, and
-`Mcp`, `Plugin`, and `Webfetch`. The older Cookie Agent `action:pattern` list form is not
-accepted.
+Accepted names are `Read`, `Write`, `Edit`, `Bash`, `Delegate`, `Skill`,
+`Mcp`, `Plugin`, and `Webfetch`. The older Cookie Agent `action:pattern` list
+form is not accepted.
 
 `Plugin` grants the complete plugin permission group. `Plugin(name:*)` grants
 both `name` and `name *`, where `name` is a plugin-declared permission prefix;
@@ -83,12 +83,12 @@ patterns pass through unchanged: `Write(src/**)` grants the `src/**` glob.
 On load, these entries create turn-scoped allow grants labeled for that skill.
 Grants from every skill loaded during the same turn are merged; loading a
 grantless skill does not remove grants from an earlier skill. The complete
-collection disappears on the next committed user input, and an agent-policy
-deny remains authoritative, including the unmatched default deny. Grants can
-allow otherwise-Ask operations only: explicitly configure `bash: ask`, for
-example, before using a skill's Bash grants. Grants do not independently expose
-tools whose action has no Allow or Ask rules. A `model` override applies to the next model turn
-only.
+collection disappears on the next committed user input. Grants can only upgrade
+an `ask` decision to allow: they never override a deny, including the unmatched
+default deny, and they do not make a tool visible on their own. The agent still
+needs an explicit `allow` or `ask` rule for each granted action — for example
+`bash: ask` before relying on a skill's Bash grants. A `model` override applies
+to the next model turn only.
 
 Every first rendered load appends `skill_loaded`, including the rendered body,
 source and base paths, arguments, and up to ten supporting-file paths. Loading

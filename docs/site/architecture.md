@@ -53,7 +53,7 @@ identity
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
-| `tools` | Built-in `read`, `write`, `edit`, and `bash` tools plus the `delegate_subagent`, `get_subagent_result`, and `cancel_subagent` provider. |
+| `tools` | Built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `steer_subagent`, `cancel_subagent`), `skill`, goal, and `read_tool_result` providers. |
 | `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public `load_auth_token` / `validate_websocket_url` APIs. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
@@ -202,7 +202,10 @@ session and drive the run loop:
   request the loop runs predictive compaction and, after a completed turn,
   post-check compaction (see [Compaction](guide/compaction.md)).
 - **Permissions.** Every prepared tool call is matched against the agent's
-  ordered permission rules (see [Permissions](guide/permissions.md)). The
+  ordered permission rules (see [Permissions](guide/permissions.md)), and
+  unmatched checks deny by default. Tool visibility is gated the same way: a
+  tool is advertised to the model only when its action has an `allow` or `ask`
+  rule in the agent document or session overlay. The
   permission pipeline is stateless; approvals and tree grants live in an
   in-memory `ApprovalStore` rebuilt from durable events.
 - **Approvals.** A stateless approval evaluator (the `approval` internal agent)

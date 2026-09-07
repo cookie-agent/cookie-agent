@@ -608,19 +608,12 @@ are provider-only.
 For durable wire-schema compatibility, the event emitted when advancing through
 the chain remains named `model_fallback`; only agent frontmatter uses `models`.
 
-Permission evaluation has no implicit filename or resource-name exceptions.
-Patterns apply to `.env` and `.env.*` like any other file for both `read` and
-`write`. Broad allows, including `${workspace_dir}/*`, need no special
-override. Explicit rules retain normal specificity and session-overlay
-precedence; unmatched resources are denied. The synthesized `default` agent's explicit
-dotenv and credential-file rules remain ordinary policy rules.
-See [Permissions](../guide/permissions.md).
-
 Permission actions are `read`, `write`, `bash`, `delegate`, `mcp`, `plugin`,
-`skill`, and `webfetch`; effects remain `allow`, `ask`, and `deny`. Omitted
-actions and resource misses deny by default. A tool is advertised only if its
-action has any Allow or Ask rule in the agent snapshot or session overlay,
-regardless of pattern or competing denies. For example:
+`skill`, and `webfetch`; effects are `allow`, `ask`, and `deny`. Evaluation
+denies by default: an unmatched resource is denied, and an omitted action has
+no matching rule. A tool is advertised to the model only if its action has any
+`allow` or `ask` rule in the agent snapshot or session overlay, regardless of
+pattern or competing denies. For example:
 
 ```yaml
 permissions:
@@ -628,7 +621,14 @@ permissions:
     "*https://*.quantumcookie.xyz/*": allow
 ```
 
-See [Agents](../guide/agents.md) for the full frontmatter reference and reserved
+Permission evaluation has no implicit filename or resource-name exceptions.
+Patterns apply to `.env` and `.env.*` like any other file for both `read` and
+`write`. Broad allows, including `${workspace_dir}/*`, need no special
+override. Explicit rules retain normal specificity and session-overlay
+precedence. The synthesized `default` agent's explicit dotenv and
+credential-file rules remain ordinary policy rules.
+See [Permissions](../guide/permissions.md) for the evaluation contract and
+[Agents](../guide/agents.md) for the full frontmatter reference and reserved
 IDs.
 
 ## TUI configuration (`tui.toml`)

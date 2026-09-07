@@ -21,9 +21,9 @@ and observability are all built in.
   events, and intercept decisions across the run lifecycle: user input, model
   requests, tool calls, agent starts, compaction, forks, and more. An official
   Rust SDK (`cookie_agent_plugin_sdk`) handles the protocol for you.
-- **Permissions** — every capability is opt-in. Agents see only the tools
-  their permission map allows, with resource-pattern rules and ask/allow/deny
-  effects.
+- **Permissions** — every capability is opt-in, and unmatched checks deny by
+  default. Agents see only the tools their permission map allows or asks for,
+  with resource-pattern rules and allow/ask/deny effects.
 - **Agent documents** — Markdown files with YAML frontmatter define personas,
   models, and permissions. Author your own or use the built-in `default`.
 - **Skill loading** — strict user/project `SKILL.md` discovery, permission-aware

@@ -59,15 +59,14 @@ removes that document cap.
 a hard error. Internal agents use the 30-second invocation timeout when
 `timeout_ms` is zero or omitted.
 
-Tool visibility is derived only from `permissions`, and user agents must opt in
-to each action they need. With no `permissions` field, no tools are visible. An
-action becomes visible when the agent or overlay has any `allow` or `ask` rule;
-`edit` uses the `write` action. Delegation tools additionally require a
-`delegate` map naming at least one eligible target. A bare action deny hides
-that action's tools. A mapped action with `"*": deny` also hides them unless it
-contains an `allow` or `ask` rule. Any pattern counts, even if a competing deny
-wins at execution time. Unmatched resources are denied; approval requires an
-explicit `ask` rule.
+Tool visibility is derived only from `permissions`: with no `permissions`
+field, no tools are visible. An action's tools become visible when the agent or
+session overlay has any `allow` or `ask` rule for it — any resource pattern
+counts, even if a competing deny wins at execution time — and unmatched
+resources deny by default, so approval requires an explicit `ask` rule. `edit`
+uses the `write` action. Delegation tools additionally require a `delegate` map
+naming at least one eligible target. See
+[Permissions](permissions.md#tool-availability-and-delegation).
 
 The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove
@@ -203,8 +202,8 @@ If no authored agent is runnable as a root, the engine synthesizes the built-in
 `default` coding agent bound to the first available model selection. Its prompt
 and explicit permission map are fixed by the engine: read is allowed with
 additional asks and secret-file denies, while write, bash, and delegate ask by
-default. MCP remains omitted. User agents do not inherit this list and must
-declare their own tool permissions.
+default. MCP, `webfetch`, and every other undeclared action stay hidden. User
+agents do not inherit this list and must declare their own tool permissions.
 
 ## Agent presets
 

@@ -464,9 +464,12 @@ IDs, arguments, resource, and an optional cancellation token. The plugin returns
 `is_error`. A JSON-RPC error, transport failure, timeout, cancellation, or plugin exit fails the
 tool call. `is_error` remains structured tool-result metadata, parallel to MCP tool results.
 
-Plugin tools use the fail-closed permission pipeline. They are hidden until the agent policy or a
-session overlay has an `allow` or `ask` rule for the `plugin` action and declared permission. The
-permission resource is the declared permission name followed by the primary resource when one is
+Plugin tools use the deny-by-default permission pipeline. They are hidden until
+the agent policy or a session overlay has any `allow` or `ask` rule for the
+`plugin` action; visibility is action-level and does not match the declared
+permission. Each call is then checked against the declared permission and
+resource, and unmatched calls are denied. The permission resource is the
+declared permission name followed by the primary resource when one is
 present. The [user plugin guide](../guide/plugins.md#allow-plugin-tools) shows the corresponding
 agent permission configuration.
 

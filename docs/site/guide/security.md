@@ -2,7 +2,9 @@
 
 cookie agent combines permission policy with platform-specific filesystem and
 process controls. Permission rules decide whether a prepared tool call may run;
-they are not an operating-system security boundary. In particular, a permitted
+they are not an operating-system security boundary. Rules deny by default: an
+unmatched action or resource is refused, and a tool whose action has no `allow`
+or `ask` rule is not advertised to the model at all. In particular, a permitted
 `bash` command is not parsed into filesystem operations and runs without syscall
 filtering.
 
@@ -156,3 +158,13 @@ restrict what an approved command can access. Windows commands do not run in an
 AppContainer or restricted token and have no seccomp-like syscall filter. Treat
 `bash` permission as authority to run the complete command with the cookie agent
 process's user privileges.
+
+## Web fetching
+
+`webfetch` requests run with the cookie agent process's network access and
+inherited proxy environment. Permission policy checks only the exact initial
+URL, including its query string; redirect destinations are not re-checked, and
+there is no SSRF protection, host or IP blocklist, or DNS pinning. A broad
+pattern therefore authorizes requests to any reachable host, including local
+network services — scope `webfetch` rules accordingly. See the
+[tool reference](../reference/tools.md#webfetch).

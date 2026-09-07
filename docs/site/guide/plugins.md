@@ -71,10 +71,10 @@ observational bus publication is unaffected.
 
 ## Allow plugin tools
 
-Plugin tools remain hidden until the selected agent's policy or a session
-overlay has any Allow or Ask rule for the `plugin` action. This action-level
-visibility gate does not match individual resource patterns. Calls still check
-the plugin's declared permission and resource; unmatched calls deny. The plugin
+Plugin tools remain hidden until the agent's policy or a session overlay has
+any `allow` or `ask` rule for the `plugin` action; the gate is action-level and
+does not match individual resource patterns. Calls still check the plugin's
+declared permission and resource, and unmatched calls are denied. The plugin
 author should document these names. For example:
 
 ```yaml
