@@ -10,7 +10,7 @@ emit only their current version and reject unsupported versions.
 |---|---:|---:|
 | Runtime configuration | unversioned | unversioned current shape |
 | Agent document | unversioned | unversioned current shape |
-| Protocol | 11 | 11 |
+| Protocol | 16 | 16 |
 | Events and session JSONL | versionless | versionless plus legacy schema markers |
 | Session metadata | unversioned | unversioned current shape |
 | Runtime snapshot | 5 | 5 |
