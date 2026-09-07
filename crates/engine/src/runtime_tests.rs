@@ -1011,6 +1011,17 @@ async fn session_permission_overlay_is_durable_and_evaluated_after_restart() {
 async fn tightening_overlay_invalidates_tree_grants_durably() {
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
+    fixture
+        .engine
+        .set_session_permission(
+            session.session_id,
+            PermissionAction::Bash,
+            WildcardPattern::new("*").unwrap(),
+            PermissionEffect::Ask,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("explicit ask before tightening");
     let resource = PreparedApprovalResource {
         capability: PermissionAction::Bash,
         canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
@@ -1084,7 +1095,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
 }
 
 #[tokio::test]
-async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
+async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
     let (fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
     let wildcard = WildcardPattern::new("*").expect("wildcard");
@@ -1167,7 +1178,7 @@ async fn clearing_allow_overlay_to_default_ask_invalidates_tree_grants() {
         .into_iter()
         .find(|permission| permission.action == PermissionAction::Bash)
         .expect("bash permission");
-    assert_eq!(bash.effect, PermissionEffect::Ask);
+    assert_eq!(bash.effect, PermissionEffect::Deny);
     assert_eq!(bash.source, PermissionRuleSource::Default);
     fixture.engine.shutdown().await;
 }

@@ -1262,6 +1262,7 @@ fn action_label(action: PermissionAction) -> &'static str {
         PermissionAction::Mcp => "mcp",
         PermissionAction::Plugin => "plugin",
         PermissionAction::Skill => "skill",
+        PermissionAction::Webfetch => "webfetch",
     }
 }
 

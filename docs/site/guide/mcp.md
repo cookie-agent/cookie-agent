@@ -160,10 +160,10 @@ permissions:
 
 MCP availability is permission-driven. With no `mcp` entry, an agent receives
 no MCP tools. A bare `deny`, or `"*": deny` with no non-deny exception, also
-hides every MCP tool. Any other `mcp` map exposes the connected MCP tools at the
+hides every MCP tool. Any `mcp` Allow or Ask rule in the agent or overlay exposes the connected MCP tools at the
 action level. Calls then use the complete generated tool name as their scoped
 resource: more-specific patterns override broader patterns, and unmatched calls
-ask. Each delegated agent is evaluated against its own permission map.
+are denied. Each delegated agent is evaluated against its own permission map.
 
 Each MCP description and result is treated as untrusted server output.
 

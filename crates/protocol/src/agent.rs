@@ -115,6 +115,7 @@ pub enum PermissionAction {
     Mcp,
     Plugin,
     Skill,
+    Webfetch,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]

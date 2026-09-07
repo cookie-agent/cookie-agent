@@ -24,6 +24,7 @@ mod path_args;
 pub mod read;
 pub mod read_tool_result;
 pub mod skill;
+pub mod webfetch;
 pub mod write;
 
 #[cfg(test)]
@@ -358,6 +359,7 @@ impl ToolProvider for BuiltinTools {
         tools.extend(self.write.tools_for_session(ctx)?);
         tools.extend(self.edit.tools_for_session(ctx)?);
         tools.extend(self.bash.tools_for_session(ctx)?);
+        tools.extend(webfetch::WebfetchTool.tools_for_session(ctx)?);
         Ok(tools)
     }
 
@@ -367,6 +369,7 @@ impl ToolProvider for BuiltinTools {
             "write" => write::WriteTool::get_permission_name(tool_name),
             "edit" => edit::EditTool::get_permission_name(tool_name),
             "bash" => bash::BashTool::get_permission_name(tool_name),
+            "webfetch" => webfetch::WebfetchTool::get_permission_name(tool_name),
             _ => Err(tool_error(format!("unknown built-in tool `{tool_name}`"))),
         }
     }
@@ -381,6 +384,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.get_permission_resource(name, arguments),
             "edit" => self.edit.get_permission_resource(name, arguments),
             "bash" => self.bash.get_permission_resource(name, arguments),
+            "webfetch" => webfetch::WebfetchTool.get_permission_resource(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -395,6 +399,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.get_display_argument(name, arguments),
             "edit" => self.edit.get_display_argument(name, arguments),
             "bash" => self.bash.get_display_argument(name, arguments),
+            "webfetch" => webfetch::WebfetchTool.get_display_argument(name, arguments),
             _ => Err(tool_error(format!("unknown built-in tool `{name}`"))),
         }
     }
@@ -409,6 +414,7 @@ impl ToolProvider for BuiltinTools {
             "write" => self.write.prepare(ctx, call).await,
             "edit" => self.edit.prepare(ctx, call).await,
             "bash" => self.bash.prepare(ctx, call).await,
+            "webfetch" => webfetch::WebfetchTool.prepare(ctx, call).await,
             _ => Err(tool_error(format!("unknown built-in tool `{}`", call.name))),
         }
     }
@@ -438,6 +444,14 @@ mod tests {
         assert_eq!(WriteTool::get_permission_name("write").unwrap(), "write");
         assert_eq!(EditTool::get_permission_name("edit").unwrap(), "write");
         assert_eq!(BashTool::get_permission_name("bash").unwrap(), "bash");
+        assert_eq!(
+            BuiltinTools::get_permission_name("webfetch").unwrap(),
+            "webfetch"
+        );
+        assert_eq!(
+            super::skill::SkillTool::get_permission_name("skill").unwrap(),
+            "skill"
+        );
         assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), "read");
         assert_eq!(
             GoalTools::get_permission_name("goal_update").unwrap(),
@@ -490,7 +504,7 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["read", "write", "edit", "bash"]);
+        assert_eq!(names, ["read", "write", "edit", "bash", "webfetch"]);
         for name in ["grep", "glob"] {
             let arguments = serde_json::json!({});
             assert!(

@@ -13,7 +13,7 @@ declaration.
 
 | Tools | Eligibility | Coordination |
 |---|---|---|
-| `read`, `read_tool_result`, `bash` | Parallel | Each call owns its execution and streaming state. |
+| `read`, `read_tool_result`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
 | `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
 | MCP tools | Parallel | Each MCP server's service mutex serializes calls to that server; different servers can overlap. |
@@ -24,6 +24,38 @@ All parallel-eligible calls in the turn are dispatched together without a
 fan-out limit. Exclusive calls run one at a time after the parallel calls have
 finished. Results remain associated with their tool call IDs, while terminal
 events are persisted in completion order.
+
+## Webfetch
+
+`webfetch` accepts `{"url":"https://docs.quantumcookie.xyz/", "raw":false}`.
+`url` is required; `raw` defaults to false. Only `http://` and `https://` prefixes
+are accepted; otherwise the URL is passed to reqwest unchanged. One permission
+check uses the initial URL including its query string. Without a matching rule
+the call is denied, and without any Allow or Ask rule for `webfetch` the tool is
+not advertised. Explicit `ask` rules still use the normal approval flow.
+
+The JSON output is `{url, final_url, status_code, content_type, text, truncated}`.
+HTML (`text/html` or `application/xhtml+xml`) is rendered by html2text at width
+80 unless `raw` is true. Text types, JSON, XML, JavaScript, form data, and
+`+json`/`+xml` types pass through as text; raw and non-HTML text use UTF-8 lossy
+decoding. Binary types are rejected, including in raw mode. Missing or invalid
+Content-Type is treated as `application/octet-stream` and rejected.
+
+The request has a 30-second overall timeout, inherits environment proxies, and
+uses reqwest's default redirect policy (10 hops). Redirect hops are not
+permission-checked. HTTP error statuses are returned with their text bodies.
+There are no additional SSRF, host/IP, DNS, or userinfo checks.
+
+Downloads are streamed to a fixed 16 MiB cap. Over-cap responses return the
+fetched prefix with `truncated: true`, not an error. The cap has no input or
+configuration parameter. Full results use the standard event log and result
+store; model-facing truncation and `read_tool_result` paging work as for other
+tools. Grant `read: {"tool_result:*": allow}` for result paging.
+
+Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
+`transport_error`, and `unsupported_content_type` (which names the content type).
+`permission_denied` uses the standard policy-denial path and its structured
+`tool_denied` reason.
 
 ## Filesystem tools
 

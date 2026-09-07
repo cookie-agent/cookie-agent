@@ -68,7 +68,7 @@ string of bare `Tool` names or `Tool(pattern)` entries. Patterns may contain
 spaces and parentheses; a bare tool means `*`. Tool names are case-insensitive,
 and `Edit` maps to the `write` permission just like the builtin edit tool.
 Accepted names are `Read`, `Write`, `Edit`, `Bash`, `Delegate`, `Skill`, and
-`Mcp`, and `Plugin`. The older Cookie Agent `action:pattern` list form is not
+`Mcp`, `Plugin`, and `Webfetch`. The older Cookie Agent `action:pattern` list form is not
 accepted.
 
 `Plugin` grants the complete plugin permission group. `Plugin(name:*)` grants
@@ -84,7 +84,10 @@ On load, these entries create turn-scoped allow grants labeled for that skill.
 Grants from every skill loaded during the same turn are merged; loading a
 grantless skill does not remove grants from an earlier skill. The complete
 collection disappears on the next committed user input, and an agent-policy
-deny remains authoritative. A `model` override applies to the next model turn
+deny remains authoritative, including the unmatched default deny. Grants can
+allow otherwise-Ask operations only: explicitly configure `bash: ask`, for
+example, before using a skill's Bash grants. Grants do not independently expose
+tools whose action has no Allow or Ask rules. A `model` override applies to the next model turn
 only.
 
 Every first rendered load appends `skill_loaded`, including the rendered body,

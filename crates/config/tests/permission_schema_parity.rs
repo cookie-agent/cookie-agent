@@ -384,13 +384,59 @@ fn dotenv_permissions_do_not_gain_implicit_rules() {
     }
 }
 
+#[test]
+fn webfetch_rules_preserve_explicit_effects_queries_and_strict_schema() {
+    let base = serde_json::json!({
+        "description": "Web access", "mode": "primary", "enabled": true, "models": []
+    });
+    let empty: AgentFrontmatter = serde_json::from_value(base.clone()).unwrap();
+    assert!(empty.permissions.is_empty());
+    assert_eq!(
+        configured_effect(
+            &empty,
+            PermissionAction::Webfetch,
+            "https://docs.quantumcookie.xyz/"
+        ),
+        PermissionEffect::Deny
+    );
+    for effect in ["allow", "ask", "deny"] {
+        let mut value = base.clone();
+        value["permissions"] =
+            serde_json::json!({"webfetch": {"*https://*.quantumcookie.xyz/*": effect}});
+        let parsed: AgentFrontmatter = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            parsed.permissions[&PermissionAction::Webfetch]
+                .rules(PermissionAction::Webfetch)
+                .len(),
+            1
+        );
+        assert_eq!(
+            configured_effect(
+                &parsed,
+                PermissionAction::Webfetch,
+                "https://docs.quantumcookie.xyz/page?key=value"
+            ),
+            serde_json::from_value::<PermissionEffect>(effect.into()).unwrap()
+        );
+    }
+    for permissions in [
+        serde_json::json!({"webfetch": true}),
+        serde_json::json!({"webfetch": "invalid"}),
+        serde_json::json!({"webfetch": "allow", "unknown": "allow"}),
+    ] {
+        let mut value = base.clone();
+        value["permissions"] = permissions;
+        assert!(serde_json::from_value::<AgentFrontmatter>(value).is_err());
+    }
+}
+
 fn configured_effect(
     frontmatter: &AgentFrontmatter,
     action: PermissionAction,
     resource: &str,
 ) -> PermissionEffect {
     let Some(value) = frontmatter.permissions.get(&action) else {
-        return PermissionEffect::Ask;
+        return PermissionEffect::Deny;
     };
     value
         .rules(action)
@@ -407,7 +453,7 @@ fn configured_effect(
             let literals = rule.resource.as_str().chars().count() - wildcards;
             (literals, std::cmp::Reverse(wildcards), *index)
         })
-        .map_or(PermissionEffect::Ask, |(_, rule)| rule.effect)
+        .map_or(PermissionEffect::Deny, |(_, rule)| rule.effect)
 }
 
 #[test]

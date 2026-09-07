@@ -61,11 +61,13 @@ a hard error. Internal agents use the 30-second invocation timeout when
 
 Tool visibility is derived only from `permissions`, and user agents must opt in
 to each action they need. With no `permissions` field, no tools are visible. An
-action becomes visible when it has at least one effective `allow` or `ask` rule;
+action becomes visible when the agent or overlay has any `allow` or `ask` rule;
 `edit` uses the `write` action. Delegation tools additionally require a
 `delegate` map naming at least one eligible target. A bare action deny hides
 that action's tools. A mapped action with `"*": deny` also hides them unless it
-contains a more specific `allow` or `ask` exception.
+contains an `allow` or `ask` rule. Any pattern counts, even if a competing deny
+wins at execution time. Unmatched resources are denied; approval requires an
+explicit `ask` rule.
 
 The former `tools` field is removed. Documents that still declare it fail
 with an error naming `tools` and directing the author to `permissions`; remove

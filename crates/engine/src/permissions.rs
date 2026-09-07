@@ -19,6 +19,22 @@ use thiserror::Error;
 
 use crate::tool_api::UNSCOPED_PERMISSION_RESOURCE_DISPLAY;
 
+/// Visibility is action-level opt-in, not a resource authorization decision.
+#[must_use]
+pub fn tool_visible(
+    rules: &[PermissionRule],
+    overlay: Option<&SessionPermissionOverlay>,
+    action: PermissionAction,
+) -> bool {
+    rules
+        .iter()
+        .chain(overlay.into_iter().flat_map(|overlay| &overlay.rules))
+        .any(|rule| {
+            rule.action == action
+                && matches!(rule.effect, PermissionEffect::Allow | PermissionEffect::Ask)
+        })
+}
+
 #[derive(Debug, Error)]
 pub enum PermissionError {
     #[error("unknown permission name `{0}`")]
@@ -127,6 +143,7 @@ impl PermissionPipeline {
             "mcp" => Ok(PermissionAction::Mcp),
             "plugin" => Ok(PermissionAction::Plugin),
             "skill" => Ok(PermissionAction::Skill),
+            "webfetch" => Ok(PermissionAction::Webfetch),
             other if other.starts_with("plugin:") && other.len() > "plugin:".len() => {
                 Ok(PermissionAction::Plugin)
             }
@@ -276,59 +293,7 @@ impl PermissionPipeline {
         let Ok(action) = Self::action_for_permission_name(permission_name) else {
             return false;
         };
-        if let Some(declared_permission) = permission_name.strip_prefix("plugin:") {
-            let overlay_winner = overlay
-                .into_iter()
-                .flat_map(|overlay| overlay.rules.iter())
-                .enumerate()
-                .filter(|(_, rule)| {
-                    rule.action == PermissionAction::Plugin
-                        && plugin_rule_governs(rule.resource.as_str(), declared_permission)
-                })
-                .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index));
-            if let Some((_, rule)) = overlay_winner {
-                return rule.effect != PermissionEffect::Deny;
-            }
-            return policy
-                .permissions
-                .iter()
-                .enumerate()
-                .filter(|(_, rule)| {
-                    rule.action == PermissionAction::Plugin
-                        && plugin_rule_governs(rule.resource.as_str(), declared_permission)
-                })
-                .max_by_key(|(index, rule)| specificity(rule.resource.as_str(), *index))
-                .is_some_and(|(_, rule)| rule.effect != PermissionEffect::Deny);
-        }
-        let effective_overlay = overlay
-            .into_iter()
-            .flat_map(|overlay| overlay.rules.iter())
-            .filter(|rule| rule.action == action)
-            .map(|rule| (rule.resource.as_str(), rule.effect))
-            .collect::<HashMap<_, _>>();
-        if effective_overlay
-            .values()
-            .any(|effect| *effect != PermissionEffect::Deny)
-        {
-            return true;
-        }
-        let effective_policy = policy
-            .permissions
-            .iter()
-            .filter(|rule| rule.action == action)
-            .map(|rule| (rule.resource.as_str(), rule.effect))
-            .collect::<HashMap<_, _>>();
-
-        // Visibility only estimates whether some resource may be usable. Treat
-        // each policy pattern as a candidate string for overlay deny matching;
-        // operation evaluation remains authoritative for actual resources.
-        effective_policy.iter().any(|(resource, effect)| {
-            *effect != PermissionEffect::Deny
-                && !effective_overlay.iter().any(|(pattern, effect)| {
-                    *effect == PermissionEffect::Deny
-                        && (*pattern == "*" || simple_wildcard_match(pattern, resource))
-                })
-        })
+        tool_visible(&policy.permissions, overlay, action)
     }
 
     #[must_use]
@@ -395,8 +360,8 @@ pub(crate) fn effective_loose_permission(
         .map_or_else(
             || {
                 (
-                    PermissionEffect::Ask,
-                    "no bare or `*` rule; ask by default for a permission-name-only check".into(),
+                    PermissionEffect::Deny,
+                    "no bare or `*` rule; deny by default for a permission-name-only check".into(),
                 )
             },
             |(_, rule)| {
@@ -458,8 +423,8 @@ pub(crate) fn effective_permission(
         .map_or_else(
             || {
                 (
-                    PermissionEffect::Ask,
-                    "no matching rule; ask by default".into(),
+                    PermissionEffect::Deny,
+                    "no matching rule; deny by default".into(),
                 )
             },
             |(_, rule)| {
@@ -874,6 +839,7 @@ fn effective_permission_view(
         PermissionAction::Mcp,
         PermissionAction::Plugin,
         PermissionAction::Skill,
+        PermissionAction::Webfetch,
     ]
     .into_iter()
     .map(|action| {
@@ -890,7 +856,7 @@ fn effective_permission_view(
         let (effect, source) = overlay_wildcard.map_or_else(
             || {
                 agent_wildcard.map_or(
-                    (PermissionEffect::Ask, PermissionRuleSource::Default),
+                    (PermissionEffect::Deny, PermissionRuleSource::Default),
                     |rule| (rule.effect, PermissionRuleSource::AgentDocument),
                 )
             },
@@ -1042,8 +1008,13 @@ mod tests {
     }
 
     #[test]
-    fn turn_scoped_skill_grant_temporarily_publishes_hidden_tool() {
-        let base_policy = policy(Vec::new());
+    fn turn_scoped_skill_grant_requires_explicit_ask() {
+        let base_policy = policy(vec![rule(
+            "ask",
+            PermissionAction::Bash,
+            "git*",
+            PermissionEffect::Ask,
+        )]);
         let grants = SessionPermissionOverlay {
             rules: vec![
                 rule(
@@ -1060,7 +1031,7 @@ mod tests {
                 ),
             ],
         };
-        assert!(!PermissionPipeline::tool_visible_with_grants(
+        assert!(PermissionPipeline::tool_visible_with_grants(
             &base_policy,
             None,
             None,
@@ -1102,8 +1073,8 @@ mod tests {
             &[Some("cargo test".into())],
             std::path::Path::new("/workspace"),
         );
-        assert_eq!(ungranted.effect, PermissionEffect::Ask);
-        assert!(!PermissionPipeline::tool_visible_with_grants(
+        assert_eq!(ungranted.effect, PermissionEffect::Deny);
+        assert!(PermissionPipeline::tool_visible_with_grants(
             &base_policy,
             None,
             None,
@@ -1128,7 +1099,12 @@ mod tests {
 
     #[test]
     fn skill_grant_can_publish_another_skill_action() {
-        let base_policy = policy(Vec::new());
+        let base_policy = policy(vec![rule(
+            "ask",
+            PermissionAction::Skill,
+            "other-skill",
+            PermissionEffect::Ask,
+        )]);
         let grants = SessionPermissionOverlay {
             rules: vec![rule(
                 "skill-chain",
@@ -1137,7 +1113,7 @@ mod tests {
                 PermissionEffect::Allow,
             )],
         };
-        assert!(!PermissionPipeline::tool_visible_with_grants(
+        assert!(PermissionPipeline::tool_visible_with_grants(
             &base_policy,
             None,
             None,
@@ -1293,7 +1269,7 @@ mod tests {
             )]),
             PermissionAction::Delegate,
         );
-        assert_eq!(specific_only.effect, PermissionEffect::Ask);
+        assert_eq!(specific_only.effect, PermissionEffect::Deny);
         assert!(specific_only.evaluations[0].trace.candidates.is_empty());
     }
 
@@ -1406,7 +1382,7 @@ mod tests {
                 resource(PermissionAction::Mcp, "slack_search", b"unmatched")
             )
             .effect,
-            PermissionEffect::Ask
+            PermissionEffect::Deny
         );
         assert_eq!(
             PermissionPipeline::action_for_permission_name("mcp").expect("MCP action"),
@@ -1652,12 +1628,20 @@ mod tests {
     #[test]
     fn multi_resource_ask_beats_allow() {
         let decision = decide_many(
-            &policy(vec![rule(
-                "allow-public",
-                PermissionAction::Read,
-                "/workspace/public.txt",
-                PermissionEffect::Allow,
-            )]),
+            &policy(vec![
+                rule(
+                    "ask-review",
+                    PermissionAction::Read,
+                    "/workspace/review.txt",
+                    PermissionEffect::Ask,
+                ),
+                rule(
+                    "allow-public",
+                    PermissionAction::Read,
+                    "/workspace/public.txt",
+                    PermissionEffect::Allow,
+                ),
+            ]),
             vec![
                 resource(PermissionAction::Read, "/workspace/public.txt", b"public"),
                 resource(PermissionAction::Read, "/workspace/review.txt", b"review"),
@@ -1771,7 +1755,7 @@ mod tests {
                 let decision = decide(&policy(Vec::new()), resource(action, name, name.as_bytes()));
                 assert_eq!(
                     decision.effect,
-                    PermissionEffect::Ask,
+                    PermissionEffect::Deny,
                     "unmatched {action:?} {name}"
                 );
                 assert!(decision.evaluations[0].trace.candidates.is_empty());
@@ -1903,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_dotenv_files_use_normal_default_ask() {
+    fn unmatched_dotenv_files_use_normal_default_deny() {
         for action in [PermissionAction::Read, PermissionAction::Write] {
             for path in [".env", ".env.local", "nested/.env.local", "/outside/.env"] {
                 for rules in [
@@ -1922,11 +1906,11 @@ mod tests {
                         &[Some(path.into())],
                         std::path::Path::new("/workspace"),
                     );
-                    assert_eq!(decision.effect, PermissionEffect::Ask, "{action:?} {path}");
+                    assert_eq!(decision.effect, PermissionEffect::Deny, "{action:?} {path}");
                     assert!(decision.evaluations[0].trace.candidates.is_empty());
                     assert_eq!(
                         decision.evaluations[0].trace.precedence_reason,
-                        "no matching rule; ask by default"
+                        "no matching rule; deny by default"
                     );
                 }
             }
@@ -2034,13 +2018,72 @@ mod tests {
     #[test]
     fn empty_permissions_hide_all_known_actions() {
         let policy = policy(Vec::new());
-        for permission_name in ["read", "write", "bash", "delegate", "mcp", "plugin:echo"] {
+        for permission_name in [
+            "read",
+            "write",
+            "bash",
+            "delegate",
+            "mcp",
+            "plugin:echo",
+            "skill",
+            "webfetch",
+        ] {
             assert!(!PermissionPipeline::tool_visible(&policy, permission_name));
         }
     }
 
     #[test]
-    fn plugin_visibility_is_scoped_by_declared_permission_and_overlay() {
+    fn visibility_uses_any_rule_without_resource_precedence() {
+        for effect in [PermissionEffect::Allow, PermissionEffect::Ask] {
+            let rules = vec![
+                rule(
+                    "opt-in",
+                    PermissionAction::Webfetch,
+                    "https://*.quantumcookie.xyz/*",
+                    effect,
+                ),
+                rule(
+                    "later-deny",
+                    PermissionAction::Webfetch,
+                    "https://*.quantumcookie.xyz/*",
+                    PermissionEffect::Deny,
+                ),
+            ];
+            let deny = SessionPermissionOverlay {
+                rules: vec![rule(
+                    "deny",
+                    PermissionAction::Webfetch,
+                    "*",
+                    PermissionEffect::Deny,
+                )],
+            };
+            assert!(super::tool_visible(
+                &rules,
+                Some(&deny),
+                PermissionAction::Webfetch
+            ));
+            assert!(super::tool_visible(
+                &[],
+                Some(&SessionPermissionOverlay {
+                    rules: rules.clone()
+                }),
+                PermissionAction::Webfetch
+            ));
+            assert!(!super::tool_visible(&rules, None, PermissionAction::Read));
+            assert!(!super::tool_visible(
+                &[],
+                Some(&deny),
+                PermissionAction::Webfetch
+            ));
+        }
+        assert_eq!(
+            decide_loose(&policy(Vec::new()), PermissionAction::Webfetch).effect,
+            PermissionEffect::Deny
+        );
+    }
+
+    #[test]
+    fn plugin_visibility_is_action_scoped_and_execution_remains_authoritative() {
         let plugin_policy = policy(vec![rule(
             "allow-echo",
             PermissionAction::Plugin,
@@ -2051,7 +2094,7 @@ mod tests {
             &plugin_policy,
             "plugin:echo"
         ));
-        assert!(!PermissionPipeline::tool_visible(
+        assert!(PermissionPipeline::tool_visible(
             &plugin_policy,
             "plugin:delete"
         ));
@@ -2064,7 +2107,7 @@ mod tests {
                 PermissionEffect::Deny,
             )],
         };
-        assert!(!PermissionPipeline::tool_visible_with_overlay(
+        assert!(PermissionPipeline::tool_visible_with_overlay(
             &plugin_policy,
             Some(&overlay),
             "plugin:echo"
@@ -2095,7 +2138,7 @@ mod tests {
             )],
         };
         let empty = policy(Vec::new());
-        assert!(PermissionPipeline::tool_visible_with_grants(
+        assert!(!PermissionPipeline::tool_visible_with_grants(
             &empty,
             None,
             Some(&read_only_grant),
@@ -2112,7 +2155,7 @@ mod tests {
     }
 
     #[test]
-    fn session_overlay_can_expose_or_hide_tools() {
+    fn session_overlay_denies_do_not_hide_agent_non_deny_rules() {
         let empty_policy = policy(Vec::new());
         let named_allow = SessionPermissionOverlay {
             rules: vec![rule(
@@ -2164,7 +2207,7 @@ mod tests {
             "*",
             PermissionEffect::Allow,
         )]);
-        assert!(!PermissionPipeline::tool_visible_with_overlay(
+        assert!(PermissionPipeline::tool_visible_with_overlay(
             &policy_allow,
             Some(&wildcard_deny),
             "read"
@@ -2184,7 +2227,7 @@ mod tests {
                 PermissionEffect::Deny,
             )],
         };
-        assert!(!PermissionPipeline::tool_visible_with_overlay(
+        assert!(PermissionPipeline::tool_visible_with_overlay(
             &named_policy_allow,
             Some(&identical_named_deny),
             "read"
@@ -2198,7 +2241,7 @@ mod tests {
                 PermissionEffect::Deny,
             )],
         };
-        assert!(!PermissionPipeline::tool_visible_with_overlay(
+        assert!(PermissionPipeline::tool_visible_with_overlay(
             &named_policy_allow,
             Some(&markdown_deny),
             "read"
@@ -2257,7 +2300,7 @@ mod tests {
                 std::path::Path::new("/workspace"),
             )
             .0,
-            PermissionEffect::Ask
+            PermissionEffect::Deny
         );
     }
 

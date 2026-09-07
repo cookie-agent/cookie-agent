@@ -1,7 +1,7 @@
 # Permissions
 
 Agent documents define an ordered permission map for `read`, `write`, `bash`,
-`delegate`, and `mcp`. Each action is either one bare effect or a resource-pattern map:
+`delegate`, `mcp`, `plugin`, `skill`, and `webfetch`. Each action is either one bare effect or a resource-pattern map:
 
 ```yaml
 permissions:
@@ -23,7 +23,8 @@ permissions:
 Effects are `allow`, `ask`, and `deny`. A bare effect is equivalent to mapping
 `"*"` to that effect. For matching patterns, more literal characters win, then
 fewer wildcards, then the later declaration on an exact tie. Unmatched resources
-ask.
+are denied by default. `ask` remains an explicitly writable effect and routes
+matching calls through the existing approval flow; it is never an implicit fallback.
 
 ## Resource labels
 
@@ -37,6 +38,10 @@ Tool providers publish a static permission name and an optional resource label:
 | `delegate_subagent` | `delegate` | Target `agent_type` |
 | `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | None (permission-name-only check) |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
+| `skill` | `skill` | Skill name |
+| `goal_get`, `goal_update` | `read`, `write` respectively | `goal:current` |
+| `read_tool_result` | `read` | Tool-result resource |
+| `webfetch` | `webfetch` | Initial URL as given, including its query string |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
 operations: `cat .env` is controlled by `bash`, not `read`, and a pattern such
@@ -65,12 +70,12 @@ part of the local storage threat model, not an `allow`/`ask`/`deny` decision.
 
 MCP checks are always scoped. A rule such as `"github_*": allow` covers every
 tool from that generated server prefix, while a more-specific deny can override
-one tool. An unmatched MCP tool asks.
+one tool. An unmatched MCP tool is denied.
 
 When a tool has no resource label, only the permission's bare effect or `"*"`
 rule applies. Specific patterns are inapplicable rather than matching or
 denying. If neither a bare effect nor `"*"` exists, the normal unmatched result
-is `ask`.
+is `deny`.
 
 `${workspace_dir}` is allowed only in `read` and `write` patterns and expands
 against the engine workspace root during evaluation. Ordinary absolute patterns
@@ -83,7 +88,7 @@ configured rules for their action, including in session overlays. Broad file
 allows such as `"*": allow` or
 `"${workspace_dir}/*": allow` apply without a protected-file override. Explicit
 `deny` and `ask` rules follow the same specificity and overlay precedence as any
-other file; unmatched resources ask.
+other file; unmatched resources are denied.
 
 The synthesized `default` agent still declares explicit dotenv read denies and
 `.env.example` allows in its permission map. These are ordinary policy rules,
@@ -99,11 +104,14 @@ resource-name exceptions.
 
 ## Tool availability and delegation
 
-Tools are opt-in. A permission action must have at least one effective `allow`
+Tools are opt-in. A permission action must have at least one `allow`
 or `ask` rule in the agent document or session overlay before that action's
-tools are visible. Omitting an action hides its tools. A bare deny, or `"*":
-deny` with no named non-deny exception, also hides them. Resource patterns still
-decide individual calls once tools are visible.
+tools are visible. Any resource pattern counts, not just `"*"`. Visibility does
+not resolve rule precedence: an overlay deny does not hide a tool if the agent
+still declares an Allow or Ask rule for that action. An action omitted from both
+layers, or with only Deny rules, has no advertised tools. The engine applies this
+gate when assembling model tool specs, across all providers. Resource patterns
+and overlay precedence still decide individual calls once tools are visible.
 
 For example, this agent exposes read, write/edit, and bash with granular write
 and command policies while leaving delegation and MCP tools hidden:
@@ -161,6 +169,28 @@ Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4
 Old tool calls and prepared-operation grants therefore fail closed. The
 `delegate` spelling above remains the permission action, not a tool alias.
 
+## Web fetching
+
+For the rule `webfetch *https://*.quantumcookie.xyz/* allow`, use this agent map:
+
+```yaml
+permissions:
+  webfetch:
+    "*https://*.quantumcookie.xyz/*": allow
+    "https://review.example.org/*": ask
+  read:
+    "tool_result:*": allow
+```
+
+`webfetch` checks permission exactly once against the initial URL, as given,
+including the query string. Redirect destinations are not checked; reqwest's
+default redirect policy allows up to 10 hops. Results include `final_url`.
+No SSRF protection, host/IP blocklist, DNS pinning, or extra userinfo restriction
+is applied. Limit rules accordingly, including access to local network services.
+Requests inherit the cookie-agent process's proxy environment and have a
+30-second overall request timeout. See the [tool reference](../reference/tools.md#webfetch)
+for text conversion, the fixed download cap, and result paging.
+
 ## Live permission modes
 
 Each session tree starts in `auto_approve` unless changed. The mode is runtime
@@ -207,7 +237,7 @@ The editor does not accept freeform YAML.
 
 An overlay rule is evaluated before matching rules from the frozen agent
 snapshot. If no overlay rule matches, evaluation falls back to the agent
-document and then the normal default (`ask`). This default affects evaluation
+document and then the normal default (`deny`). This default affects evaluation
 only; an action omitted from both layers has no visible tools. Changes affect
 subsequent visibility and permission evaluations only. They do not rewrite an
 active run's frozen agent/model

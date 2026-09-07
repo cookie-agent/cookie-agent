@@ -407,6 +407,12 @@ pub(crate) struct ToolFailure {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ToolCallFailureCode {
+    InvalidUrl,
+    PermissionDenied,
+    RedirectError,
+    Timeout,
+    TransportError,
+    UnsupportedContentType,
     ExecutionFailed,
     OperationChanged,
     PreparedCapabilityLost,
@@ -416,6 +422,12 @@ pub(crate) enum ToolCallFailureCode {
 impl ToolCallFailureCode {
     fn safe_code(self) -> SafeCode {
         safe_code(match self {
+            Self::InvalidUrl => "invalid_url",
+            Self::PermissionDenied => "permission_denied",
+            Self::RedirectError => "redirect_error",
+            Self::Timeout => "timeout",
+            Self::TransportError => "transport_error",
+            Self::UnsupportedContentType => "unsupported_content_type",
             Self::ExecutionFailed => "execution_failed",
             Self::OperationChanged => "operation_changed",
             Self::PreparedCapabilityLost => "prepared_capability_lost",

@@ -134,14 +134,10 @@ impl Engine {
         let prepared = prepared_call.prepared.as_ref().map_err(Clone::clone)?;
         match permission.effect {
             cookie_agent_protocol::PermissionEffect::Allow => Ok(()),
-            cookie_agent_protocol::PermissionEffect::Deny => Err(ToolFailure {
-                code: ToolCallFailureCode::ExecutionFailed,
-                message: denied_tool_failure(
-                    ApprovalDecisionSource::Policy,
-                    "permission denied",
-                    None,
-                ),
-            }),
+            cookie_agent_protocol::PermissionEffect::Deny => Err(ToolError::PermissionDenied(
+                denied_tool_failure(ApprovalDecisionSource::Policy, "permission denied", None),
+            )
+            .into()),
             cookie_agent_protocol::PermissionEffect::Ask => {
                 let allow_tree_grant = prepared.operation().resources().iter().all(|resource| {
                     resource.binding_lifetime
@@ -808,7 +804,6 @@ impl Engine {
         policy: &FrozenRunPolicy,
     ) -> Result<PublishedToolSet, EngineError> {
         let session_projection = self.inner.store.get(session)?;
-        let grants = self.skill_grants_for_session(session);
         let depth = session_depth(&session_projection.meta.origin);
         let delegate_enabled = !policy.delegate_targets(depth).is_empty();
         let mut names = HashSet::new();
@@ -830,12 +825,10 @@ impl Engine {
                 let enabled = (!delegation_tool || delegate_enabled)
                     && (!goal_tool || policy.goal_tools_enabled);
                 if enabled
-                    && PermissionPipeline::tool_visible_with_grants(
+                    && PermissionPipeline::tool_visible_with_overlay(
                         &policy.agent,
                         Some(&session_projection.permission_overlay),
-                        grants.as_ref(),
                         &tool.permission_name,
-                        self.inner.store.cwd(),
                     )
                 {
                     if !names.insert(tool.name.clone()) {
@@ -923,6 +916,7 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
             Some("delegate")
         }
         "skill" => Some("skill"),
+        "webfetch" => Some("webfetch"),
         _ => None,
     }
 }

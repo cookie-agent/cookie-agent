@@ -8,6 +8,27 @@ provider definitions are supported: **managed** catalog providers and
 
 ## How providers are resolved
 
+Model tool lists are filtered engine-side using the frozen agent permissions
+and session overlay. Each tool action needs at least one Allow or Ask rule for
+any resource pattern; omitted or Deny-only actions are hidden. Resource misses
+deny without prompting, while explicit `ask` still enters the approval flow.
+Provider configuration alone does not grant tool access.
+
+For web access, add an agent rule such as
+`webfetch *https://*.quantumcookie.xyz/* allow`:
+
+```yaml
+permissions:
+  webfetch:
+    "*https://*.quantumcookie.xyz/*": allow
+  read:
+    "tool_result:*": allow
+```
+
+`webfetch` uses cookie-agent's process environment for proxies, the default
+reqwest redirect policy, and one permission check on the initial URL including
+its query. It does not re-check redirect destinations or apply network blocklists.
+
 At startup the daemon refreshes the models.dev catalog
 (`https://models.dev/catalog.json`), with a validated ETag cache and a bundled
 integrity-checked bootstrap as fallback. Catalog providers are classified by

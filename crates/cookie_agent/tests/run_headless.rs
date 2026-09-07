@@ -753,7 +753,94 @@ async fn direct_skill_ask_routes_through_headless_auto_rejection() {
 }
 
 #[tokio::test]
-async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
+async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
+    let fixture = Fixture::new().await;
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("no web tools")));
+    let mut args = run_args("inspect tools");
+    args.output = Some(OutputMode::Json);
+    let first = fixture.run(args, "").await;
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let records = parse_json_lines(&first.stdout);
+    let session_id: SessionId =
+        serde_json::from_value(records.last().unwrap()["session_id"].clone()).unwrap();
+    let has_webfetch = |request: &str| {
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        body["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == "webfetch")
+        })
+    };
+    assert!(!has_webfetch(&fixture.server.requests()[0]));
+
+    for effect in [PermissionEffect::Allow, PermissionEffect::Ask] {
+        fixture
+            .engine
+            .set_session_permission(
+                session_id,
+                PermissionAction::Webfetch,
+                cookie_agent_protocol::WildcardPattern::new("http://127.0.0.1:1/allowed?key=given")
+                    .unwrap(),
+                effect,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        let before = fixture.server.requests().len();
+        let url = if effect == PermissionEffect::Allow {
+            "http://127.0.0.1:1/allowed?key=unmatched"
+        } else {
+            "http://127.0.0.1:1/allowed?key=given"
+        };
+        fixture.server.enqueue(MockResponse::Sse(tool_response(
+            "webfetch",
+            &serde_json::json!({"url":url}).to_string(),
+        )));
+        if effect == PermissionEffect::Allow {
+            fixture
+                .server
+                .enqueue(MockResponse::Sse(final_response("denied URL")));
+        }
+        let mut args = run_args("fetch URL");
+        args.resume_session = Some(session_id);
+        args.permission_mode = PermissionModeArg::Ask;
+        args.output = Some(OutputMode::Json);
+        let result = fixture.run(args, "").await;
+        let records = parse_json_lines(&result.stdout);
+        assert!(has_webfetch(&fixture.server.requests()[before]));
+        let escalation = records
+            .iter()
+            .any(|record| record["event"]["payload"]["type"] == "approval_escalated");
+        if effect == PermissionEffect::Allow {
+            assert_eq!(result.code, 0, "{}", result.stderr);
+            assert!(!escalation);
+            assert!(
+                result.stdout.contains("permission_denied"),
+                "{}",
+                result.stdout
+            );
+            assert!(
+                result.stdout.contains("permission denied"),
+                "{}",
+                result.stdout
+            );
+        } else {
+            assert_eq!(result.code, 3, "{}", result.stderr);
+            assert!(escalation);
+            assert!(records.iter().any(|record| {
+                let request = &record["event"]["payload"];
+                request["type"] == "approval_requested" && request.to_string().contains(url)
+            }));
+        }
+    }
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
     let fixture = Fixture::new().await;
     fixture.server.enqueue(MockResponse::Sse(tool_response(
         "bash",
@@ -826,8 +913,9 @@ async fn skill_grant_executes_hidden_bash_for_one_turn_only() {
         .enqueue(MockResponse::Sse(final_response("not granted")));
     let mut second = run_args("next user turn");
     second.resume_session = Some(session_id);
+    second.permission_mode = PermissionModeArg::Ask;
     let second = fixture.run(second, "").await;
-    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert_eq!(second.code, 3, "{}", second.stderr);
     assert!(!fixture.workspace.join("leaked-repo").exists());
     fixture.shutdown().await;
 }
@@ -1766,6 +1854,8 @@ permissions:
     release-check: allow
     fork-skill: allow
     grant-a: allow
+    grant-b: ask
+  bash: ask
   delegate:
     reviewer: ask
 ---

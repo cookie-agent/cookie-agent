@@ -284,6 +284,18 @@ pub enum ToolError {
     UnsupportedPlatform(String),
     #[error("prepared capability resource limit exceeded: {0}")]
     ResourceLimit(String),
+    #[error("invalid URL: {0}")]
+    InvalidUrl(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+    #[error("redirect error: {0}")]
+    RedirectError(String),
+    #[error("request timed out: {0}")]
+    Timeout(String),
+    #[error("transport error: {0}")]
+    TransportError(String),
+    #[error("unsupported content type: {0}")]
+    UnsupportedContentType(String),
 }
 
 impl ToolError {
@@ -321,6 +333,12 @@ impl ToolError {
                 ToolCallFailureCode::ExecutionFailed
             }
             Self::UnsupportedPlatform(_) => ToolCallFailureCode::UnsupportedPlatform,
+            Self::InvalidUrl(_) => ToolCallFailureCode::InvalidUrl,
+            Self::PermissionDenied(_) => ToolCallFailureCode::PermissionDenied,
+            Self::RedirectError(_) => ToolCallFailureCode::RedirectError,
+            Self::Timeout(_) => ToolCallFailureCode::Timeout,
+            Self::TransportError(_) => ToolCallFailureCode::TransportError,
+            Self::UnsupportedContentType(_) => ToolCallFailureCode::UnsupportedContentType,
         }
     }
 
@@ -332,6 +350,12 @@ impl ToolError {
             | Self::OperationChanged(message)
             | Self::UnsupportedSecurity(message)
             | Self::UnsupportedPlatform(message)
+            | Self::InvalidUrl(message)
+            | Self::PermissionDenied(message)
+            | Self::RedirectError(message)
+            | Self::Timeout(message)
+            | Self::TransportError(message)
+            | Self::UnsupportedContentType(message)
             | Self::ResourceLimit(message) => message.clone(),
         }
     }

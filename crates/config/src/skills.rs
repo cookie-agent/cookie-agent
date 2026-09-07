@@ -192,6 +192,8 @@ fn tool_action(name: &str) -> Option<PermissionAction> {
         Some(PermissionAction::Delegate)
     } else if name.eq_ignore_ascii_case("skill") {
         Some(PermissionAction::Skill)
+    } else if name.eq_ignore_ascii_case("webfetch") {
+        Some(PermissionAction::Webfetch)
     } else if name.eq_ignore_ascii_case("mcp") {
         Some(PermissionAction::Mcp)
     } else if name.eq_ignore_ascii_case("plugin") {
@@ -653,7 +655,7 @@ mod tests {
         );
 
         let parsed = parse_allowed_tools(
-            "read READ ReAd edit EDIT Write BASH(git commit -m *) McP(api(call *))",
+            "read READ ReAd edit EDIT Write BASH(git commit -m *) McP(api(call *)) Webfetch(https://example.org/*) WEBFETCH",
         )
         .expect("case variants and patterns with spaces/parens");
         assert_eq!(parsed[0].action, PermissionAction::Read);
@@ -666,6 +668,10 @@ mod tests {
         assert_eq!(parsed[6].pattern.as_str(), "git commit -m *");
         assert_eq!(parsed[7].action, PermissionAction::Mcp);
         assert_eq!(parsed[7].pattern.as_str(), "api(call *)");
+        assert_eq!(parsed[8].action, PermissionAction::Webfetch);
+        assert_eq!(parsed[8].pattern.as_str(), "https://example.org/*");
+        assert_eq!(parsed[9].action, PermissionAction::Webfetch);
+        assert_eq!(parsed[9].pattern.as_str(), "*");
 
         let passthrough =
             parse_allowed_tools("Write(src/**) Bash(git commit -m *)").expect("pass-through globs");

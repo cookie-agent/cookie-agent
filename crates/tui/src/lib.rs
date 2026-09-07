@@ -227,7 +227,13 @@ mod tests {
         } else {
             cookie_agent_config::SkillRegistry::default()
         };
-        let agent = test_agent_document(&agent_id);
+        let mut agent = test_agent_document(&agent_id);
+        if with_skills {
+            agent.frontmatter.permissions.insert(
+                PermissionAction::Skill,
+                cookie_agent_config::PermissionValue::Effect(PermissionEffect::Ask),
+            );
+        }
         let config = LoadedConfiguration {
             runtime: RuntimeConfig {
                 server: ServerConfig::default(),
@@ -559,7 +565,7 @@ mod tests {
         let mut app = App::new(client).await.expect("app");
         app.wait_for_skill_refresh_for_test().await;
         assert_eq!(app.skill_names_for_test(), ["fresh-skill"]);
-        assert_eq!(app.skill_visible_for_test("fresh-skill"), Some(false));
+        assert_eq!(app.skill_visible_for_test("fresh-skill"), Some(true));
         assert!(
             app.skill_palette_labels_for_test()
                 .iter()

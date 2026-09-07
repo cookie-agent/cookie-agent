@@ -4494,7 +4494,8 @@
         "delegate",
         "mcp",
         "plugin",
-        "skill"
+        "skill",
+        "webfetch"
       ]
     },
     "PermissionEffect": {
