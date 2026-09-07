@@ -210,74 +210,127 @@ impl PreparedExecutor for WebfetchArgs {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::{
+        io::{self, BufRead, BufReader, Read, Write},
+        net::{SocketAddr, TcpListener, TcpStream},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread::{self, JoinHandle},
+    };
 
     use cookie_agent_protocol::{PermissionEffect, RunId, SessionId, ToolCallId};
 
     use super::*;
 
-    fn server() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        listener.set_nonblocking(true).unwrap();
-        std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(connection) => connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
-                        continue;
+    struct HttpFixture {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        task: Option<JoinHandle<io::Result<()>>>,
+    }
+
+    impl HttpFixture {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let task_stop = Arc::clone(&stop);
+            let task = thread::spawn(move || {
+                while !task_stop.load(Ordering::Acquire) {
+                    let (stream, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error),
+                    };
+                    if task_stop.load(Ordering::Acquire) {
+                        break;
                     }
-                    Err(error) => panic!("fixture accept: {error}"),
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut request = [0; 4096];
-                let count = stream.read(&mut request).unwrap();
-                let request = String::from_utf8_lossy(&request[..count]);
-                let path = request.split_whitespace().nth(1).unwrap();
-                let (status, headers, body) = match path {
-                    "/first" => ("302 Found", "Location: /second\r\n", Vec::new()),
-                    "/second" => ("301 Moved Permanently", "Location: /html\r\n", Vec::new()),
-                    "/loop" => ("302 Found", "Location: /loop\r\n", Vec::new()),
-                    "/html" => (
-                        "200 OK",
-                        "Content-Type: text/html; charset=utf-8\r\n",
-                        b"<h1>Hello</h1><p>World <b>wide</b> web.</p>".to_vec(),
-                    ),
-                    "/cap" => (
-                        "200 OK",
-                        "Content-Type: text/plain\r\n",
-                        vec![b'x'; DOWNLOAD_CAP + 1],
-                    ),
-                    "/exact" => (
-                        "200 OK",
-                        "Content-Type: text/plain\r\n",
-                        vec![b'x'; DOWNLOAD_CAP],
-                    ),
-                    "/binary" => ("200 OK", "Content-Type: image/png\r\n", vec![0, 255]),
-                    "/lines" => (
-                        "200 OK",
-                        "Content-Type: text/plain\r\n",
-                        b"first\nsecond\r\nlast".to_vec(),
-                    ),
-                    _ => (
-                        "404 Not Found",
-                        "Content-Type: application/json\r\n",
-                        b"{\"error\":\"missing\"}".to_vec(),
-                    ),
-                };
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(&body);
+                    // Early disconnects are normal when webfetch rejects or caps a body.
+                    let _ = serve_connection(stream);
+                }
+                Ok(())
+            });
+            Self {
+                address,
+                stop,
+                task: Some(task),
             }
-        });
-        format!("http://{address}")
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}", self.address)
+        }
+    }
+
+    impl Drop for HttpFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            // Wake accept even if shutdown races with the loop's stop check.
+            let _ = TcpStream::connect(self.address);
+            if let Some(task) = self.task.take() {
+                task.join()
+                    .expect("join HTTP fixture")
+                    .expect("HTTP fixture accept");
+            }
+        }
+    }
+
+    fn serve_connection(mut stream: TcpStream) -> io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let mut reader = BufReader::new((&mut stream).take(16 * 1024));
+        let mut request = String::new();
+        reader.read_line(&mut request)?;
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header)? == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if header == "\r\n" {
+                break;
+            }
+        }
+        let Some(path) = request.split_whitespace().nth(1) else {
+            return Ok(());
+        };
+        let (status, headers, body) = match path {
+            "/first" => ("302 Found", "Location: /second\r\n", Vec::new()),
+            "/second" => ("301 Moved Permanently", "Location: /html\r\n", Vec::new()),
+            "/loop" => ("302 Found", "Location: /loop\r\n", Vec::new()),
+            "/html" => (
+                "200 OK",
+                "Content-Type: text/html; charset=utf-8\r\n",
+                b"<h1>Hello</h1><p>World <b>wide</b> web.</p>".to_vec(),
+            ),
+            "/cap" => (
+                "200 OK",
+                "Content-Type: text/plain\r\n",
+                vec![b'x'; DOWNLOAD_CAP + 1],
+            ),
+            "/exact" => (
+                "200 OK",
+                "Content-Type: text/plain\r\n",
+                vec![b'x'; DOWNLOAD_CAP],
+            ),
+            "/binary" => ("200 OK", "Content-Type: image/png\r\n", vec![0, 255]),
+            "/lines" => (
+                "200 OK",
+                "Content-Type: text/plain\r\n",
+                b"first\nsecond\r\nlast".to_vec(),
+            ),
+            _ => (
+                "404 Not Found",
+                "Content-Type: application/json\r\n",
+                b"{\"error\":\"missing\"}".to_vec(),
+            ),
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )?;
+        stream.write_all(&body)
     }
 
     async fn fetch(url: String, raw: bool) -> Result<PersistedToolResult, ToolError> {
@@ -306,6 +359,24 @@ mod tests {
     }
 
     #[test]
+    fn fixture_shutdown_wakes_blocking_accept() {
+        drop(HttpFixture::start());
+    }
+
+    #[tokio::test]
+    async fn fixture_keeps_serving_after_dropped_connections() {
+        let server = HttpFixture::start();
+        for request in ["", "GET /html HTTP/1.1\r\nHost: incomplete"] {
+            let mut stream = TcpStream::connect(server.address).unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+        }
+        let result = fetch(format!("{}/lines", server.url()), false)
+            .await
+            .unwrap();
+        assert_eq!(body(&result), "first\nsecond\r\nlast");
+    }
+
+    #[test]
     fn webfetch_keeps_standard_bounded_retention() {
         let spec = WebfetchTool
             .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
@@ -319,22 +390,24 @@ mod tests {
 
     #[tokio::test]
     async fn redirects_preserve_initial_url_and_record_final_url() {
-        let base = server();
+        let server = HttpFixture::start();
+        let base = server.url();
         let result = fetch(format!("{base}/first"), false).await.unwrap();
         assert_eq!(result.metadata["url"], format!("{base}/first"));
         assert_eq!(result.metadata["final_url"], format!("{base}/html"));
         assert_eq!(result.metadata["status_code"], 200);
         assert_eq!(result.metadata["content_type"], "text/html; charset=utf-8");
         assert_eq!(result.metadata["truncated"], false);
-        assert!(matches!(
-            fetch(format!("{base}/loop"), false).await,
-            Err(ToolError::RedirectError(_))
-        ));
+        let error = fetch(format!("{base}/loop"), false).await.unwrap_err();
+        assert!(matches!(error, ToolError::RedirectError(_)), "{error}");
+        let result = fetch(format!("{base}/html"), true).await.unwrap();
+        assert_eq!(result.metadata["status_code"], 200);
     }
 
     #[tokio::test]
     async fn html_raw_and_plaintext_and_http_errors() {
-        let base = server();
+        let server = HttpFixture::start();
+        let base = server.url();
         let rendered = fetch(format!("{base}/html"), false).await.unwrap();
         let text = body(&rendered);
         assert!(text.contains("Hello") && text.contains("World"));
@@ -356,7 +429,8 @@ mod tests {
 
     #[tokio::test]
     async fn download_cap_returns_prefix_and_only_truncates_over_cap() {
-        let base = server();
+        let server = HttpFixture::start();
+        let base = server.url();
         for (path, truncated) in [("cap", true), ("exact", false)] {
             let result = fetch(format!("{base}/{path}"), false).await.unwrap();
             assert_eq!(result.metadata["truncated"], truncated);
@@ -417,7 +491,8 @@ mod tests {
             AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
             PermissionRule, Sha256Digest, WildcardPattern,
         };
-        let url = format!("{}/html?token=given", server());
+        let server = HttpFixture::start();
+        let url = format!("{}/html?token=given", server.url());
         let prepared = prepare(serde_json::json!({"url":url})).await.unwrap();
         assert_eq!(prepared.operation().resources().len(), 1);
         assert_eq!(prepared.policy_labels(), [Some(url.clone())]);
