@@ -49,19 +49,9 @@ pub(crate) fn compile_executable(
         if let Some(project) = &behavior.options.project {
             headers.insert("openai-project".into(), project.clone());
         }
-        if model.adapter == OvenAdapterFamily::OpenaiResponses {
-            return crate::adapters::no_auth_responses::build(
-                executable_provider_id(provider_id, model.adapter, model.custom),
-                &executable_model_id(model),
-                endpoint,
-                headers,
-                capabilities,
-            );
-        }
     }
     let auth = executable_auth(model, credentials, behavior.options)?;
     let adapter = adapter_config(model, behavior.options, behavior.reasoning)?;
-    let concrete_capabilities = capabilities.clone();
     let compiled = ConcreteModel {
         provider_id: executable_provider_id(provider_id, model.adapter, model.custom).to_owned(),
         model_id: executable_model_id(model),
@@ -82,23 +72,24 @@ pub(crate) fn compile_executable(
         adapter,
     }
     .build()?;
-    if model.auth.method == "no-auth-v1" && model.adapter == OvenAdapterFamily::OpenaiChat {
-        return crate::adapters::reattribute(
-            compiled,
-            executable_provider_id(provider_id, model.adapter, model.custom),
-            &executable_model_id(model),
-            &model.adapter_id,
-            concrete_capabilities,
-        );
-    }
     Ok(compiled)
 }
 
-fn executable_provider_id(provider_id: &str, family: OvenAdapterFamily, custom: bool) -> &str {
+pub(crate) fn executable_provider_id(
+    provider_id: &str,
+    family: OvenAdapterFamily,
+    custom: bool,
+) -> &str {
     // Custom Responses providers keep their full authored ID as replay
     // identity so separate gateways never share native replay history with
     // each other or with the managed `openai` family identity.
-    if custom && family == OvenAdapterFamily::OpenaiResponses {
+    if custom
+        && matches!(
+            family,
+            OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses
+        )
+        || family == OvenAdapterFamily::OpenaiResponses && provider_id != "openai"
+    {
         return provider_id;
     }
     match family {
@@ -141,6 +132,11 @@ fn executable_auth(
         "bearer-api-key-v1" => {
             let value = credential(material, "api_key")?.to_owned();
             match model.adapter {
+                OvenAdapterFamily::OpenaiResponses
+                    if model.adapter_id.starts_with("oven.openai-compatible.") =>
+                {
+                    AuthConfig::Bearer { token: value }
+                }
                 OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
                     AuthConfig::Openai {
                         api_key: value,
@@ -226,22 +222,6 @@ fn adapter_config(
             },
             "options": anthropic_options(options, reasoning)
         }),
-        OvenAdapterFamily::OpenaiChat if model.auth.method == "no-auth-v1" => json!({
-            "adaptor": "openai-compatible",
-            "settings": {
-                "adapter_id": "cookie.openai-chat.no-auth.v1",
-                "system_message_role": "developer",
-                "max_tokens_field": if model.capabilities.reasoning { "max_completion_tokens" } else { "max_tokens" },
-                "stream_usage": false,
-                "structured_output": structured,
-                "reasoning_field": reasoning_field,
-                "query": {},
-                "request_id_headers": ["x-request-id"],
-                "strict_sse_content_type": true,
-                "routing_discriminator": Value::Null
-            },
-            "options": {}
-        }),
         OvenAdapterFamily::OpenaiChat => json!({
             "adaptor": "openai-chat",
             "settings": {
@@ -254,6 +234,23 @@ fn adapter_config(
             },
             "options": { "reasoning_effort": reasoning.and_then(reasoning_effort) }
         }),
+        OvenAdapterFamily::OpenaiResponses
+            if model.adapter_id.starts_with("oven.openai-compatible.")
+                || model.auth.method == "no-auth-v1" =>
+        {
+            json!({
+                "adaptor": "compatible-responses",
+                "adapter_id": model.adapter_id,
+                "settings": {
+                    "routing_discriminator": (model.auth.method == "api-key-header-v1")
+                        .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
+                },
+                "options": {
+                    "reasoning_mode": reasoning.and_then(reasoning_effort),
+                    "parallel_tool_calls": model.capabilities.parallel_tool_calls
+                }
+            })
+        }
         OvenAdapterFamily::OpenaiResponses => json!({
             "adaptor": "openai-responses",
             "settings": {
@@ -286,7 +283,7 @@ fn adapter_config(
         OvenAdapterFamily::GoogleGemini => json!({
             "adaptor": "google",
             "settings": {
-                "model_resource": format!("models/{}", model.id),
+                "model_resource": format!("models/{}", model.wire_model_id.as_str()),
                 "thinking": google_thinking(reasoning),
                 "strict_functions": model.capabilities.structured_output,
                 "mixed_client_and_provider_tools": false,
@@ -299,7 +296,7 @@ fn adapter_config(
             "settings": {
                 "project": setup(model, "project")?,
                 "location": setup(model, "location")?,
-                "resource": { "type": "publisher_model", "publisher": if model.family_id == "vertex-anthropic" { "anthropic" } else { "google" }, "model": model.id.as_str() },
+                "resource": { "type": "publisher_model", "publisher": if model.family_id == "vertex-anthropic" { "anthropic" } else { "google" }, "model": model.wire_model_id.as_str() },
                 "thinking": vertex_thinking(reasoning),
                 "provider_tools": false,
                 "mixed_client_and_provider_tools": false,
@@ -324,7 +321,7 @@ fn adapter_config(
             "adaptor": "azure-chat",
             "settings": {
                 "route": { "kind": "v1" },
-                "revision": Value::Null,
+                "revision": azure_revision(model),
                 "system_role": "developer",
                 "max_tokens_field": if model.capabilities.reasoning { "max_completion_tokens" } else { "max_tokens" },
                 "stream_usage": false,
@@ -338,15 +335,7 @@ fn adapter_config(
             "adaptor": "azure-responses",
             "settings": {
                 "route": { "kind": "v1" },
-                "revision": if model.capabilities.compaction == crate::CompactionCapability::Native {
-                    json!({
-                        "model": setup(model, "model")?,
-                        "version": setup(model, "version")?,
-                        "deployment_type": setup(model, "deployment_type")?
-                    })
-                } else {
-                    Value::Null
-                },
+                "revision": azure_revision(model),
                 "compaction": if model.capabilities.compaction == crate::CompactionCapability::Native {
                     json!({
                         "kind": "azure-responses-compact",
@@ -387,6 +376,19 @@ fn setup<'a>(model: &'a CompiledDynamicModel, name: &str) -> Result<&'a str, Mod
         .ok_or_else(|| wrong_auth("dynamic", "complete setup material"))
 }
 
+fn azure_revision(model: &CompiledDynamicModel) -> Value {
+    match (
+        setup(model, "model"),
+        setup(model, "version"),
+        setup(model, "deployment_type"),
+    ) {
+        (Ok(model), Ok(version), Ok(deployment_type)) => {
+            json!({ "model": model, "version": version, "deployment_type": deployment_type })
+        }
+        _ => Value::Null,
+    }
+}
+
 fn executable_endpoint(model: &CompiledDynamicModel) -> Result<String, ModelBuildError> {
     let endpoint = model
         .endpoint
@@ -405,19 +407,7 @@ fn executable_endpoint(model: &CompiledDynamicModel) -> Result<String, ModelBuil
 }
 
 fn executable_model_id(model: &CompiledDynamicModel) -> String {
-    if matches!(
-        model.adapter,
-        OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
-    ) {
-        model
-            .setup
-            .as_ref()
-            .and_then(|setup| setup.values.get("deployment"))
-            .cloned()
-            .unwrap_or_else(|| model.id.as_str().to_owned())
-    } else {
-        model.id.as_str().to_owned()
-    }
+    model.wire_model_id.as_str().to_owned()
 }
 
 fn reasoning_effort(reasoning: &ReasoningBehavior) -> Option<String> {
@@ -627,7 +617,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
 
 [models.test]
 display_name = "Test Responses"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "optional", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "optional", media = {} }
 "#,
         )
         .expect("custom Responses provider");

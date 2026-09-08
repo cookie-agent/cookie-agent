@@ -388,7 +388,7 @@ impl Engine {
                     model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
                 let mut compact_request = CompactionRequest::new(request);
                 let instructions = compaction_focus.clone();
-                compact_request = match input.binding.protocol_recipe.as_str() {
+                compact_request = match input.binding.descriptor.adapter_id.as_str() {
                     "oven.openai.responses" => compact_request
                         .with_openai_responses_compaction_options(
                             OpenAiResponsesCompactionOptions {

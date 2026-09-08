@@ -1662,7 +1662,6 @@ mod tests {
                 )]),
                 api_key: None,
                 auth_override: None,
-                shape: None,
                 cache: None,
                 headers: BTreeMap::new(),
                 model_overrides: BTreeMap::new(),

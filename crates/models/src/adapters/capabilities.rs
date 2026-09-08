@@ -25,13 +25,13 @@ pub fn validate_capability_ceiling(
     {
         return Err(AdapterCapabilityError::Unsupported);
     }
-    let replay_supported = matches!(
-        family,
-        OvenAdapterFamily::AnthropicCompatible
-            | OvenAdapterFamily::OpenaiResponses
-            | OvenAdapterFamily::AzureOpenaiResponses
-    );
-    if capabilities.native_replay != ReplayCapability::Unsupported && !replay_supported {
+    if capabilities.reasoning
+        && matches!(
+            family,
+            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+        )
+        && capabilities.native_replay == ReplayCapability::Unsupported
+    {
         return Err(AdapterCapabilityError::Unsupported);
     }
     let compaction_supported = matches!(

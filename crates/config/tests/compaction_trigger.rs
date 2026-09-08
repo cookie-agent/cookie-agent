@@ -69,7 +69,6 @@ temperature = true
 top_p = true
 seed = true
 native_replay = "unsupported"
-cancellation = "local_only"
 media = {{}}
 "#
     )
@@ -404,7 +403,7 @@ fn pricing_defaults_empty_and_rejects_invalid_rates() {
     let authored = temp.path().join("pricing-authored");
     write_config(
         &authored,
-        "[pricing.models.\"custom.test/model\"]\ninput_per_million_usd = \"10000.000000000001\"\noutput_per_million_usd = \"5.0\"\nreasoning_per_million_usd = \"7.5\"\ncache_read_per_million_usd = \"0.125\"\ncache_write_per_million_usd = \"0.000000000001\"\n",
+        "[providers.\"custom.test\"]\nsource = \"models_dev\"\n[providers.\"custom.test\".models.model.pricing]\ninput_per_million_usd = \"10000.000000000001\"\noutput_per_million_usd = \"5.0\"\nreasoning_per_million_usd = \"7.5\"\ncache_read_per_million_usd = \"0.125\"\ncache_write_per_million_usd = \"0.000000000001\"\n",
     );
     let loaded = load_from_roots(None, Some(&authored)).unwrap();
     let rates = loaded
@@ -430,9 +429,51 @@ fn pricing_defaults_empty_and_rejects_invalid_rates() {
     let invalid = temp.path().join("pricing-invalid");
     write_config(
         &invalid,
-        "[pricing.models.\"custom.test/model\"]\ninput_per_million_usd = \"-1.0\"\n",
+        "[providers.\"custom.test\"]\nsource = \"models_dev\"\n[providers.\"custom.test\".models.model.pricing]\ninput_per_million_usd = \"-1.0\"\n",
     );
     assert!(load_from_roots(None, Some(&invalid)).is_err());
+}
+
+#[test]
+fn model_local_pricing_obeys_whole_provider_layer_replacement_and_empty_rates() {
+    let temporary = TempDir::new().unwrap();
+    let user = temporary.path().join("user");
+    let workspace = temporary.path().join("workspace");
+    write_config(
+        &user,
+        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.a.pricing]\ninput_per_million_usd = \"1.25\"\noutput_per_million_usd = \"5\"\n",
+    );
+    write_config(
+        &workspace,
+        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\nenabled = false\npricing = {}\n",
+    );
+    let loaded = load_from_roots(Some(&user), Some(&workspace)).unwrap();
+    assert!(
+        !loaded
+            .runtime
+            .pricing
+            .models
+            .contains_key(&"openai/a".parse().unwrap())
+    );
+    let rates = loaded
+        .runtime
+        .pricing
+        .models
+        .get(&"openai/b".parse().unwrap())
+        .unwrap();
+    assert!(rates.input_per_million_usd.is_none() && rates.output_per_million_usd.is_none());
+    for invalid in [
+        "[pricing]\nmodels = {}",
+        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\nenabled = false\npricing = { input_per_million_usd = \"-1\" }",
+        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\npricing = { input_per_million_usd = 1.0 }",
+        "[providers.openai]\nsource = \"models_dev\"\n[providers.openai.models.b]\npricing = { unknown = \"1\" }",
+    ] {
+        write_config(&workspace, invalid);
+        assert!(
+            load_from_roots(None, Some(&workspace)).is_err(),
+            "{invalid}"
+        );
+    }
 }
 
 #[test]

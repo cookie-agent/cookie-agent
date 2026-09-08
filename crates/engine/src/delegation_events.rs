@@ -667,7 +667,7 @@ fn cache_strategies_match_bindings(
                 return true;
             };
             let Some(family) = cookie_agent_models::adapters::wire_adapter_for_protocol(
-                binding.protocol_recipe.as_str(),
+                binding.descriptor.adapter_id.as_str(),
             ) else {
                 return false;
             };

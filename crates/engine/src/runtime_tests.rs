@@ -2798,9 +2798,10 @@ fn managed_openai_compaction_fixture(endpoint: &str) -> (Fixture, RunSelection) 
 [providers.openai]
 source = "models_dev"
 api_key = "test-secret"
-shape = "responses"
 
-[providers.openai.model_overrides."gpt-test"]
+[providers.openai.models."gpt-test"]
+model_id = "wire-native"
+adaptor_options = { request_endpoint = "responses" }
 compaction = "openai-responses-compact"
 "#,
     );
@@ -2821,7 +2822,7 @@ compaction = "openai-responses-compact"
         family: None,
         attachment: false,
         reasoning: false,
-        tool_call: false,
+        tool_call: true,
         structured_output: Some(false),
         temperature: Some(true),
         open_weights: false,
@@ -3510,7 +3511,7 @@ __MODEL_CAPABILITIES__
         capabilities_override.map_or_else(
             || {
                 format!(
-                    "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = {context_tokens}\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {{}}"
+                    "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = {context_tokens}\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = {{}}"
                 )
             },
             str::to_owned,
@@ -3899,7 +3900,7 @@ fn explicit_anthropic_one_hour_requires_authored_beta() {
         None,
         "anthropic-compatible",
         None,
-        Some("options = { beta = [\"extended-cache-ttl-2025-04-11\"] }"),
+        Some("adaptor_options = { beta = [\"extended-cache-ttl-2025-04-11\"] }"),
     );
     assert!(try_frozen_root_policy(&with_beta, &selection).is_ok());
 }
@@ -4685,12 +4686,12 @@ auth = { method = "no-auth-v1", values = {} }
 
 [providers."custom.test".models."z-model"]
 display_name = "Z Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", media = {} }
 
 [providers."custom.test".models."a-model"]
 display_name = "A Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", cancellation = "local_only", media = {} }
-variants = { zeta = { operation = "add" }, alpha = { operation = "add" }, precise = { operation = "add", defaults = { temperature = 0.25 } } }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "unsupported", media = {} }
+variants = { zeta = { }, alpha = { }, precise = { generation_options = { temperature = 0.25 } } }
 default_variant = "precise"
 "#;
     let mut config_text = base_config.replace("http://127.0.0.1:9/v1", endpoint);
@@ -13074,7 +13075,6 @@ enum AnthropicReplayResponse {
     Status400,
     Text(&'static str),
     TextWithInputTokens(&'static str, u64),
-    RejectUnsignedThinkingElseText(&'static str),
 }
 
 fn anthropic_request_has_unsigned_thinking(request: &str) -> bool {
@@ -13107,11 +13107,7 @@ async fn anthropic_replay_server(
             let (mut socket, _) = listener.accept().await.expect("Anthropic replay accept");
             let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
                 .expect("UTF-8 Anthropic replay request");
-            let reject = matches!(response, AnthropicReplayResponse::Status400)
-                || matches!(
-                    response,
-                    AnthropicReplayResponse::RejectUnsignedThinkingElseText(_)
-                ) && anthropic_request_has_unsigned_thinking(&request);
+            let reject = matches!(response, AnthropicReplayResponse::Status400);
             requests.push(request);
             if reject {
                 let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"invalid signature"}}"#;
@@ -13128,10 +13124,7 @@ async fn anthropic_replay_server(
                     AnthropicReplayResponse::Thinking(signature) => {
                         anthropic_thinking_body(signature)
                     }
-                    AnthropicReplayResponse::Text(text)
-                    | AnthropicReplayResponse::RejectUnsignedThinkingElseText(text) => {
-                        anthropic_usage_body(text, 1, 0, 0)
-                    }
+                    AnthropicReplayResponse::Text(text) => anthropic_usage_body(text, 1, 0, 0),
                     AnthropicReplayResponse::TextWithInputTokens(text, input_tokens) => {
                         anthropic_usage_body(text, input_tokens, 0, 0)
                     }
@@ -13145,7 +13138,7 @@ async fn anthropic_replay_server(
     (format!("http://{address}/v1"), task)
 }
 
-const ANTHROPIC_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = true\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"required\"\ncancellation = \"local_only\"\nmedia = {}";
+const ANTHROPIC_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = true\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"required\"\nmedia = {}";
 
 async fn run_replay_test_turn(
     fixture: &Fixture,
@@ -13167,6 +13160,88 @@ async fn run_replay_test_turn(
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session_id).await;
+}
+
+#[tokio::test]
+async fn no_auth_openai_chat_automatic_replay_persists_and_replays_after_restart() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let captured = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests
+                .push(String::from_utf8(read_scripted_http_request(&mut socket).await).unwrap());
+            write_scripted_sse(&mut socket, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").await;
+        }
+        requests
+    });
+    let primary = "---\ndescription: No-auth replay test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest replay.\n";
+    let capabilities = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nmedia = {}";
+    let (mut fixture, selection) = custom_fixture_with_capabilities_and_variants(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4096,
+        None,
+        "openai-chat",
+        Some(capabilities),
+        Some("model_id = \"wire-noauth\""),
+    );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    run_replay_test_turn(&fixture, session.session_id, &selection, "first").await;
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    run_replay_test_turn(&fixture, session.session_id, &selection, "second").await;
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let turns = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelTurnCommitted { turn, .. } => Some(turn),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(turns.len(), 2);
+    for turn in turns {
+        let artifact = turn.native_replay.as_ref().unwrap();
+        assert_eq!(artifact.adapter_id().as_str(), "oven.openai.chat");
+        assert_eq!(
+            artifact.payload()["format"],
+            "oven.openai.chat.assistant.v1"
+        );
+        assert_eq!(
+            turn.provider_metadata["cookie_agent.replay_source_wire_model_id"],
+            "wire-noauth"
+        );
+    }
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ModelReplayEvaluated { ordered_decisions, .. } if ordered_decisions.iter().any(|decision| matches!(decision.disposition, cookie_agent_protocol::ReplayDisposition::Replayed)))));
+    let requests = tokio::time::timeout(std::time::Duration::from_secs(5), captured)
+        .await
+        .unwrap()
+        .unwrap();
+    for request in &requests {
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert_eq!(request_body(request)["model"], "wire-noauth");
+    }
+    assert!(
+        request_body(&requests[1])["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["role"] == "assistant" && message["content"] == "answer")
+    );
+    fixture.engine.shutdown().await;
 }
 
 async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixture, RunSelection) {
@@ -13222,13 +13297,6 @@ async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixture, RunSelec
     (fixture, selection)
 }
 
-fn assert_reconstructed_without_reasoning(request: &str) {
-    assert_eq!(
-        request_body(request)["messages"][1]["content"],
-        serde_json::json!([{"type":"text","text":"answer"}])
-    );
-}
-
 fn rejected_unsigned_replay_recovery_count(events: &[cookie_agent_protocol::StoredEvent]) -> usize {
     let marked_attempts = events
         .iter()
@@ -13260,11 +13328,10 @@ fn rejected_unsigned_replay_recovery_count(events: &[cookie_agent_protocol::Stor
 }
 
 #[tokio::test]
-async fn rejected_unsigned_replay_stays_degraded_after_restart_and_same_model_variant_switch() {
+async fn rejected_unsigned_replay_is_not_silently_removed_after_restart_or_variant_switch() {
     let (endpoint, captured) = anthropic_replay_server(vec![
         AnthropicReplayResponse::Thinking(None),
         AnthropicReplayResponse::Status400,
-        AnthropicReplayResponse::Text("recovered"),
         AnthropicReplayResponse::Text("later run"),
     ])
     .await;
@@ -13281,7 +13348,7 @@ async fn rejected_unsigned_replay_stays_degraded_after_restart_and_same_model_va
         None,
         "anthropic-compatible",
         Some(ANTHROPIC_REPLAY_CAPABILITIES),
-        Some("variants = { recovery = { operation = \"add\" } }"),
+        Some("variants = { recovery = { } }"),
     );
     let session = fixture.engine.create_session(selection.clone()).unwrap();
     for id in ["unsigned-seed", "unsigned-recover"] {
@@ -13304,8 +13371,8 @@ async fn rejected_unsigned_replay_stays_degraded_after_restart_and_same_model_va
         request_body(&requests[1])["messages"][1]["content"][0],
         serde_json::json!({"type":"thinking","thinking":"reason","signature":""})
     );
-    assert_reconstructed_without_reasoning(&requests[2]);
-    assert_reconstructed_without_reasoning(&requests[3]);
+    assert_eq!(requests.len(), 3);
+    assert!(anthropic_request_has_unsigned_thinking(&requests[2]));
     let events = fixture
         .engine
         .inner
@@ -13314,7 +13381,7 @@ async fn rejected_unsigned_replay_stays_degraded_after_restart_and_same_model_va
         .unwrap()
         .log
         .events();
-    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 1);
+    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 0);
     fixture.engine.shutdown().await;
 }
 
@@ -13362,10 +13429,9 @@ async fn signed_anthropic_replay_never_triggers_degradation() {
 }
 
 #[tokio::test]
-async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_400() {
+async fn unsigned_replay_rejection_uses_normal_fallback_without_reasoning_removal() {
     let (endpoint, captured) = anthropic_replay_server(vec![
         AnthropicReplayResponse::Thinking(None),
-        AnthropicReplayResponse::Status400,
         AnthropicReplayResponse::Status400,
         AnthropicReplayResponse::Text("variant fallback"),
     ])
@@ -13376,9 +13442,9 @@ async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_40
     run_replay_test_turn(&fixture, session.session_id, &selection, "variant-reject").await;
 
     let requests = captured.await.expect("variant replay requests");
-    assert_eq!(requests.len(), 4);
-    assert_reconstructed_without_reasoning(&requests[2]);
-    assert_reconstructed_without_reasoning(&requests[3]);
+    assert_eq!(requests.len(), 3);
+    assert!(anthropic_request_has_unsigned_thinking(&requests[1]));
+    assert!(anthropic_request_has_unsigned_thinking(&requests[2]));
     let events = fixture
         .engine
         .inner
@@ -13387,11 +13453,11 @@ async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_40
         .unwrap()
         .log
         .events();
-    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 1);
+    assert_eq!(rejected_unsigned_replay_recovery_count(&events), 0);
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ModelFallback {
-            attempts_on_from: 2,
+            attempts_on_from: 1,
             ..
         }
     )));
@@ -13399,15 +13465,14 @@ async fn unsigned_replay_recovers_once_then_uses_normal_fallback_after_second_40
 }
 
 #[tokio::test]
-async fn compaction_prefix_honors_replay_rejection_metadata_after_recent_tail_boundary() {
+async fn compaction_prefix_preserves_eligible_reasoning_before_recent_tail_boundary() {
     const OLD_PREFIX: &str = "UNSIGNED_REPLAY_OLD_PREFIX";
     const RECENT_TAIL: &str = "UNSIGNED_REPLAY_RECENT_TAIL";
 
     let (endpoint, captured) = anthropic_replay_server(vec![
         AnthropicReplayResponse::Thinking(None),
-        AnthropicReplayResponse::Status400,
         AnthropicReplayResponse::TextWithInputTokens("recovered answer", 5_000),
-        AnthropicReplayResponse::RejectUnsignedThinkingElseText("checkpoint summary"),
+        AnthropicReplayResponse::Text("checkpoint summary"),
     ])
     .await;
     let primary = "---\ndescription: Replay compaction regression\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest replay compaction.\n";
@@ -13463,28 +13528,25 @@ async fn compaction_prefix_honors_replay_rejection_metadata_after_recent_tail_bo
             _ => None,
         })
         .expect("recent-tail user event");
-    let rejected_seq = before
+    let replayed_seq = before
         .iter()
-        .find_map(|event| {
-            match &event.payload {
-                EventPayload::ModelReplayEvaluated {
-                    ordered_decisions, ..
-                } if ordered_decisions.iter().any(|decision| matches!(
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelReplayEvaluated {
+                ordered_decisions, ..
+            } if ordered_decisions.iter().any(|decision| {
+                matches!(
                     &decision.disposition,
-                    cookie_agent_protocol::ReplayDisposition::DiscardedInvalidPayload { reason }
-                        if reason.as_str().starts_with("rejected unsigned Anthropic replay artifact ")
-                )) => Some(event.seq),
-                _ => None,
+                    cookie_agent_protocol::ReplayDisposition::Replayed
+                )
+            }) =>
+            {
+                Some(event.seq)
             }
+            _ => None,
         })
-        .expect("unsigned replay rejection metadata");
-    let abandoned_seq = before
-        .iter()
-        .find_map(|event| {
-            matches!(event.payload, EventPayload::AttemptAbandoned { .. }).then_some(event.seq)
-        })
-        .expect("abandoned rejected attempt");
-    assert!(recent_seq < rejected_seq && rejected_seq < abandoned_seq);
+        .expect("native replay metadata");
+    assert!(recent_seq < replayed_seq);
+    assert_eq!(rejected_unsigned_replay_recovery_count(&before), 0);
     assert!(
         crate::model_history::compaction_tail_candidates(&before).contains(&recent_seq),
         "subsequent user must be an eligible recent-tail boundary"
@@ -13523,7 +13585,7 @@ async fn compaction_prefix_honors_replay_rejection_metadata_after_recent_tail_bo
     );
 
     let requests = captured.await.expect("unsigned replay compaction requests");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 3);
     let rejected_artifact = request_body(&requests[1])["messages"][1]["content"][0].clone();
     assert_eq!(
         rejected_artifact,
@@ -13532,18 +13594,18 @@ async fn compaction_prefix_honors_replay_rejection_metadata_after_recent_tail_bo
     let summary_request = requests.last().expect("internal summary request");
     let summary_body = request_body(summary_request);
     assert!(
-        !summary_body["messages"]
+        summary_body["messages"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(|message| message["content"].as_array())
             .flatten()
             .any(|block| block == &rejected_artifact),
-        "internal summary request replayed the known rejected artifact"
+        "internal summary request lost eligible native reasoning"
     );
     assert!(summary_request.contains(OLD_PREFIX));
     assert!(!summary_request.contains(RECENT_TAIL));
-    assert!(!anthropic_request_has_unsigned_thinking(summary_request));
+    assert!(anthropic_request_has_unsigned_thinking(summary_request));
     fixture.engine.shutdown().await;
 }
 
@@ -13557,8 +13619,8 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
         0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
     let primary = "---\ndescription: Media read test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRead media.\n";
-    let image_capabilities = "input = [\"text\", \"image\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 20971520, max_count = 1 } }";
-    let text_capabilities = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\ncancellation = \"local_only\"\nmedia = {}";
+    let image_capabilities = "input = [\"text\", \"image\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 20971520, max_count = 1 } }";
+    let text_capabilities = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = {}";
 
     for (capabilities, capable) in [(image_capabilities, true), (text_capabilities, false)] {
         let bodies = vec![

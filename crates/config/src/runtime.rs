@@ -299,7 +299,7 @@ pub struct RuntimeConfig {
     pub session_title: SessionTitleConfig,
     #[serde(default)]
     pub delegation: DelegationConfig,
-    #[serde(default)]
+    #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -318,7 +318,6 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
-    pub(crate) pricing: Option<PricingConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -368,15 +367,7 @@ pub struct PricingConfig {
     pub models: BTreeMap<ModelKey, ModelPricing>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelPricing {
-    pub input_per_million_usd: Option<PicoUsdPerMillion>,
-    pub output_per_million_usd: Option<PicoUsdPerMillion>,
-    pub reasoning_per_million_usd: Option<PicoUsdPerMillion>,
-    pub cache_read_per_million_usd: Option<PicoUsdPerMillion>,
-    pub cache_write_per_million_usd: Option<PicoUsdPerMillion>,
-}
+pub use cookie_agent_models::authoring::ModelPricing;
 
 impl Drop for RawRuntimeLayer {
     fn drop(&mut self) {
@@ -665,9 +656,6 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     }
     if let Some(value) = &layer.delegation {
         runtime.delegation = value.clone();
-    }
-    if let Some(value) = &layer.pricing {
-        runtime.pricing = value.clone();
     }
     if let Some(values) = &layer.headers {
         for (name, value) in values {

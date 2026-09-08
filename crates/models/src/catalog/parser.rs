@@ -379,7 +379,6 @@ fn parse_model(
         "description",
         "attachment",
         "reasoning",
-        "tool_call",
         "open_weights",
         "release_date",
         "last_updated",
@@ -401,7 +400,7 @@ fn parse_model(
     let family = optional_text(&fields, "family")?;
     let attachment = required_bool(&fields, "attachment")?;
     let reasoning = required_bool(&fields, "reasoning")?;
-    let tool_call = required_bool(&fields, "tool_call")?;
+    let tool_call = optional_bool(&fields, "tool_call")?.unwrap_or(true);
     let structured_output = optional_bool(&fields, "structured_output")?;
     let temperature = optional_bool(&fields, "temperature")?;
     let open_weights = required_bool(&fields, "open_weights")?;

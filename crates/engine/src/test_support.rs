@@ -37,8 +37,8 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "test-secret" } }
 
 [models.test]
 display_name = "Test model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "optional", cancellation = "local_only", media = {} }
-variants = { fast = { operation = "add", defaults = { temperature = 0.1 } } }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = true, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = true, native_replay = "optional", media = {} }
+variants = { fast = { generation_options = { temperature = 0.1 } } }
 "#,
     )
     .expect("test provider");

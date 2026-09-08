@@ -94,7 +94,6 @@ mod tests {
                         "top_p": false,
                         "seed": false,
                         "native_replay": "unsupported",
-                        "cancellation": "local_only",
                         "media": {}
                     }
                 }

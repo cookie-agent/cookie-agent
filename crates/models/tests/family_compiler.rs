@@ -4,8 +4,8 @@ use cookie_agent_identity::{
     AuthFieldName, AuthMethodId, ProviderId, ProviderModelId, SetupFieldId,
 };
 use cookie_agent_models::{
-    AuthOverride, BoundedSetupString, HeaderName, ManagedModelShape, ModelsDevProvider,
-    ProviderDefinition, SafeSetupValue, SafeStaticHeaderValue, SecretString,
+    AuthOverride, BoundedSetupString, HeaderName, ModelsDevProvider, ProviderDefinition,
+    SafeSetupValue, SafeStaticHeaderValue, SecretString,
     adapters::OvenAdapterFamily,
     catalog::{
         CatalogInterleaved, CatalogLimits, CatalogModalities, CatalogModelEntry,
@@ -63,6 +63,173 @@ fn record(npm: &str, api: Option<&str>) -> CatalogProviderRecord {
                 quarantine: None,
             },
         )]),
+    }
+}
+
+#[test]
+fn catalog_reasoning_is_validated_after_variant_disabling_and_replacement() {
+    let mut catalog = record("@ai-sdk/openai", None);
+    catalog
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![CatalogReasoningOption::Toggle];
+    for endpoint in ["completions", "responses"] {
+        for variants in [
+            "variants = { on = { enabled = false }, off = { enabled = false } }",
+            "variants = { on = { reasoning = { type = \"effort\", value = \"high\" } }, off = { reasoning = { type = \"effort\", value = \"low\" } } }",
+        ] {
+            let authored: ModelsDevProvider = toml::from_str(&format!("[models.\"model/1\"]\nadaptor_options = {{ request_endpoint = \"{endpoint}\" }}\n{variants}")).unwrap();
+            let compiled = DynamicCompiler::default()
+                .compile_managed("test", &catalog, Some(&authored))
+                .unwrap();
+            assert_eq!(compiled.models.len(), 1);
+            let model = compiled.models.values().next().unwrap();
+            if variants.contains("enabled = false") {
+                assert!(model.variants.is_empty());
+            } else {
+                assert_eq!(model.variants.len(), 2);
+                assert!(model.variants.values().all(|variant| matches!(
+                    variant.reasoning,
+                    Some(cookie_agent_models::ReasoningBehavior::Effort { .. })
+                )));
+            }
+        }
+        let authored: ModelsDevProvider = toml::from_str(&format!("[models.\"model/1\"]\nadaptor_options = {{ request_endpoint = \"{endpoint}\" }}\nvariants = {{ off = {{ enabled = false }} }}")).unwrap();
+        assert!(matches!(
+            DynamicCompiler::default().compile_managed("test", &catalog, Some(&authored)),
+            Err(DynamicCompileError::Variant)
+        ));
+    }
+    catalog
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![CatalogReasoningOption::Effort {
+        values: vec![Some("invalid-effort".into())],
+    }];
+    let authored: ModelsDevProvider =
+        toml::from_str("[models.\"model/1\"]\nvariants = { invalid-effort = { enabled = false } }")
+            .unwrap();
+    assert!(matches!(
+        DynamicCompiler::default().compile_managed("test", &catalog, Some(&authored)),
+        Err(DynamicCompileError::Variant)
+    ));
+}
+
+#[test]
+fn managed_models_and_variants_are_sparse_and_preserve_catalog_order() {
+    let mut catalog = record("@ai-sdk/anthropic", None);
+    catalog
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![CatalogReasoningOption::Effort {
+        values: vec![Some("high".into()), Some("low".into())],
+    }];
+    let mut other = catalog.models.values().next().unwrap().clone();
+    other.id = ProviderModelId::new("other").unwrap();
+    other.record.as_mut().unwrap().id = other.id.clone();
+    catalog.models.insert(other.id.clone(), other);
+    let authored: ModelsDevProvider = toml::from_str(
+        r#"
+[models."model/1"]
+generation_options = { temperature = 0.5, stop = ["END"] }
+adaptor_options = { beta = ["base"] }
+default_variant = "high"
+[models."model/1".variants.high]
+generation_options = { max_output_tokens = 100, stop = [] }
+adaptor_options = { beta = [] }
+[models."model/1".variants.new]
+reasoning = { type = "toggle", enabled = false }
+"#,
+    )
+    .unwrap();
+    let compiled = DynamicCompiler::default()
+        .compile_managed("test", &catalog, Some(&authored))
+        .unwrap();
+    assert_eq!(compiled.models.len(), 2);
+    let model = &compiled.models[&ProviderModelId::new("model/1").unwrap()];
+    assert_eq!(
+        model
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["high", "low", "new"]
+    );
+    let high = &model.variants[&cookie_agent_identity::VariantId::new("high").unwrap()];
+    assert_eq!(high.defaults.temperature, model.defaults.temperature);
+    assert_eq!(high.defaults.max_output_tokens, Some(100));
+    assert!(high.defaults.stop.is_empty() && high.options.beta.is_empty());
+    assert!(matches!(
+        high.reasoning,
+        Some(cookie_agent_models::ReasoningBehavior::Effort { .. })
+    ));
+    assert_eq!(model.default_variant.as_ref().unwrap().as_str(), "high");
+    for variants in ["", "variants = {}"] {
+        let authored: ModelsDevProvider =
+            toml::from_str(&format!("[models.\"model/1\"]\n{variants}")).unwrap();
+        let compiled = DynamicCompiler::default()
+            .compile_managed("test", &catalog, Some(&authored))
+            .unwrap();
+        assert_eq!(
+            compiled.models[&ProviderModelId::new("model/1").unwrap()]
+                .variants
+                .len(),
+            2
+        );
+    }
+    let authored: ModelsDevProvider =
+        toml::from_str("[models.\"model/1\"]\nenabled = false").unwrap();
+    assert_eq!(
+        DynamicCompiler::default()
+            .compile_managed("test", &catalog, Some(&authored))
+            .unwrap()
+            .models
+            .len(),
+        1
+    );
+    let authored: ModelsDevProvider = toml::from_str("[models.unknown]\nenabled = false").unwrap();
+    assert_eq!(
+        DynamicCompiler::default()
+            .compile_managed("test", &catalog, Some(&authored))
+            .unwrap_err(),
+        DynamicCompileError::UnknownModelOverride
+    );
+}
+
+#[test]
+fn absent_catalog_structured_output_defaults_true_and_explicit_false_survives() {
+    for declaration in [None, Some(false), Some(true)] {
+        let mut catalog = record("@ai-sdk/anthropic", None);
+        catalog
+            .models
+            .values_mut()
+            .next()
+            .unwrap()
+            .record
+            .as_mut()
+            .unwrap()
+            .structured_output = declaration;
+        let compiled = DynamicCompiler::default()
+            .compile_managed("test", &catalog, None)
+            .unwrap();
+        let capabilities = &compiled.models.values().next().unwrap().capabilities;
+        assert_eq!(capabilities.structured_output, declaration.unwrap_or(true));
+        assert!(capabilities.parallel_tool_calls);
     }
 }
 
@@ -255,22 +422,19 @@ fn non_video_model_behavior_fingerprint_is_stable() {
             .unwrap()
             .behavior_fingerprint
             .as_str(),
-        "3a320f167eb773e1b67c5c8177623733b955e2971de564faf0122edee29842ae"
+        "14ade02acfbe198263da50c13cc085d6301ea48335b4856ce43940a25af6f9fb"
     );
 }
 
 #[test]
-fn authored_shape_selects_chat() {
-    let authored = ModelsDevProvider {
-        base_url: None,
-        setup: BTreeMap::new(),
-        api_key: None,
-        auth_override: None,
-        shape: Some(ManagedModelShape::Chat),
-        cache: None,
-        headers: BTreeMap::new(),
-        model_overrides: BTreeMap::new(),
-    };
+fn authored_endpoint_selects_chat() {
+    let authored: ModelsDevProvider = toml::from_str(
+        r#"
+[models."model/1"]
+adaptor_options = { request_endpoint = "completions" }
+"#,
+    )
+    .unwrap();
     let compiled = DynamicCompiler::family_registry()
         .compile_managed(
             "sha256:test",
@@ -291,7 +455,6 @@ fn managed_provider_cache_must_match_resolved_adaptor() {
         setup: BTreeMap::new(),
         api_key: None,
         auth_override: None,
-        shape: None,
         cache: Some(
             serde_json::from_value(serde_json::json!({"system":"1h"})).expect("provider cache"),
         ),
@@ -315,7 +478,6 @@ fn managed_cache_validation_precedes_model_availability_and_resolution_skips() {
         setup: BTreeMap::new(),
         api_key: None,
         auth_override: None,
-        shape: None,
         cache: Some(
             serde_json::from_value(serde_json::json!({"mode":"implicit"}))
                 .expect("provider cache envelope"),
@@ -363,9 +525,8 @@ fn managed_responses_compaction_setting_derives_native_capability() {
     provider.id = ProviderId::new("openai").unwrap();
     let model_id = provider.models.keys().next().unwrap().clone();
     let authored: ModelsDevProvider = toml::from_str(&format!(
-        r#"shape = "responses"
-
-[model_overrides."{model_id}"]
+        r#"[models."{model_id}"]
+adaptor_options = {{ request_endpoint = "responses" }}
 compaction = "openai-responses-compact"
 "#
     ))
@@ -388,7 +549,7 @@ compaction = "openai-responses-compact"
 #[test]
 fn managed_compaction_setting_rejects_wrong_recipe_and_legacy_value() {
     let legacy = toml::from_str::<ModelsDevProvider>(
-        r#"[model_overrides."model/1"]
+        r#"[models."model/1"]
 compaction = "v1"
 "#,
     )
@@ -396,9 +557,8 @@ compaction = "v1"
     assert!(legacy.to_string().contains("adapter-specific"));
 
     let authored: ModelsDevProvider = toml::from_str(
-        r#"shape = "chat"
-
-[model_overrides."model/1"]
+        r#"[models."model/1"]
+adaptor_options = { request_endpoint = "completions" }
 compaction = "openai-responses-compact"
 "#,
     )
@@ -477,7 +637,6 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         setup: setup(&[("resource_name", "example")]),
         api_key: None,
         auth_override: Some(auth("azure-api-key-v1", &[("api_key", "secret")])),
-        shape: None,
         cache: None,
         headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
@@ -510,7 +669,6 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         ]),
         api_key: None,
         auth_override: Some(auth("oauth-access-token-v1", &[("access_token", "token")])),
-        shape: None,
         cache: None,
         headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
@@ -544,7 +702,6 @@ fn mixed_family_nested_models_map_auth_and_route_adapters() {
         setup: setup(&[("region", "us-east-1")]),
         api_key: None,
         auth_override: Some(auth("bearer-api-key-v1", &[("api_key", "bedrock-key")])),
-        shape: None,
         cache: None,
         headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
@@ -694,8 +851,8 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "secret" } }
 
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
-variants = { zeta = { operation = "add" }, alpha = { operation = "add" } }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+variants = { zeta = { }, alpha = { } }
 "#,
     )
     .unwrap();
@@ -743,9 +900,9 @@ headers = { X-Level = "provider", X-Delete = "" }
 
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 headers = { x-LEVEL = "model", x-provider-only = "model" }
-variants = { fast = { operation = "add", headers = { X-Level = "variant", X-Keep = "" } } }
+variants = { fast = { headers = { X-Level = "variant", X-Keep = "" } } }
 "#,
     )
     .unwrap();
@@ -793,7 +950,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "typed" } }
 headers = { Authorization = "Bearer configured", Cookie = "route=one", user-agent = "custom" }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -826,7 +983,6 @@ fn managed_provider_accepts_auth_owned_and_user_agent_headers() {
         setup: BTreeMap::new(),
         api_key: Some(SecretString::new("typed-secret").unwrap()),
         auth_override: None,
-        shape: None,
         cache: None,
         headers: header_map(&[
             ("authorization", "Bearer configured"),
@@ -862,7 +1018,7 @@ adaptor = "openai-compatible"
 auth = { method = "no-auth-v1", values = {} }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -905,7 +1061,7 @@ auth = { method = "no-auth-v1", values = {} }
 headers = { x-env = "${env:COOKIE_AGENT_FINGERPRINT_TEST:-fallback}" }
 [models.test]
 display_name = "Test"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();

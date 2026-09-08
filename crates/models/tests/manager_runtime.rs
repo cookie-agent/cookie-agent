@@ -119,6 +119,359 @@ fn catalog() -> Arc<CatalogSnapshot> {
     })
 }
 
+#[test]
+fn azure_executables_resolve_native_and_reasoning_replay_per_endpoint() {
+    let config = |adaptor: &str,
+                  revision: bool,
+                  replay: &str,
+                  variants: &str|
+     -> ProviderDefinition {
+        toml::from_str(&format!(r#"
+source = "custom"
+endpoint = "http://127.0.0.1:9"
+adaptor = "{adaptor}"
+setup = {{ deployment = "deployment", api_version = "2025-03-01"{revision} }}
+auth = {{ method = "azure-api-key-v1", values = {{ api_key = "test-key" }} }}
+[models.test]
+display_name = "Azure Test"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, reasoning = true, temperature = false, top_p = false, seed = false, media = {{}}{replay} }}
+{variants}
+"#, revision = if revision { ", model = \"gpt-test\", version = \"2026-01-01\", deployment_type = \"GlobalStandard\"" } else { "" })).unwrap()
+    };
+    for revision in [false, true] {
+        for replay in [
+            "",
+            ", native_replay = \"unsupported\"",
+            ", native_replay = \"optional\"",
+            ", native_replay = \"required\"",
+        ] {
+            let temporary = TempDir::new().unwrap();
+            let result = ModelManager::new(
+                BTreeMap::from([(
+                    ProviderId::new("test.azure").unwrap(),
+                    config("azure-openai-chat", revision, replay, ""),
+                )]),
+                empty_catalog(),
+                store(&temporary),
+            );
+            let manager = result.unwrap();
+            let resolved = manager
+                .current()
+                .resolve(&cookie_agent_identity::ModelSelection {
+                    model: "test.azure/test".parse().unwrap(),
+                    variant: None,
+                })
+                .unwrap();
+            let declaration = &resolved.model().capabilities().replay;
+            assert_eq!(
+                resolved.model().descriptor().identity.model_id.as_str(),
+                "deployment"
+            );
+            assert!(!declaration.reasoning);
+            assert_eq!(
+                declaration.capability,
+                if replay.contains("unsupported") {
+                    oven_sdk::ReplayCapability::Unsupported
+                } else if replay.contains("required") {
+                    oven_sdk::ReplayCapability::Required
+                } else {
+                    oven_sdk::ReplayCapability::Optional
+                }
+            );
+        }
+    }
+    for adaptor in ["azure-openai-chat", "azure-openai-responses"] {
+        let temporary = TempDir::new().unwrap();
+        let definition = config(
+            adaptor,
+            true,
+            "",
+            r#"
+model_id = "configured-deployment"
+variants = { chat = { model_id = "variant-deployment", adaptor_options = { request_endpoint = "completions" } }, responses = { adaptor_options = { request_endpoint = "responses" } } }
+"#,
+        );
+        let manager = ModelManager::new(
+            BTreeMap::from([(ProviderId::new("test.azure").unwrap(), definition)]),
+            empty_catalog(),
+            store(&temporary),
+        )
+        .unwrap();
+        for (variant, reasoning) in [
+            (None, adaptor == "azure-openai-responses"),
+            (Some("chat"), false),
+            (Some("responses"), true),
+        ] {
+            let resolved = manager
+                .current()
+                .resolve(&cookie_agent_identity::ModelSelection {
+                    model: "test.azure/test".parse().unwrap(),
+                    variant: variant.map(|id| cookie_agent_identity::VariantId::new(id).unwrap()),
+                })
+                .unwrap();
+            assert_eq!(
+                resolved.model().capabilities().replay.capability,
+                oven_sdk::ReplayCapability::Optional
+            );
+            assert_eq!(resolved.model().capabilities().replay.reasoning, reasoning);
+            assert_eq!(
+                resolved.model().descriptor().identity.model_id.as_str(),
+                if variant == Some("chat") {
+                    "variant-deployment"
+                } else {
+                    "configured-deployment"
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn configured_wire_model_id_reaches_each_integrated_request_mapping() {
+    for (adaptor, setup, auth, suffix) in [
+        (
+            "openai-chat",
+            "{}",
+            "{ method = \"bearer-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "/v1",
+        ),
+        (
+            "openai-responses",
+            "{}",
+            "{ method = \"bearer-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "/v1",
+        ),
+        (
+            "openai-compatible",
+            "{}",
+            "{ method = \"no-auth-v1\", values = {} }",
+            "/v1",
+        ),
+        (
+            "anthropic",
+            "{}",
+            "{ method = \"anthropic-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "/v1",
+        ),
+        (
+            "anthropic-compatible",
+            "{}",
+            "{ method = \"anthropic-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "/v1",
+        ),
+        (
+            "google-gemini",
+            "{}",
+            "{ method = \"google-api-key-header-v1\", values = { api_key = \"test-key\" } }",
+            "/v1beta",
+        ),
+        (
+            "google-vertex-gemini",
+            "{ project = \"project\", location = \"us-central1\" }",
+            "{ method = \"oauth-access-token-v1\", values = { access_token = \"test-token\" } }",
+            "/v1",
+        ),
+        (
+            "aws-bedrock-converse",
+            "{ region = \"us-east-1\" }",
+            "{ method = \"aws-sigv4-credentials-v1\", values = { access_key_id = \"test-key\", secret_access_key = \"test-secret\" } }",
+            "",
+        ),
+        (
+            "azure-openai-chat",
+            "{ deployment = \"inherited\", api_version = \"2025-03-01\" }",
+            "{ method = \"azure-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "",
+        ),
+        (
+            "azure-openai-responses",
+            "{ deployment = \"inherited\", api_version = \"2025-03-01\" }",
+            "{ method = \"azure-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "",
+        ),
+        (
+            "cohere-v2-chat",
+            "{}",
+            "{ method = \"bearer-api-key-v1\", values = { api_key = \"test-key\" } }",
+            "/v2",
+        ),
+    ] {
+        let (endpoint, captured) = capture_http_request().await;
+        let definition: ProviderDefinition = toml::from_str(&format!(r#"
+source = "custom"
+endpoint = "{endpoint}{suffix}"
+adaptor = "{adaptor}"
+setup = {setup}
+auth = {auth}
+[models.local-alias]
+display_name = "Local Alias"
+model_id = "backend-v1"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = false, top_p = false, seed = false, media = {{}} }}
+"#)).unwrap();
+        let temporary = TempDir::new().unwrap();
+        let manager = ModelManager::new(
+            BTreeMap::from([(ProviderId::new("wire-test").unwrap(), definition)]),
+            empty_catalog(),
+            store(&temporary),
+        )
+        .unwrap_or_else(|error| panic!("{adaptor}: {error:?}"));
+        let resolved = manager
+            .current()
+            .resolve(&cookie_agent_identity::ModelSelection {
+                model: "wire-test/local-alias".parse().unwrap(),
+                variant: None,
+            })
+            .unwrap();
+        let error = resolved
+            .model()
+            .stream(
+                resolved.prepare_request(oven_sdk::Request::new(vec![])),
+                oven_sdk::AbortSignal::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.diagnostics.http_status,
+            Some(500),
+            "{adaptor}: {error:?}"
+        );
+        let wire = captured.await.unwrap();
+        if matches!(
+            adaptor,
+            "google-gemini" | "google-vertex-gemini" | "aws-bedrock-converse"
+        ) {
+            assert!(
+                wire.lines().next().unwrap().contains("backend-v1"),
+                "{adaptor}"
+            );
+        } else {
+            let body: serde_json::Value =
+                serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body["model"], "backend-v1", "{adaptor}");
+        }
+        assert_eq!(
+            resolved.selection().model.model_id().as_str(),
+            "local-alias"
+        );
+    }
+}
+
+#[tokio::test]
+async fn endpoint_switch_variants_dispatch_after_catalogless_frozen_reconstruction() {
+    for (base_endpoint, selected_endpoint, expected_path, history_field) in [
+        (
+            "responses",
+            "completions",
+            "/v1/chat/completions",
+            "messages",
+        ),
+        ("completions", "responses", "/v1/responses", "input"),
+    ] {
+        let (endpoint, captured) = capture_http_request().await;
+        let mut snapshot = (*catalog()).clone();
+        let record = snapshot
+            .providers
+            .values_mut()
+            .next()
+            .unwrap()
+            .record
+            .as_mut()
+            .unwrap();
+        record.api = Some(format!("{endpoint}/v1"));
+        record.shape = Some(base_endpoint.into());
+        let snapshot = Arc::new(snapshot);
+        let temporary = TempDir::new().unwrap();
+        let authored = BTreeMap::from([(
+            ProviderId::new("openai").unwrap(),
+            toml::from_str(&format!(
+                r#"
+source = "models_dev"
+[models."gpt-5-mini"]
+model_id = "remote-base"
+[models."gpt-5-mini".variants.switched]
+model_id = "remote-switched"
+generation_options = {{ temperature = 0.25 }}
+adaptor_options = {{ request_endpoint = "{selected_endpoint}" }}
+"#
+            ))
+            .unwrap(),
+        )]);
+        let manager =
+            ModelManager::new(authored, Arc::clone(&snapshot), store(&temporary)).unwrap();
+        manager
+            .connect(
+                connect_request("frozen-switch", "test-key", &snapshot),
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let runtime = manager.current();
+        let snapshots =
+            ModelSnapshotManifestStore::open_directory(temporary.path().join("snapshots")).unwrap();
+        let manifest = snapshots
+            .write(runtime.manifest_payload().unwrap())
+            .unwrap();
+        let blueprint = &manifest.payload.blueprints[0];
+        let selection = cookie_agent_identity::ModelSelection {
+            model: blueprint.selection.model.clone(),
+            variant: Some(cookie_agent_identity::VariantId::new("switched").unwrap()),
+        };
+        let binding = frozen_binding(manifest.revision.clone(), blueprint, selection).unwrap();
+        let restarted =
+            ModelManager::new(BTreeMap::new(), empty_catalog(), store(&temporary)).unwrap();
+        let restored = restarted.current();
+        assert!(restored.models().is_empty());
+        let rehydrated = snapshots
+            .scan()
+            .unwrap()
+            .rehydrate(
+                &binding,
+                restored.authored(),
+                restored.store(),
+                safe_definition_fingerprint,
+            )
+            .unwrap();
+        let resolved = restored
+            .resolve_frozen(&binding, &rehydrated.blueprint)
+            .unwrap();
+        assert_eq!(
+            resolved.adapter_family(),
+            if selected_endpoint == "responses" {
+                OvenAdapterFamily::OpenaiResponses
+            } else {
+                OvenAdapterFamily::OpenaiChat
+            }
+        );
+        let request =
+            resolved.prepare_request(oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
+                oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(
+                    oven_sdk::TextPart::new("hello"),
+                )]),
+            )]));
+        let error = resolved
+            .model()
+            .stream(request, oven_sdk::AbortSignal::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.diagnostics.http_status, Some(500));
+        let wire = captured.await.unwrap();
+        let mut request_line = wire.lines().next().unwrap().split_whitespace();
+        assert_eq!(request_line.next(), Some("POST"));
+        let url =
+            url::Url::parse(&format!("http://capture{}", request_line.next().unwrap())).unwrap();
+        assert_eq!(url.path(), expected_path);
+        let body: serde_json::Value =
+            serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert!(body[history_field].is_array());
+        assert_eq!(body["temperature"], 0.25);
+        assert_eq!(body["model"], "remote-switched");
+        assert_eq!(binding.selection.model.model_id().as_str(), "gpt-5-mini");
+        assert_eq!(
+            binding.descriptor.provider_metadata["cookie_agent.wire_model_id"],
+            "remote-switched"
+        );
+    }
+}
+
 fn cloud_catalog(
     provider: &str,
     npm: &str,
@@ -303,7 +656,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
 
 [models.gateway-model]
 display_name = "Gateway Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -350,7 +703,7 @@ auth = { method = "bearer-api-key-v1", values = { api_key = "test-key" } }
 
 [models.model-1]
 display_name = "Gateway Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
 "#,
     )
     .unwrap();
@@ -1346,7 +1699,7 @@ async fn dynamic_handles_execute_anthropic_and_openai_responses_and_build_vertex
     let model = |display: &str| {
         format!(
             r#"display_name = "{display}"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = false, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
 "#
         )
     };
@@ -1498,8 +1851,8 @@ auth = {{ method = "aws-sigv4-credentials-v1", values = {{ access_key_id = "acce
 
 [models.test]
 display_name = "Bedrock"
-capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {{}} }}
-variants = {{ toggle = {{ operation = "add", reasoning = {{ type = "toggle", enabled = {enabled} }} }} }}
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = true, temperature = false, top_p = false, seed = false, native_replay = "unsupported", media = {{}} }}
+variants = {{ toggle = {{ reasoning = {{ type = "toggle", enabled = {enabled} }} }} }}
 "#
         );
         let manager = ModelManager::new(
@@ -2246,9 +2599,9 @@ auth = { method = "no-auth-v1", values = {} }
 
 [models.test]
 display_name = "Decimal Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
-defaults = { temperature = 0.7, top_p = 0.125 }
-variants = { precise = { operation = "add", defaults = { temperature = 1.25, top_p = 0.5 } } }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+generation_options = { temperature = 0.7, top_p = 0.125 }
+variants = { precise = { generation_options = { temperature = 1.25, top_p = 0.5 } } }
 "#,
     )
     .unwrap();
@@ -2426,8 +2779,8 @@ headers = { x-shared = "base", x-delete = "inherited" }
 
 [models.test]
 display_name = "Header Model"
-capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", cancellation = "local_only", media = {} }
-variants = { override = { operation = "add", headers = { x-shared = "variant" } }, deleted = { operation = "add", headers = { x-delete = "" } } }
+capabilities = { input = ["text"], output = ["text"], context_tokens = 4096, output_tokens = 1024, tool_calling = false, parallel_tool_calls = false, structured_output = false, reasoning = false, temperature = true, top_p = true, seed = false, native_replay = "unsupported", media = {} }
+variants = { override = { headers = { x-shared = "variant" } }, deleted = { headers = { x-delete = "" } } }
 "#,
     )
     .unwrap();

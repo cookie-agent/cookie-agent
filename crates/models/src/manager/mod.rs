@@ -884,18 +884,17 @@ impl CompiledRuntimeModel {
             .variants
             .iter()
             .map(|(id, variant)| {
+                let selected = self
+                    .model
+                    .selected(&variant.options, variant.model_id.as_ref())?;
                 Ok(FrozenVariantBlueprint {
                     id: id.clone(),
-                    descriptor: descriptor.clone(),
+                    descriptor: safe_descriptor(&provider_id, &selected)?,
                     defaults: frozen_defaults(&crate::ResolvedRequestDefaults {
                         request: variant.defaults.clone(),
                         reasoning: variant.reasoning.clone(),
                     })?,
-                    options: {
-                        let mut selected = self.model.clone();
-                        selected.options = variant.options.clone();
-                        protocol_options(&selected, &self.setup_values)?
-                    },
+                    options: { protocol_options(&selected, &self.setup_values)? },
                     static_headers: variant
                         .headers
                         .iter()
@@ -1306,7 +1305,7 @@ fn validate_unresolved_managed_cache(
     else {
         return Ok(());
     };
-    let adapter = managed_provider_adapter(recipe.family, provider.shape, None);
+    let adapter = managed_provider_adapter(recipe.family, None, None);
     crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|reason| {
         ModelManagerError::ProviderCache {
             provider: provider_id.clone(),
@@ -1330,8 +1329,17 @@ fn validate_frozen_provider_cache(
     else {
         return Ok(());
     };
-    let adapter = crate::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
-        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+    let adapter = if binding
+        .descriptor
+        .adapter_id
+        .as_str()
+        .starts_with("oven.openai-compatible.")
+    {
+        OvenAdapterFamily::OpenaiCompatible
+    } else {
+        crate::adapters::wire_adapter_for_protocol(binding.descriptor.adapter_id.as_str())
+            .ok_or(ModelManagerError::RuntimeCompileFailed)?
+    };
     crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|reason| {
         ModelManagerError::ProviderCache {
             provider: provider_id,
@@ -1663,7 +1671,6 @@ fn effective_managed(
         setup: BTreeMap::new(),
         api_key: None,
         auth_override: None,
-        shape: None,
         cache: None,
         headers: BTreeMap::new(),
         model_overrides: BTreeMap::new(),
@@ -1803,10 +1810,11 @@ fn compile_behaviors(
         .variants
         .iter()
         .map(|(id, variant)| {
+            let selected = model.selected(&variant.options, variant.model_id.as_ref())?;
             let compiled = compile_executable(
                 provider_id.as_str(),
-                model,
-                capabilities.clone(),
+                &selected,
+                oven_capabilities(&selected.capabilities, selected.adapter)?,
                 variant
                     .headers
                     .iter()
@@ -1821,12 +1829,18 @@ fn compile_behaviors(
             )?;
             let behavior_fingerprint = safe_hash(
                 "cookie-agent/model-variant/v1",
-                &(id, &variant.defaults, &variant.options, &variant.reasoning),
+                &(
+                    id,
+                    &variant.defaults,
+                    &variant.options,
+                    &variant.reasoning,
+                    &selected.wire_model_id,
+                ),
             );
             Ok((
                 id.clone(),
                 ExecutableBehavior {
-                    adapter: model.adapter,
+                    adapter: selected.adapter,
                     model: compiled.model,
                     defaults: crate::ResolvedRequestDefaults {
                         request: variant.defaults.clone(),
@@ -1908,9 +1922,9 @@ fn compile_frozen_managed(
             }
         })
         .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-    let adapter = adapter_for_protocol(blueprint.protocol_recipe.as_str())
-        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
     let frozen_behavior = selected_behavior(blueprint, &binding.selection)
+        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
+    let adapter = adapter_for_protocol(frozen_behavior.descriptor.adapter_id.as_str())
         .ok_or(ModelManagerError::RuntimeCompileFailed)?;
     let setup_values = blueprint
         .setup_binding
@@ -1935,13 +1949,18 @@ fn compile_frozen_managed(
         // bindings resolve through the current-runtime fast path instead.
         custom: false,
         id: binding.selection.model.model_id(),
+        wire_model_id: frozen_wire_model_id(
+            frozen_behavior.descriptor,
+            &binding.selection.model.model_id(),
+            frozen_behavior.options,
+        )?,
         display_name: binding.selection.model.to_string(),
         family_id: blueprint.provider_recipe.as_str().to_owned(),
         effective_npm: match &blueprint.source {
             FrozenProviderSource::Managed { package_claim, .. } => package_claim.clone(),
             FrozenProviderSource::Custom { .. } => "custom".to_owned(),
         },
-        adapter_id: blueprint.protocol_recipe.as_str().to_owned(),
+        adapter_id: frozen_behavior.descriptor.adapter_id.as_str().to_owned(),
         resolved_shape: if matches!(
             adapter,
             OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
@@ -1980,6 +1999,7 @@ fn compile_frozen_managed(
                 .collect(),
             source: AuthSourceCategory::Unavailable,
         },
+        replay_declaration: Some(capabilities.native_replay),
         capabilities,
         defaults: defaults.request.clone(),
         options: options.clone(),
@@ -2029,8 +2049,7 @@ fn compile_frozen_managed(
     )?;
     Ok(ResolvedExecutableModel {
         selection: binding.selection.clone(),
-        adapter: adapter_for_protocol(binding.protocol_recipe.as_str())
-            .ok_or(ModelManagerError::RuntimeCompileFailed)?,
+        adapter,
         model: compiled.model,
         defaults,
         provider_options: compiled.provider_options,
@@ -2567,12 +2586,13 @@ pub fn safe_definition_fingerprint(
                 "enabled": value.enabled,
                 "display_name": value.display_name,
                 "defaults": value.defaults,
+                "model_id": value.model_id,
                 "variants": value.variants,
                 "default_variant": value.default_variant,
-                "shape": value.shape,
+                "adaptor_options": value.options,
+                "pricing": value.pricing,
                 "headers": value.headers,
             }))).collect::<BTreeMap<_, _>>(),
-            "shape": provider.shape,
             "headers": provider.headers,
         }),
         ProviderDefinition::Custom(provider) => json!({
@@ -2591,6 +2611,7 @@ pub fn safe_definition_fingerprint(
                 "enabled": value.enabled,
                 "display_name": value.display_name,
                 "capabilities": value.capabilities,
+                "model_id": value.model_id,
                 "defaults": value.defaults,
                 "options": value.options,
                 "headers": value.headers,
@@ -2703,12 +2724,12 @@ fn protocol_options(
             region: string("region").ok_or(ModelManagerError::RuntimeCompileFailed)?,
         },
         OvenAdapterFamily::AzureOpenaiChat => protocol::ProviderOptions::AzureOpenAiChat {
-            deployment: string("deployment").unwrap_or_else(|| model.id.as_str().to_owned()),
+            deployment: model.wire_model_id.as_str().to_owned(),
             api_version: string("api_version").unwrap_or_else(|| "v1".to_owned()),
         },
         OvenAdapterFamily::AzureOpenaiResponses => {
             protocol::ProviderOptions::AzureOpenAiResponses {
-                deployment: string("deployment").unwrap_or_else(|| model.id.as_str().to_owned()),
+                deployment: model.wire_model_id.as_str().to_owned(),
                 api_version: string("api_version").unwrap_or_else(|| "v1".to_owned()),
             }
         }
@@ -2803,7 +2824,48 @@ fn safe_descriptor(
         AdapterId::new(model.adapter_id.clone()),
         oven_capabilities(&model.capabilities, model.adapter)?,
     )
+    .map(|descriptor| {
+        descriptor.with_provider_metadata(BTreeMap::from([
+            (
+                "cookie_agent.wire_model_id".into(),
+                Value::String(model.wire_model_id.as_str().into()),
+            ),
+            (
+                "cookie_agent.wire_provider_id".into(),
+                Value::String(
+                    crate::compiler::executable_provider_id(
+                        provider_id.as_str(),
+                        model.adapter,
+                        model.custom,
+                    )
+                    .into(),
+                ),
+            ),
+        ]))
+    })
     .map_err(|_| ModelManagerError::RuntimeCompileFailed)
+}
+
+fn frozen_wire_model_id(
+    descriptor: &LanguageModelDescriptor,
+    local_id: &cookie_agent_identity::ProviderModelId,
+    options: &protocol::ProviderOptions,
+) -> Result<crate::authoring::WireModelId, ModelManagerError> {
+    let wire = match descriptor
+        .provider_metadata
+        .get("cookie_agent.wire_model_id")
+    {
+        Some(Value::String(wire)) => wire.as_str(),
+        Some(_) => return Err(ModelManagerError::RuntimeCompileFailed),
+        None => match options {
+            protocol::ProviderOptions::AzureOpenAiChat { deployment, .. }
+            | protocol::ProviderOptions::AzureOpenAiResponses { deployment, .. } => {
+                deployment.as_str()
+            }
+            _ => local_id.as_str(),
+        },
+    };
+    crate::authoring::WireModelId::new(wire).map_err(|_| ModelManagerError::RuntimeCompileFailed)
 }
 
 fn oven_capabilities(
@@ -2895,6 +2957,7 @@ fn oven_capabilities(
                 crate::ReplayCapability::Required => OvenReplay::Required,
             },
             reasoning: value.reasoning
+                && adapter != OvenAdapterFamily::AzureOpenaiChat
                 && value.native_replay != crate::ReplayCapability::Unsupported,
         },
     })
@@ -3324,7 +3387,6 @@ mod cache_strategy_tests {
             setup: BTreeMap::new(),
             api_key: None,
             auth_override: None,
-            shape: None,
             cache: Some(
                 serde_json::from_value(json!({"mode":"implicit"}))
                     .expect("provider cache envelope"),

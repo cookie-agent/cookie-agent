@@ -5,8 +5,7 @@ use serde::Serialize;
 
 use crate::{
     HeaderName, ProviderOptions, SafeStaticHeaderValue,
-    adapters::OvenAdapterFamily,
-    authoring::{ManagedModelOverride, ReasoningBehavior, RequestDefaults, VariantDirective},
+    authoring::{ManagedModelOverride, ReasoningBehavior, RequestDefaults, VariantDefinition},
     catalog::CatalogReasoningOption,
 };
 
@@ -22,6 +21,7 @@ pub enum CompiledVariantOrigin {
 #[derive(Clone, Debug, Serialize)]
 pub struct CompiledVariant {
     pub id: VariantId,
+    pub model_id: Option<crate::authoring::WireModelId>,
     pub display_name: String,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
@@ -49,11 +49,22 @@ pub(crate) enum VariantCompileError {
 pub(crate) fn managed_variants(
     source: &[CatalogReasoningOption],
     override_: Option<&ManagedModelOverride>,
-    family: OvenAdapterFamily,
+    defaults: &RequestDefaults,
+    options: &ProviderOptions,
 ) -> Result<CompiledVariants, VariantCompileError> {
-    let (mut variants, mut order) = generated(source, family)?;
+    let (mut variants, mut order) = generated(source)?;
+    for variant in variants.values_mut() {
+        variant.defaults = defaults.clone();
+        variant.options = options.clone();
+    }
     if let Some(override_) = override_ {
-        apply_directives(&mut variants, &mut order, &override_.variants)?;
+        apply_directives(
+            &mut variants,
+            &mut order,
+            &override_.variants,
+            defaults,
+            options,
+        )?;
     }
     let default = resolve_default(
         override_.and_then(|value| value.default_variant.as_ref()),
@@ -63,19 +74,20 @@ pub(crate) fn managed_variants(
 }
 
 pub(crate) fn custom_variants(
-    directives: &BTreeMap<VariantId, VariantDirective>,
+    directives: &BTreeMap<VariantId, VariantDefinition>,
     default: Option<&ConfiguredModelDefault>,
+    defaults: &RequestDefaults,
+    options: &ProviderOptions,
 ) -> Result<CompiledVariants, VariantCompileError> {
     let mut variants = BTreeMap::new();
     let mut order = Vec::new();
-    apply_directives(&mut variants, &mut order, directives)?;
+    apply_directives(&mut variants, &mut order, directives, defaults, options)?;
     let default = resolve_default(default, &variants)?;
     Ok((variants, order, default))
 }
 
 fn generated(
     source: &[CatalogReasoningOption],
-    family: OvenAdapterFamily,
 ) -> Result<(BTreeMap<VariantId, CompiledVariant>, Vec<VariantId>), VariantCompileError> {
     let mut variants = BTreeMap::new();
     let mut order = Vec::new();
@@ -97,7 +109,6 @@ fn generated(
                         id,
                         reasoning,
                         CompiledVariantOrigin::ModelsDevEffort,
-                        family,
                     )?;
                 }
             }
@@ -109,7 +120,6 @@ fn generated(
                         id,
                         ReasoningBehavior::Toggle { enabled },
                         CompiledVariantOrigin::ModelsDevToggle,
-                        family,
                     )?;
                 }
             }
@@ -125,7 +135,6 @@ fn generated(
                         },
                         ReasoningBehavior::BudgetTokens { value: *value },
                         CompiledVariantOrigin::ModelsDevBudgetTokens,
-                        family,
                     )?;
                 }
                 if let Some(value) = max {
@@ -135,7 +144,6 @@ fn generated(
                         "budget-max",
                         ReasoningBehavior::BudgetTokens { value: *value },
                         CompiledVariantOrigin::ModelsDevBudgetTokens,
-                        family,
                     )?;
                 }
             }
@@ -185,11 +193,10 @@ fn insert_generated(
     id: &str,
     reasoning: ReasoningBehavior,
     origin: CompiledVariantOrigin,
-    family: OvenAdapterFamily,
 ) -> Result<(), VariantCompileError> {
-    validate_reasoning(&reasoning, family)?;
     let id = VariantId::new(id).map_err(|_| VariantCompileError::Invalid)?;
     let candidate = CompiledVariant {
+        model_id: None,
         display_name: display_name(&id),
         id: id.clone(),
         defaults: RequestDefaults::default(),
@@ -214,71 +221,54 @@ fn insert_generated(
 fn apply_directives(
     variants: &mut BTreeMap<VariantId, CompiledVariant>,
     order: &mut Vec<VariantId>,
-    directives: &BTreeMap<VariantId, VariantDirective>,
-) -> Result<(), VariantCompileError> {
-    for (id, directive) in directives {
-        match directive {
-            VariantDirective::Add {
-                display_name,
-                defaults,
-                options,
-                reasoning,
-                headers,
-            } => {
-                if variants.contains_key(id) {
-                    return Err(VariantCompileError::Collision);
-                }
-                variants.insert(
-                    id.clone(),
-                    authored(id, display_name, defaults, options, reasoning, headers),
-                );
-                order.push(id.clone());
-            }
-            VariantDirective::Replace {
-                display_name,
-                defaults,
-                options,
-                reasoning,
-                headers,
-            } => {
-                if !variants.contains_key(id) {
-                    return Err(VariantCompileError::Invalid);
-                }
-                variants.insert(
-                    id.clone(),
-                    authored(id, display_name, defaults, options, reasoning, headers),
-                );
-            }
-            VariantDirective::Disable => {
-                if variants.remove(id).is_none() {
-                    return Err(VariantCompileError::Invalid);
-                }
-                order.retain(|candidate| candidate != id);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn authored(
-    id: &VariantId,
-    authored_display_name: &Option<String>,
+    directives: &BTreeMap<VariantId, VariantDefinition>,
     defaults: &RequestDefaults,
     options: &ProviderOptions,
-    reasoning: &Option<ReasoningBehavior>,
-    headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
-) -> CompiledVariant {
-    CompiledVariant {
-        id: id.clone(),
-        display_name: authored_display_name
-            .clone()
-            .unwrap_or_else(|| display_name(id)),
-        defaults: defaults.clone(),
-        options: options.clone(),
-        reasoning: reasoning.clone(),
-        headers: headers.clone(),
-        origin: CompiledVariantOrigin::Authored,
+) -> Result<(), VariantCompileError> {
+    for (id, directive) in directives {
+        if directive.enabled == Some(false) {
+            if directive.disabled_has_settings() {
+                return Err(VariantCompileError::Invalid);
+            }
+            variants.remove(id);
+            order.retain(|candidate| candidate != id);
+            continue;
+        }
+        let variant = variants.entry(id.clone()).or_insert_with(|| {
+            order.push(id.clone());
+            CompiledVariant {
+                model_id: None,
+                id: id.clone(),
+                display_name: display_name(id),
+                defaults: defaults.clone(),
+                options: options.clone(),
+                reasoning: None,
+                headers: BTreeMap::new(),
+                origin: CompiledVariantOrigin::Authored,
+            }
+        });
+        if let Some(name) = &directive.display_name {
+            if name.trim().is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
+                return Err(VariantCompileError::Invalid);
+            }
+            variant.display_name.clone_from(name);
+        }
+        if let Some(model_id) = &directive.model_id {
+            variant.model_id = Some(model_id.clone());
+        }
+        if let Some(defaults) = &directive.generation_options {
+            defaults.apply(&mut variant.defaults);
+        }
+        if let Some(options) = &directive.adaptor_options {
+            options.apply(&mut variant.options);
+        }
+        if let Some(reasoning) = &directive.reasoning {
+            variant.reasoning = Some(reasoning.clone());
+        }
+        // Keep deletion markers until global/provider/model headers are composed.
+        variant.headers.extend(directive.headers().clone());
     }
+    Ok(())
 }
 
 fn resolve_default(
@@ -291,29 +281,6 @@ fn resolve_default(
             Ok(Some(id.clone()))
         }
         Some(ConfiguredModelDefault::Named(_)) => Err(VariantCompileError::Default),
-    }
-}
-
-fn validate_reasoning(
-    reasoning: &ReasoningBehavior,
-    family: OvenAdapterFamily,
-) -> Result<(), VariantCompileError> {
-    let valid = match reasoning {
-        ReasoningBehavior::Effort { .. } => !matches!(family, OvenAdapterFamily::CohereV2Chat),
-        ReasoningBehavior::Toggle { .. } | ReasoningBehavior::BudgetTokens { .. } => matches!(
-            family,
-            OvenAdapterFamily::Anthropic
-                | OvenAdapterFamily::AnthropicCompatible
-                | OvenAdapterFamily::AwsBedrockConverse
-                | OvenAdapterFamily::GoogleGemini
-                | OvenAdapterFamily::GoogleVertexGemini
-                | OvenAdapterFamily::CohereV2Chat
-        ),
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(VariantCompileError::Invalid)
     }
 }
 
@@ -335,6 +302,18 @@ mod tests {
     use super::*;
     use crate::authoring::PartialRequestDefaults;
 
+    fn managed_variants(
+        source: &[CatalogReasoningOption],
+        override_: Option<&ManagedModelOverride>,
+    ) -> Result<CompiledVariants, VariantCompileError> {
+        super::managed_variants(
+            source,
+            override_,
+            &RequestDefaults::default(),
+            &ProviderOptions::default(),
+        )
+    }
+
     fn id(value: &str) -> VariantId {
         VariantId::new(value).unwrap()
     }
@@ -344,16 +323,18 @@ mod tests {
     }
 
     fn override_with(
-        variants: BTreeMap<VariantId, VariantDirective>,
+        variants: BTreeMap<VariantId, VariantDefinition>,
         default_variant: Option<ConfiguredModelDefault>,
     ) -> ManagedModelOverride {
         ManagedModelOverride {
+            model_id: None,
             enabled: None,
             display_name: None,
             defaults: PartialRequestDefaults::default(),
             variants,
             default_variant,
-            shape: None,
+            options: crate::AdaptorOptions::default(),
+            pricing: None,
             compaction: crate::NativeCompactionConfig::Unsupported,
             headers: BTreeMap::new(),
         }
@@ -372,8 +353,7 @@ mod tests {
             Some(ConfiguredModelDefault::Named(id("high"))),
         );
 
-        let (variants, order, default) =
-            managed_variants(&source, Some(&override_), OvenAdapterFamily::Anthropic).unwrap();
+        let (variants, order, default) = managed_variants(&source, Some(&override_)).unwrap();
 
         assert_eq!(names(&order), ["off", "low", "high", "max"]);
         assert!(!variants.contains_key(&id("on")));
@@ -387,12 +367,8 @@ mod tests {
             Some(ConfiguredModelDefault::Named(id("on"))),
         );
 
-        let (variants, order, default) = managed_variants(
-            &[CatalogReasoningOption::Toggle],
-            Some(&override_),
-            OvenAdapterFamily::Anthropic,
-        )
-        .unwrap();
+        let (variants, order, default) =
+            managed_variants(&[CatalogReasoningOption::Toggle], Some(&override_)).unwrap();
 
         assert_eq!(names(&order), ["off", "on"]);
         assert!(variants.contains_key(&id("on")));
@@ -411,7 +387,6 @@ mod tests {
                 values: vec![Some("low".into()), Some("high".into())],
             }],
             Some(&override_),
-            OvenAdapterFamily::Anthropic,
         )
         .unwrap();
 
@@ -436,7 +411,6 @@ mod tests {
                 },
             ],
             Some(&override_),
-            OvenAdapterFamily::Anthropic,
         )
         .unwrap();
 
@@ -450,12 +424,9 @@ mod tests {
         let override_ = override_with(
             BTreeMap::from([(
                 id("on"),
-                VariantDirective::Add {
-                    display_name: None,
-                    defaults: RequestDefaults::default(),
-                    options: ProviderOptions::default(),
+                VariantDefinition {
                     reasoning: Some(ReasoningBehavior::Toggle { enabled: true }),
-                    headers: BTreeMap::new(),
+                    ..VariantDefinition::default()
                 },
             )]),
             Some(ConfiguredModelDefault::Named(id("on"))),
@@ -469,7 +440,6 @@ mod tests {
                 },
             ],
             Some(&override_),
-            OvenAdapterFamily::Anthropic,
         )
         .unwrap();
 

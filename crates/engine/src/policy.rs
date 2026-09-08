@@ -452,7 +452,16 @@ pub(crate) fn policy_from_snapshot(
 }
 
 pub(crate) fn wire_resolved(binding: &protocol::FrozenModelBinding) -> protocol::ResolvedModelRef {
-    let adapter_id = wire_adapter(binding.protocol_recipe.as_str());
+    // Versionless history may have an older descriptor spelling. New executable
+    // bindings validate the selected descriptor before reaching request dispatch.
+    let selected = binding.descriptor.adapter_id.as_str();
+    let adapter_id = wire_adapter(
+        if cookie_agent_models::adapters::wire_adapter_for_protocol(selected).is_some() {
+            selected
+        } else {
+            binding.protocol_recipe.as_str()
+        },
+    );
     protocol::ResolvedModelRef {
         selection: binding.selection.clone(),
         provider_id: binding.selection.model.provider_id(),
@@ -518,11 +527,19 @@ pub(crate) fn resolve_cache_strategy(
             ));
         }
     }
-    let family =
-        cookie_agent_models::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
-            .ok_or_else(|| {
-                EngineError::CacheStrategy("model adapter family is unavailable".into())
-            })?;
+    let family = if binding
+        .descriptor
+        .adapter_id
+        .as_str()
+        .starts_with("oven.openai-compatible.")
+    {
+        OvenAdapterFamily::OpenaiCompatible
+    } else {
+        cookie_agent_models::adapters::wire_adapter_for_protocol(
+            binding.descriptor.adapter_id.as_str(),
+        )
+        .ok_or_else(|| EngineError::CacheStrategy("model adapter family is unavailable".into()))?
+    };
     if let Some(config) = authored {
         let matches_family = match family {
             OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {

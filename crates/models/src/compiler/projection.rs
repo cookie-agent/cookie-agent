@@ -142,31 +142,15 @@ pub(crate) fn capabilities_from_catalog(
             );
         }
     }
-    // Anthropic reasoning blocks must be replayed verbatim, so replay is
-    // required. OpenAI/Azure Responses reasoning items can be replayed as
-    // encrypted items but the adaptor accepts falling back, so replay is
-    // optional; `oven_capabilities` derives `replay.reasoning` from this and
-    // the pinned Responses profiles reject reasoning models without
-    // reasoning-aware replay.
-    let native_replay = if !model.reasoning {
-        "unsupported"
-    } else {
-        match family {
-            OvenAdapterFamily::AnthropicCompatible => "required",
-            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses => {
-                "optional"
-            }
-            _ => "unsupported",
-        }
-    };
+    let native_replay = family.automatic_replay(model.reasoning);
     serde_json::from_value(json!({
         "input": input,
         "output": output,
         "context_tokens": model.limits.context,
         "output_tokens": model.limits.output,
         "tool_calling": model.tool_call,
-        "parallel_tool_calls": false,
-        "structured_output": model.structured_output.unwrap_or(false),
+        "parallel_tool_calls": true,
+        "structured_output": model.structured_output.unwrap_or(true),
         "reasoning": model.reasoning,
         "temperature": model.temperature.unwrap_or(false),
         "top_p": false,
@@ -296,15 +280,15 @@ mod tests {
             let capabilities = capabilities_from_catalog(&model, family).unwrap();
             assert_eq!(
                 capabilities.native_replay,
-                ReplayCapability::Unsupported,
+                ReplayCapability::Optional,
                 "{family:?}"
             );
         }
-        // Non-reasoning models never project native replay.
+        // Non-reasoning responses also preserve native history.
         let capabilities =
             capabilities_from_catalog(&catalog_model(false), OvenAdapterFamily::OpenaiResponses)
                 .unwrap();
-        assert_eq!(capabilities.native_replay, ReplayCapability::Unsupported);
+        assert_eq!(capabilities.native_replay, ReplayCapability::Optional);
     }
 
     #[test]

@@ -60,8 +60,10 @@ pub(crate) fn validate_referenced_binding(
     _runtime: &CompiledModelRuntime,
     binding: &FrozenModelBinding,
 ) -> Result<(), EngineError> {
-    if cookie_agent_models::adapters::wire_adapter_for_protocol(binding.protocol_recipe.as_str())
-        .is_none()
+    if cookie_agent_models::adapters::wire_adapter_for_protocol(
+        binding.descriptor.adapter_id.as_str(),
+    )
+    .is_none()
     {
         return Err(EngineError::RuntimeCompileFailed);
     }

@@ -79,7 +79,7 @@ impl Sha256Digest {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Authoring capabilities intentionally defer cross-field validation to the compiler.
+/// Compiled capabilities; authored declarations use `AuthoredCapabilities`.
 pub struct ModelCapabilities {
     pub input: BTreeSet<Modality>,
     pub output: BTreeSet<Modality>,
@@ -189,6 +189,7 @@ impl ResolvedRequestDefaults {
 #[serde(deny_unknown_fields)]
 /// Authoring options are an adapter-neutral overlay; protocol options are a tagged adapter enum.
 pub struct ProviderOptions {
+    pub request_endpoint: Option<crate::authoring::RequestEndpoint>,
     pub api_version: Option<String>,
     #[serde(default)]
     pub beta: Vec<String>,
@@ -199,59 +200,6 @@ pub struct ProviderOptions {
     pub location: Option<String>,
     pub region: Option<String>,
     pub deployment: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "operation", rename_all = "lowercase", deny_unknown_fields)]
-pub enum VariantDirective {
-    Add {
-        display_name: Option<String>,
-        #[serde(default)]
-        defaults: RequestDefaults,
-        #[serde(default)]
-        options: ProviderOptions,
-        reasoning: Option<ReasoningBehavior>,
-        #[serde(default, deserialize_with = "crate::authoring::deserialize_headers")]
-        headers: std::collections::BTreeMap<
-            crate::authoring::HeaderName,
-            crate::authoring::SafeStaticHeaderValue,
-        >,
-    },
-    Replace {
-        display_name: Option<String>,
-        #[serde(default)]
-        defaults: RequestDefaults,
-        #[serde(default)]
-        options: ProviderOptions,
-        reasoning: Option<ReasoningBehavior>,
-        #[serde(default, deserialize_with = "crate::authoring::deserialize_headers")]
-        headers: std::collections::BTreeMap<
-            crate::authoring::HeaderName,
-            crate::authoring::SafeStaticHeaderValue,
-        >,
-    },
-    Disable,
-}
-
-impl VariantDirective {
-    #[must_use]
-    pub fn headers(
-        &self,
-    ) -> &std::collections::BTreeMap<
-        crate::authoring::HeaderName,
-        crate::authoring::SafeStaticHeaderValue,
-    > {
-        match self {
-            Self::Add { headers, .. } | Self::Replace { headers, .. } => headers,
-            Self::Disable => {
-                static EMPTY: std::collections::BTreeMap<
-                    crate::authoring::HeaderName,
-                    crate::authoring::SafeStaticHeaderValue,
-                > = std::collections::BTreeMap::new();
-                &EMPTY
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

@@ -28,7 +28,6 @@ pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being contin
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
 pub(crate) const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =
     "[tool-emitted system message; materialized as user history]";
-const REJECTED_UNSIGNED_REPLAY_PREFIX: &str = "rejected unsigned Anthropic replay artifact ";
 
 pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
@@ -110,10 +109,24 @@ pub(crate) fn wire_model(binding: &FrozenModelBinding) -> ResolvedModelRef {
 }
 
 pub(crate) fn persist_turn(
-    turn: CompletedTurn,
+    mut turn: CompletedTurn,
     store: &ArtifactStore,
     binding: &FrozenModelBinding,
 ) -> Result<(PersistedModelTurn, Vec<SafeErrorMessage>), HistoryError> {
+    turn.finish
+        .provider_metadata
+        .remove("cookie_agent.replay_source_wire_model_id");
+    if let Some(source) = turn
+        .finish
+        .native_replay
+        .as_ref()
+        .and_then(OvenReplayArtifact::source_wire_model_id)
+    {
+        turn.finish.provider_metadata.insert(
+            "cookie_agent.replay_source_wire_model_id".into(),
+            serde_json::Value::String(source.as_str().into()),
+        );
+    }
     let warnings = turn
         .warnings
         .iter()
@@ -245,142 +258,6 @@ pub(crate) fn replay_decisions_with_preflight(
     }
     merged.sort_by_key(|decision| decision.history_index);
     merged
-}
-
-pub(crate) fn unsigned_anthropic_replay_decisions(history: &[HistoryTurn]) -> Vec<ReplayDecision> {
-    history
-        .iter()
-        .enumerate()
-        .filter_map(|(history_index, turn)| {
-            let HistoryTurn::Assistant(turn) = turn else {
-                return None;
-            };
-            if !turn
-                .finish
-                .native_replay
-                .as_ref()
-                .is_some_and(unsigned_anthropic_replay)
-            {
-                return None;
-            }
-            let artifact = turn
-                .finish
-                .native_replay
-                .as_ref()
-                .expect("checked artifact");
-            Some(ReplayDecision {
-                history_index: history_index as u64,
-                disposition: ReplayDisposition::DiscardedInvalidPayload {
-                    reason: rejected_unsigned_replay_reason(artifact),
-                },
-            })
-        })
-        .collect()
-}
-
-fn rejected_unsigned_replay_reason(artifact: &OvenReplayArtifact) -> SafeErrorMessage {
-    safe_replay_reason(&format!(
-        "{REJECTED_UNSIGNED_REPLAY_PREFIX}{}; replaying normalized history",
-        oven_native_replay_fingerprint(artifact).as_str()
-    ))
-}
-
-fn native_replay_fingerprint(
-    adapter_id: &str,
-    provider_id: &str,
-    model_id: &str,
-    resource_id: &str,
-    payload: &serde_json::Value,
-) -> Sha256Digest {
-    let mut bytes = Vec::with_capacity(
-        adapter_id.len() + provider_id.len() + model_id.len() + resource_id.len() + 4,
-    );
-    for component in [adapter_id, provider_id, model_id, resource_id] {
-        bytes.extend_from_slice(component.as_bytes());
-        bytes.push(0);
-    }
-    serde_json::to_writer(&mut bytes, payload).expect("JSON value serializes");
-    Sha256Digest::of_bytes(&bytes)
-}
-
-fn oven_native_replay_fingerprint(artifact: &OvenReplayArtifact) -> Sha256Digest {
-    let scope = artifact.scope();
-    native_replay_fingerprint(
-        artifact.adapter_id().as_str(),
-        scope.provider_id.as_str(),
-        scope.model_id.as_str(),
-        scope.resource_id.as_str(),
-        artifact.payload(),
-    )
-}
-
-fn persisted_native_replay_fingerprint(artifact: &NativeReplayArtifact) -> Sha256Digest {
-    let scope = artifact.scope();
-    native_replay_fingerprint(
-        artifact.adapter_id().as_str(),
-        scope.provider_id.as_str(),
-        scope.model_id.as_str(),
-        scope.resource_id.as_str(),
-        artifact.payload(),
-    )
-}
-
-fn rejected_persisted_replay_reason(artifact: &NativeReplayArtifact) -> SafeErrorMessage {
-    safe_replay_reason(&format!(
-        "{REJECTED_UNSIGNED_REPLAY_PREFIX}{}; replaying normalized history",
-        persisted_native_replay_fingerprint(artifact).as_str()
-    ))
-}
-
-fn rejected_unsigned_replay_fingerprints(events: &[StoredEvent]) -> HashSet<String> {
-    let abandoned = events
-        .iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::AttemptAbandoned { attempt_id } => Some(attempt_id),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ModelReplayEvaluated {
-                attempt_id,
-                ordered_decisions,
-                ..
-            } if abandoned.contains(attempt_id) => Some(ordered_decisions),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|decision| match &decision.disposition {
-            ReplayDisposition::DiscardedInvalidPayload { reason } => reason
-                .as_str()
-                .strip_prefix(REJECTED_UNSIGNED_REPLAY_PREFIX)
-                .and_then(|value| value.split_once(';'))
-                .map(|(fingerprint, _)| fingerprint.to_owned()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn unsigned_anthropic_replay(artifact: &OvenReplayArtifact) -> bool {
-    if crate::policy::wire_adapter(artifact.adapter_id().as_str())
-        != cookie_agent_protocol::AdaptorId::Anthropic
-    {
-        return false;
-    }
-    artifact
-        .payload()
-        .pointer("/message/content")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|content| {
-            content.iter().any(|block| {
-                block.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
-                    && match block.get("signature") {
-                        None => true,
-                        Some(signature) => signature.as_str() == Some(""),
-                    }
-            })
-        })
 }
 
 #[derive(Clone)]
@@ -855,7 +732,7 @@ pub(crate) fn assemble_model_context(
                 assemble_history_with_replay(&selected, events, store, binding, composed_prompt)?;
             Ok(ModelContext {
                 history: assembled.history,
-                native_context: Some(restore_native_context(window)?),
+                native_context: Some(restore_native_context(window, binding)?),
                 replay_decisions: assembled.replay_decisions,
             })
         }
@@ -880,7 +757,6 @@ fn assemble_history_with_replay(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
-    let rejected_unsigned_replays = rejected_unsigned_replay_fingerprints(context_events);
     let producer_projection = GoalProducerProjection::from_events(context_events);
     let current_run = context_events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. })
@@ -1258,23 +1134,6 @@ fn assemble_history_with_replay(
                         reason: safe_replay_reason(
                             "native replay was discarded because normalized tool-call history changed",
                         ),
-                    })
-                } else if assistant
-                    .turn
-                    .native_replay
-                    .as_ref()
-                    .is_some_and(|artifact| {
-                        rejected_unsigned_replays
-                            .contains(persisted_native_replay_fingerprint(artifact).as_str())
-                    })
-                {
-                    let artifact = assistant
-                        .turn
-                        .native_replay
-                        .take()
-                        .expect("checked artifact");
-                    Some(ReplayDisposition::DiscardedInvalidPayload {
-                        reason: rejected_persisted_replay_reason(&artifact),
                     })
                 } else {
                     None
@@ -1801,20 +1660,40 @@ fn persist_replay(
     artifact: OvenReplayArtifact,
     binding: &FrozenModelBinding,
 ) -> Result<NativeReplayArtifact, HistoryError> {
+    let wire_model = binding
+        .descriptor
+        .provider_metadata
+        .get("cookie_agent.wire_model_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(binding.descriptor.identity.model_id.as_str());
+    let wire_provider = binding
+        .descriptor
+        .provider_metadata
+        .get("cookie_agent.wire_provider_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(binding.descriptor.identity.provider_id.as_str());
     if artifact.adapter_id() != &binding.descriptor.adapter_id
-        || artifact.scope().provider_id != binding.descriptor.identity.provider_id
-        || artifact.scope().model_id != binding.descriptor.identity.model_id
+        || artifact.scope().provider_id.as_str() != wire_provider
+        || artifact.scope().model_id.as_str() != wire_model
     {
         return Err(HistoryError::Corrupt(
             "native replay artifact does not match its exact frozen model binding".into(),
         ));
     }
+    let scope = NativeContextScope {
+        provider_id: binding.selection.model.provider_id(),
+        model_id: binding.selection.model.model_id(),
+        resource_id: cookie_agent_protocol::SafeDisplayText::new(
+            artifact.scope().resource_id.as_str(),
+        )
+        .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
+    };
     NativeReplayArtifact::new(
         cookie_agent_protocol::SafeCode::new(artifact.adapter_id().as_str())
             .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
         cookie_agent_protocol::Sha256Digest::new(binding.selection_fingerprint.as_str())
             .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
-        persist_scope(artifact.scope()),
+        scope,
         artifact.payload().clone(),
     )
     .map_err(|error| HistoryError::Corrupt(error.to_string()))
@@ -1823,24 +1702,18 @@ fn persist_replay(
 fn restore_replay(
     artifact: &NativeReplayArtifact,
     resolved_model: &ResolvedModelRef,
-    binding: &FrozenModelBinding,
+    _binding: &FrozenModelBinding,
+    source_wire_model_id: Option<&str>,
 ) -> (Option<OvenReplayArtifact>, Option<ReplayDisposition>) {
-    let expected_adapter = exact_adapter_code(binding.descriptor.adapter_id.as_str());
-    if artifact.adapter_id() != &expected_adapter {
-        return (
-            None,
-            Some(ReplayDisposition::DiscardedForeignAdapter {
-                found: artifact.adapter_id().clone(),
-                expected: expected_adapter,
-            }),
-        );
-    }
     // Persisted-turn integrity: the artifact must have been recorded by the
     // adapter the turn itself resolved to, before any current-eligibility
     // checks expose its opaque payload. Artifacts record the Oven adapter ID
     // while the persisted turn carries the protocol adapter ID, so compare
     // through the shared family mapping.
-    if crate::policy::wire_adapter(artifact.adapter_id().as_str()) != resolved_model.adapter_id {
+    if cookie_agent_models::adapters::wire_adapter_for_protocol(artifact.adapter_id().as_str())
+        .is_none()
+        || crate::policy::wire_adapter(artifact.adapter_id().as_str()) != resolved_model.adapter_id
+    {
         return (
             None,
             Some(ReplayDisposition::DiscardedInvalidPayload {
@@ -1863,17 +1736,7 @@ fn restore_replay(
             }),
         );
     }
-    // Exact fingerprints validate the persisted turn above; current replay
-    // eligibility is model-scoped so variants share their native history.
-    if resolved_model.selection.model != binding.selection.model {
-        return (
-            None,
-            Some(ReplayDisposition::DiscardedForeignModelSelection {
-                found: resolved_model.selection.clone(),
-                expected: binding.selection.clone(),
-            }),
-        );
-    }
+    // Source attribution is integrity data. Target codecs decide block eligibility.
     let scope = match restore_scope(artifact.scope()) {
         Ok(scope) => scope,
         Err(error) => {
@@ -1889,7 +1752,11 @@ fn restore_replay(
         AdapterId::new(artifact.adapter_id().as_str()),
         scope,
         artifact.payload().clone(),
-    ) {
+    )
+    .and_then(|artifact| match source_wire_model_id {
+        Some(source) => artifact.with_source_wire_model_id(oven_sdk::ModelId::new(source)),
+        None => Ok(artifact),
+    }) {
         Ok(artifact) => (Some(artifact), None),
         Err(error) => (
             None,
@@ -1911,17 +1778,6 @@ fn safe_replay_reason(value: &str) -> SafeErrorMessage {
         .expect("sanitized replay reason")
 }
 
-fn persist_scope(scope: &OvenNativeContextScope) -> NativeContextScope {
-    NativeContextScope {
-        provider_id: cookie_agent_protocol::ProviderId::new(scope.provider_id.as_str())
-            .expect("validated provider id"),
-        model_id: cookie_agent_protocol::ProviderModelId::new(scope.model_id.as_str())
-            .expect("validated model id"),
-        resource_id: cookie_agent_protocol::SafeDisplayText::new(scope.resource_id.as_str())
-            .expect("validated resource id"),
-    }
-}
-
 fn restore_scope(scope: &NativeContextScope) -> Result<OvenNativeContextScope, HistoryError> {
     OvenNativeContextScope::new(
         ProviderId::new(scope.provider_id.as_str()),
@@ -1938,7 +1794,14 @@ pub(crate) fn persist_native_context(
     cookie_agent_protocol::NativeContextWindow::new(
         exact_adapter_code(window.adapter_id().as_str()),
         binding.blueprint_fingerprint.clone(),
-        persist_scope(window.scope()),
+        NativeContextScope {
+            provider_id: binding.selection.model.provider_id(),
+            model_id: binding.selection.model.model_id(),
+            resource_id: cookie_agent_protocol::SafeDisplayText::new(
+                window.scope().resource_id.as_str(),
+            )
+            .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
+        },
         window.payload().clone(),
     )
     .map_err(|error| HistoryError::Corrupt(error.to_string()))
@@ -1946,10 +1809,31 @@ pub(crate) fn persist_native_context(
 
 fn restore_native_context(
     window: &cookie_agent_protocol::NativeContextWindow,
+    binding: &FrozenModelBinding,
 ) -> Result<OvenNativeContextWindow, HistoryError> {
+    let identity = |key: &str, fallback: &str| -> Result<String, HistoryError> {
+        match binding.descriptor.provider_metadata.get(key) {
+            None => Ok(fallback.into()),
+            Some(serde_json::Value::String(value)) => Ok(value.clone()),
+            Some(_) => Err(HistoryError::Corrupt(
+                "invalid frozen wire identity metadata".into(),
+            )),
+        }
+    };
+    let scope = OvenNativeContextScope::new(
+        ProviderId::new(identity(
+            "cookie_agent.wire_provider_id",
+            binding.descriptor.identity.provider_id.as_str(),
+        )?),
+        oven_sdk::ModelId::new(identity(
+            "cookie_agent.wire_model_id",
+            binding.descriptor.identity.model_id.as_str(),
+        )?),
+        ResourceId::new(window.scope().resource_id.as_str())?,
+    )?;
     OvenNativeContextWindow::new(
         AdapterId::new(window.adapter_id().as_str()),
-        restore_scope(window.scope())?,
+        scope,
         window.payload().clone(),
     )
     .map_err(|error| HistoryError::Corrupt(error.to_string()))
@@ -2054,16 +1938,23 @@ fn restore_turn_with_store(
     store: &ArtifactStore,
     binding: &FrozenModelBinding,
 ) -> Result<(CompletedTurn, Option<ReplayDisposition>), HistoryError> {
-    let (native_replay, replay_disposition) = turn
-        .native_replay
-        .as_ref()
-        .map_or((None, None), |artifact| {
-            restore_replay(artifact, resolved_model, binding)
-        });
+    let (native_replay, replay_disposition) =
+        turn.native_replay
+            .as_ref()
+            .map_or((None, None), |artifact| {
+                restore_replay(
+                    artifact,
+                    resolved_model,
+                    binding,
+                    turn.provider_metadata
+                        .get("cookie_agent.replay_source_wire_model_id")
+                        .and_then(serde_json::Value::as_str),
+                )
+            });
     // A model switch may project normalized reasoning only when the target
     // declares support for replaying provider-authoritative reasoning.
-    let preserve_reasoning = resolved_model.selection.model == binding.selection.model
-        || binding.descriptor.capabilities.replay.reasoning;
+    let preserve_reasoning =
+        native_replay.is_some() || binding.descriptor.capabilities.replay.reasoning;
     Ok((
         CompletedTurn {
             message: AssistantMessage {
@@ -2158,58 +2049,98 @@ mod tests {
         COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
         assemble_full_history, assemble_model_context, checkpoint_retained_history,
         compaction_prefix_history, compaction_tail_candidates, framed_compaction_summary,
-        oven_native_replay_fingerprint, persisted_native_replay_fingerprint,
         project_summary_context, replay_decisions, replay_decisions_with_preflight, restore_replay,
         tool_output_elision_marker, tool_result_part, wire_model,
     };
 
     #[test]
-    fn replay_rejection_fingerprint_includes_native_context_scope() {
-        let payload = serde_json::json!({
-            "format": "oven.anthropic.messages.assistant.v3",
-            "message": {"role":"assistant","content":[
-                {"type":"thinking","thinking":"same","signature":""}
-            ]},
-            "stop_reason": "end_turn",
-            "stop_sequence": null
-        });
-        let oven_artifact = |resource: &str| {
-            oven_sdk::NativeReplayArtifact::new(
-                AdapterId::new("oven.anthropic.messages"),
-                OvenNativeContextScope::new(
-                    oven_sdk::ProviderId::new("provider"),
-                    oven_sdk::ModelId::new("model"),
-                    ResourceId::new(resource).unwrap(),
-                )
-                .unwrap(),
-                payload.clone(),
+    fn replay_source_wire_id_round_trips_without_becoming_a_local_selection_key() {
+        let mut binding = binding();
+        let wire = "vendor/model[wire]:v1";
+        binding
+            .descriptor
+            .provider_metadata
+            .insert("cookie_agent.wire_model_id".into(), serde_json::json!(wire));
+        let artifact = oven_sdk::NativeReplayArtifact::capture(
+            binding.descriptor.adapter_id.clone(),
+            OvenNativeContextScope::new(
+                binding.descriptor.identity.provider_id.clone(),
+                oven_sdk::ModelId::new(wire),
+                ResourceId::new("resource").unwrap(),
             )
-            .unwrap()
-        };
-        let persisted_artifact = |resource: &str| {
-            NativeReplayArtifact::new(
-                SafeCode::new("oven.anthropic.messages").unwrap(),
-                Sha256Digest::of_bytes(b"selection"),
-                NativeContextScope {
-                    provider_id: ProviderId::new("provider").unwrap(),
-                    model_id: cookie_agent_protocol::ProviderModelId::new("model").unwrap(),
-                    resource_id: SafeDisplayText::new(resource).unwrap(),
-                },
-                payload.clone(),
-            )
-            .unwrap()
-        };
-
-        let oven_a = oven_artifact("endpoint-a");
-        let oven_b = oven_artifact("endpoint-b");
-        assert_ne!(
-            oven_native_replay_fingerprint(&oven_a),
-            oven_native_replay_fingerprint(&oven_b)
+            .unwrap(),
+            serde_json::json!({"opaque":true}),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let mut finish = oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::Stop);
+        finish.native_replay = Some(artifact);
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(vec![oven_sdk::AssistantPart::Text(
+                oven_sdk::TextPart::new("text"),
+            )]),
+            finish,
         );
+        let (mut persisted, _) = super::persist_turn(turn, &store, &binding).unwrap();
         assert_eq!(
-            oven_native_replay_fingerprint(&oven_a),
-            persisted_native_replay_fingerprint(&persisted_artifact("endpoint-a"))
+            persisted.native_replay.as_ref().unwrap().scope().model_id,
+            binding.selection.model.model_id()
         );
+        let (restored, _) =
+            super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
+                .unwrap();
+        assert_eq!(
+            restored
+                .finish
+                .native_replay
+                .unwrap()
+                .source_wire_model_id()
+                .unwrap()
+                .as_str(),
+            wire
+        );
+        persisted
+            .provider_metadata
+            .remove("cookie_agent.replay_source_wire_model_id");
+        let (legacy, _) =
+            super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
+                .unwrap();
+        assert!(
+            legacy
+                .finish
+                .native_replay
+                .unwrap()
+                .source_wire_model_id()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn required_vertex_call_witness_survives_persistence_without_native_artifact() {
+        let binding = binding();
+        let mut call = oven_sdk::ToolCallPart::new("call", "inspect", serde_json::json!({}));
+        oven_sdk::replay::mark_required_vertex_signature(
+            &mut call,
+            &serde_json::json!({"functionCall":{"name":"inspect","args":{}},"thoughtSignature":"opaque-required-state"}),
+        );
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(vec![oven_sdk::AssistantPart::ToolCall(call)]),
+            oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let (persisted, _) = super::persist_turn(turn, &store, &binding).unwrap();
+        let encoded = serde_json::to_string(&persisted).unwrap();
+        assert!(!encoded.contains("opaque-required-state"));
+        let persisted = serde_json::from_str(&encoded).unwrap();
+        let (restored, _) =
+            super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
+                .unwrap();
+        assert!(restored.finish.native_replay.is_none());
+        assert!(oven_sdk::replay::has_required_vertex_signature(
+            &restored.message.content
+        ));
     }
 
     #[test]
@@ -3177,25 +3108,19 @@ mod tests {
         let HistoryTurn::Assistant(turn) = &context.history[1] else {
             panic!("assistant turn");
         };
-        assert!(turn.finish.native_replay.is_none());
+        assert!(turn.finish.native_replay.is_some());
         assert!(context_has_reasoning(&context));
-        assert!(matches!(
-            context.replay_decisions.as_slice(),
-            [cookie_agent_protocol::ReplayDecision {
-                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
-                ..
-            }]
-        ));
+        assert!(context.replay_decisions.is_empty());
     }
 
     #[test]
-    fn model_switch_to_non_reasoning_replay_target_discards_reasoning() {
+    fn model_switch_defers_native_block_filtering_to_target_codec() {
         let context = switched_context(&model_binding_named("fallback-zero"));
         let HistoryTurn::Assistant(turn) = &context.history[1] else {
             panic!("assistant turn");
         };
-        assert!(turn.finish.native_replay.is_none());
-        assert!(!context_has_reasoning(&context));
+        assert!(turn.finish.native_replay.is_some());
+        assert!(context_has_reasoning(&context));
         assert!(
             turn.message
                 .content
@@ -3210,28 +3135,16 @@ mod tests {
         current.descriptor.adapter_id = AdapterId::new("anthropic");
         let context = switched_context(&current);
         assert!(context_has_reasoning(&context));
-        assert!(matches!(
-            context.replay_decisions.as_slice(),
-            [cookie_agent_protocol::ReplayDecision {
-                disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
-                ..
-            }]
-        ));
+        assert!(context.replay_decisions.is_empty());
     }
 
     #[test]
-    fn cross_protocol_non_reasoning_target_discards_reasoning() {
+    fn cross_protocol_target_receives_complete_source_for_payload_validation() {
         let mut current = model_binding_named("fallback-zero");
         current.descriptor.adapter_id = AdapterId::new("other-protocol");
         let context = switched_context(&current);
-        assert!(!context_has_reasoning(&context));
-        assert!(matches!(
-            context.replay_decisions.as_slice(),
-            [cookie_agent_protocol::ReplayDecision {
-                disposition: ReplayDisposition::DiscardedForeignAdapter { .. },
-                ..
-            }]
-        ));
+        assert!(context_has_reasoning(&context));
+        assert!(context.replay_decisions.is_empty());
     }
 
     #[test]
@@ -3246,17 +3159,11 @@ mod tests {
         current.descriptor.identity.provider_id = oven_sdk::ProviderId::new(provider_id.as_str());
         let context = switched_context(&current);
         assert!(context_has_reasoning(&context));
-        assert!(matches!(
-            context.replay_decisions.as_slice(),
-            [cookie_agent_protocol::ReplayDecision {
-                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
-                ..
-            }]
-        ));
+        assert!(context.replay_decisions.is_empty());
     }
 
     #[test]
-    fn cross_provider_non_reasoning_target_discards_reasoning() {
+    fn cross_provider_non_reasoning_target_defers_filtering_to_codec() {
         let mut current = model_binding_named("fallback-zero");
         let provider_id = ProviderId::new("other").expect("provider");
         current.selection.model = ModelKey::new(
@@ -3266,18 +3173,12 @@ mod tests {
         .expect("model key");
         current.descriptor.identity.provider_id = oven_sdk::ProviderId::new(provider_id.as_str());
         let context = switched_context(&current);
-        assert!(!context_has_reasoning(&context));
-        assert!(matches!(
-            context.replay_decisions.as_slice(),
-            [cookie_agent_protocol::ReplayDecision {
-                disposition: ReplayDisposition::DiscardedForeignModelSelection { .. },
-                ..
-            }]
-        ));
+        assert!(context_has_reasoning(&context));
+        assert!(context.replay_decisions.is_empty());
     }
 
     #[test]
-    fn cross_protocol_native_replay_is_discarded() {
+    fn artifact_with_invalid_source_adapter_attribution_is_discarded() {
         let binding = binding();
         let resolved = wire_model(&binding);
         let artifact = NativeReplayArtifact::new(
@@ -3291,13 +3192,11 @@ mod tests {
             serde_json::json!({"opaque": true}),
         )
         .expect("artifact");
-        let (restored, disposition) = restore_replay(&artifact, &resolved, &binding);
+        let (restored, disposition) = restore_replay(&artifact, &resolved, &binding, None);
         assert!(restored.is_none());
         assert!(matches!(
             disposition,
-            Some(ReplayDisposition::DiscardedForeignAdapter { found, expected })
-                if found.as_str() == "vendor.custom-adapter.v2"
-                    && expected.as_str() == binding.descriptor.adapter_id.as_str()
+            Some(ReplayDisposition::DiscardedInvalidPayload { .. })
         ));
     }
 
@@ -3364,7 +3263,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_provider_native_replay_is_discarded() {
+    fn cross_provider_native_replay_is_restored_for_target_validation() {
         let binding = binding();
         let current = wire_model(&binding);
         let provider_id = ProviderId::new("other").expect("provider");
@@ -3391,15 +3290,10 @@ mod tests {
             serde_json::json!({"opaque": true}),
         )
         .expect("artifact");
-        let (restored, disposition) = restore_replay(&artifact, &found, &binding);
-        assert!(restored.is_none());
-        assert!(matches!(
-            disposition,
-            Some(ReplayDisposition::DiscardedForeignModelSelection {
-                found: persisted,
-                expected,
-            }) if persisted == selection && expected == binding.selection
-        ));
+        let (restored, disposition) = restore_replay(&artifact, &found, &binding, None);
+        assert!(restored.is_some());
+        assert!(restored.unwrap().source_wire_model_id().is_none());
+        assert!(disposition.is_none());
     }
 
     #[test]
@@ -3417,7 +3311,7 @@ mod tests {
             serde_json::json!({"semantically":"invalid"}),
         )
         .expect("artifact");
-        let (restored, preflight) = restore_replay(&artifact, &resolved, &binding);
+        let (restored, preflight) = restore_replay(&artifact, &resolved, &binding, None);
         assert!(restored.is_some());
         assert!(preflight.is_none());
         let merged = replay_decisions_with_preflight(

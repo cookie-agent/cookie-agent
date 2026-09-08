@@ -145,6 +145,18 @@ impl ConcreteModel {
                     ))?),
                     namespace("anthropic", options.to_oven()?)?,
                 ),
+                AdapterConfig::OpenaiChat { settings, options }
+                    if matches!(self.auth, AuthConfig::None) =>
+                {
+                    (
+                        Arc::new(OpenAiChatModel::new_no_auth(ModelConfig::new(
+                            provider.with_auth(()),
+                            declaration,
+                            settings.to_openai_chat(header_routing_discriminator.as_deref()),
+                        ))?),
+                        namespace("openai", json!({ "chat": options }))?,
+                    )
+                }
                 AdapterConfig::OpenaiChat { settings, options } => (
                     Arc::new(OpenAiChatModel::new(ModelConfig::new(
                         provider.with_auth(self.openai_auth()?),
@@ -159,6 +171,21 @@ impl ConcreteModel {
                         declaration,
                         settings.to_openai_responses(header_routing_discriminator.as_deref()),
                     ))?),
+                    namespace("openai", json!({ "responses": options }))?,
+                ),
+                AdapterConfig::CompatibleResponses {
+                    adapter_id,
+                    settings,
+                    options,
+                } => (
+                    Arc::new(OpenAiResponsesModel::new_compatible(
+                        ModelConfig::new(
+                            provider.with_auth(self.compatible_auth()?),
+                            declaration,
+                            settings.to_openai_responses(header_routing_discriminator.as_deref()),
+                        ),
+                        oven_sdk::AdapterId::new(adapter_id.clone()),
+                    )?),
                     namespace("openai", json!({ "responses": options }))?,
                 ),
                 AdapterConfig::OpenaiCompatible { settings, options } => (
@@ -653,6 +680,13 @@ pub enum AdapterConfig {
         #[serde(default)]
         options: CompatibleOptionsConfig,
     },
+    CompatibleResponses {
+        adapter_id: String,
+        #[serde(default)]
+        settings: OpenAiResponsesSettingsConfig,
+        #[serde(default)]
+        options: OpenAiResponsesOptionsConfig,
+    },
     Google {
         settings: GoogleSettingsConfig,
         #[serde(default)]
@@ -751,6 +785,20 @@ fn header_routing_discriminator(values: &BTreeMap<String, String>) -> String {
         digest.update(b"\0");
     }
     format!("{:x}", digest.finalize())
+}
+
+fn combined_routing_discriminator(routing: Option<&str>, headers: Option<&str>) -> Option<String> {
+    match (routing, headers) {
+        (Some(routing), Some(headers)) => {
+            let mut digest = Sha256::new();
+            digest.update(b"cookie-agent/request-routing/v1\0");
+            digest.update(
+                serde_json::to_vec(&(routing, headers)).expect("routing strings serialize"),
+            );
+            Some(format!("{:x}", digest.finalize()))
+        }
+        (routing, headers) => routing.or(headers).map(str::to_owned),
+    }
 }
 
 fn namespace(
@@ -1155,10 +1203,10 @@ impl OpenAiChatSettingsConfig {
             stream_usage: self.stream_usage,
             structured_output: self.structured_output.into(),
             reasoning_field: self.reasoning_field.into(),
-            routing_discriminator: self
-                .routing_discriminator
-                .clone()
-                .or_else(|| header_discriminator.map(str::to_owned)),
+            routing_discriminator: combined_routing_discriminator(
+                self.routing_discriminator.as_deref(),
+                header_discriminator,
+            ),
             client: None,
             timeouts: self.timeouts.openai(),
         }
@@ -1178,10 +1226,10 @@ pub struct OpenAiResponsesSettingsConfig {
 impl OpenAiResponsesSettingsConfig {
     fn to_openai_responses(&self, header_discriminator: Option<&str>) -> OpenAiResponsesSettings {
         OpenAiResponsesSettings {
-            routing_discriminator: self
-                .routing_discriminator
-                .clone()
-                .or_else(|| header_discriminator.map(str::to_owned)),
+            routing_discriminator: combined_routing_discriminator(
+                self.routing_discriminator.as_deref(),
+                header_discriminator,
+            ),
             compaction: self.compaction.into(),
             client: None,
             timeouts: self.timeouts.openai(),
@@ -1322,10 +1370,10 @@ impl CompatibleSettingsConfig {
                 .collect(),
             request_id_headers: self.request_id_headers.clone(),
             strict_sse_content_type: self.strict_sse_content_type,
-            routing_discriminator: self
-                .routing_discriminator
-                .clone()
-                .or_else(|| header_discriminator.map(str::to_owned)),
+            routing_discriminator: combined_routing_discriminator(
+                self.routing_discriminator.as_deref(),
+                header_discriminator,
+            ),
             client: None,
             timeouts: self.timeouts.openai(),
         }
@@ -2088,6 +2136,52 @@ impl CohereOptionsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_routing_discriminator_composes_with_effective_header_templates() {
+        let settings = OpenAiResponsesSettingsConfig {
+            routing_discriminator: Some("header:x-api-key".into()),
+            ..OpenAiResponsesSettingsConfig::default()
+        };
+        let one = header_routing_discriminator(&BTreeMap::from([(
+            "x-route".into(),
+            "route-one-secret".into(),
+        )]));
+        let two = header_routing_discriminator(&BTreeMap::from([(
+            "x-route".into(),
+            "route-two-secret".into(),
+        )]));
+        let first = settings
+            .to_openai_responses(Some(&one))
+            .routing_discriminator
+            .unwrap();
+        assert_ne!(
+            first,
+            settings
+                .to_openai_responses(Some(&two))
+                .routing_discriminator
+                .unwrap()
+        );
+        assert_ne!(
+            first,
+            settings
+                .to_openai_responses(None)
+                .routing_discriminator
+                .unwrap()
+        );
+        assert!(!first.contains("route-one-secret"));
+        let other_auth = OpenAiResponsesSettingsConfig {
+            routing_discriminator: Some("header:api-key".into()),
+            ..settings
+        };
+        assert_ne!(
+            first,
+            other_auth
+                .to_openai_responses(Some(&one))
+                .routing_discriminator
+                .unwrap()
+        );
+    }
 
     #[test]
     fn session_header_templates_resolve_from_request_context() {

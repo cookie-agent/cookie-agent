@@ -1,6 +1,12 @@
 //! Strict provider authoring data transfer objects.
 
 mod cache;
+mod model;
+
+pub use model::{
+    AdaptorOptions, AuthoredCapabilities, ModelPricing, RequestEndpoint, VariantDefinition,
+    WireModelId,
+};
 
 pub use cache::{
     AnthropicCacheConfig, BedrockCacheConfig, CacheTtl, OpenAiCacheConfig, OpenAiCacheMode,
@@ -26,7 +32,7 @@ use zeroize::Zeroize;
 pub use crate::model_types::{
     CancellationCapability, CompactionCapability, FiniteF32, MediaCapability, MediaKind, MimeType,
     Modality, ModelCapabilities, NativeCompactionConfig, ProviderOptions as CustomProviderOptions,
-    ReasoningBehavior, ReplayCapability, RequestDefaults, ToolChoice, VariantDirective,
+    ReasoningBehavior, ReplayCapability, RequestDefaults, ToolChoice,
 };
 
 const MAX_ENDPOINT_BYTES: usize = 2048;
@@ -285,13 +291,16 @@ pub struct PartialRequestDefaults {
 #[serde(deny_unknown_fields)]
 pub struct ManagedModelOverride {
     pub enabled: Option<bool>,
+    pub model_id: Option<WireModelId>,
     pub display_name: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "generation_options")]
     pub defaults: PartialRequestDefaults,
+    #[serde(default, rename = "adaptor_options")]
+    pub options: AdaptorOptions,
+    pub pricing: Option<ModelPricing>,
     #[serde(default)]
-    pub variants: BTreeMap<VariantId, VariantDirective>,
+    pub variants: BTreeMap<VariantId, VariantDefinition>,
     pub default_variant: Option<ConfiguredModelDefault>,
-    pub shape: Option<ManagedModelShape>,
     #[serde(default)]
     pub compaction: NativeCompactionConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -313,11 +322,10 @@ pub struct ModelsDevProvider {
     pub setup: BTreeMap<SetupFieldId, ConfigSetupValue>,
     pub api_key: Option<SecretString>,
     pub auth_override: Option<AuthOverride>,
-    pub shape: Option<ManagedModelShape>,
     pub cache: Option<ProviderCacheConfig>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
-    #[serde(default)]
+    #[serde(default, rename = "models")]
     pub model_overrides: BTreeMap<ProviderModelId, ManagedModelOverride>,
 }
 
@@ -326,14 +334,16 @@ pub struct ModelsDevProvider {
 pub struct CustomModelDefinition {
     #[serde(default = "yes")]
     pub enabled: bool,
+    pub model_id: Option<WireModelId>,
     pub display_name: String,
-    pub capabilities: ModelCapabilities,
+    pub capabilities: AuthoredCapabilities,
+    #[serde(default, rename = "generation_options")]
+    pub defaults: PartialRequestDefaults,
+    #[serde(default, rename = "adaptor_options")]
+    pub options: AdaptorOptions,
+    pub pricing: Option<ModelPricing>,
     #[serde(default)]
-    pub defaults: RequestDefaults,
-    #[serde(default)]
-    pub options: CustomProviderOptions,
-    #[serde(default)]
-    pub variants: BTreeMap<VariantId, VariantDirective>,
+    pub variants: BTreeMap<VariantId, VariantDefinition>,
     pub default_variant: Option<ConfiguredModelDefault>,
     #[serde(default, deserialize_with = "deserialize_headers")]
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -424,9 +434,11 @@ fn validate_custom(provider: &CustomProvider) -> Result<(), AuthoringError> {
             )?;
         }
         validate_display_name(&model.display_name)?;
-        validate_capabilities(&model.capabilities)?;
-        validate_defaults(&model.defaults, &model.capabilities)?;
-        validate_custom_options(&model.options, provider.adaptor.as_str())?;
+        let adapter = crate::adapters::OvenAdapterFamily::parse(provider.adaptor.as_str())
+            .ok_or(AuthoringError::Adaptor)?;
+        let capabilities = model.capabilities.resolve(adapter);
+        validate_capabilities(&capabilities)?;
+        validate_defaults(&model.defaults.resolve(), &capabilities)?;
         if let Some(ConfiguredModelDefault::Named(id)) = &model.default_variant
             && !model.variants.contains_key(id)
         {
@@ -509,38 +521,6 @@ fn validate_capabilities(value: &ModelCapabilities) -> Result<(), AuthoringError
         }
     }
     Ok(())
-}
-
-fn validate_custom_options(
-    options: &CustomProviderOptions,
-    adaptor: &str,
-) -> Result<(), AuthoringError> {
-    let has_openai =
-        options.organization.is_some() || options.project.is_some() || options.store.is_some();
-    let has_anthropic = !options.beta.is_empty();
-    let has_compatible = options.api_path.is_some();
-    let has_setup_leak = options.api_version.is_some()
-        || options.location.is_some()
-        || options.region.is_some()
-        || options.deployment.is_some();
-    let valid = !has_setup_leak
-        && match adaptor {
-            "anthropic" | "anthropic-compatible" => !has_openai && !has_compatible,
-            "openai-chat" | "openai-responses" => !has_anthropic && !has_compatible,
-            "openai-compatible" => !has_anthropic && !has_openai,
-            "google-gemini"
-            | "google-vertex-gemini"
-            | "aws-bedrock-converse"
-            | "azure-openai-chat"
-            | "azure-openai-responses"
-            | "cohere-v2-chat" => !has_anthropic && !has_openai && !has_compatible,
-            _ => false,
-        };
-    if valid {
-        Ok(())
-    } else {
-        Err(AuthoringError::Options)
-    }
 }
 
 fn validate_defaults(
@@ -686,6 +666,15 @@ where
     deserializer.deserialize_map(Visitor)
 }
 
+fn deserialize_optional_model_headers<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_headers(deserializer).map(Some)
+}
+
 pub fn validate_header_limits(
     headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
 ) -> Result<(), AuthoringError> {
@@ -731,7 +720,9 @@ pub enum AuthoringError {
     EmptyModels,
     #[error("invalid display name")]
     DisplayName,
-    #[error("invalid model capabilities")]
+    #[error(
+        "invalid model capabilities; tool_calling = false requires parallel_tool_calls = false"
+    )]
     Capabilities,
     #[error("invalid request defaults")]
     Defaults,

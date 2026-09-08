@@ -10,8 +10,8 @@ use crate::{
         validate_custom_endpoint, validate_managed_base_url, wire_adapter_for_custom,
     },
     authoring::{
-        AuthDefinition, CustomProvider, ManagedModelOverride, ModelsDevProvider,
-        PartialRequestDefaults, RequestDefaults, validate_header_limits, validate_header_ownership,
+        AuthDefinition, CustomProvider, ManagedModelOverride, ModelsDevProvider, RequestDefaults,
+        validate_header_limits, validate_header_ownership,
     },
     catalog::{CatalogModelRecord, CatalogProviderRecord},
     compiler::{
@@ -62,6 +62,7 @@ pub struct CompiledDynamicModel {
     /// custom Responses providers so separate gateways never share history.
     pub custom: bool,
     pub id: ProviderModelId,
+    pub wire_model_id: crate::authoring::WireModelId,
     pub display_name: String,
     pub family_id: String,
     pub effective_npm: String,
@@ -73,6 +74,7 @@ pub struct CompiledDynamicModel {
     pub setup: Option<ValidatedSetup>,
     pub auth: CompiledAuthShape,
     pub capabilities: ModelCapabilities,
+    pub replay_declaration: Option<crate::ReplayCapability>,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
@@ -83,6 +85,142 @@ pub struct CompiledDynamicModel {
     pub default_variant: Option<VariantId>,
     pub status: CompiledModelStatus,
     pub behavior_fingerprint: Sha256Digest,
+}
+
+impl CompiledDynamicModel {
+    pub(crate) fn selected(
+        &self,
+        options: &ProviderOptions,
+        model_id: Option<&crate::authoring::WireModelId>,
+    ) -> Result<Self, DynamicCompileError> {
+        let mut selected = self.clone();
+        if let Some(model_id) = model_id {
+            selected.wire_model_id = model_id.clone();
+        }
+        let compatible = self.adapter_id.starts_with("oven.openai-compatible.");
+        let family = if compatible {
+            OvenAdapterFamily::OpenaiCompatible
+        } else {
+            self.adapter
+        };
+        selected.adapter = if options.request_endpoint.is_none() {
+            self.adapter
+        } else {
+            family.with_endpoint(options.request_endpoint)?
+        };
+        selected.resolved_shape = if matches!(
+            selected.adapter,
+            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+        ) {
+            "responses"
+        } else {
+            "chat"
+        }
+        .into();
+        selected.adapter_id = if compatible {
+            self.adapter_id.replacen(
+                if self.adapter == OvenAdapterFamily::OpenaiResponses {
+                    ".responses"
+                } else {
+                    ".chat"
+                },
+                if selected.adapter == OvenAdapterFamily::OpenaiResponses {
+                    ".responses"
+                } else {
+                    ".chat"
+                },
+                1,
+            )
+        } else if selected.adapter == self.adapter {
+            self.adapter_id.clone()
+        } else {
+            selected.adapter.protocol_recipe().into()
+        };
+        selected.options = options.clone();
+        selected.capabilities.native_replay = self.replay_declaration.unwrap_or_else(|| {
+            automatic_replay(
+                selected.adapter,
+                selected.capabilities.reasoning,
+                selected.setup.as_ref(),
+            )
+        });
+        Ok(selected)
+    }
+
+    fn validate_settings(&self) -> Result<(), DynamicCompileError> {
+        let compatible_accounts = self.adapter_id.starts_with("oven.openai-compatible.")
+            || self.auth.method == "no-auth-v1"
+                && self.adapter == OvenAdapterFamily::OpenaiResponses;
+        if compatible_accounts
+            && (self.options.organization.is_some() || self.options.project.is_some())
+        {
+            return Err(DynamicCompileError::EndpointSelection("organization/project adaptor_options require official OpenAI authentication, not compatible or unauthenticated Responses".into()));
+        }
+        if self.options.store == Some(true) {
+            return Err(DynamicCompileError::EndpointSelection("adaptor_options.store = true is unsupported: the integrated Responses encoder uses stateless store = false requests".into()));
+        }
+        let validate = |selected: &Self,
+                        defaults: &RequestDefaults,
+                        reasoning: Option<&crate::ReasoningBehavior>| {
+            validate_capability_shape(&selected.capabilities)
+                && validate_capability_ceiling(selected.adapter, &selected.capabilities).is_ok()
+                && validate_defaults(defaults, &selected.capabilities)
+                && validate_custom_options(&selected.options, selected.adapter)
+                && (reasoning.is_none() || selected.capabilities.reasoning)
+                && reasoning_supported(reasoning, selected.adapter)
+        };
+        if !validate(self, &self.defaults, None) {
+            return Err(DynamicCompileError::CustomModel);
+        }
+        for variant in self.variants.values() {
+            let selected = self.selected(&variant.options, variant.model_id.as_ref())?;
+            if compatible_accounts
+                && (selected.options.organization.is_some() || selected.options.project.is_some())
+            {
+                return Err(DynamicCompileError::EndpointSelection(format!(
+                    "variant `{}`: organization/project adaptor_options require official OpenAI authentication",
+                    variant.id
+                )));
+            }
+            if selected.options.store == Some(true) {
+                return Err(DynamicCompileError::EndpointSelection(format!(
+                    "variant `{}`: adaptor_options.store = true is unsupported by the stateless Responses encoder",
+                    variant.id
+                )));
+            }
+            if !validate(&selected, &variant.defaults, variant.reasoning.as_ref()) {
+                return Err(DynamicCompileError::Variant);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn automatic_replay(
+    adapter: OvenAdapterFamily,
+    reasoning: bool,
+    _setup: Option<&ValidatedSetup>,
+) -> crate::ReplayCapability {
+    adapter.automatic_replay(reasoning)
+}
+
+pub(crate) fn provider_wire_model_id(
+    id: &ProviderModelId,
+    adapter: OvenAdapterFamily,
+    setup: Option<&ValidatedSetup>,
+) -> Result<crate::authoring::WireModelId, DynamicCompileError> {
+    let wire = if matches!(
+        adapter,
+        OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
+    ) {
+        setup
+            .and_then(|setup| setup.values.get("deployment"))
+            .map_or(id.as_str(), String::as_str)
+    } else {
+        id.as_str()
+    };
+    crate::authoring::WireModelId::new(wire)
+        .map_err(|reason| DynamicCompileError::EndpointSelection(reason.into()))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -109,6 +247,8 @@ pub enum DynamicCompileError {
     Setup,
     #[error("invalid_endpoint")]
     Endpoint,
+    #[error("{0}")]
+    EndpointSelection(String),
     #[error("invalid_auth")]
     Auth,
     #[error("authored_base_url_requires_auth")]
@@ -117,9 +257,13 @@ pub enum DynamicCompileError {
     UnsupportedAdapter,
     #[error("{0}")]
     StaticHeaders(#[source] crate::authoring::AuthoringError),
-    #[error("invalid_custom_model")]
+    #[error(
+        "invalid model settings: check generation_options/adaptor_options against the selected endpoint and capabilities; tool_calling = false requires parallel_tool_calls = false"
+    )]
     CustomModel,
-    #[error("invalid_variant")]
+    #[error(
+        "invalid variant: check inherited settings against the selected endpoint, enabled = false conflicts, and default_variant"
+    )]
     Variant,
     #[error("invalid cache config: {0}")]
     Cache(String),
@@ -203,12 +347,7 @@ impl DynamicCompiler {
             if override_.and_then(|value| value.enabled) == Some(false) {
                 continue;
             }
-            let resolved = match resolve_model(
-                record,
-                model,
-                authored.and_then(|value| value.shape),
-                override_.and_then(|value| value.shape),
-            ) {
+            let resolved = match resolve_model(record, model, None, None) {
                 Ok(resolved) => resolved,
                 Err(error) => {
                     unsupported_models.push(UnsupportedModel {
@@ -275,10 +414,31 @@ impl DynamicCompiler {
         override_: Option<&ManagedModelOverride>,
         global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
     ) -> Result<CompiledDynamicModel, ModelLocalError> {
-        let adapter = resolved.adapter;
+        let options =
+            override_.map_or_else(ProviderOptions::default, |value| value.options.resolve());
+        let endpoint_family = if resolved.recipe.family == FamilyKind::OpenAiCompatibleChat {
+            OvenAdapterFamily::OpenaiCompatible
+        } else {
+            resolved.adapter
+        };
+        let adapter = if options.request_endpoint.is_none() {
+            resolved.adapter
+        } else {
+            endpoint_family
+                .with_endpoint(options.request_endpoint)
+                .map_err(ModelLocalError::Provider)?
+        };
         let adapter_id = match adapter {
-            OvenAdapterFamily::OpenaiCompatible => {
-                format!("oven.openai-compatible.chat.{}", provider_id.as_str())
+            _ if resolved.recipe.family == FamilyKind::OpenAiCompatibleChat => {
+                format!(
+                    "oven.openai-compatible.{}.{}",
+                    if adapter == OvenAdapterFamily::OpenaiResponses {
+                        "responses"
+                    } else {
+                        "chat"
+                    },
+                    provider_id.as_str()
+                )
             }
             OvenAdapterFamily::AnthropicCompatible => {
                 format!(
@@ -303,9 +463,11 @@ impl DynamicCompiler {
         if !validate_capability_shape(&capabilities)
             || validate_capability_ceiling(adapter, &capabilities).is_err()
         {
-            return Err(ModelLocalError::Unsupported(
-                "unsupported_model_capabilities".to_owned(),
-            ));
+            return Err(if override_.is_some() {
+                ModelLocalError::Provider(DynamicCompileError::CustomModel)
+            } else {
+                ModelLocalError::Unsupported("unsupported_model_capabilities; tool_calling = false conflicts with the parallel_tool_calls = true fallback".to_owned())
+            });
         }
         let template = authored
             .and_then(|value| value.base_url.as_ref())
@@ -318,6 +480,15 @@ impl DynamicCompiler {
             template.as_deref(),
             authored,
         )?;
+        capabilities.native_replay =
+            automatic_replay(adapter, capabilities.reasoning, setup.as_ref());
+        let wire_model_id = override_
+            .and_then(|value| value.model_id.clone())
+            .map_or_else(
+                || provider_wire_model_id(&model.id, adapter, setup.as_ref()),
+                Ok,
+            )
+            .map_err(ModelLocalError::Provider)?;
         let required_auth_method = match adapter {
             OvenAdapterFamily::AwsBedrockConverse => Some("aws-sigv4-credentials-v1"),
             OvenAdapterFamily::OpenaiResponses if resolved.recipe.family == FamilyKind::Bedrock => {
@@ -333,17 +504,25 @@ impl DynamicCompiler {
         )?;
         let mut defaults = managed_defaults(model);
         if let Some(override_) = override_ {
-            apply_partial_defaults(&mut defaults, &override_.defaults);
+            override_.defaults.apply(&mut defaults);
         }
         if !validate_defaults(&defaults, &capabilities) {
-            return Err(ModelLocalError::Unsupported(
-                "unsupported_model_capabilities".to_owned(),
-            ));
+            return Err(if override_.is_some() {
+                ModelLocalError::Provider(DynamicCompileError::CustomModel)
+            } else {
+                ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
+            });
         }
         let (mut variants, variant_order, default_variant) =
-            managed_variants(&model.reasoning_options, override_, adapter).map_err(|_| {
-                ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
-            })?;
+            managed_variants(&model.reasoning_options, override_, &defaults, &options).map_err(
+                |_| {
+                    if override_.is_some() {
+                        ModelLocalError::Provider(DynamicCompileError::Variant)
+                    } else {
+                        ModelLocalError::Unsupported("unsupported_protocol_feature".to_owned())
+                    }
+                },
+            )?;
         if variants
             .values()
             .any(|variant| !validate_defaults(&variant.defaults, &capabilities))
@@ -388,7 +567,6 @@ impl DynamicCompiler {
         } else {
             CompiledModelStatus::Available
         };
-        let options = ProviderOptions::default();
         let behavior_fingerprint = fingerprint(
             "cookie-agent/dynamic-model-behavior/v1",
             &(
@@ -398,6 +576,7 @@ impl DynamicCompiler {
                     catalog_revision,
                     provider_id,
                     &model.id,
+                    &wire_model_id,
                     resolved.recipe.family.id(),
                     &adapter_id,
                     adapter,
@@ -415,16 +594,21 @@ impl DynamicCompiler {
                 "managed_catalog",
             ),
         );
-        Ok(CompiledDynamicModel {
+        let compiled = CompiledDynamicModel {
             custom: false,
             id: model.id.clone(),
+            wire_model_id,
             display_name,
             family_id: resolved.recipe.family.id().to_owned(),
             effective_npm: resolved.npm.clone(),
             adapter_id,
-            resolved_shape: match resolved.shape {
-                crate::recipes::ResolvedShape::Chat => "chat",
-                crate::recipes::ResolvedShape::Responses => "responses",
+            resolved_shape: if matches!(
+                adapter,
+                OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
+            ) {
+                "responses"
+            } else {
+                "chat"
             }
             .to_owned(),
             reasoning_field: match model.interleaved {
@@ -439,6 +623,7 @@ impl DynamicCompiler {
             setup,
             auth,
             capabilities,
+            replay_declaration: None,
             defaults,
             options,
             headers,
@@ -448,7 +633,15 @@ impl DynamicCompiler {
             default_variant,
             status,
             behavior_fingerprint,
-        })
+        };
+        compiled.validate_settings().map_err(|error| {
+            if override_.is_some() {
+                ModelLocalError::Provider(error)
+            } else {
+                ModelLocalError::Unsupported(error.to_string())
+            }
+        })?;
+        Ok(compiled)
     }
 
     pub fn compile_custom(
@@ -469,7 +662,6 @@ impl DynamicCompiler {
             .ok_or(DynamicCompileError::UnsupportedAdapter)?;
         crate::authoring::validate_provider_cache(provider.cache.as_ref(), adapter.id())
             .map_err(DynamicCompileError::Cache)?;
-        let wire = wire_adapter_for_custom(adapter);
         validate_custom_endpoint(adapter, &provider.endpoint)
             .map_err(|_| DynamicCompileError::Endpoint)?;
         let setup_recipe = custom_setup_recipe(adapter);
@@ -480,26 +672,33 @@ impl DynamicCompiler {
         let auth = custom_auth_shape(&provider.auth, auth_method);
         let mut models = BTreeMap::new();
         for (id, model) in &provider.models {
-            let capabilities = model.capabilities.clone();
+            let options = model.options.resolve();
+            let resolved_adapter = adapter.with_endpoint(options.request_endpoint)?;
+            let wire = wire_adapter_for_custom(resolved_adapter);
+            let mut capabilities = model.capabilities.resolve(resolved_adapter);
+            if model.capabilities.native_replay.is_none() {
+                capabilities.native_replay =
+                    automatic_replay(resolved_adapter, capabilities.reasoning, Some(&setup));
+            }
+            let defaults = model.defaults.resolve();
+            let wire_model_id = model.model_id.clone().map_or_else(
+                || provider_wire_model_id(id, resolved_adapter, Some(&setup)),
+                Ok,
+            )?;
             if !validate_capability_shape(&capabilities)
-                || validate_capability_ceiling(adapter, &capabilities).is_err()
-                || !validate_defaults(&model.defaults, &capabilities)
-                || !validate_custom_options(&model.options, adapter)
-                || !validate_no_auth_profile(&auth, adapter, &model.capabilities, &model.options)
+                || validate_capability_ceiling(resolved_adapter, &capabilities).is_err()
+                || !validate_defaults(&defaults, &capabilities)
+                || !validate_custom_options(&options, resolved_adapter)
             {
                 return Err(DynamicCompileError::CustomModel);
             }
-            let (mut variants, variant_order, default_variant) =
-                custom_variants(&model.variants, model.default_variant.as_ref())
-                    .map_err(|_| DynamicCompileError::Variant)?;
-            if variants.values().any(|variant| {
-                !validate_defaults(&variant.defaults, &capabilities)
-                    || variant.reasoning.is_some() && !capabilities.reasoning
-                    || !validate_custom_options(&variant.options, adapter)
-                    || !reasoning_supported(variant.reasoning.as_ref(), adapter)
-            }) {
-                return Err(DynamicCompileError::Variant);
-            }
+            let (mut variants, variant_order, default_variant) = custom_variants(
+                &model.variants,
+                model.default_variant.as_ref(),
+                &defaults,
+                &options,
+            )
+            .map_err(|_| DynamicCompileError::Variant)?;
             let headers = merge_headers([
                 (global_headers, "global".to_owned()),
                 (&provider.headers, format!("provider `{provider_id}`")),
@@ -524,7 +723,6 @@ impl DynamicCompiler {
                 continue;
             }
             let endpoint = provider.endpoint.as_str().trim_end_matches('/').to_owned();
-            let options = model.options.clone();
             let safe_headers = headers
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -545,7 +743,7 @@ impl DynamicCompiler {
                     &capabilities,
                     &model.defaults,
                     &options,
-                    (&variants, &variant_order, &default_variant),
+                    (&variants, &variant_order, &default_variant, &wire_model_id),
                     "custom_authored",
                 ),
             );
@@ -554,12 +752,25 @@ impl DynamicCompiler {
                 CompiledDynamicModel {
                     custom: true,
                     id: id.clone(),
+                    wire_model_id,
                     display_name: model.display_name.clone(),
                     family_id: "custom".into(),
                     effective_npm: "custom".into(),
-                    adapter_id: wire.adapter_id.into(),
-                    resolved_shape: if adapter == OvenAdapterFamily::OpenaiResponses
-                        || adapter == OvenAdapterFamily::AzureOpenaiResponses
+                    adapter_id: if adapter == OvenAdapterFamily::OpenaiCompatible {
+                        format!(
+                            "oven.openai-compatible.{}.{}",
+                            if resolved_adapter == OvenAdapterFamily::OpenaiResponses {
+                                "responses"
+                            } else {
+                                "chat"
+                            },
+                            provider_id
+                        )
+                    } else {
+                        wire.adapter_id.into()
+                    },
+                    resolved_shape: if resolved_adapter == OvenAdapterFamily::OpenaiResponses
+                        || resolved_adapter == OvenAdapterFamily::AzureOpenaiResponses
                     {
                         "responses"
                     } else {
@@ -567,12 +778,13 @@ impl DynamicCompiler {
                     }
                     .into(),
                     reasoning_field: "reasoning_content".into(),
-                    adapter,
+                    adapter: resolved_adapter,
                     endpoint: Some(endpoint),
                     setup: Some(setup.clone()),
                     auth: auth.clone(),
                     capabilities,
-                    defaults: model.defaults.clone(),
+                    replay_declaration: model.capabilities.native_replay,
+                    defaults,
                     options,
                     headers,
                     cost: None,
@@ -583,6 +795,7 @@ impl DynamicCompiler {
                     behavior_fingerprint,
                 },
             );
+            models[id].validate_settings()?;
         }
         let safe_headers = provider
             .headers
@@ -652,7 +865,7 @@ pub(crate) fn validate_managed_cache(
 
     let mut adapters = BTreeSet::from([managed_provider_adapter(
         family.family,
-        authored.shape,
+        None,
         record.shape.as_deref(),
     )]);
     for (model_id, entry) in &record.models {
@@ -660,13 +873,17 @@ pub(crate) fn validate_managed_cache(
             continue;
         };
         let override_ = authored.model_overrides.get(model_id);
-        if let Ok(resolved) = resolve_model(
-            record,
-            model,
-            authored.shape,
-            override_.and_then(|value| value.shape),
-        ) {
-            adapters.insert(resolved.adapter);
+        if let Ok(resolved) = resolve_model(record, model, None, None) {
+            let adapter = resolved
+                .adapter
+                .with_endpoint(override_.and_then(|value| value.options.request_endpoint))?;
+            adapters.insert(
+                if resolved.recipe.family == FamilyKind::OpenAiCompatibleChat {
+                    OvenAdapterFamily::OpenaiCompatible
+                } else {
+                    adapter
+                },
+            );
         }
     }
     for adapter in adapters {
@@ -686,7 +903,6 @@ pub(crate) fn managed_provider_adapter(
         || authored_shape.is_none() && catalog_shape == Some("responses")
         || authored_shape.is_none() && catalog_shape.is_none() && family == FamilyKind::OpenAi;
     match family {
-        FamilyKind::OpenAiCompatibleChat if responses => OvenAdapterFamily::OpenaiResponses,
         FamilyKind::OpenAiCompatibleChat => OvenAdapterFamily::OpenaiCompatible,
         FamilyKind::Anthropic => OvenAdapterFamily::AnthropicCompatible,
         FamilyKind::OpenAi if responses => OvenAdapterFamily::OpenaiResponses,
@@ -895,25 +1111,19 @@ fn auth_shape(
     }
 }
 
-fn apply_partial_defaults(base: &mut RequestDefaults, overlay: &PartialRequestDefaults) {
-    base.temperature = overlay.temperature.or(base.temperature);
-    base.top_p = overlay.top_p.or(base.top_p);
-    base.max_output_tokens = overlay.max_output_tokens.or(base.max_output_tokens);
-    if let Some(stop) = &overlay.stop {
-        base.stop.clone_from(stop);
-    }
-    base.seed = overlay.seed.or(base.seed);
-    base.tool_choice = overlay
-        .tool_choice
-        .clone()
-        .or_else(|| base.tool_choice.clone());
-}
-
 fn validate_custom_options(options: &ProviderOptions, adapter: OvenAdapterFamily) -> bool {
     let has_openai =
         options.organization.is_some() || options.project.is_some() || options.store.is_some();
     let has_anthropic = !options.beta.is_empty();
-    let has_compatible = options.api_path.is_some();
+    let has_compatible = options.request_endpoint.is_some()
+        && !matches!(
+            adapter,
+            OvenAdapterFamily::OpenaiChat
+                | OvenAdapterFamily::OpenaiResponses
+                | OvenAdapterFamily::OpenaiCompatible
+                | OvenAdapterFamily::AzureOpenaiChat
+                | OvenAdapterFamily::AzureOpenaiResponses
+        );
     let has_setup_leak = options.api_version.is_some()
         || options.location.is_some()
         || options.region.is_some()
@@ -923,9 +1133,10 @@ fn validate_custom_options(options: &ProviderOptions, adapter: OvenAdapterFamily
             OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible => {
                 !has_openai && !has_compatible
             }
-            OvenAdapterFamily::OpenaiChat | OvenAdapterFamily::OpenaiResponses => {
-                !has_anthropic && !has_compatible
+            OvenAdapterFamily::OpenaiChat => {
+                !has_anthropic && !has_compatible && options.store.is_none()
             }
+            OvenAdapterFamily::OpenaiResponses => !has_anthropic && !has_compatible,
             OvenAdapterFamily::OpenaiCompatible => !has_anthropic && !has_openai,
             OvenAdapterFamily::GoogleGemini
             | OvenAdapterFamily::GoogleVertexGemini
@@ -955,24 +1166,4 @@ fn reasoning_supported(
                 | OvenAdapterFamily::CohereV2Chat
         ),
     }
-}
-
-fn validate_no_auth_profile(
-    auth: &CompiledAuthShape,
-    adapter: OvenAdapterFamily,
-    capabilities: &ModelCapabilities,
-    options: &ProviderOptions,
-) -> bool {
-    if auth.method != "no-auth-v1" || adapter != OvenAdapterFamily::OpenaiResponses {
-        return true;
-    }
-    capabilities.input == BTreeSet::from([crate::Modality::Text])
-        && capabilities.output == BTreeSet::from([crate::Modality::Text])
-        && !capabilities.tool_calling
-        && !capabilities.parallel_tool_calls
-        && !capabilities.structured_output
-        && !capabilities.reasoning
-        && capabilities.media.is_empty()
-        && capabilities.native_replay == crate::ReplayCapability::Unsupported
-        && options.store.is_none_or(|store| !store)
 }

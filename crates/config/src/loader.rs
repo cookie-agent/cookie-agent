@@ -198,6 +198,31 @@ pub fn load_from_roots(
             Ok((preset, effective))
         })
         .collect::<Result<_, ConfigError>>()?;
+    runtime.pricing.models = runtime
+        .providers
+        .iter()
+        .flat_map(|(provider_id, provider)| {
+            let prices: Vec<_> = match provider {
+                ProviderDefinition::ModelsDev(provider) => provider
+                    .model_overrides
+                    .iter()
+                    .filter_map(|(id, model)| model.pricing.map(|pricing| (id, pricing)))
+                    .collect(),
+                ProviderDefinition::Custom(provider) => provider
+                    .models
+                    .iter()
+                    .filter_map(|(id, model)| model.pricing.map(|pricing| (id, pricing)))
+                    .collect(),
+            };
+            prices.into_iter().map(|(id, pricing)| {
+                (
+                    cookie_agent_identity::ModelKey::new(provider_id.clone(), id.clone())
+                        .expect("validated model IDs"),
+                    pricing,
+                )
+            })
+        })
+        .collect();
     validate_runtime(&runtime)?;
     for (name, server) in &mcp_servers {
         server.config.validate(name)?;
@@ -370,7 +395,6 @@ fn decode_runtime_layer(
         "context_compaction",
         "session_title",
         "delegation",
-        "pricing",
         "headers",
         "mcp",
         "plugins",

@@ -1,14 +1,11 @@
 //! Reviewed Oven adapter recipes used by Registry 1.
 
-mod attribution;
 mod cache;
 mod capabilities;
 mod endpoints;
 mod headers;
-pub(crate) mod no_auth_responses;
 pub(crate) mod oven;
 
-pub(crate) use attribution::reattribute;
 pub use cache::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
     CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheMode,
@@ -35,6 +32,11 @@ pub struct WireAdapterSelection {
 pub fn wire_adapter_for_protocol(adapter_id: &str) -> Option<OvenAdapterFamily> {
     families()
         .find(|family| family.protocol_recipe() == adapter_id)
+        .or_else(|| {
+            adapter_id
+                .starts_with("oven.openai-compatible.responses.")
+                .then_some(OvenAdapterFamily::OpenaiResponses)
+        })
         .or_else(|| {
             adapter_id
                 .starts_with("oven.openai-compatible.chat.")
@@ -74,6 +76,44 @@ pub enum OvenAdapterFamily {
 }
 
 impl OvenAdapterFamily {
+    pub(crate) fn with_endpoint(
+        self,
+        endpoint: Option<crate::authoring::RequestEndpoint>,
+    ) -> Result<Self, crate::compiler::DynamicCompileError> {
+        use crate::authoring::RequestEndpoint::{Completions, Responses};
+        Ok(match (self, endpoint) {
+            (_, None) => self,
+            (Self::OpenaiChat | Self::OpenaiResponses, Some(Completions)) => Self::OpenaiChat,
+            (
+                Self::OpenaiChat | Self::OpenaiResponses | Self::OpenaiCompatible,
+                Some(Responses),
+            ) => Self::OpenaiResponses,
+            (Self::OpenaiCompatible, Some(Completions)) => Self::OpenaiCompatible,
+            (Self::AzureOpenaiChat | Self::AzureOpenaiResponses, Some(Completions)) => {
+                Self::AzureOpenaiChat
+            }
+            (Self::AzureOpenaiChat | Self::AzureOpenaiResponses, Some(Responses)) => {
+                Self::AzureOpenaiResponses
+            }
+            _ => {
+                return Err(crate::compiler::DynamicCompileError::EndpointSelection(
+                    format!(
+                        "adaptor `{}` does not support request_endpoint; omit it to use the native API",
+                        self.id()
+                    ),
+                ));
+            }
+        })
+    }
+
+    pub(crate) fn automatic_replay(self, reasoning: bool) -> crate::ReplayCapability {
+        if reasoning && matches!(self, Self::Anthropic | Self::AnthropicCompatible) {
+            crate::ReplayCapability::Required
+        } else {
+            crate::ReplayCapability::Optional
+        }
+    }
+
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {

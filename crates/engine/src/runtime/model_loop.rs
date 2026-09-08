@@ -32,8 +32,7 @@ use crate::{
     events::OutputHub,
     model_bridge::{AbortBridge, TurnAccumulator},
     model_history::{
-        assemble_model_context, persist_turn, replay_decisions_with_preflight,
-        unsigned_anthropic_replay_decisions, wire_model,
+        assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
     },
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
     policy::{
@@ -1406,8 +1405,8 @@ impl Engine {
                 let turn_context = Arc::new(TurnAgentContext {
                     agent: policy.agent.agent.clone(),
                     model: binding.selection.model.clone(),
-                    adapter: policy::wire_adapter(binding.protocol_recipe.as_str()),
-                    adapter_family: policy::adapter_family(binding.protocol_recipe.as_str()),
+                    adapter: policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
+                    adapter_family: policy::adapter_family(binding.descriptor.adapter_id.as_str()),
                     capabilities: policy
                         .model_capabilities(binding)
                         .ok_or(EngineError::NoRunnableModel)?,
@@ -1556,8 +1555,6 @@ impl Engine {
                     }
                 }
                 request.header_context = self.model_header_context(session)?;
-                let unsigned_replay_rejections =
-                    unsigned_anthropic_replay_decisions(&request.history);
                 crate::media::validate_media_part_counts(
                     &request.history,
                     &turn_context.capabilities,
@@ -1816,32 +1813,6 @@ impl Engine {
                             model_turn_seq,
                             turn_context,
                         });
-                    }
-                    Err(error)
-                        if !unsigned_replay_rejections.is_empty()
-                            && error.diagnostics.http_status == Some(400)
-                            && !meaningful_output =>
-                    {
-                        // Anthropic errors omit provider messages, so the status and the
-                        // known unsigned artifact are the reliable rejection signal.
-                        self.append(
-                            session,
-                            Some(run),
-                            event_origin("engine:model-loop"),
-                            Event::ModelReplayEvaluated {
-                                attempt_id,
-                                resolved_model: wire_model(binding),
-                                ordered_decisions: unsigned_replay_rejections,
-                            },
-                        )
-                        .await?;
-                        self.append(
-                            session,
-                            Some(run),
-                            event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
-                        )
-                        .await?;
                     }
                     Err(error)
                         if error.kind == oven_sdk::ModelErrorKind::ContextLength

@@ -235,9 +235,9 @@ fn header_interpolation_path(path: &[String]) -> bool {
     matches!(path, [headers, _] if headers == "headers")
         || matches!(path, [providers, _, headers, _] if providers == "providers" && headers == "headers")
         || matches!(path, [providers, _, models, _, headers, _]
-            if providers == "providers" && matches!(models.as_str(), "models" | "model_overrides") && headers == "headers")
+            if providers == "providers" && models == "models" && headers == "headers")
         || matches!(path, [providers, _, models, _, variants, _, headers, _]
-            if providers == "providers" && matches!(models.as_str(), "models" | "model_overrides") && variants == "variants" && headers == "headers")
+            if providers == "providers" && models == "models" && variants == "variants" && headers == "headers")
 }
 
 fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {
@@ -419,14 +419,7 @@ mod tests {
         for mut path in [
             vec!["headers", "x-test"],
             vec!["providers", "openai", "headers", "x-test"],
-            vec![
-                "providers",
-                "openai",
-                "model_overrides",
-                "gpt",
-                "headers",
-                "x-test",
-            ],
+            vec!["providers", "openai", "models", "gpt", "headers", "x-test"],
             vec![
                 "providers",
                 "custom",

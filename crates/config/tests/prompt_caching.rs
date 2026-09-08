@@ -42,7 +42,6 @@ temperature = true
 top_p = true
 seed = false
 native_replay = "unsupported"
-cancellation = "local_only"
 media = {{}}
 "#
     )
