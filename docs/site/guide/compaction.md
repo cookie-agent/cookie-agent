@@ -20,6 +20,11 @@ requires the managed provider identity `azure.openai` plus `model`, `version`,
 and `deployment_type` in the provider `setup` table so the window is scoped to
 an explicit deployment.
 
+This deployment-metadata requirement is specific to native compaction, not
+ordinary Azure replay. Native windows retain their exact scope checks; the
+[portable-block replay rules](providers.md#replay-and-cancellation) do not permit
+moving a compaction window to an incompatible provider or deployment.
+
 A native checkpoint stores a bounded opaque provider window rather than summary
 text. Events through the checkpoint boundary are omitted from normal history,
 no framed summary message is inserted, and the window is attached to the next
@@ -128,34 +133,8 @@ provider windows rather than this summary-and-tail layout.
 
 ## Configuration
 
-```toml
-[context_compaction]
-auto = true
-trigger = { percent = 70 }
-max_summary_bytes = 262144  # 256 KiB, max 2 MiB
-keep_recent_tokens = 16384 # 0 disables the recent-message tail
-```
-
-To reserve a fixed amount of headroom instead:
-
-```toml
-[context_compaction]
-trigger = { buffer_tokens = 33000 }
-```
-
-The legacy top-level `buffer_tokens = 33000` spelling remains accepted as an
-alias for the fixed trigger. It cannot be combined with `trigger`.
-
-- `auto = false` disables the automatic post-check and predictive signals.
-  Manual `/compact` and context-overflow recovery compaction remain available.
-- `max_summary_bytes` caps the summary produced by the compaction agent and must
-  be at most 2 MiB.
-- `keep_recent_tokens` is a nonnegative `u64` token budget, defaulting to 16,384.
-  The runtime caps the effective target at one quarter of the model context
-  limit and further reduces it to fit available post-checkpoint space. Complete
-  message groups may retain fewer tokens than that target. Configuration loading
-  does not clamp the requested value. This setting applies only to internal
-  summaries, including fallback after a native-compaction failure.
+See [Context Compaction](../engine/context_compaction.md) for settings, defaults,
+trigger forms, and inheritance.
 
 ## Manual compaction
 

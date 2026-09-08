@@ -35,16 +35,15 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   deploy:
-    name: Package docs
-    if: github.event_name != 'pull_request'
+    name: Publish docs to cookie-agent/doc
+    if: github.event_name == 'release' || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request')
     needs: check
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
@@ -61,66 +60,43 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add docs https://github.com/cookie-agent/doc.git
+          # Fine-grained PAT: only cookie-agent/doc, Contents read/write.
+          # The source repository's GITHUB_TOKEN cannot publish across repos.
+          git config credential.https://github.com.helper '!f() { if [ "$1" = get ]; then printf "%s\n" "username=x-access-token" "password=$DOCS_DEPLOY_TOKEN"; fi; }; f'
       - name: Fetch existing version tree
+        env:
+          DOCS_DEPLOY_TOKEN: ${{ secrets.DOCS_DEPLOY_TOKEN }}
         run: |
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            git fetch origin +refs/heads/gh-pages:refs/heads/gh-pages
-          else
-            status=$?
-            if [[ "$status" -ne 2 ]]; then
-              exit "$status"
-            fi
-          fi
+          : "${DOCS_DEPLOY_TOKEN:?Configure DOCS_DEPLOY_TOKEN with Contents write access to cookie-agent/doc}"
+          git fetch docs +refs/heads/gh-pages:refs/heads/gh-pages
       - name: Deploy development docs
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          DOCS_DEPLOY_TOKEN: ${{ secrets.DOCS_DEPLOY_TOKEN }}
         run: |
           deploy_dev() {
-            mike deploy --push dev || return
+            mike deploy --remote docs --push dev || return
             if ! git cat-file -e gh-pages:index.html 2>/dev/null; then
-              mike set-default --push dev
+              mike set-default --remote docs --push dev
             fi
           }
           if ! deploy_dev; then
-            git fetch origin +refs/heads/gh-pages:refs/heads/gh-pages
+            git fetch docs +refs/heads/gh-pages:refs/heads/gh-pages
             deploy_dev
           fi
       - name: Deploy release docs
         if: github.event_name == 'release'
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DOCS_DEPLOY_TOKEN: ${{ secrets.DOCS_DEPLOY_TOKEN }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           deploy_release() {
-            mike deploy --alias-type=redirect --push --update-aliases "$RELEASE_TAG" latest &&
-              mike set-default --push latest
+            mike deploy --remote docs --alias-type=redirect --push --update-aliases "$RELEASE_TAG" latest &&
+              mike set-default --remote docs --push latest
           }
           if ! deploy_release; then
-            git fetch origin +refs/heads/gh-pages:refs/heads/gh-pages
+            git fetch docs +refs/heads/gh-pages:refs/heads/gh-pages
             deploy_release
           fi
-      - name: Materialize versioned site
-        run: |
-          rm -rf _site_deploy
-          mkdir _site_deploy
-          git archive gh-pages | tar -x -C _site_deploy
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
-        with:
-          path: _site_deploy
-
-  publish:
-    name: Publish docs
-    if: github.event_name != 'pull_request'
-    needs: deploy
-    permissions:
-      actions: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

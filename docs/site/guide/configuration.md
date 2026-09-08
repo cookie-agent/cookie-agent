@@ -1,228 +1,88 @@
-# Configuration
+# config.toml
 
-cookie agent reads four independent configuration surfaces:
-
-| Surface | Location |
-|---|---|
-| Runtime, providers, MCP servers, and plugins | `~/.cookie-agent/config.toml` and `<cwd>/.cookie-agent/config.toml` |
-| Agents | `~/.cookie-agent/agents/<agent-id>.md` and `<cwd>/.cookie-agent/agents/<agent-id>.md` |
-| Skills | `~/.agents/skills/`, then `~/.cookie-agent/skills/`, then `.agents/skills/` + `.cookie-agent/skills/` from worktree root to cwd |
-| TUI | `~/.cookie-agent/tui.toml` |
-
-This page covers where configuration lives and how it behaves. For the complete
-key-by-key reference, see [Configuration Reference](../reference/configuration.md).
-Examples on this page target the user layer unless workspace behavior is named.
-The workspace file accepts the same syntax.
-
-## Locations and layering
-
-```text
-~/.cookie-agent/config.toml
-~/.cookie-agent/agents/<agent-id>.md
-<exact-cwd>/.cookie-agent/config.toml
-<exact-cwd>/.cookie-agent/agents/<agent-id>.md
-```
-
-There is no upward workspace search: configuration is loaded from the exact
-working directory the daemon started in. The user layer and the workspace layer
-are both optional. Workspace settings replace the corresponding user settings. A
-same-ID workspace provider, MCP server, plugin, or agent replaces the complete user
-definition; nested fields never merge. Every authored file is parsed strictly.
-Unknown fields, leftover schema/version fields, wrong types, and malformed content
-are hard errors; there are no migrations or silently ignored fields.
-
-## Optional runtime configuration
-
-No configuration file is required. For common per-user settings, create
-`~/.cookie-agent/config.toml`. Every top-level section is optional, and an empty
-file or provider map is valid. Use `<cwd>/.cookie-agent/config.toml` only for
-workspace-specific overrides.
+The engine reads `~/.cookie-agent/config.toml`, then
+`<exact-cwd>/.cookie-agent/config.toml`, over built-in defaults. Neither file is
+required; an empty file is valid. This complete example changes one setting:
 
 ```toml
-
-[providers]
-```
-
-If the global provider store is also empty, the TUI starts in setup mode and
-keeps `/connect` available.
-
-## Runtime settings
-
-All runtime sections default to safe values; you only need to write the ones you
-want to change:
-
-```toml
-
-[server]
-host = "127.0.0.1"
-port = 7419
-
-[tool_output]
-max_lines = 2000
-max_bytes = 51200
-
-[approval]
-timeout_ms = 30000
-
 [model_retry]
-standard_retries = 3
-overload_retries = 5
-backoff_ceiling_ms = 60000
-
-[context_compaction]
-auto = true
-trigger = { percent = 70 }
-max_summary_bytes = 262144
-keep_recent_tokens = 16384
-
-[session_title]
-max_chars = 80
-max_input_messages = 4
-generate_on_first_turn = true
-fallback_to_input_excerpt = true
-
-[delegation]
-max_depth = 3
-max_concurrency = 4
-
-[providers]
+standard_retries = 1
 ```
 
-Validation rules that apply regardless of what you set:
+## Locations and inheritance
 
-- The `cookie` binary requires `server.host` to be exactly `127.0.0.1`.
-- Positive size and timeout limits are required; compaction trigger percentages
-  must be from 1 through 99, and `context_compaction.max_summary_bytes` may not
-  exceed 2 MiB.
-- `context_compaction.keep_recent_tokens` accepts zero to disable the recent
-  original-message suffix. Its default is 16,384 tokens; the runtime caps it at
-  one quarter of the context limit and by actual post-checkpoint available
-  space. It applies only to internal summaries, not native windows. See
-  [Compaction](compaction.md) for complete-group retention rules.
-- Model retry counts are signed: zero disables retries after the first attempt,
-  and a negative value retries that error class until success or cancellation.
-  The default standard budget is three retries, or four total attempts; the
-  default overload budget is five retries, or six total attempts.
-  `model_retry.backoff_ceiling_ms` must be positive. A longer provider
-  `Retry-After` may exceed this local ceiling without a cap.
-- `delegation.max_concurrency` defaults to `4`; `0` is rejected. Excess
-  root-level background delegations queue up to four times the concurrency
-  limit. Foreground and nested delegations bypass the queue.
-- Provider definitions are validated per provider ID (see
-  [Providers](providers.md)).
-- MCP servers require exactly one stdio command or Streamable HTTP URL (see
-  [MCP servers](mcp.md)).
+The user layer and the exact working directory's `.cookie-agent` layer are both
+optional. Configuration is loaded from the exact working directory only; there
+is no upward search. Within a layer, `config.toml` and the `agents/` directory
+are optional. A same-ID workspace provider, MCP server, plugin, or agent replaces
+the complete user entry; nested fields never merge.
 
-## Plugins
+An authored settings table replaces the lower layer's whole table. Omitted
+fields in that replacement use defaults, not the lower file's values. For
+example, the snippet above also resets `overload_retries` and
+`backoff_ceiling_ms` to their defaults. An omitted table inherits unchanged.
+Global [headers](../engine/headers.md) are the exception: names merge and empty
+values delete inherited headers. Model and variant sparse inheritance happens
+within one provider definition, not between files.
 
-Plugins use the same user and exact-workspace `config.toml` layers as runtime
-settings. A minimal executable plugin entry is:
+Agents are separate [Markdown documents](agents.md); [skills](skills.md) have
+their own discovery rules. The client loads [tui.toml](../tui/configuration.md)
+independently and has no workspace layer.
 
-```toml
-[plugins.issue_tracker]
-command = "/opt/cookie-plugins/issue-tracker"
-args = ["--stdio"]
-```
+## Accepted top-level keys
 
-A same-name workspace entry replaces the complete user entry. Set `enabled =
-false` to keep a plugin from starting; its command, timeouts, and other fields
-are still validated. See [Plugins](plugins.md) for installation, permissions,
-and runtime behavior, or [Plugin development](../development/plugins.md) for
-the extension protocol and capabilities.
+Every key is optional. Unknown keys, including removed top-level `pricing`, fail.
+
+| Key | Canonical settings page |
+|---|---|
+| `server` | [Server](../engine/server.md) |
+| `tool_output` | [Tool Output](../engine/tool_output.md) |
+| `agent_md` | [AGENTS.md Context](../engine/agent_md.md) |
+| `approval` | [Approval](../engine/approval.md) |
+| `model_retry` | [Model Retry](../engine/model_retry.md) |
+| `context_compaction` | [Context Compaction](../engine/context_compaction.md) |
+| `session_title` | [Session Title](../engine/session_title.md) |
+| `delegation` | [Delegation](../engine/delegation.md) |
+| `headers` | [Request Header](../engine/headers.md) |
+| `providers` | [Providers](providers.md) |
+| `mcp` | [MCP](mcp.md) |
+| `plugins` | [Plugins](plugins.md) |
+
+## Strictness and limits
+
+Every authored file is parsed strictly. Unknown keys, leftover `schema` or
+`schema_version` keys, wrong types, and malformed content are hard errors with an
+actionable path, key, and line where available. No authored-file migrations or
+unknown-field ignores exist. Decoded values that hold secrets are zeroized when
+the load completes.
+
+TOML-level limits (enforced before deserialization):
+
+- Configuration file at most 1 MiB; agent document at most 256 KiB.
+- Maximum TOML nesting depth 32; at most 4096 entries per table or array.
+- String values at most 256 KiB; TOML datetimes rejected; floats must be finite.
 
 ## Environment interpolation
 
-`${env:NAME}` is a single-pass interpolation available only in approved provider
-secret values (`api_key`, `auth`/`auth_override` credential values, `setup`
-fields) and authored endpoint strings (`endpoint`, `base_url`). It is not
-available in permission patterns, agent documents, or custom static headers.
-Interpolation is applied at load time; a missing variable fails startup with the
-offending path.
+`${env:NAME}` is single-pass interpolation. `${env:NAME:-fallback}` uses the
+fallback when the variable is unset; the fallback may be empty and is split on
+the first `:-`. `$$` emits a literal `$`. Interpolation is allowed only in these
+paths:
 
-```toml
-[providers.openai]
-source = "models_dev"
-api_key = "${env:OPENAI_API_KEY}"
-```
+- `providers.<id>.endpoint`
+- `providers.<id>.base_url`
+- `providers.<id>.setup.<field>`
+- `providers.<id>.api_key`
+- `providers.<id>.auth_override.values.<field>`
+- `providers.<id>.auth.values.<field>`
+- `headers.<name>`
+- `providers.<id>.headers.<name>`
+- `providers.<id>.models.<model>.headers.<name>`
+- model and model-override `variants.<variant>.headers.<name>`
 
-Prefer interpolation or `/connect` over plaintext credentials, and never commit
-`.env` or a credential-bearing config.
-
-## Prompt caching
-
-Prompt-cache policy is configured on each provider. This GPT-5.6+ example keeps
-OpenAI's implicit breakpoint and adds stable system and latest-user boundaries:
-
-```toml
-[providers.openai.cache]
-mode = "auto"
-ttl = "30m"
-system = true
-rolling = true
-```
-
-Use `mode = "explicit"` when only the selected `system` and `rolling` boundaries
-should write. OpenAI and Azure OpenAI do not support a Cookie agent `tools`
-placement because provider breakpoints attach to content parts, not tool
-definitions. OpenAI and Azure always use the bare session UUIDv7 as their cache
-key. See the [configuration reference](../reference/configuration.md#providersidcache)
-for retention, placement, and provider-specific rules.
-
-## Agent documents
-
-Agents are Markdown files whose filename is the agent ID. Each file has strict
-YAML frontmatter and a nonempty Markdown body used as the system prompt:
-
-```markdown
----
-description: Reviews changes for correctness
-mode: subagent
-enabled: true
-models:
-  - model: "openai/gpt-5.6"
-    variant: null
-    cache:
-      openai:
-        mode: explicit
-        ttl: 30m
-        system: true
-        rolling: true
-limits:
-  max_output_tokens: 2048
-permissions:
-  read: allow
-  write: deny
-  bash:
-    "git diff*": allow
-    "*": ask
-  delegate: deny
----
-Review the requested change and report concrete findings.
-```
-
-Modes are `primary`, `subagent`, `all`, and `internal`. Internal agents are
-engine-only and cannot be selected as roots or delegation targets. The reserved
-built-ins are `approval`, `compaction`, and `title`; same-ID authored internal
-documents replace them through normal layering, and only internal agents may use
-`${parent_model}` in the `models` list.
-
-See [Agents](agents.md) for the full frontmatter reference and the built-in
-internal agents.
-
-## TUI configuration
-
-The TUI reads `~/.cookie-agent/tui.toml`. It is independent of the runtime
-config: there is no workspace layer and no environment-variable override. A
-missing file uses defaults; unknown keys or malformed values are rejected naming
-the path and key.
-
-```toml
-minimum_event_level = "warning"   # debug | info | warning | error
-theme = "auto"                    # auto | default | dark | mono | high-contrast
-```
-
-`theme` takes precedence over `COOKIE_THEME` and terminal detection, but
-leaving it unset is equivalent to `"auto"`. Automatic selection queries the
-terminal background with OSC 11, then checks `COLORFGBG`, then falls back to the
-light `default` theme. `NO_COLOR` and `TERM=dumb` always force monochrome. See
-`docs/tui.toml.example` for the fully commented example.
+`NAME` must be `[A-Z_][A-Z0-9_]*` (uppercase letters, digits, underscore, starting
+with a letter or underscore). A missing variable, a non-UTF-8 value, or an
+interpolation used anywhere else is a load error. A missing variable without a
+default remains an error. Header templates are validated at load time but kept
+unresolved for request-time expansion and stable manifests. Interpolation is not
+available in permission patterns or agent documents.

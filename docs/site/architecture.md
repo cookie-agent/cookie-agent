@@ -151,7 +151,7 @@ types, and malformed values are rejected without migration or silent ignores.
 The TUI additionally reads an independent `~/.cookie-agent/tui.toml`.
 
 See [Configuration](guide/configuration.md) and the
-[configuration reference](reference/configuration.md) for every key.
+[configuration reference](guide/configuration.md) for every key.
 
 ## Provider and model runtime
 
@@ -183,6 +183,21 @@ Each accepted run freezes its model selection into a project manifest under
 `<cwd>/.cookie-agent/model-snapshots/`, so later catalog, configuration, or store
 changes cannot silently change an accepted run's model behavior.
 
+Local selection/pricing identity is distinct from the effective provider wire
+model ID. Model and variant overrides resolve before execution; frozen bindings
+retain the selected wire ID and endpoint. Concrete SDK constructors provide
+their own request and capture attribution, including unauthenticated OpenAI
+Chat; no attribution-rewriting wrapper is used.
+
+History reconstruction validates saved provenance against its original turn,
+then leaves block eligibility to the target codec. Standard supported blocks
+are not restricted by source provider, header, or model fingerprints. Encrypted
+reasoning requires equal known effective wire model IDs and target support;
+required continuation evidence survives persistence so missing native state
+cannot silently normalize away. Integrity markers alone do not establish a
+required continuation. Native-compaction scopes are a separate contract. See
+[Providers](guide/providers.md#replay-and-cancellation) for operational effects.
+
 ## Engine
 
 `crates/engine` runs one actor per session. Actors serialize all mutations to a
@@ -202,7 +217,7 @@ session and drive the run loop:
   request the loop runs predictive compaction and, after a completed turn,
   post-check compaction (see [Compaction](guide/compaction.md)).
 - **Permissions.** Every prepared tool call is matched against the agent's
-  ordered permission rules (see [Permissions](guide/permissions.md)), and
+  ordered permission rules (see [Permissions](guide/agents.md#permissions)), and
   unmatched checks deny by default. Tool visibility is gated the same way: a
   tool is advertised to the model only when its action has an `allow` or `ask`
   rule in the agent document or session overlay. The

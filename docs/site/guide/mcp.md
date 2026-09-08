@@ -1,4 +1,4 @@
-# MCP servers
+# MCP [mcp]
 
 Cookie Agent supports MCP tools through `tools/list` and `tools/call`. It does
 not expose MCP resources or prompts. Server requests for sampling, elicitation,
@@ -6,14 +6,13 @@ roots, or other interactive input are rejected.
 
 ## Configuration
 
-Define servers by default in the user configuration at
-`~/.cookie-agent/config.toml`:
+`mcp` accepts one optional `servers` map, empty by default. Define entries in
+`~/.cookie-agent/config.toml`; this is a complete illustrative file:
 
 ```toml
 [mcp.servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
-env = { GITHUB_TOKEN = "token" }
 cwd = "/workspace"
 timeout_ms = 30000
 
@@ -54,7 +53,7 @@ oauth = { client_id = "cookie-agent", scopes = ["mcp"] }
 [mcp.servers.no_oauth]
 url = "https://static.example.com/mcp"
 oauth = false
-headers = { Authorization = "Bearer static-token" }
+headers = { Authorization = "Bearer REPLACE_WITH_LOCAL_TOKEN" }
 ```
 
 Omitting `oauth` is the default auto mode. `true` and `{}` enable the same
@@ -65,6 +64,14 @@ client, a server-supported Client ID Metadata Document, or Dynamic Client
 Registration in that order. A static `Authorization` header takes precedence
 over OAuth when both are configured; other static headers are sent alongside
 OAuth requests. OAuth is not used for stdio servers.
+
+MCP environment values and headers do not support engine `${env:NAME}`
+interpolation. Configure credentials locally, never in a committed example.
+Names must be nonempty, at most 128 bytes, and contain no control characters.
+`command` and an authored `cwd` must be nonempty. OAuth client IDs, secrets,
+and scopes must be nonempty; a secret requires a client ID. Metadata URLs must
+use HTTPS with a non-root path. Unknown fields and mixed transport fields fail,
+including on disabled entries.
 
 An authorization challenge changes the server state to `needs_auth`. Run
 `cookie mcp auth <server>`, or select the server in `/mcp` and press `a`, then
@@ -175,3 +182,45 @@ with an actionable error; malformed blocks degrade to inline notes. Blob
 resources without a declared MIME type are retained under the sniffed type.
 Results that would exceed the combined attachment budget keep what fits and
 degrade the remainder to inline notes.
+
+## Accepted fields
+
+These are the complete fields under `[mcp.servers.<name>]`. File precedence is
+described in [config.toml](configuration.md).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | *(none)* | Stdio server executable. Exactly one of `command` or `url` is required. |
+| `args` | array of strings | empty | Command arguments; valid only with `command`. |
+| `env` | map of strings | empty | Command environment additions; valid only with `command`. |
+| `cwd` | string | *(none)* | Child working directory; valid only with `command`. |
+| `url` | string | *(none)* | Absolute HTTP or HTTPS Streamable HTTP endpoint. Exactly one of `url` or `command` is required. |
+| `headers` | map of strings | empty | Static request headers; valid only with `url`. |
+| `oauth` | boolean or table | auto | Streamable HTTP OAuth. Omit, set `true`, or use `{}` for reactive OAuth; set `false` to disable it. A table accepts optional `client_id`, `client_secret`, `client_metadata_url`, and `scopes`. A static `Authorization` header takes precedence. |
+| `enabled` | boolean | `true` | Whether the server may connect. |
+| `lazy` | boolean | `false` | Defer connection and tool listing until first named use. |
+| `timeout_ms` | integer | `30000` | Positive timeout for connect, list, and call operations. |
+
+## Runtime layers and persistence
+
+The running engine adds a mutable `Runtime` layer for MCP server entries. It
+wins over the workspace and user file layers and lasts for the daemon lifetime.
+Runtime removals are tombstones: the named server is absent even when a file
+layer defines it. Runtime, user-file, and workspace-file entries use the same
+connection lifecycle. Nothing is written automatically.
+
+Explicit MCP write-back replaces only `[mcp.servers.<name>]` in the selected
+user or project file using a format-preserving TOML document edit. Unrelated
+keys, tables, and comments are retained. The complete candidate is passed
+through the strict configuration loader before an atomic replacement; an
+existing unknown field, type conflict, or malformed table fails without
+changing the file. The replacement syncs the candidate before rename and syncs
+the containing directory afterward. The newly staged replacement is owner-only;
+the existing source path is not validated before replacement. The source file is re-read and
+compared immediately before replacement, and a mismatch fails with a conflict
+instead of overwriting the external edit. A modification landing between that
+comparison and the rename itself cannot be detected — a narrow residual race
+that only matters if another writer edits the file in the same instant; avoid
+concurrent external edits while applying changes. The runtime entry remains the
+effective layer after a successful write, so normal file-layer provenance
+resumes on restart.

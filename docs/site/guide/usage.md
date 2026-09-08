@@ -34,9 +34,10 @@ the selected session total; clicking it opens `/usage`. Unpriced costs are
 omitted from both locations.
 
 Cost is always optional. Managed models use the selected models.dev catalog
-price tier for each request's reported input-token context size. Model-specific entries under `[pricing.models."provider/model"]` supply
+price tier for each request's reported input-token context size. Model-specific
+entries under `[providers.<provider>.models.<model>.pricing]` supply
 prices for custom models or override catalog prices, as described in the
-[configuration reference](../reference/configuration.md#pricingmodelsprovidermodel).
+[model pricing reference](providers.md#model-pricing).
 The precedence is config override, catalog, then no cost. An aggregate remains
 unpriced when any used model lacks a required rate or when a provider omits a
 usage split needed to apply a distinct cache or reasoning price.
@@ -52,10 +53,8 @@ New usage events stamp the request price selected when the request completes.
 Footers and rollups preserve those stamps, so later pricing changes do not
 rewrite already stamped costs. An explicit unpriced stamp also remains
 unpriced after configuration or catalog changes. Legacy events without the
-field are priced from
-the current configuration or catalog when a rollup is requested; mixed
-rollups therefore combine durable historical prices with best-effort current
-pricing for legacy records.
+field remain unpriced; current configuration does not retroactively price them.
+A mixed rollup containing such a record has no complete estimated-cost total.
 
 To evaluate prompt caching, compare equivalent workloads before and after
 changing `[providers.<id>.cache]`. Track `cache_hit_rate` after the first turn and
@@ -65,5 +64,6 @@ compare totals only after enough repeated-prefix turns to amortize any write and
 storage charges. Use the provider's off configuration as the baseline: set all
 Anthropic or Bedrock `system`, `tools`, and `rolling` values to `"off"`; for
 OpenAI GPT-5.6+, use `mode = "explicit"` with both placements false. Gemini
-caching is always implicit and has no off control. Provider-reported cache reads
-and writes should then remain zero where the provider exposes a kill switch.
+caching is always implicit and has no off control. Disabling authored cache
+placements is not a guarantee that provider-managed cache activity or billing
+stops; use the reported usage rather than assuming zero reads or writes.

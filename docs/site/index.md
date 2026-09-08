@@ -24,10 +24,10 @@ Provider setup and credentials are per-user and shared across workspaces.
 Credentials are checked when the provider is first used, not during the connect
 flow.
 
-The [installation guide](install.md#quick-start) continues through provider setup
-and the first run. See [Providers](guide/providers.md) for managed and custom
+The [installation guide](install.md#connect-a-model) ends with provider setup;
+[Run](guide/run.md) covers interactive and headless operation. See [Providers](guide/providers.md) for managed and custom
 provider options, [Plugins](guide/plugins.md) for executable extensions, and
-[Configuration](reference/configuration.md) for every configurable item.
+[Configuration](guide/configuration.md) for every configurable item.
 
 !!! warning "Keep credentials out of Git"
     Prefer `/connect` or `${env:NAME}` interpolation. Do not commit `.env`, a

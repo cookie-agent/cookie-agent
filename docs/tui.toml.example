@@ -3,7 +3,7 @@
 # Location: ~/.cookie-agent/tui.toml
 #
 # This file is independent from engine/workspace config. There is no
-# workspace layer and no environment-variable override for these keys; a
+# workspace layer or environment-selected file path; a
 # missing file uses the defaults shown below, and unknown keys or malformed
 # values are rejected with an actionable path/key error.
 
@@ -16,6 +16,7 @@ minimum_event_level = "warning"
 
 # Theme override. One of: "auto" | "default" | "dark" | "mono" | "high-contrast".
 # Precedence: this key > COOKIE_THEME > terminal detection.
-# Unset and "auto" query OSC 11, then COLORFGBG, then use the light default.
+# Explicit "auto" ignores COOKIE_THEME and queries OSC 11, then COLORFGBG,
+# then uses the light default. An unset key first allows COOKIE_THEME.
 # NO_COLOR and TERM=dumb always force monochrome regardless of this key.
 # theme = "auto"

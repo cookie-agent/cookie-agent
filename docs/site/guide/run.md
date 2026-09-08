@@ -1,18 +1,46 @@
-# Terminal UI
+# Run
 
-## Themes
+## Terminal UI
 
-With no theme setting, the TUI automatically chooses the light or Dark Roast
-bakery palette. It first queries the terminal background with OSC 11, then falls
-back to the last `COLORFGBG` field, and finally uses the light palette when
-neither signal is available. Set `theme = "auto"` or `COOKIE_THEME=auto` to
-request the same detection explicitly.
+Start in the workspace where the agent should operate:
 
-Set `theme = "default"` for the light palette or `theme = "dark"` for the bakery
-palette's dark roast. Dark is a curated palette with its own surfaces and
-accents; HighContrast uses terminal-driven bright ANSI colors on the terminal's
-own background. `NO_COLOR` and `TERM=dumb` force monochrome after selection for
-every configured theme.
+```sh
+cookie
+```
+
+This starts the local engine and terminal client together. Configure the
+[theme](../tui/theme.md) and [diagnostic filter](../tui/minimum_event_level.md)
+in the independent client configuration.
+When at least one model is available, select an agent and model if needed, type
+a request in the composer, and press Enter. If no authored root agent is
+runnable, the engine supplies the built-in `default` coding agent.
+
+Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
+`/cancel`. [Agent](agents.md) covers authored prompts and permissions.
+
+
+## Separate server and client
+
+
+The daemon binds to `127.0.0.1:7419` by default:
+
+```sh
+cookie daemon
+```
+
+Attach from another terminal:
+
+```sh
+cookie attach
+```
+
+The attach URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
+`--url`. Only loopback WebSocket URLs with the exact `/ws` path are accepted.
+The client uses the local daemon token; see [Server](../engine/server.md).
+Only open trusted workspaces: configured plugins and eager MCP servers can
+start during engine initialization, before a model tool call is approved.
+Allowed shell commands run without a filesystem sandbox; see the
+[security contract](security.md#process-boundary).
 
 ## Composer
 
@@ -29,7 +57,7 @@ Ctrl-P opens the command palette. The available commands are:
 | `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](agents.md#agent-presets) |
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
-| `/permissions` | Edit session permission overrides; see [Permissions](permissions.md) |
+| `/permissions` | Edit session permission overrides; see [Permissions](agents.md#permissions) |
 | `/sessions` | Choose a session |
 | `/skills` | List discovered skills, sources, precedence, and permission effects |
 | `/<skill-name> [args]` | Invoke a user-invocable skill |
@@ -121,7 +149,7 @@ The permission mode appears in the bottom bar. Click it to cycle
 `auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies to
 subsequent approvals throughout the selected session tree, including delegated
 descendants. Hard policy denies and doom-loop rejection still win in every
-mode. See [Permissions](permissions.md).
+mode. See [Permissions](agents.md#permissions).
 
 When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
@@ -145,3 +173,105 @@ Esc to close. Clicking the selected session cost in the bottom bar still opens
 this panel.
 
 See [Usage and cost](usage.md) for recording and pricing semantics.
+
+## Headless runs
+
+`cookie run` executes one prompt through the local engine without starting the
+TUI, daemon, or an in-process protocol server. It is intended for CI and scripts.
+
+### Prompt input
+
+Provide exactly one prompt source:
+
+```console
+cookie run "Review this workspace"
+cookie run -p "Review this workspace"
+cookie run -f request.txt
+printf '%s\n' 'Review this workspace' | cookie run -
+printf '%s\n' 'Review this workspace' | cookie run -p -
+```
+
+The positional prompt, `-p/--prompt`, and `-f/--prompt-file` conflict with each
+other. `-` reads standard input for any of them.
+
+### Selection and limits
+
+The default agent is the root-runnable `primary` agent, or the first
+root-runnable agent. The default model is its first live fallback, including a
+valid variant; if none is live, the first available model and its default
+variant are used. Select an agent preset with `--preset`; override the effective
+selection with `-a/--agent`, `-m/--model`, and `--variant`. Use `--variant base`
+to select no named variant. Every override is validated against the current
+coherent runtime before a session starts.
+
+`--resume-session <id>` continues an existing session and defaults to its
+creation preset. Supplying `--preset` selects a different preset for that run
+without rewriting the session's creation selection. See
+[Agent presets](agents.md#agent-presets) for resolution and persistence details.
+`--data-dir <path>` selects the session and artifact store. `--max-turns` and
+`--timeout` are positive guards and default to 100 root model turns and 600
+seconds. Reaching either guard cancels the run and waits for its terminal event.
+`SIGINT` follows the same cancellation path.
+
+### Permissions
+
+`--permission-mode` accepts `auto-approve` (`auto_approve`), `auto-approve-n`
+(`auto_approve_n`), `auto-approve-y` (`auto_approve_y`), `ask`, or `yolo`.
+The selected mode applies to the whole runtime session tree, including delegated
+descendants.
+Headless runs never wait for approval input. In `auto-approve-n`, a classifier
+escalation is rejected and cancels the root run with exit code `3`. In
+`auto-approve-y`, an escalation is approved once and the run continues
+automatically. Other escalations anywhere in the session tree are rejected;
+the runner cancels the root run and waits for the matching terminal event.
+
+`--allowed-tools` may be repeated or comma-delimited and accepts `read`,
+`write`, `bash`, `delegate`, `mcp`, `plugin`, `plugin:<name>`, and
+`skill:<name>` — each entry adds an `allow` overlay rule (resource `*`, or the
+given name). It does not deny omitted actions or replace existing agent policy.
+`webfetch` is not accepted; grant web access in the agent document.
+
+### Skills
+
+`--skill <name>` loads a user-invocable skill before the prompt run.
+`--skill-args <text>` supplies its raw arguments and requires `--skill`. Skill
+permission is evaluated before injection; use `--allowed-tools skill:<name>` to
+grant it explicitly in unattended runs. The load appends the same durable event
+used by interactive and model invocation.
+
+### Output
+
+Select `text`, `json`, or `none` with `-o/--output`. `--json` is an alias for
+`--output json` and conflicts with an explicit `--output`. `--output-file`
+redirects text or JSON output to a file and cannot be combined with
+`--output none`.
+
+Text mode writes only the terminal `final_text` to standard output. It does not
+stream model deltas. With `--verbose`, ANSI-free progress lines are written to
+standard error; standard error stays empty for a successful non-verbose run.
+
+JSON mode writes JSON Lines. Records use these stable `type` tags:
+
+- `event`: one accepted, ordered event for the active run.
+- `tool_output`: a retained or live tool-output delta, emitted with `--verbose`.
+- `tool_output_gap`: a tool-output retention or delivery gap, emitted with
+  `--verbose`.
+- `summary`: the final record, containing terminal status and exit code, IDs,
+  turn/rejection/recovery counts, cancellation cause, final text, and the
+  session usage and estimated-cost rollup.
+
+`--output none` suppresses command output. Diagnostics and verbose progress
+still use standard error.
+
+### Exit codes
+
+The active run's terminal event determines the runtime exit code. Command-line
+syntax errors use Clap's exit code `2` before the runtime starts.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | `RunCompleted`, or `user_before_input` intentionally handled the input without starting a run |
+| `1` | `RunFailed`, blocked model selection, or an unrecoverable active-driver failure |
+| `3` | `RunCancelled` after the engine accepted a permission-triggered cancellation |
+| `4` | Other `RunCancelled` outcomes and every `RunInterrupted`, including `SIGINT`, timeout, and turn-limit cancellation |
+| `5` | Environment or setup failure before the run becomes active |

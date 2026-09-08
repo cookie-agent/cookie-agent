@@ -1,5 +1,16 @@
 # Sessions
 
+Use `/sessions` to search and open saved sessions, or `/new` for a fresh root.
+Selecting a saved session restores its visible transcript; submitting another
+message continues it. A headless continuation uses:
+
+```sh
+cookie run --resume-session <session-id> "Continue the investigation"
+```
+
+See [Run](run.md#headless-runs) for selection overrides. For shortening model
+context without removing the saved log, see [Compaction](compaction.md).
+
 ## Lifecycle and persistence
 
 A new empty session exists only in memory. Its directory, metadata cache, and
@@ -22,7 +33,7 @@ configuration, or provider-store state changes later.
 ## Titles
 
 Root sessions may generate a title from their opening user messages according to
-the `session_title` configuration. A delegated session is titled immediately
+the [Session Title](../engine/session_title.md) configuration. A delegated session is titled immediately
 from the `delegate_subagent` description instead. The description is bounded by
 `session_title.max_chars`, and the delegated child does not run the title
 internal agent.
@@ -49,29 +60,3 @@ artifacts remain resolvable without copying their bytes.
 
 In the TUI, choose **Fork** from a user message. That message is included in the
 copied prefix, the new title receives ` (fork)`, and the new session is selected.
-
-## Compaction
-
-Automatic compaction is enabled by default. It triggers from actual token usage
-or a learned pre-send estimate relative to the model context limit. Raw history
-is preferred; old bulky tool outputs are replaced with artifact references only
-when the raw compaction input would overflow its budget or a normal model request
-has already failed for context length. If that is enough to bring an automatic
-compaction below its trigger, no summarizer call is made.
-
-Use `/compact` to force compaction for the selected idle session. Add optional
-focus text, for example:
-
-```text
-/compact preserve the parser decisions and failing test evidence
-```
-
-Steering remains available while compaction runs. Admitted inputs stay pending
-and are promoted only after the checkpoint, honoring any recalls made during
-compaction. Set `context_compaction.auto = false` to disable automatic signals;
-manual and context-overflow recovery compaction remain available.
-
-See [Compaction](compaction.md) for the trigger math, the internal agent that
-summarizes the discarded history prefix, and the bounded recent-message suffix
-retained alongside that summary. Compaction does not reread files; native
-provider windows remain unchanged and receive no independent recent-message tail.

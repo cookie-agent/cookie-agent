@@ -113,7 +113,7 @@ Cookie agent does not search another turn. Assistant and tool-result content is
 never selected because those marker locations are rejected by the provider.
 Compaction resolves the same structural placements and shares the parent's
 cached prefix rather than using an isolated cache namespace. See the
-[prompt-caching configuration reference](configuration.md#providersidcache).
+[prompt-caching configuration reference](../guide/providers.md#prompt-caching).
 
 ## Agent matrix
 
@@ -140,4 +140,4 @@ the admitted run freezes them. Changing, externally controlled, or redundant
 information remains in typed fields or explicit context turns.
 
 See [Agents](../guide/agents.md), [Events](events.md), and
-[Configuration](configuration.md).
+[Configuration](../guide/configuration.md).

@@ -4,7 +4,7 @@
 
 Simple and mighty coding agent.
 
-[![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/cookie-agent/)
+[![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io-blue)](https://cookie-agent.github.io/doc/)
 
 cookie agent is a Rust-powered terminal coding agent. The surface stays
 minimalistic — a daemon, a TUI, a headless runner — while the batteries are
@@ -43,7 +43,7 @@ Install the latest release with the generated shell installer:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.sh | sh
 ```
 
-See the [installation guide](https://cookie-agent.github.io/cookie-agent/install/)
+See the [installation guide](https://cookie-agent.github.io/doc/dev/install/)
 for direct binary downloads, nightly builds, configuration, and the first run.
 Running `cookie` starts a local daemon and opens the TUI. In the TUI, type
 `/connect` to store a provider connection, then start a session.
@@ -61,9 +61,10 @@ cookie run "Review this workspace"
 ## Documentation
 
 Setup, configuration, and task-oriented guides are at
-[cookie-agent.github.io/cookie-agent](https://cookie-agent.github.io/cookie-agent/),
-including [Installation](https://cookie-agent.github.io/cookie-agent/install/),
-[Development](https://cookie-agent.github.io/cookie-agent/development/building/),
-[Providers](https://cookie-agent.github.io/cookie-agent/guide/providers/),
-[Plugins](https://cookie-agent.github.io/cookie-agent/guide/plugins/), and
-[Permissions](https://cookie-agent.github.io/cookie-agent/guide/permissions/).
+[cookie-agent.github.io/doc](https://cookie-agent.github.io/doc/),
+including the development version's [Installation](https://cookie-agent.github.io/doc/dev/install/),
+[Run](https://cookie-agent.github.io/doc/dev/guide/run/),
+[Development](https://cookie-agent.github.io/doc/dev/development/building/),
+[Providers](https://cookie-agent.github.io/doc/dev/guide/providers/),
+[Plugins](https://cookie-agent.github.io/doc/dev/guide/plugins/), and
+[Agent permissions](https://cookie-agent.github.io/doc/dev/guide/agents/#permissions).

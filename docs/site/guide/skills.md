@@ -1,4 +1,4 @@
-# Skills
+# Skill
 
 Skills are reusable instruction bundles loaded once when the engine opens. A
 skill is a directory whose name contains lowercase letters, digits, and single
@@ -28,6 +28,8 @@ not hot-reloaded; restart the engine after changing them.
 
 ## Authoring
 
+Complete `release-check/SKILL.md`:
+
 ```markdown
 ---
 name: release-check
@@ -46,6 +48,13 @@ Optional fields are `when_to_use`, `allowed-tools`,
 `argument-hint`, `license`, `compatibility`, and `metadata`. Unknown fields are
 errors. `model` must be a valid `provider/model` key and is rejected during
 discovery otherwise. `context` accepts only `fork`.
+
+`disable-model-invocation` defaults to false and `user-invocable` defaults to
+true. `allowed-tools` is omitted by default (no extra grants); an authored empty
+string is invalid. Optional text fields are strings; `model` and `context` are
+unset by default, and `metadata` is an empty map of YAML values. Files are
+limited to 256 KiB and must have a nonempty body. The declared name must match
+the directory name.
 
 Arguments replace `$ARGUMENTS` and positional `$1`, `$2`, and later forms.
 `${COOKIE_SKILL_DIR}` expands to the skill directory. Expansion is textual and

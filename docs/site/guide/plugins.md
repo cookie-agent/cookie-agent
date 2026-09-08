@@ -1,4 +1,4 @@
-# Plugins
+# Plugins [plugins]
 
 Plugins are executable processes that extend cookie agent without loading code
 into the engine process. Install a plugin by obtaining its executable from its
@@ -12,6 +12,9 @@ contracts, see [Plugin development](../development/plugins.md).
 
 Configure each plugin under `[plugins.<name>]` in user or workspace
 `config.toml`. A workspace entry replaces a user entry with the same name.
+The map defaults to empty. Names must be nonempty, at most 128 bytes, and contain
+no control characters. The following is a complete illustrative `config.toml`;
+the executable and working directory must exist when the engine starts.
 
 ```toml
 [plugins.example]
@@ -85,7 +88,7 @@ permissions:
 ```
 
 The first rule allows `issue_read` for any primary resource; the second asks
-before `issue_delete`. See [Permissions](permissions.md) for policy precedence
+before `issue_delete`. See [Permissions](agents.md#permissions) for policy precedence
 and session overrides.
 
 ## Status and restart behavior
@@ -110,3 +113,39 @@ is only as complete as the plugin's own durable records.
 
 During shutdown, the engine requests plugin shutdown, waits for the configured
 grace period, and then terminates the process if needed.
+
+## Accepted fields
+
+Plugin definitions are layered by plugin name. A workspace definition replaces
+the complete same-name user definition without merging nested fields. The
+replacement keeps that user's position in authored order, which is also the
+interception order; workspace-only plugins append in workspace-authored order.
+Plugin authors can use the
+[development guide](../development/plugins.md) for protocol and tool contracts.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | *(required)* | Plugin executable. |
+| `args` | array of strings | empty | Command arguments. |
+| `env` | map of strings | empty | Complete child environment; inherited variables are cleared. |
+| `cwd` | string | *(none)* | Child working directory. |
+| `enabled` | boolean | `true` | Whether the plugin starts with the engine. |
+| `producer_messaging` | boolean | `false` | Opt in to the producer messaging protocol capability, allowing the plugin to register producers and send model-bound messages. |
+| `interception_timeout_ms` | integer | `2000` | Positive timeout for interception requests. |
+| `startup_timeout_ms` | integer | `10000` | Positive timeout for initialization. |
+| `shutdown_grace_ms` | integer | `3000` | Positive graceful shutdown period before termination. |
+| `tool_timeout_ms` | integer | `30000` | Positive timeout for each plugin tool call. |
+
+Plugin entries reject unknown fields. `command` must be present and nonempty,
+`cwd` must be nonempty when set, and every timeout must be greater than zero.
+These rules apply even when `enabled = false`; disabling an entry prevents
+startup but does not bypass configuration validation.
+
+The child receives only the variables in `env`. It does not inherit the
+engine's environment, including `PATH`; use an absolute `command` and configure
+`PATH` explicitly when the executable or its children need it.
+
+Plugin commands are trusted local code, not a sandbox. Review workspace plugin
+configuration before opening the workspace. Tool permissions do not prevent
+configured startup or independently authorize interception hooks. See
+[security boundaries](security.md#process-boundary).

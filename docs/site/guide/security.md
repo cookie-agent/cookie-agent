@@ -29,7 +29,7 @@ platform-specific validation-to-use guarantees are described below.
 Permission matching is deliberately separate: it uses only the normalized
 lexical path requested by the caller, even when that alias leads outside the
 workspace. The resolved destination does not receive a second permission check.
-See [Permissions](permissions.md#resource-labels).
+See [Permissions](agents.md#resource-labels).
 
 ### Linux
 

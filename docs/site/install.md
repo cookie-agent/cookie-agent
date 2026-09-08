@@ -58,75 +58,15 @@ and select a nightly to download an archive or use its generated installer
 command. Each prerelease provides PowerShell (`irm ... | iex`) and shell
 (`curl ... | sh`) installers pinned to that prerelease.
 
-## Quick start
+## Connect a model
 
-After installation, change to the workspace where cookie agent should operate.
-Running `cookie` without a subcommand starts a local daemon and opens the TUI.
-
-### Start without configuration
-
-Both user and workspace configuration are optional. Start cookie agent directly:
+Change to the workspace where the agent should operate and start the terminal UI:
 
 ```sh
 cookie
 ```
 
-When no provider is available, the TUI starts in setup mode. Type `/connect`,
-select a managed provider, and fill in its recipe-defined setup and credential
-fields. The durable store is global to the user, so other workspaces can use the
-same compatible connection. The form does not contact the provider; the first
-model request verifies the credentials.
-
-### Optional user configuration
-
-Create `~/.cookie-agent/config.toml` only when you have settings to author. For
-example, an environment-backed managed provider can be declared as:
-
-```toml
-
-[providers.openai]
-source = "models_dev"
-api_key = "${env:OPENAI_API_KEY}"
-```
-
-Export the variable before launching cookie agent:
-
-```sh
-export OPENAI_API_KEY='your-key'
-cookie
-```
-
-Workspace-specific settings use the same syntax in
-`<cwd>/.cookie-agent/config.toml` and take precedence over user settings. A
-same-ID workspace provider, MCP server, plugin, or agent replaces the complete
-user entry; nested fields never merge.
-
-See [Providers](guide/providers.md) for precedence rules and custom providers.
-
-### First run
-
-When at least one model is available, select an agent and model if needed, type
-a request in the composer, and press Enter. If no authored root agent is
-runnable, the engine supplies the built-in `default` coding agent.
-
-Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
-`/cancel`. The [TUI guide](guide/tui.md) covers editing, steering, approvals,
-selection, and message actions. [Agents](guide/agents.md) explains the built-in
-internal agents and how to author your own.
-
-### Separate daemon and TUI
-
-The daemon binds to `127.0.0.1:7419` by default:
-
-```sh
-cookie daemon
-```
-
-Attach from another terminal:
-
-```sh
-cookie attach
-```
-
-The attach URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
-`--url`. Only loopback WebSocket URLs with the exact `/ws` path are accepted.
+No configuration file is required. When no provider is available, the TUI opens
+in setup mode. Use `/connect` to choose a [managed provider](guide/providers.md#managed-providers)
+and enter its setup and credentials, or configure a
+[custom model](guide/providers.md#custom-model-example) in `config.toml`.

@@ -1,4 +1,4 @@
-# Goals
+# Goal Mode
 
 Goal mode lets you give a root session a durable objective and a checklist the
 agent maintains while it works. It is activated explicitly: the engine never

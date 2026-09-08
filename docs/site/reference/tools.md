@@ -97,7 +97,7 @@ depends on two checks, in order:
    capability.
 2. **Family deliverability.** The provider's wire API must accept the media
    kind either inside a tool result or in a following user turn (see the
-   [provider matrix](../guide/providers.md#media-in-tool-results)). If it does
+   [delivery matrix](#media-delivery)). If it does
    not, the call fails with a tool error naming the family.
 
 Both rejections are ordinary tool errors: the model sees the reason and can
@@ -121,6 +121,22 @@ wire format cannot author arbitrary additional messages.
 Media does not survive context pressure. Tool-output elision removes the parent
 result and all of its emitted messages as one unit, and compaction checkpoints
 drop attachments. The model can re-read the source file to recover it.
+
+### Media delivery
+
+This matrix describes tool-origin media, not every input type the upstream API
+accepts. The effective model must also declare the modality and limits.
+
+| Effective adaptor family | Images | PDF | Video | Audio |
+|---|---|---|---|---|
+| Anthropic | Tool result | Tool result | No | No |
+| Anthropic-compatible | Tool result | Tool result | User turn on capable MiniMax models | No |
+| Bedrock Converse | Tool result | Tool result | Tool result on capable Nova models | No |
+| OpenAI/compatible Responses, Azure Responses | Tool result | No | No | No |
+| OpenAI Chat, Azure Chat | No | No | No | No |
+| OpenAI-compatible Chat | No | No | User turn on capable Kimi/Qwen models | No |
+| Gemini, Vertex Gemini | No | No | User turn | User turn |
+| Cohere | No | No | No | No |
 
 ## Bash
 
