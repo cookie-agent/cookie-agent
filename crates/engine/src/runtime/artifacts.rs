@@ -1555,8 +1555,26 @@ mod windows {
                 .expect("open replacement")
                 .set_times(std::fs::FileTimes::new().set_modified(modified))
                 .expect("preserve replacement mtime");
+            // MoveFileExW cannot replace an open destination, even with delete
+            // sharing. Rename the pinned source aside, then occupy its vacant path.
+            // This simulates path substitution without requiring POSIX replacement.
+            cookie_agent_models::secure_store::replace_windows_path(
+                &path,
+                &artifacts.join("displaced"),
+            )
+            .expect("move pinned artifact aside");
             cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
                 .expect("replace cached artifact path");
+            assert_eq!(
+                std::fs::read(&path).expect("read substituted path"),
+                vec![b'x'; original.len()]
+            );
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .expect("substituted path mtime"),
+                modified
+            );
 
             assert_eq!(
                 store
