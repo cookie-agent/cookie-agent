@@ -28,6 +28,7 @@ const TEMPORARY_ARTIFACT_GRACE: std::time::Duration = std::time::Duration::from_
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
     entries: VecDeque<(String, File)>,
+    generation: u64,
 }
 
 impl VerifiedFileCache {
@@ -48,7 +49,44 @@ impl VerifiedFileCache {
     }
 
     fn evict(&mut self, digest: &str) {
+        self.generation = self.generation.wrapping_add(1);
         let _ = self.take(digest);
+    }
+
+    fn restore(&mut self, digest: &str, file: File, generation: u64) {
+        // GC may evict while a checked-out handle is being verified. Do not put
+        // a handle back after that invalidation and resurrect a removed blob.
+        if self.generation == generation {
+            self.insert(digest.to_owned(), file);
+        }
+    }
+}
+
+#[cfg(test)]
+type IoHook = std::sync::Arc<dyn Fn(&str, &str) -> std::io::Result<()> + Send + Sync>;
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ArtifactIoTestHook(std::sync::Mutex<Option<IoHook>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for ArtifactIoTestHook {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ArtifactIoTestHook")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+impl ArtifactIoTestHook {
+    pub(crate) fn set(&self, hook: IoHook) {
+        *self.0.lock().unwrap() = Some(hook);
+    }
+
+    pub(crate) fn run(&self, operation: &str, key: &str) -> std::io::Result<()> {
+        let hook = self.0.lock().unwrap().clone();
+        hook.map_or(Ok(()), |hook| hook(operation, key))
     }
 }
 
@@ -106,10 +144,9 @@ mod verified_bytes_cache_tests {
 mod temporary_cleanup_tests {
     use std::time::{Duration, SystemTime};
 
-    use cookie_agent_protocol::{OutputStream, PersistedToolResult, SafeDisplayText};
     use fs2::FileExt as _;
 
-    use super::{ArtifactStore, OutputCapture};
+    use super::ArtifactStore;
 
     #[test]
     fn startup_cleanup_preserves_fresh_temporary_artifacts_and_removes_old_ones() {
@@ -140,98 +177,6 @@ mod temporary_cleanup_tests {
         drop(active);
         drop(ArtifactStore::open(artifacts).expect("reopen with abandoned temporary"));
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn capture_commit_unlocks_before_immediate_read_for_new_and_deduplicated_content() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let artifacts = root.path().join("artifacts");
-        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-        for _ in 0..2 {
-            let capture = OutputCapture::new(store.clone()).expect("output capture");
-            capture.write(OutputStream::Stdout, b"locked capture\n");
-            let result = capture
-                .finish(
-                    PersistedToolResult {
-                        title: SafeDisplayText::new("Capture").expect("title"),
-                        output: String::new(),
-                        metadata: serde_json::Value::Null,
-                        truncation: None,
-                        attachments: Vec::new(),
-                        additional_messages: Vec::new(),
-                    },
-                    100,
-                    4096,
-                )
-                .expect("commit and preview capture");
-            let digest = result.metadata["streams"]["stdout"]["sha256"]
-                .as_str()
-                .expect("stdout digest");
-            assert_eq!(
-                store
-                    .read_paged(digest, 0, 10)
-                    .expect("immediate final-path read")
-                    .content,
-                "locked capture\n"
-            );
-            let probe = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(artifacts.join(digest))
-                .expect("open committed capture through second handle");
-            probe
-                .try_lock_exclusive()
-                .expect("capture lock released after commit");
-            fs2::FileExt::unlock(&probe).expect("unlock probe");
-        }
-    }
-
-    #[test]
-    fn capture_commit_refreshes_old_mtime_before_unlock_and_gc() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let artifacts = root.path().join("artifacts");
-        let sessions = root.path().join("sessions");
-        std::fs::create_dir(&sessions).expect("sessions directory");
-        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-        let capture = OutputCapture::new(store.clone()).expect("output capture");
-        capture.write(OutputStream::Stdout, b"long running capture\n");
-        let old = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
-        capture
-            .set_modified_for_test(old)
-            .expect("age in-flight capture");
-
-        let result = capture
-            .finish(
-                PersistedToolResult {
-                    title: SafeDisplayText::new("Capture").expect("title"),
-                    output: String::new(),
-                    metadata: serde_json::Value::Null,
-                    truncation: None,
-                    attachments: Vec::new(),
-                    additional_messages: Vec::new(),
-                },
-                100,
-                4096,
-            )
-            .expect("commit aged capture");
-        let digest = result.metadata["streams"]["stdout"]["sha256"]
-            .as_str()
-            .expect("stdout digest");
-        let path = artifacts.join(digest);
-        let modified = std::fs::metadata(&path)
-            .and_then(|metadata| metadata.modified())
-            .expect("committed mtime");
-        assert!(
-            SystemTime::now()
-                .duration_since(modified)
-                .unwrap_or(Duration::ZERO)
-                < Duration::from_secs(60)
-        );
-
-        store
-            .collect_garbage(&sessions, Duration::from_secs(60 * 60))
-            .expect("immediate garbage collection");
-        assert!(path.is_file(), "fresh capture must remain inside GC grace");
     }
 }
 
@@ -340,34 +285,59 @@ fn read_verified_file_paged(
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
     let mut after_first_read = Some(after_first_read);
-    let mut line = Vec::new();
     let mut line_index = 0_u64;
     let mut content = Vec::new();
     let mut read_lines = 0_u64;
     let mut has_more = false;
+    let mut line_start = true;
+    let mut too_large = false;
     loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
             break;
         }
-        hasher.update(&line);
-        if let Some(after_first_read) = after_first_read.take() {
-            after_first_read()?;
-        }
+        let length = buffer
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(buffer.len(), |index| index + 1);
+        let bytes = &buffer[..length];
+        let newline = bytes.last() == Some(&b'\n');
+        hasher.update(bytes);
         if line_index >= offset_lines {
-            if read_lines < limit_lines {
-                content.extend_from_slice(&line);
-                read_lines += 1;
+            if line_index - offset_lines < limit_lines {
+                if line_start {
+                    read_lines = read_lines.saturating_add(1);
+                }
+                if content.len().saturating_add(bytes.len())
+                    > cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
+                {
+                    too_large = true;
+                } else if !too_large {
+                    content.extend_from_slice(bytes);
+                }
             } else {
                 has_more = true;
             }
         }
-        line_index = line_index.saturating_add(1);
+        reader.consume(length);
+        if let Some(after_first_read) = after_first_read.take() {
+            after_first_read()?;
+        }
+        if newline {
+            line_index = line_index.saturating_add(1);
+        }
+        line_start = newline;
     }
     if format!("{:x}", hasher.finalize()) != digest {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "artifact content does not match its digest",
+        ));
+    }
+    if too_large {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            "artifact page exceeds the 2 MiB output limit",
         ));
     }
     Ok(ArtifactPage {
@@ -386,18 +356,13 @@ mod unix {
     };
 
     use bytes::Bytes;
-    use cookie_agent_protocol::{
-        ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
-        ToolOutputTruncation,
-    };
+    use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
     use rustix::fs::{AtFlags, Dir, Mode, OFlags, fsync, openat, renameat, unlinkat};
     use serde::Serialize;
-    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
-    use super::super::tool_execution::truncate_tool_output;
     use super::{
         ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedBytesCache,
         VerifiedFileCache, expand_transitive_artifact_references, read_verified_file_paged,
@@ -408,7 +373,10 @@ mod unix {
 
     #[derive(Debug)]
     pub(crate) struct ArtifactStore {
+        #[cfg(test)]
+        pub(crate) io_test_hook: super::ArtifactIoTestHook,
         directory_handle: Arc<fs::File>,
+        pub(crate) publication: Arc<tokio::sync::RwLock<()>>,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
         verified_attachment_bytes: Mutex<VerifiedBytesCache>,
@@ -424,7 +392,10 @@ mod unix {
             )?;
             let handle = fs::File::from(handle);
             let store = Arc::new(Self {
+                #[cfg(test)]
+                io_test_hook: Default::default(),
                 directory_handle: Arc::new(handle),
+                publication: Arc::new(tokio::sync::RwLock::new(())),
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
                 verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
@@ -499,6 +470,9 @@ mod unix {
             sessions_dir: &Path,
             grace: std::time::Duration,
         ) -> std::io::Result<ArtifactGcReport> {
+            let Ok(_publication) = self.publication.try_write() else {
+                return Ok(ArtifactGcReport::default());
+            };
             let mut live = scan_durable_artifact_references(sessions_dir)?;
             expand_transitive_artifact_references(&mut live, |digest| {
                 let Some(mut file) = self.open_existing(digest)? else {
@@ -616,19 +590,27 @@ mod unix {
                     "invalid artifact digest",
                 ));
             }
-            let mut verified = self
-                .verified_reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut file = match verified.take(digest) {
+            let (cached, generation) = {
+                let mut verified = self
+                    .verified_reads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                (verified.take(digest), verified.generation)
+            };
+            let mut file = match cached {
                 Some(file) => file,
                 None => self.open_existing(digest)?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
                 })?,
             };
+            #[cfg(test)]
+            self.io_test_hook.run("read", digest)?;
             let page =
                 read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
-            verified.insert(digest.to_owned(), file);
+            self.verified_reads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restore(digest, file, generation);
             Ok(page)
         }
 
@@ -646,11 +628,14 @@ mod unix {
                     "invalid artifact digest",
                 ));
             }
-            let mut verified = self
-                .verified_reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut file = match verified.take(digest) {
+            let (cached, generation) = {
+                let mut verified = self
+                    .verified_reads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                (verified.take(digest), verified.generation)
+            };
+            let mut file = match cached {
                 Some(file) => file,
                 None => self.open_existing(digest)?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
@@ -658,11 +643,16 @@ mod unix {
             };
             let page =
                 read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
-            verified.insert(digest.to_owned(), file);
+            self.verified_reads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restore(digest, file, generation);
             Ok(page)
         }
 
-        fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
+        pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
+            #[cfg(test)]
+            self.io_test_hook.run("capture_create", name)?;
             if !valid_temporary_artifact_name(name) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -680,11 +670,13 @@ mod unix {
             Ok(file)
         }
 
-        fn commit_capture(
+        pub(crate) fn commit_capture(
             &self,
             name: &str,
             capture: &Mutex<fs::File>,
         ) -> std::io::Result<(CapturedArtifact, u64)> {
+            #[cfg(test)]
+            self.io_test_hook.run("capture_finalize", name)?;
             let _write = self
                 .writes
                 .lock()
@@ -734,23 +726,10 @@ mod unix {
             ))
         }
 
-        fn discard_capture(&self, name: &str) {
+        pub(crate) fn discard_capture(&self, name: &str) {
             if valid_temporary_artifact_name(name) {
                 let _ = unlinkat(&*self.directory_handle, name, AtFlags::empty());
             }
-        }
-
-        fn preview(&self, digest: &str, max_bytes: usize) -> std::io::Result<(String, bool)> {
-            let mut file = self.open_existing(digest)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-            })?;
-            let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
-            std::io::Read::by_ref(&mut file)
-                .take(max_bytes.saturating_add(1) as u64)
-                .read_to_end(&mut bytes)?;
-            let truncated = bytes.len() > max_bytes;
-            bytes.truncate(max_bytes);
-            Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
         }
 
         pub(crate) fn read_verified_attachment(
@@ -841,207 +820,11 @@ mod unix {
         Ok((digest, total, newlines))
     }
 
-    #[derive(Clone, Debug)]
-    pub(crate) struct OutputCapture {
-        store: Arc<ArtifactStore>,
-        stdout: Arc<CaptureStream>,
-        stderr: Arc<CaptureStream>,
-        _cleanup: Arc<CaptureCleanup>,
-    }
-
-    #[derive(Debug)]
-    struct CaptureStream {
-        name: String,
-        file: Mutex<fs::File>,
-        error: Mutex<Option<String>>,
-    }
-
-    #[derive(Debug)]
-    struct CaptureCleanup {
-        store: Arc<ArtifactStore>,
-        stdout_name: String,
-        stderr_name: String,
-    }
-
-    impl Drop for CaptureCleanup {
-        fn drop(&mut self) {
-            self.store.discard_capture(&self.stdout_name);
-            self.store.discard_capture(&self.stderr_name);
-        }
-    }
-
     #[derive(Clone, Debug, Serialize)]
-    struct CapturedArtifact {
-        reference: ArtifactReference,
-        sha256: String,
-        byte_length: u64,
-    }
-
-    pub(super) fn composed_bash_output_lines(stdout_newlines: u64, stderr_newlines: u64) -> u64 {
-        // The fixed labels are "stdout:\n" and "\n\nstderr:\n": four newline
-        // bytes total. split('\n') line count is newline count + one.
-        stdout_newlines + stderr_newlines + 5
-    }
-
-    impl OutputCapture {
-        pub(crate) fn new(store: Arc<ArtifactStore>) -> std::io::Result<Self> {
-            let id = Uuid::now_v7();
-            let stdout_name = format!(".capture-{id}-stdout.tmp");
-            let stderr_name = format!(".capture-{id}-stderr.tmp");
-            let stdout = store.create_capture_file(&stdout_name)?;
-            let stderr = match store.create_capture_file(&stderr_name) {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    store.discard_capture(&stdout_name);
-                    return Err(error);
-                }
-            };
-            Ok(Self {
-                store: store.clone(),
-                stdout: Arc::new(CaptureStream {
-                    name: stdout_name.clone(),
-                    file: Mutex::new(stdout),
-                    error: Mutex::new(None),
-                }),
-                stderr: Arc::new(CaptureStream {
-                    name: stderr_name.clone(),
-                    file: Mutex::new(stderr),
-                    error: Mutex::new(None),
-                }),
-                _cleanup: Arc::new(CaptureCleanup {
-                    store,
-                    stdout_name,
-                    stderr_name,
-                }),
-            })
-        }
-
-        pub(crate) fn write(&self, stream: OutputStream, data: &[u8]) {
-            let capture = match stream {
-                OutputStream::Stdout => &self.stdout,
-                OutputStream::Stderr => &self.stderr,
-            };
-            if capture
-                .error
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some()
-            {
-                return;
-            }
-            if let Err(error) = capture
-                .file
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .write_all(data)
-            {
-                *capture
-                    .error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
-            }
-        }
-
-        #[cfg(test)]
-        pub(super) fn set_modified_for_test(
-            &self,
-            modified: std::time::SystemTime,
-        ) -> std::io::Result<()> {
-            for stream in [&self.stdout, &self.stderr] {
-                stream
-                    .file
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
-            }
-            Ok(())
-        }
-
-        pub(crate) fn finish(
-            &self,
-            mut result: ToolResult,
-            max_lines: usize,
-            max_bytes: usize,
-        ) -> std::io::Result<ToolResult> {
-            for stream in [&self.stdout, &self.stderr] {
-                if let Some(error) = stream
-                    .error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-                {
-                    self.discard();
-                    return Err(std::io::Error::other(format!(
-                        "tool output capture failed: {error}"
-                    )));
-                }
-                stream
-                    .file
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .sync_all()?;
-            }
-            let (stdout, stdout_newlines) = match self
-                .store
-                .commit_capture(&self.stdout.name, &self.stdout.file)
-            {
-                Ok(stdout) => stdout,
-                Err(error) => {
-                    self.discard();
-                    return Err(error);
-                }
-            };
-            let (stderr, stderr_newlines) = match self
-                .store
-                .commit_capture(&self.stderr.name, &self.stderr.file)
-            {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    self.store.discard_capture(&self.stderr.name);
-                    return Err(error);
-                }
-            };
-            let original_lines = composed_bash_output_lines(stdout_newlines, stderr_newlines);
-            let preview_budget = max_bytes.max(1);
-            let (stdout_preview, stdout_truncated) =
-                self.store.preview(&stdout.sha256, preview_budget)?;
-            let (stderr_preview, stderr_truncated) =
-                self.store.preview(&stderr.sha256, preview_budget)?;
-            let complete_for_budget =
-                format!("stdout:\n{stdout_preview}\n\nstderr:\n{stderr_preview}");
-            let preview = truncate_tool_output(&complete_for_budget, max_lines, max_bytes)
-                .map_or(complete_for_budget.clone(), |preview| preview.content);
-            let stream_truncated = stdout_truncated || stderr_truncated;
-            let output_truncated = preview != complete_for_budget || stream_truncated;
-            result.output = preview;
-            let streams = serde_json::json!({"stdout": stdout.clone(), "stderr": stderr.clone()});
-            match &mut result.metadata {
-                Value::Object(metadata) => {
-                    metadata.insert("streams".into(), streams.clone());
-                }
-                metadata => {
-                    *metadata = serde_json::json!({"tool": metadata.clone(), "streams": streams});
-                }
-            }
-            if output_truncated {
-                let manifest = serde_json::to_vec(&serde_json::json!({
-                    "title": result.title,
-                    "streams": streams,
-                }))?;
-                let (retained, _) = self.store.retain(&manifest)?;
-                result.truncation = Some(ToolOutputTruncation {
-                    original_bytes: stdout.byte_length + stderr.byte_length + 18,
-                    original_lines,
-                    retained,
-                });
-            }
-            Ok(result)
-        }
-
-        pub(crate) fn discard(&self) {
-            self.store.discard_capture(&self.stdout.name);
-            self.store.discard_capture(&self.stderr.name);
-        }
+    pub(crate) struct CapturedArtifact {
+        pub(crate) reference: ArtifactReference,
+        pub(crate) sha256: String,
+        pub(crate) byte_length: u64,
     }
 
     pub(super) fn directory_names(directory: &fs::File) -> std::io::Result<Vec<String>> {
@@ -1068,7 +851,8 @@ mod unix {
             let Some((id, stream)) = value.rsplit_once('-') else {
                 return false;
             };
-            return matches!(stream, "stdout" | "stderr") && Uuid::parse_str(id).is_ok();
+            return cookie_agent_protocol::validate_tool_stream_name(stream).is_ok()
+                && Uuid::parse_str(id).is_ok();
         }
         let Some(value) = name
             .strip_prefix('.')
@@ -1109,30 +893,8 @@ mod unix {
 
     #[cfg(test)]
     mod tests {
-        use cookie_agent_protocol::{
-            OutputStream, PersistedToolResult as ToolResult, SafeDisplayText,
-        };
 
-        use super::{ArtifactStore, OutputCapture};
-
-        fn result(output: String) -> ToolResult {
-            ToolResult {
-                title: SafeDisplayText::new("Bash").expect("result title"),
-                output,
-                metadata: serde_json::Value::Null,
-                truncation: None,
-                attachments: Vec::new(),
-                additional_messages: Vec::new(),
-            }
-        }
-
-        fn capture() -> (tempfile::TempDir, OutputCapture) {
-            let directory = tempfile::tempdir().expect("temporary artifact root");
-            let store = ArtifactStore::open(directory.path().join("artifacts"))
-                .expect("open artifact store");
-            let capture = OutputCapture::new(store).expect("create output capture");
-            (directory, capture)
-        }
+        use super::ArtifactStore;
 
         #[test]
         fn artifact_store_uses_preexisting_symlinked_directory() {
@@ -1225,51 +987,6 @@ mod unix {
                 String::from_utf8_lossy(original)
             );
         }
-
-        #[test]
-        fn bash_capture_composes_stdout_and_stderr_once() {
-            let (_directory, capture) = capture();
-            let stdout = "stdout-unique\n";
-            let stderr = "stderr-unique\n";
-            capture.write(OutputStream::Stdout, stdout.as_bytes());
-            capture.write(OutputStream::Stderr, stderr.as_bytes());
-
-            let result = capture
-                .finish(result(format!("{stdout}{stderr}")), 100, 4096)
-                .expect("finish capture");
-
-            assert_eq!(
-                result.output,
-                "stdout:\nstdout-unique\n\n\nstderr:\nstderr-unique\n"
-            );
-            assert_eq!(result.output.matches("stdout-unique").count(), 1);
-            assert_eq!(result.output.matches("stderr-unique").count(), 1);
-            assert!(result.truncation.is_none());
-        }
-
-        #[test]
-        fn bash_capture_truncation_counts_composed_streams_without_duplication() {
-            let (_directory, capture) = capture();
-            let stdout = format!("kept-prefix\n{}", "x".repeat(256));
-            let stderr = "stderr-tail\n";
-            capture.write(OutputStream::Stdout, stdout.as_bytes());
-            capture.write(OutputStream::Stderr, stderr.as_bytes());
-
-            let result = capture
-                .finish(result(format!("{stdout}{stderr}")), 100, 80)
-                .expect("finish capture");
-            let truncation = result.truncation.expect("truncation metadata");
-            let complete = format!("stdout:\n{stdout}\n\nstderr:\n{stderr}");
-
-            assert!(result.output.len() <= 80);
-            assert!(result.output.starts_with("stdout:\nkept-prefix\n"));
-            assert_eq!(result.output.matches("kept-prefix").count(), 1);
-            assert_eq!(truncation.original_bytes, complete.len() as u64);
-            assert_eq!(
-                truncation.original_lines,
-                complete.split('\n').count() as u64
-            );
-        }
     }
 }
 
@@ -1286,17 +1003,12 @@ mod windows {
     };
 
     use bytes::Bytes;
-    use cookie_agent_protocol::{
-        ArtifactReference, OutputStream, PersistedToolResult as ToolResult, ToolAttachment,
-        ToolOutputTruncation,
-    };
+    use cookie_agent_protocol::{ArtifactReference, ToolAttachment};
     use fs2::FileExt as _;
     use serde::Serialize;
-    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
-    use super::super::tool_execution::truncate_tool_output;
     use super::{
         ArtifactGcReport, ArtifactPage, MAX_TRANSITIVE_ARTIFACT_BYTES, VerifiedBytesCache,
         VerifiedFileCache, expand_transitive_artifact_references, read_verified_file_paged,
@@ -1307,7 +1019,10 @@ mod windows {
 
     #[derive(Debug)]
     pub(crate) struct ArtifactStore {
+        #[cfg(test)]
+        pub(crate) io_test_hook: super::ArtifactIoTestHook,
         directory: PathBuf,
+        pub(crate) publication: Arc<tokio::sync::RwLock<()>>,
         writes: Mutex<()>,
         verified_reads: Mutex<VerifiedFileCache>,
         verified_attachment_bytes: Mutex<VerifiedBytesCache>,
@@ -1319,7 +1034,10 @@ mod windows {
                 cookie_agent_models::secure_store::create_windows_private_dir_all(&directory)?;
             }
             let store = Arc::new(Self {
+                #[cfg(test)]
+                io_test_hook: Default::default(),
                 directory,
+                publication: Arc::new(tokio::sync::RwLock::new(())),
                 writes: Mutex::new(()),
                 verified_reads: Mutex::new(VerifiedFileCache::default()),
                 verified_attachment_bytes: Mutex::new(VerifiedBytesCache::default()),
@@ -1385,6 +1103,9 @@ mod windows {
             grace: std::time::Duration,
         ) -> std::io::Result<ArtifactGcReport> {
             let mut live = scan_durable_artifact_references(sessions_dir)?;
+            let Ok(_publication) = self.publication.try_write() else {
+                return Ok(ArtifactGcReport::default());
+            };
             expand_transitive_artifact_references(&mut live, |digest| {
                 let Some(mut file) = self.open_existing(digest)? else {
                     return Ok(None);
@@ -1493,6 +1214,12 @@ mod windows {
             }
         }
 
+        pub(crate) fn create_capture_file(&self, name: &str) -> std::io::Result<fs::File> {
+            #[cfg(test)]
+            self.io_test_hook.run("capture_create", name)?;
+            self.create_file(name)
+        }
+
         fn create_file(&self, name: &str) -> std::io::Result<fs::File> {
             let path = self.directory.join(name);
             let file = cookie_agent_models::secure_store::create_windows_private_file(&path)?;
@@ -1540,19 +1267,27 @@ mod windows {
             if !is_digest_name(digest) {
                 return Err(invalid("invalid artifact digest"));
             }
-            let mut verified = self
-                .verified_reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut file = match verified.take(digest) {
+            let (cached, generation) = {
+                let mut verified = self
+                    .verified_reads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                (verified.take(digest), verified.generation)
+            };
+            let mut file = match cached {
                 Some(file) => file,
                 None => self.open_paged(digest)?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
                 })?,
             };
+            #[cfg(test)]
+            self.io_test_hook.run("read", digest)?;
             let page =
                 read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, || Ok(()))?;
-            verified.insert(digest.to_owned(), file);
+            self.verified_reads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restore(digest, file, generation);
             Ok(page)
         }
 
@@ -1567,11 +1302,14 @@ mod windows {
             if !is_digest_name(digest) {
                 return Err(invalid("invalid artifact digest"));
             }
-            let mut verified = self
-                .verified_reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let mut file = match verified.take(digest) {
+            let (cached, generation) = {
+                let mut verified = self
+                    .verified_reads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                (verified.take(digest), verified.generation)
+            };
+            let mut file = match cached {
                 Some(file) => file,
                 None => self.open_paged(digest)?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
@@ -1579,7 +1317,10 @@ mod windows {
             };
             let page =
                 read_verified_file_paged(&mut file, digest, offset_lines, limit_lines, hook)?;
-            verified.insert(digest.to_owned(), file);
+            self.verified_reads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .restore(digest, file, generation);
             Ok(page)
         }
 
@@ -1601,11 +1342,13 @@ mod windows {
             }
         }
 
-        fn commit_capture(
+        pub(crate) fn commit_capture(
             &self,
             name: &str,
             capture: &Mutex<fs::File>,
         ) -> std::io::Result<(CapturedArtifact, u64)> {
+            #[cfg(test)]
+            self.io_test_hook.run("capture_finalize", name)?;
             let _write = self
                 .writes
                 .lock()
@@ -1658,212 +1401,18 @@ mod windows {
             ))
         }
 
-        fn discard_capture(&self, name: &str) {
+        pub(crate) fn discard_capture(&self, name: &str) {
             if valid_temporary_artifact_name(name) {
                 let _ = fs::remove_file(self.directory.join(name));
             }
         }
-
-        fn preview(&self, digest: &str, max_bytes: usize) -> std::io::Result<(String, bool)> {
-            let mut file = self.open_existing(digest)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-            })?;
-            let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
-            std::io::Read::by_ref(&mut file)
-                .take(max_bytes.saturating_add(1) as u64)
-                .read_to_end(&mut bytes)?;
-            let truncated = bytes.len() > max_bytes;
-            bytes.truncate(max_bytes);
-            Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    pub(crate) struct OutputCapture {
-        store: Arc<ArtifactStore>,
-        stdout: Arc<CaptureStream>,
-        stderr: Arc<CaptureStream>,
-        _cleanup: Arc<CaptureCleanup>,
-    }
-
-    #[derive(Debug)]
-    struct CaptureStream {
-        name: String,
-        file: Mutex<fs::File>,
-        error: Mutex<Option<String>>,
-    }
-
-    #[derive(Debug)]
-    struct CaptureCleanup {
-        store: Arc<ArtifactStore>,
-        stdout_name: String,
-        stderr_name: String,
-    }
-
-    impl Drop for CaptureCleanup {
-        fn drop(&mut self) {
-            self.store.discard_capture(&self.stdout_name);
-            self.store.discard_capture(&self.stderr_name);
-        }
     }
 
     #[derive(Clone, Debug, Serialize)]
-    struct CapturedArtifact {
-        reference: ArtifactReference,
-        sha256: String,
-        byte_length: u64,
-    }
-
-    impl OutputCapture {
-        pub(crate) fn new(store: Arc<ArtifactStore>) -> std::io::Result<Self> {
-            let id = Uuid::now_v7();
-            let stdout_name = format!(".capture-{id}-stdout.tmp");
-            let stderr_name = format!(".capture-{id}-stderr.tmp");
-            let stdout = store.create_file(&stdout_name)?;
-            let stderr = match store.create_file(&stderr_name) {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    store.discard_capture(&stdout_name);
-                    return Err(error);
-                }
-            };
-            Ok(Self {
-                store: store.clone(),
-                stdout: Arc::new(CaptureStream {
-                    name: stdout_name.clone(),
-                    file: Mutex::new(stdout),
-                    error: Mutex::new(None),
-                }),
-                stderr: Arc::new(CaptureStream {
-                    name: stderr_name.clone(),
-                    file: Mutex::new(stderr),
-                    error: Mutex::new(None),
-                }),
-                _cleanup: Arc::new(CaptureCleanup {
-                    store,
-                    stdout_name,
-                    stderr_name,
-                }),
-            })
-        }
-
-        pub(crate) fn write(&self, stream: OutputStream, data: &[u8]) {
-            let capture = match stream {
-                OutputStream::Stdout => &self.stdout,
-                OutputStream::Stderr => &self.stderr,
-            };
-            if capture
-                .error
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_some()
-            {
-                return;
-            }
-            if let Err(error) = capture
-                .file
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .write_all(data)
-            {
-                *capture
-                    .error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
-            }
-        }
-
-        #[cfg(test)]
-        pub(super) fn set_modified_for_test(
-            &self,
-            modified: std::time::SystemTime,
-        ) -> std::io::Result<()> {
-            for stream in [&self.stdout, &self.stderr] {
-                stream
-                    .file
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
-            }
-            Ok(())
-        }
-
-        pub(crate) fn finish(
-            &self,
-            mut result: ToolResult,
-            max_lines: usize,
-            max_bytes: usize,
-        ) -> std::io::Result<ToolResult> {
-            for stream in [&self.stdout, &self.stderr] {
-                if let Some(error) = stream
-                    .error
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone()
-                {
-                    self.discard();
-                    return Err(std::io::Error::other(format!(
-                        "tool output capture failed: {error}"
-                    )));
-                }
-                stream
-                    .file
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .sync_all()?;
-            }
-            let (stdout, stdout_newlines) = self
-                .store
-                .commit_capture(&self.stdout.name, &self.stdout.file)?;
-            let (stderr, stderr_newlines) = match self
-                .store
-                .commit_capture(&self.stderr.name, &self.stderr.file)
-            {
-                Ok(stderr) => stderr,
-                Err(error) => {
-                    self.store.discard_capture(&self.stderr.name);
-                    return Err(error);
-                }
-            };
-            let original_lines = stdout_newlines + stderr_newlines + 5;
-            let preview_budget = max_bytes.max(1);
-            let (stdout_preview, stdout_truncated) =
-                self.store.preview(&stdout.sha256, preview_budget)?;
-            let (stderr_preview, stderr_truncated) =
-                self.store.preview(&stderr.sha256, preview_budget)?;
-            let complete = format!("stdout:\n{stdout_preview}\n\nstderr:\n{stderr_preview}");
-            let preview = truncate_tool_output(&complete, max_lines, max_bytes)
-                .map_or(complete.clone(), |preview| preview.content);
-            let output_truncated = preview != complete || stdout_truncated || stderr_truncated;
-            result.output = preview;
-            let streams = serde_json::json!({"stdout": stdout.clone(), "stderr": stderr.clone()});
-            match &mut result.metadata {
-                Value::Object(metadata) => {
-                    metadata.insert("streams".into(), streams.clone());
-                }
-                metadata => {
-                    *metadata = serde_json::json!({"tool": metadata.clone(), "streams": streams});
-                }
-            }
-            if output_truncated {
-                let manifest = serde_json::to_vec(&serde_json::json!({
-                    "title": result.title,
-                    "streams": streams,
-                }))?;
-                let (retained, _) = self.store.retain(&manifest)?;
-                result.truncation = Some(ToolOutputTruncation {
-                    original_bytes: stdout.byte_length + stderr.byte_length + 18,
-                    original_lines,
-                    retained,
-                });
-            }
-            Ok(result)
-        }
-
-        pub(crate) fn discard(&self) {
-            self.store.discard_capture(&self.stdout.name);
-            self.store.discard_capture(&self.stderr.name);
-        }
+    pub(crate) struct CapturedArtifact {
+        pub(crate) reference: ArtifactReference,
+        pub(crate) sha256: String,
+        pub(crate) byte_length: u64,
     }
 
     fn hash_file(file: &mut fs::File) -> std::io::Result<(String, u64, u64)> {
@@ -1917,7 +1466,8 @@ mod windows {
             let Some((id, stream)) = value.rsplit_once('-') else {
                 return false;
             };
-            return matches!(stream, "stdout" | "stderr") && Uuid::parse_str(id).is_ok();
+            return cookie_agent_protocol::validate_tool_stream_name(stream).is_ok()
+                && Uuid::parse_str(id).is_ok();
         }
         let Some(value) = name
             .strip_prefix('.')

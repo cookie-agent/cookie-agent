@@ -846,8 +846,7 @@ impl PluginRegistry {
         );
         let class = match &event.payload {
             cookie_agent_protocol::EventPayload::ToolCallProgress {
-                output_chunk: Some(_),
-                ..
+                display: Some(_), ..
             } => PluginDeliveryClass::Chunk,
             cookie_agent_protocol::EventPayload::ToolCallTerminated { .. } => {
                 PluginDeliveryClass::Terminal
@@ -2186,6 +2185,7 @@ impl ToolProvider for PluginRegistry {
                     .into_iter()
                     .filter(|tool| runtime.mcp.plugin_owns_tool(&runtime.name, &tool.name))
                     .map(|tool| ToolSpec {
+                        output: tool.output,
                         concurrency: Default::default(),
                         // External opt-out requires a future extension-protocol capability.
                         result_truncation: Default::default(),
@@ -2311,7 +2311,7 @@ impl PreparedExecutor for PluginExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+    ) -> Result<crate::ToolCompletion, ToolError> {
         self.revalidate().await?;
         let params = ExtensionToolCallParams {
             tool: self.call.name.clone(),
@@ -2333,17 +2333,31 @@ impl PreparedExecutor for PluginExecutor {
                 Err(ToolError::execution("plugin tool call timed out"))
             }
         }?;
-        Ok(cookie_agent_protocol::PersistedToolResult {
-            title: safe_title(&self.call.name),
-            output: result.content,
-            metadata: serde_json::json!({
-                "plugin": {
-                    "is_error": result.is_error,
-                }
-            }),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
+        if matches!(
+            result.output,
+            cookie_agent_protocol::ToolCompletionOutput::Streamed
+        ) {
+            return Err(ToolError::execution(
+                "plugin transport requires terminal output",
+            ));
+        }
+        Ok(crate::ToolCompletion {
+            failed: result.is_error,
+            output: result.output,
+            result: cookie_agent_protocol::PersistedToolResult {
+                display: Some(result.display),
+                retained_output: None,
+                title: safe_title(&self.call.name),
+                output: String::new(),
+                metadata: serde_json::json!({
+                    "plugin": {
+                        "is_error": result.is_error,
+                    }
+                }),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            },
         })
     }
 }
@@ -3293,7 +3307,8 @@ mod tests {
                 artifacts: ArtifactStore::open(harness.directory.path().join("artifacts"))
                     .expect("artifact store"),
             })
-            .await
+            .await?
+            .into_result_for_test()
     }
 
     #[tokio::test]
@@ -3423,10 +3438,7 @@ mod tests {
                         tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                         message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                             .expect("message"),
-                        output_chunk: Some(
-                            cookie_agent_protocol::SafeDisplayText::new("partial output")
-                                .expect("chunk"),
-                        ),
+                        display: Some("partial output".into()),
                     }
                 } else {
                     EventPayload::PluginDiagnostic {
@@ -3481,7 +3493,7 @@ mod tests {
             .map(|record| record["seq"].clone())
             .collect::<Vec<_>>();
         assert_eq!(seqs, [serde_json::json!(2), serde_json::json!(3)]);
-        assert_eq!(records[0]["event"]["output_chunk"], "partial output");
+        assert_eq!(records[0]["event"]["display"], "partial output");
 
         let self_event = StoredEvent {
             engine_version: None,
@@ -3840,9 +3852,7 @@ mod tests {
                 tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
                 message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                     .expect("message"),
-                output_chunk: Some(
-                    cookie_agent_protocol::SafeDisplayText::new("flood chunk").expect("chunk"),
-                ),
+                display: Some("flood chunk".into()),
             },
         };
         assert!(
@@ -3907,9 +3917,7 @@ mod tests {
                 EventPayload::ToolCallProgress {
                     tool_call_id: call_id,
                     message: SafeDisplayText::new("bash stdout").expect("message"),
-                    output_chunk: Some(
-                        SafeDisplayText::new(format!("chunk {seq}")).expect("chunk"),
-                    ),
+                    display: Some(format!("chunk {seq}")),
                 },
             )
         };
@@ -3975,6 +3983,8 @@ mod tests {
                         owner,
                         outcome: ToolTerminationOutcome::Completed,
                         result: Some(PersistedToolResult {
+                            display: None,
+                            retained_output: None,
                             title: SafeDisplayText::new("Bash").expect("title"),
                             output: "done".into(),
                             metadata: Value::Null,

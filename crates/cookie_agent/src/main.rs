@@ -25,9 +25,7 @@ use cookie_agent_protocol::{
 use cookie_agent_server::{
     Client, ClientProtocol, Server, in_process_pair, validate_websocket_url,
 };
-use cookie_agent_tools::{
-    BuiltinTools, delegate::DelegateToolProvider, read_tool_result::ReadToolResultProvider,
-};
+use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider};
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -97,7 +95,7 @@ enum Command {
         #[command(flatten)]
         args: Box<run::RunArgs>,
     },
-    /// Serve the exact cookie-agent protocol 16 JSON-RPC WebSocket daemon on localhost.
+    /// Serve the exact cookie-agent protocol 17 JSON-RPC WebSocket daemon on localhost.
     Daemon,
     /// Attach the TUI to an existing daemon.
     Attach {
@@ -376,13 +374,6 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
     if let Err(error) = engine
         .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
         .context("register delegate tools")
-    {
-        engine.shutdown().await;
-        return Err(error);
-    }
-    if let Err(error) = engine
-        .try_register_tool_provider(Arc::new(ReadToolResultProvider::new(engine.clone())))
-        .context("register tool result readback")
     {
         engine.shutdown().await;
         return Err(error);

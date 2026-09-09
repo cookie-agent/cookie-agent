@@ -10,19 +10,16 @@ mod runtime;
 pub use runtime::{EMPTY_RUNTIME_GUIDANCE, RuntimePhase, RuntimeState};
 
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     AgentId, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation, ApprovalFinalOutcome,
     ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus, ApprovalTrigger,
     AssistantToolCallRef, AttemptId, EventPayload, EventSubscriptionMessage, GoalId,
     GoalReminderIdentity, GoalState, GoalStatus, ModelErrorSummary, OperationFingerprint,
-    OutputDelta, OutputGap, OutputSnapshotEnvelope, OutputStream, PersistedModelTurn,
-    PreparedApprovalResource, PreparedCapabilityLifetime, ProducerDeliveryMode,
+    PersistedModelTurn, PreparedApprovalResource, PreparedCapabilityLifetime, ProducerDeliveryMode,
     ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, ReplayDecision, ReplayDisposition,
     ResolvedModelRef, RunId, SafeCode, SessionId, SessionTitleChange, Sha256Digest, StoredEvent,
     ToolAttachment, ToolCallId, ToolTerminationOutcome, Usage, VariantId,
@@ -569,7 +566,6 @@ pub struct SessionState {
     pub(crate) producer_claims: HashMap<u64, ProducerClaimProjection>,
     pub(crate) terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
-    pub output: HashMap<(ToolCallId, bool), OrderedOutput>,
 }
 
 impl SessionState {
@@ -623,9 +619,6 @@ impl SessionState {
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
     physical_events: HashMap<SessionId, Vec<StoredEvent>>,
-    pending_output: HashMap<ToolCallId, Vec<PendingOutput>>,
-    pending_output_order: VecDeque<ToolCallId>,
-    lost_output: HashMap<ToolCallId, HashSet<bool>>,
     abandoned_output: HashMap<ToolCallId, SessionId>,
     tool_sessions: HashMap<ToolCallId, SessionId>,
     quarantined_sessions: HashSet<SessionId>,
@@ -649,16 +642,7 @@ pub enum DeliveryOutcome {
     ReplayFailed { session_id: SessionId },
 }
 
-const MAX_PENDING_OUTPUT_PER_CALL: usize = 128;
-const MAX_PENDING_OUTPUT_CALLS: usize = 64;
 const REPLAY_END_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[derive(Clone, Debug)]
-enum PendingOutput {
-    Snapshot(OutputSnapshotEnvelope),
-    Delta(OutputDelta),
-    Gap(OutputGap),
-}
 
 impl StateStore {
     /// Reduce every delivery variant from the single client stream. Replay
@@ -775,9 +759,6 @@ impl StateStore {
                     self.abandon_replay(session_id);
                     DeliveryOutcome::ReplayFailed { session_id }
                 } else {
-                    if let Some(call_id) = started_call {
-                        self.flush_pending_output(call_id);
-                    }
                     DeliveryOutcome::Applied
                 }
             }
@@ -819,25 +800,24 @@ impl StateStore {
                     None => DeliveryOutcome::ReplayFailed { session_id },
                 }
             }
+            // Display comes from durable progress/terminal events. Do not retain
+            // raw payloads even when a caller bypasses the display-only client.
             ClientDelivery::OutputSnapshot(snapshot) => {
                 if let Some(session_id) = self.quarantined_output(snapshot.snapshot.call_id) {
                     return DeliveryOutcome::ReplayFailed { session_id };
                 }
-                self.apply_snapshot(snapshot);
                 DeliveryOutcome::Applied
             }
             ClientDelivery::OutputDelta(delta) => {
                 if let Some(session_id) = self.quarantined_output(delta.call_id) {
                     return DeliveryOutcome::ReplayFailed { session_id };
                 }
-                self.apply_output_delta(delta);
                 DeliveryOutcome::Applied
             }
             ClientDelivery::OutputGap(gap) => {
                 if let Some(session_id) = self.quarantined_output(gap.call_id) {
                     return DeliveryOutcome::ReplayFailed { session_id };
                 }
-                self.apply_output_gap(gap);
                 DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
@@ -898,9 +878,6 @@ impl StateStore {
     fn quarantine_replay_output(&mut self, session_id: SessionId, replay: &ReplayProgress) {
         for call_id in replay.scratch.tools.keys() {
             self.abandoned_output.insert(*call_id, session_id);
-            self.pending_output.remove(call_id);
-            self.pending_output_order
-                .retain(|pending| pending != call_id);
         }
     }
 
@@ -969,9 +946,6 @@ impl StateStore {
                 event.payload,
             );
             state.version = state.version.wrapping_add(1);
-        }
-        if let Some(call_id) = started_call {
-            self.flush_pending_output(call_id);
         }
         true
     }
@@ -1045,215 +1019,6 @@ impl StateStore {
         self.physical_events.insert(session_id, events);
         self.sessions.insert(session_id, state);
         true
-    }
-
-    pub fn apply_snapshot(&mut self, envelope: OutputSnapshotEnvelope) {
-        let call_id = envelope.snapshot.call_id;
-        if self.quarantined_output(call_id).is_some() {
-            return;
-        }
-        if !self.apply_snapshot_now(envelope.clone()) {
-            self.buffer_output(call_id, PendingOutput::Snapshot(envelope));
-        }
-    }
-
-    pub fn apply_output_delta(&mut self, delta: OutputDelta) {
-        let call_id = delta.call_id;
-        if self.quarantined_output(call_id).is_some() {
-            return;
-        }
-        if !self.apply_delta_now(delta.clone()) {
-            self.buffer_output(call_id, PendingOutput::Delta(delta));
-        }
-    }
-
-    pub fn apply_output_gap(&mut self, gap: OutputGap) {
-        let call_id = gap.call_id;
-        if self.quarantined_output(call_id).is_some() {
-            return;
-        }
-        if !self.apply_gap_now(gap.clone()) {
-            self.buffer_output(call_id, PendingOutput::Gap(gap));
-        }
-    }
-
-    fn apply_snapshot_now(&mut self, envelope: OutputSnapshotEnvelope) -> bool {
-        let call_id = envelope.snapshot.call_id;
-        let output = self
-            .replays
-            .values_mut()
-            .find_map(|replay| {
-                replay
-                    .scratch
-                    .tools
-                    .contains_key(&envelope.snapshot.call_id)
-                    .then_some(&mut replay.scratch)
-            })
-            .or_else(|| {
-                self.sessions.values_mut().find_map(|state| {
-                    state
-                        .tools
-                        .contains_key(&envelope.snapshot.call_id)
-                        .then_some(state)
-                })
-            });
-        if let Some(state) = output {
-            state
-                .output
-                .entry((envelope.snapshot.call_id, stream_key(envelope.stream)))
-                .or_default()
-                .replace_snapshot(
-                    envelope.snapshot.start_offset,
-                    envelope.snapshot.end_offset,
-                    envelope.snapshot.chunks,
-                );
-            bump_tool_item(state, call_id);
-            state.version = state.version.wrapping_add(1);
-            return true;
-        }
-        false
-    }
-
-    fn apply_delta_now(&mut self, delta: OutputDelta) -> bool {
-        let call_id = delta.call_id;
-        if let Some(state) = self
-            .replays
-            .values_mut()
-            .find_map(|replay| {
-                replay
-                    .scratch
-                    .tools
-                    .contains_key(&delta.call_id)
-                    .then_some(&mut replay.scratch)
-            })
-            .or_else(|| {
-                self.sessions
-                    .values_mut()
-                    .find(|state| state.tools.contains_key(&delta.call_id))
-            })
-        {
-            state
-                .output
-                .entry((delta.call_id, stream_key(delta.stream)))
-                .or_default()
-                .push(delta);
-            bump_tool_item(state, call_id);
-            state.version = state.version.wrapping_add(1);
-            return true;
-        }
-        false
-    }
-
-    fn apply_gap_now(&mut self, gap: OutputGap) -> bool {
-        let call_id = gap.call_id;
-        if let Some(state) = self
-            .replays
-            .values_mut()
-            .find_map(|replay| {
-                replay
-                    .scratch
-                    .tools
-                    .contains_key(&gap.call_id)
-                    .then_some(&mut replay.scratch)
-            })
-            .or_else(|| {
-                self.sessions
-                    .values_mut()
-                    .find(|state| state.tools.contains_key(&gap.call_id))
-            })
-        {
-            state
-                .output
-                .entry((gap.call_id, stream_key(gap.stream)))
-                .or_default()
-                .mark_gap(gap.next_offset);
-            bump_tool_item(state, call_id);
-            state.version = state.version.wrapping_add(1);
-            return true;
-        }
-        false
-    }
-
-    fn buffer_output(&mut self, call_id: ToolCallId, output: PendingOutput) {
-        if !self.pending_output.contains_key(&call_id)
-            && self.pending_output.len() == MAX_PENDING_OUTPUT_CALLS
-            && let Some(oldest) = self.pending_output_order.pop_front()
-            && let Some(dropped) = self.pending_output.remove(&oldest)
-        {
-            for output in dropped {
-                self.record_lost_output(oldest, pending_stream(&output));
-            }
-        }
-        if !self.pending_output.contains_key(&call_id) {
-            self.pending_output_order.push_back(call_id);
-        }
-        let dropped = {
-            let pending = self.pending_output.entry(call_id).or_default();
-            let dropped = (pending.len() == MAX_PENDING_OUTPUT_PER_CALL).then(|| pending.remove(0));
-            pending.push(output);
-            dropped
-        };
-        if let Some(dropped) = dropped {
-            self.record_lost_output(call_id, pending_stream(&dropped));
-        }
-    }
-
-    fn flush_pending_output(&mut self, call_id: ToolCallId) {
-        self.pending_output_order
-            .retain(|pending_call| *pending_call != call_id);
-        if let Some(pending) = self.pending_output.remove(&call_id) {
-            for output in pending {
-                match output {
-                    PendingOutput::Snapshot(snapshot) => {
-                        let _ = self.apply_snapshot_now(snapshot);
-                    }
-                    PendingOutput::Delta(delta) => {
-                        let _ = self.apply_delta_now(delta);
-                    }
-                    PendingOutput::Gap(gap) => {
-                        let _ = self.apply_gap_now(gap);
-                    }
-                }
-            }
-        }
-        if let Some(streams) = self.lost_output.remove(&call_id) {
-            for stream in streams {
-                self.mark_output_lost(call_id, stream);
-            }
-        }
-    }
-
-    fn record_lost_output(&mut self, call_id: ToolCallId, stream: bool) {
-        self.lost_output.entry(call_id).or_default().insert(stream);
-    }
-
-    fn mark_output_lost(&mut self, call_id: ToolCallId, stream: bool) {
-        if self.quarantined_output(call_id).is_some() {
-            return;
-        }
-        if let Some(state) = self
-            .replays
-            .values_mut()
-            .find_map(|replay| {
-                replay
-                    .scratch
-                    .tools
-                    .contains_key(&call_id)
-                    .then_some(&mut replay.scratch)
-            })
-            .or_else(|| {
-                self.sessions
-                    .values_mut()
-                    .find(|state| state.tools.contains_key(&call_id))
-            })
-        {
-            state
-                .output
-                .entry((call_id, stream))
-                .or_default()
-                .mark_gap(0);
-            bump_tool_item(state, call_id);
-        }
     }
 }
 
@@ -1975,22 +1740,23 @@ fn reduce_event(
         }
         EventPayload::ToolCallProgress {
             tool_call_id,
-            message,
-            output_chunk,
+            message: _,
+            display,
         } => {
-            if let Some(tool) = state.tools.get_mut(&tool_call_id) {
-                if let Some(output_chunk) = output_chunk {
-                    if !tool.has_output_chunks {
-                        tool.detail.clear();
-                        tool.has_output_chunks = true;
-                    }
-                    tool.detail.push_str(output_chunk.as_str());
-                } else if tool.has_output_chunks {
-                    tool.detail.push('\n');
-                    tool.detail.push_str(message.as_str());
-                } else {
-                    tool.detail = message.to_string();
+            if let Some(tool) = state.tools.get_mut(&tool_call_id)
+                && let Some(display) = display
+            {
+                if !tool.has_output_chunks {
+                    tool.detail.clear();
+                    tool.has_output_chunks = true;
                 }
+                let room =
+                    cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(tool.detail.len());
+                let mut end = display.as_str().len().min(room);
+                while !display.as_str().is_char_boundary(end) {
+                    end -= 1;
+                }
+                tool.detail.push_str(&display.as_str()[..end]);
             }
             bump_tool_item(state, tool_call_id);
         }
@@ -2004,6 +1770,7 @@ fn reduce_event(
             };
             let failed = !matches!(termination.outcome, ToolTerminationOutcome::Completed);
             let detail = match (termination.result, termination.error) {
+                (Some(result), _) if result.display.is_some() => result.display.unwrap_or_default(),
                 (Some(result), _) if !failed => render_tool_result(
                     result.title.as_str(),
                     &result.output,
@@ -2026,8 +1793,6 @@ fn reduce_event(
                 tool.detail = detail;
                 tool.has_output_chunks = false;
             }
-            state.output.remove(&(tool_call_id, false));
-            state.output.remove(&(tool_call_id, true));
             bump_tool_item(state, tool_call_id);
         }
         EventPayload::ApprovalRequested { request } => {
@@ -3440,95 +3205,6 @@ fn render_title_commit(change: &SessionTitleChange) -> String {
             format!("delegated session titled {title}")
         }
         SessionTitleChange::FallbackSet { title } => format!("session title set to {title}"),
-    }
-}
-
-fn stream_key(stream: OutputStream) -> bool {
-    matches!(stream, OutputStream::Stderr)
-}
-
-fn pending_stream(output: &PendingOutput) -> bool {
-    match output {
-        PendingOutput::Snapshot(snapshot) => stream_key(snapshot.stream),
-        PendingOutput::Delta(delta) => stream_key(delta.stream),
-        PendingOutput::Gap(gap) => stream_key(gap.stream),
-    }
-}
-
-/// Byte-offset ordered renderer for one stdout or stderr stream.
-#[derive(Clone, Debug, Default)]
-pub struct OrderedOutput {
-    data: Vec<u8>,
-    pub next_offset: u64,
-    pub has_gap: bool,
-    line_count: usize,
-    pending: BTreeMap<u64, Vec<u8>>,
-}
-
-impl OrderedOutput {
-    pub fn replace_snapshot(&mut self, start: u64, end: u64, mut chunks: Vec<OutputDelta>) {
-        self.data.clear();
-        self.pending.clear();
-        self.line_count = 0;
-        self.has_gap = start > 0;
-        chunks.sort_by_key(|chunk| chunk.byte_offset);
-        for chunk in chunks {
-            if let Ok(bytes) = STANDARD.decode(chunk.data) {
-                self.append_bytes(&bytes);
-            }
-        }
-        self.next_offset = end;
-    }
-
-    pub fn push(&mut self, delta: OutputDelta) {
-        let Ok(bytes) = STANDARD.decode(delta.data) else {
-            return;
-        };
-        if delta.byte_offset < self.next_offset {
-            return;
-        }
-        self.pending.entry(delta.byte_offset).or_insert(bytes);
-        self.flush();
-    }
-
-    pub fn mark_gap(&mut self, next_offset: u64) {
-        self.has_gap = true;
-        let next_offset = self.next_offset.max(next_offset);
-        self.next_offset = next_offset;
-        self.pending.retain(|offset, _| *offset >= next_offset);
-        self.flush();
-    }
-
-    pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.data).into_owned()
-    }
-
-    /// Return at most `max_bytes` of display text without materializing a
-    /// valid UTF-8 stream. The line count describes the complete stream so a
-    /// bounded renderer can still report accurate truncation.
-    pub fn bounded_text(&self, max_bytes: usize) -> (Cow<'_, str>, usize) {
-        let prefix = &self.data[..self.data.len().min(max_bytes)];
-        (String::from_utf8_lossy(prefix), self.line_count)
-    }
-
-    fn flush(&mut self) {
-        while let Some(bytes) = self.pending.remove(&self.next_offset) {
-            self.next_offset += bytes.len() as u64;
-            self.append_bytes(&bytes);
-        }
-    }
-
-    fn append_bytes(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
-        if self.data.is_empty() || self.data.ends_with(b"\n") {
-            self.line_count += newlines + usize::from(!bytes.ends_with(b"\n"));
-        } else {
-            self.line_count += newlines.saturating_sub(usize::from(bytes.ends_with(b"\n")));
-        }
-        self.data.extend_from_slice(bytes);
     }
 }
 
@@ -5384,34 +5060,6 @@ mod tests {
     }
 
     #[test]
-    fn ordered_output_bounded_text_borrows_valid_prefix_and_keeps_full_line_count() {
-        let mut output = OrderedOutput::default();
-        output.append_bytes(b"first\nsecond\nthird");
-        let (complete, complete_lines) = output.bounded_text(usize::MAX);
-        assert!(matches!(complete, Cow::Borrowed("first\nsecond\nthird")));
-        assert_eq!(complete, output.text());
-        assert_eq!(complete_lines, 3);
-
-        let (prefix, original_lines) = output.bounded_text(8);
-        assert!(matches!(prefix, Cow::Borrowed("first\nse")));
-        assert_eq!(original_lines, 3);
-    }
-
-    #[test]
-    fn ordered_output_updates_line_count_across_chunk_boundaries() {
-        let mut output = OrderedOutput::default();
-        for chunk in [b"first".as_slice(), b"\nsecond\n".as_slice(), b"third"] {
-            output.append_bytes(chunk);
-        }
-        assert_eq!(output.bounded_text(0).1, 3);
-
-        output.append_bytes(b"\n");
-        assert_eq!(output.bounded_text(0).1, 3);
-        output.append_bytes(b"\n");
-        assert_eq!(output.bounded_text(0).1, 4);
-    }
-
-    #[test]
     fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() {
         let item_id = 1;
         let mut state = SessionState {
@@ -5507,12 +5155,6 @@ mod tests {
                 has_output_chunks: false,
             },
         );
-        state
-            .output
-            .insert((call_id, false), OrderedOutput::default());
-        state
-            .output
-            .insert((call_id, true), OrderedOutput::default());
 
         reduce_event(
             &mut state,
@@ -5524,10 +5166,7 @@ mod tests {
                 tool_call_id: call_id,
                 message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                     .expect("progress message"),
-                output_chunk: Some(
-                    cookie_agent_protocol::SafeDisplayText::new("streamed preview")
-                        .expect("output chunk"),
-                ),
+                display: Some("streamed preview".into()),
             },
         );
         assert_eq!(state.tools[&call_id].detail, "streamed preview");
@@ -5545,6 +5184,8 @@ mod tests {
                     owner,
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(cookie_agent_protocol::PersistedToolResult {
+                        display: None,
+                        retained_output: None,
                         title: cookie_agent_protocol::SafeDisplayText::new("Bash")
                             .expect("result title"),
                         output: "stdout:\nonce\n\nstderr:\n".into(),
@@ -5589,8 +5230,6 @@ mod tests {
             },
         );
 
-        assert!(!state.output.contains_key(&(call_id, false)));
-        assert!(!state.output.contains_key(&(call_id, true)));
         assert_eq!(state.tools[&call_id].status, ToolStatus::Completed);
         assert!(!state.tools[&call_id].has_output_chunks);
         assert_eq!(
@@ -5600,6 +5239,99 @@ mod tests {
                 digest = cookie_agent_protocol::Sha256Digest::of_bytes(b"clip")
             )
         );
+    }
+
+    #[test]
+    fn tool_display_is_bounded_and_final_replacement_matches_replay() {
+        let session = SessionId::new_v7();
+        let call = ToolCallId::new_v7();
+        let owner = AssistantToolCallRef {
+            model_turn_seq: 1,
+            content_index: 0,
+            model_call_id: cookie_agent_protocol::ModelCallId::new("display-call").unwrap(),
+            provider_item_id: None,
+        };
+        let start = EventPayload::ToolCallStarted {
+            start: cookie_agent_protocol::ToolCallStart {
+                tool_call_id: call,
+                output: Default::default(),
+                owner: owner.clone(),
+                presentation: cookie_agent_protocol::ToolCallPresentation {
+                    title: cookie_agent_protocol::SafeDisplayText::new("Test").unwrap(),
+                    primary_argument: None,
+                },
+                operation_fingerprint: serde_json::from_value(
+                    serde_json::json!({"digest": "1".repeat(64)}),
+                )
+                .unwrap(),
+            },
+        };
+        let terminal = EventPayload::ToolCallTerminated {
+            termination: cookie_agent_protocol::ToolCallTermination {
+                tool_call_id: call,
+                owner,
+                outcome: ToolTerminationOutcome::Completed,
+                error: None,
+                result: Some(cookie_agent_protocol::PersistedToolResult {
+                    title: cookie_agent_protocol::SafeDisplayText::new("Test").unwrap(),
+                    output: "model-only authoritative output".into(),
+                    display: Some("final display\nsecond line".into()),
+                    retained_output: None,
+                    metadata: serde_json::json!({"model_only": true}),
+                    truncation: None,
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
+                }),
+            },
+        };
+        let mut live = SessionState::default();
+        reduce_event(
+            &mut live,
+            session,
+            None,
+            1,
+            jiff::Timestamp::now(),
+            start.clone(),
+        );
+        for seq in 2..302 {
+            reduce_event(
+                &mut live,
+                session,
+                None,
+                seq,
+                jiff::Timestamp::now(),
+                EventPayload::ToolCallProgress {
+                    tool_call_id: call,
+                    message: cookie_agent_protocol::SafeDisplayText::new("status-only").unwrap(),
+                    display: Some("\u{20ac}".repeat(100)),
+                },
+            );
+        }
+        assert!(live.tools[&call].detail.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+        assert!(
+            live.tools[&call].detail.len() >= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 3
+        );
+        reduce_event(
+            &mut live,
+            session,
+            None,
+            302,
+            jiff::Timestamp::now(),
+            terminal.clone(),
+        );
+        let mut replay = SessionState::default();
+        reduce_event(&mut replay, session, None, 1, jiff::Timestamp::now(), start);
+        reduce_event(
+            &mut replay,
+            session,
+            None,
+            302,
+            jiff::Timestamp::now(),
+            terminal,
+        );
+        assert_eq!(live.tools[&call].detail, "final display\nsecond line");
+        assert_eq!(replay.tools[&call].detail, live.tools[&call].detail);
+        assert!(!live.tools[&call].detail.contains("model-only"));
     }
 
     #[test]
@@ -5665,6 +5397,7 @@ mod tests {
                 1,
                 EventPayload::ToolCallStarted {
                     start: cookie_agent_protocol::ToolCallStart {
+                        output: Default::default(),
                         tool_call_id: call_id,
                         owner: owner.clone(),
                         presentation: cookie_agent_protocol::ToolCallPresentation {
@@ -5685,10 +5418,7 @@ mod tests {
                     tool_call_id: call_id,
                     message: cookie_agent_protocol::SafeDisplayText::new("bash stdout")
                         .expect("message"),
-                    output_chunk: Some(
-                        cookie_agent_protocol::SafeDisplayText::new("historical chunk")
-                            .expect("chunk"),
-                    ),
+                    display: Some("historical chunk".into()),
                 },
             ),
             event(
@@ -5699,6 +5429,8 @@ mod tests {
                         owner,
                         outcome: ToolTerminationOutcome::Completed,
                         result: Some(cookie_agent_protocol::PersistedToolResult {
+                            display: None,
+                            retained_output: None,
                             title: cookie_agent_protocol::SafeDisplayText::new("Bash")
                                 .expect("title"),
                             output: "committed replacement".into(),
@@ -5960,6 +5692,7 @@ mod tests {
             let model_call_id =
                 cookie_agent_protocol::ModelCallId::new(model_call_id).expect("model call ID");
             cookie_agent_protocol::ToolCallStart {
+                output: Default::default(),
                 tool_call_id: ToolCallId::new_v7(),
                 owner: cookie_agent_protocol::AssistantToolCallRef {
                     model_turn_seq,

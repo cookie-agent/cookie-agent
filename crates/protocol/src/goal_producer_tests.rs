@@ -776,7 +776,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes_and_exact_version() 
             status,
         });
     }
-    assert_eq!(EXTENSION_PROTOCOL_VERSION, "0.0.5");
+    assert_eq!(EXTENSION_PROTOCOL_VERSION, "0.0.6");
     round_trip(ExtensionProtocolVersion::current());
     assert!(serde_json::from_value::<ExtensionProtocolVersion>(json!("0.0.4")).is_err());
     let params: ExtensionInitializeParams =

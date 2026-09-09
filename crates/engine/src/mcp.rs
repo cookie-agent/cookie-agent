@@ -444,9 +444,10 @@ impl ClientHandler for McpClientHandler {
         for (tool_call_id, sink) in sinks {
             let _ = sink
                 .send(ToolProgress {
+                    output: Vec::new(),
                     tool_call_id,
                     message: message.clone(),
-                    output_chunk: None,
+                    display: Some(safe_title(&message).to_string()),
                 })
                 .await;
         }
@@ -2613,7 +2614,8 @@ impl PreparedExecutor for McpExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
         self.revalidate().await?;
         let params = CallToolRequestParams::new(self.raw_name.clone())
             .with_arguments(self.arguments.clone());
@@ -2648,6 +2650,13 @@ impl PreparedExecutor for McpExecutor {
         };
         self.server.progress.lock().await.remove(&self.call_id);
         map_tool_result(&context, &self.generated_name, result?)
+}.await;
+        result.map(|result| {
+            let failed = result.metadata["mcp"]["is_error"] == true;
+            let mut completion = crate::ToolCompletion::single(result);
+            completion.failed = failed;
+            completion
+        })
     }
 }
 
@@ -2663,6 +2672,7 @@ fn convert_tool(server: &str, sanitized_server: &str, tool: Tool) -> Result<Cach
     Ok(CachedTool {
         raw_name: tool.name.into_owned(),
         spec: ToolSpec {
+            output: Default::default(),
             concurrency: ToolConcurrency::Parallel,
             // External opt-out requires a future extension-protocol capability.
             result_truncation: Default::default(),
@@ -2826,6 +2836,8 @@ fn map_tool_result(
         ]
     };
     Ok(ToolResult {
+        display: None,
+        retained_output: None,
         title: safe_title(tool_name),
         output: text_output,
         metadata,
@@ -3223,6 +3235,8 @@ for line in sys.stdin:
             })
             .await
             .expect("execute MCP call")
+            .into_result_for_test()
+            .expect("terminal MCP output")
     }
 
     #[test]

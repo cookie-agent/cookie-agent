@@ -98,6 +98,7 @@ impl ToolProvider for GoalVisibilityProvider {
         .into_iter()
         .map(
             |(name, permission_name, description, parameters)| ToolSpec {
+                output: Default::default(),
                 name: name.into(),
                 permission_name: permission_name.into(),
                 description: description.into(),

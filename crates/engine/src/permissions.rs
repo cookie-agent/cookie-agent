@@ -136,7 +136,7 @@ impl PermissionPipeline {
         permission_name: &str,
     ) -> Result<PermissionAction, PermissionError> {
         match permission_name {
-            "read" | "read_tool_result" => Ok(PermissionAction::Read),
+            "read" => Ok(PermissionAction::Read),
             "write" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),
@@ -509,6 +509,9 @@ fn expand_workspace_pattern(pattern: &str, workspace: &Path) -> String {
 }
 
 fn absolute_resource(workspace: &Path, resource: &str) -> String {
+    if resource.starts_with("artifact://") {
+        return resource.to_owned();
+    }
     let resource_path = Path::new(resource);
     if resource_path.is_absolute() {
         normalized_path(resource_path)
@@ -956,6 +959,47 @@ mod tests {
         assert_eq!(
             select_governing_agent(&creation, None).permissions,
             creation.permissions
+        );
+    }
+
+    #[test]
+    fn artifact_uris_are_not_workspace_files_for_permission_patterns() {
+        let workspace = std::path::Path::new("/workspace");
+        let uri = format!("artifact://{}/results", "a".repeat(64));
+        let files = policy(vec![rule(
+            "files",
+            PermissionAction::Read,
+            "${workspace_dir}/*",
+            PermissionEffect::Allow,
+        )]);
+        assert_eq!(super::absolute_resource(workspace, &uri), uri);
+        assert_eq!(
+            super::effective_permission(&files, PermissionAction::Read, &uri, workspace).0,
+            PermissionEffect::Deny
+        );
+        assert_eq!(
+            super::effective_permission(&files, PermissionAction::Read, "src/main.rs", workspace).0,
+            PermissionEffect::Allow
+        );
+        let artifacts = policy(vec![rule(
+            "artifacts",
+            PermissionAction::Read,
+            "artifact://*",
+            PermissionEffect::Allow,
+        )]);
+        assert_eq!(
+            super::effective_permission(&artifacts, PermissionAction::Read, &uri, workspace).0,
+            PermissionEffect::Allow
+        );
+        assert_eq!(
+            super::effective_permission(
+                &artifacts,
+                PermissionAction::Read,
+                "src/main.rs",
+                workspace
+            )
+            .0,
+            PermissionEffect::Deny
         );
     }
 

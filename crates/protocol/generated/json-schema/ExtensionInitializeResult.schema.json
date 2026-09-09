@@ -11,7 +11,7 @@
     },
     "protocol_version": {
       "type": "string",
-      "const": "0.0.5"
+      "const": "0.0.6"
     },
     "tools": {
       "type": "array",
@@ -102,6 +102,12 @@
         "name": {
           "type": "string"
         },
+        "output": {
+          "$ref": "#/$defs/ToolOutputDeclaration",
+          "default": {
+            "kind": "single"
+          }
+        },
         "parameters": true,
         "permission_name": {
           "type": "string"
@@ -120,6 +126,45 @@
         "parameters",
         "permission_name",
         "primary_resource_param"
+      ]
+    },
+    "ToolOutputDeclaration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "single"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "named"
+            },
+            "streams": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "streams"
+          ]
+        }
       ]
     }
   }

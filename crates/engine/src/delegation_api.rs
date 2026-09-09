@@ -103,6 +103,8 @@ mod tests {
                 (serde_json::Value::Null, false),
             ] {
                 let result = ToolResult {
+                    display: None,
+                    retained_output: None,
                     title: cookie_agent_protocol::SafeDisplayText::new("Delegate cancelled")
                         .unwrap(),
                     output: String::new(),

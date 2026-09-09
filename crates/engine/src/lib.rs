@@ -33,15 +33,15 @@ pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use media::{AttachmentGate, approved_media_type, attachment_gate_error, gate_attachment};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::{
-    ApprovalRespondFailure, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
-    ToolResultReadPage,
+    ApprovalRespondFailure, ArtifactReadPage, Engine, EngineError, EngineHistoryView,
+    EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{
     PreparedExecutor, PreparedSerializationKey, PreparedTool, ProgressSink, PromptSection,
-    SessionToolContext, StdinWrite, ToolCall, ToolConcurrency, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProgress, ToolProvider, ToolResultTruncationPolicy, ToolSpec,
-    ToolStdin, TurnAgentContext,
+    SessionToolContext, StdinWrite, ToolCall, ToolCompletion, ToolConcurrency, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProgress, ToolProvider,
+    ToolResultTruncationPolicy, ToolSpec, ToolStdin, TurnAgentContext,
 };
 
 pub(crate) use runtime::ArtifactStore;

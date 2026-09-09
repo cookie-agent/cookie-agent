@@ -2119,6 +2119,12 @@
             "operation_fingerprint": {
               "$ref": "#/$defs/OperationFingerprint"
             },
+            "output": {
+              "$ref": "#/$defs/ToolOutputDeclaration",
+              "default": {
+                "kind": "single"
+              }
+            },
             "owner": {
               "$ref": "#/$defs/AssistantToolCallRef"
             },
@@ -2145,20 +2151,16 @@
         {
           "type": "object",
           "properties": {
-            "message": {
-              "description": "Control-free bounded presentation text.",
-              "type": "string",
-              "maxLength": 1024,
-              "minLength": 1,
-              "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
-            },
-            "output_chunk": {
-              "description": "Control-free bounded presentation text.",
+            "display": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null,
+              "default": null
+            },
+            "message": {
+              "description": "Control-free bounded presentation text.",
+              "type": "string",
               "maxLength": 1024,
               "minLength": 1,
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
@@ -5161,9 +5163,25 @@
           },
           "maxItems": 256
         },
+        "display": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "metadata": true,
         "output": {
           "type": "string"
+        },
+        "retained_output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetainedToolOutput"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "title": {
           "description": "Control-free bounded presentation text.",
@@ -5965,6 +5983,78 @@
         "selection_fingerprint"
       ]
     },
+    "RetainedToolOutput": {
+      "type": "object",
+      "properties": {
+        "incomplete": {
+          "type": "boolean"
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "streams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RetainedToolStream"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "streams",
+        "incomplete"
+      ]
+    },
+    "RetainedToolStream": {
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "line_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_offset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reference": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reference",
+        "sha256",
+        "byte_length",
+        "line_count",
+        "truncated"
+      ]
+    },
     "RunSelection": {
       "type": "object",
       "properties": {
@@ -6560,6 +6650,45 @@
       "enum": [
         "system",
         "user"
+      ]
+    },
+    "ToolOutputDeclaration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "single"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "named"
+            },
+            "streams": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8,
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "streams"
+          ]
+        }
       ]
     },
     "ToolOutputTruncation": {

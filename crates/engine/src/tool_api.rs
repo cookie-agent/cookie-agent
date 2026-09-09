@@ -2,9 +2,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    AdaptorId, AgentId, ModelCapabilities, ModelKey, OutputStream,
-    PersistedToolResult as ToolResult, PreparedOperationIdentity, RunId, SessionId, Sha256Digest,
-    ToolAttachment, ToolCallId, ToolCallPresentation,
+    AdaptorId, AgentId, ModelCapabilities, ModelKey, PersistedToolResult as ToolResult,
+    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolAttachment, ToolCallId,
+    ToolCallPresentation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +74,75 @@ pub struct ToolSpec {
     pub concurrency: ToolConcurrency,
     #[serde(default)]
     pub result_truncation: ToolResultTruncationPolicy,
+    #[serde(default)]
+    pub output: cookie_agent_protocol::ToolOutputDeclaration,
+}
+
+/// Completion supplies output once, or explicitly finalizes already accepted deltas.
+#[derive(Clone, Debug)]
+pub struct ToolCompletion {
+    pub output: cookie_agent_protocol::ToolCompletionOutput,
+    pub result: ToolResult,
+    pub failed: bool,
+}
+
+impl ToolCompletion {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn into_result_for_test(self) -> Result<ToolResult, ToolError> {
+        let mut result = self.result;
+        match self.output {
+            cookie_agent_protocol::ToolCompletionOutput::Single { text } => result.output = text,
+            _ => {
+                return Err(ToolError::execution(
+                    "streamed tests must use runtime capture",
+                ));
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn single(mut result: ToolResult) -> Self {
+        let text = std::mem::take(&mut result.output);
+        if result.display.is_none() {
+            result.display = Some(bounded_tool_display(&text));
+        }
+        Self {
+            output: cookie_agent_protocol::ToolCompletionOutput::Single { text },
+            result,
+            failed: false,
+        }
+    }
+
+    pub fn streamed(mut result: ToolResult) -> Self {
+        if result.display.is_none() {
+            result.display = Some(String::new());
+        }
+        Self {
+            output: cookie_agent_protocol::ToolCompletionOutput::Streamed,
+            result,
+            failed: false,
+        }
+    }
+}
+
+pub(crate) fn bounded_tool_display(text: &str) -> String {
+    sanitize_tool_display(text, cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES)
+}
+
+pub(crate) fn sanitize_tool_display(text: &str, maximum: usize) -> String {
+    let mut display = String::new();
+    for character in text.chars() {
+        let character = if character.is_control() && !matches!(character, '\n' | '\t') {
+            ' '
+        } else {
+            character
+        };
+        if display.len() + character.len_utf8() > maximum {
+            break;
+        }
+        display.push(character);
+    }
+    display
 }
 
 /// Declares whether calls to a tool may overlap with sibling calls from one model turn.
@@ -104,7 +173,9 @@ pub struct ToolCall {
 pub struct ToolProgress {
     pub tool_call_id: ToolCallId,
     pub message: String,
-    pub output_chunk: Option<String>,
+    pub display: Option<String>,
+    #[serde(default)]
+    pub output: Vec<cookie_agent_protocol::ToolOutputChunk>,
 }
 
 #[derive(Clone, Debug)]
@@ -112,14 +183,29 @@ pub struct ProgressSink {
     sender: mpsc::Sender<ToolProgress>,
     output: OutputHub,
     capture: Option<OutputCapture>,
+    display_used: Arc<std::sync::Mutex<usize>>,
 }
 impl ProgressSink {
+    #[cfg(feature = "test-support")]
+    pub async fn for_test(
+        sender: mpsc::Sender<ToolProgress>,
+        output: OutputHub,
+        directory: PathBuf,
+        declaration: cookie_agent_protocol::ToolOutputDeclaration,
+    ) -> Result<Self, ToolError> {
+        let store =
+            ArtifactStore::open(directory).map_err(|e| ToolError::execution(e.to_string()))?;
+        let capture = OutputCapture::new(store, declaration, 2_000, 16 * 1024).await?;
+        Ok(Self::with_capture(sender, output, capture))
+    }
+
     #[must_use]
     pub fn new(sender: mpsc::Sender<ToolProgress>, output: OutputHub) -> Self {
         Self {
             sender,
             output,
             capture: None,
+            display_used: Arc::new(std::sync::Mutex::new(0)),
         }
     }
     pub(crate) fn with_capture(
@@ -131,19 +217,72 @@ impl ProgressSink {
             sender,
             output,
             capture: Some(capture),
+            display_used: Arc::new(std::sync::Mutex::new(0)),
         }
     }
-    pub async fn send(&self, progress: ToolProgress) -> Result<(), ToolError> {
-        self.sender
-            .send(progress)
-            .await
-            .map_err(|_| ToolError::ProgressSinkClosed)
-    }
-    pub fn output(&self, stream: OutputStream, data: &[u8]) {
-        self.output.emit(stream, data);
+    pub async fn send(&self, mut progress: ToolProgress) -> Result<(), ToolError> {
+        if !progress.output.is_empty() && self.capture.is_none() {
+            return Err(ToolError::execution("output capture is unavailable"));
+        }
+        if progress.message.len() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES
+            || progress.display.as_ref().is_some_and(|display| {
+                display.len() > cookie_agent_protocol::SafeDisplayText::MAX_BYTES
+            })
+        {
+            return Err(ToolError::resource_limit(
+                "tool display delta exceeds the display event bound",
+            ));
+        }
+        if progress.output.len() > cookie_agent_protocol::MAX_TOOL_STREAMS
+            || progress.output.iter().fold(0_usize, |total, chunk| {
+                total.saturating_add(chunk.text.len())
+            }) > cookie_agent_protocol::MAX_TOOL_DELTA_BYTES
+        {
+            return Err(ToolError::resource_limit(
+                "tool output delta exceeds 64 KiB or 8 chunks",
+            ));
+        }
+        for chunk in &progress.output {
+            if let Some(name) = &chunk.stream {
+                cookie_agent_protocol::validate_tool_stream_name(name)
+                    .map_err(ToolError::execution)?;
+            }
+        }
+        {
+            let mut used = self.display_used.lock().unwrap_or_else(|p| p.into_inner());
+            let remaining = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(*used);
+            progress.message = sanitize_tool_display(&progress.message, remaining);
+            *used += progress.message.len();
+            progress.display = progress
+                .display
+                .as_deref()
+                .map(|text| {
+                    sanitize_tool_display(
+                        text,
+                        cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(*used),
+                    )
+                })
+                .filter(|text| !text.is_empty());
+            *used += progress.display.as_ref().map_or(0, String::len);
+        }
+        let permit = if progress.message.is_empty() && progress.display.is_none() {
+            None
+        } else {
+            Some(
+                self.sender
+                    .clone()
+                    .reserve_owned()
+                    .await
+                    .map_err(|_| ToolError::ProgressSinkClosed)?,
+            )
+        };
         if let Some(capture) = &self.capture {
-            capture.write(stream, data);
+            return capture.emit(progress, self.output.clone(), permit).await;
         }
+        if let Some(permit) = permit {
+            permit.send(progress);
+        }
+        Ok(())
     }
 }
 
@@ -217,6 +356,15 @@ pub struct ToolExecutionContext {
 }
 
 impl ToolExecutionContext {
+    pub async fn read_artifact(
+        &self,
+        path: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<crate::ArtifactReadPage, ToolError> {
+        crate::runtime::read_artifact_async(self.artifacts.clone(), path, offset, limit).await
+    }
+
     #[cfg(feature = "test-support")]
     pub fn for_test(
         artifact_directory: impl Into<PathBuf>,
@@ -378,7 +526,7 @@ pub trait PreparedExecutor: Send + Sync {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> Result<crate::ToolCompletion, ToolError>;
 }
 
 pub struct PreparedTool {
@@ -481,7 +629,7 @@ impl PreparedTool {
             .await
             .take()
             .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?;
-        executor.execute(context).await
+        executor.execute(context).await?.into_result_for_test()
     }
 }
 
@@ -548,8 +696,10 @@ mod tests {
         async fn execute(
             self: Box<Self>,
             _context: ToolExecutionContext,
-        ) -> Result<ToolResult, ToolError> {
-            unreachable!("constructor validation test never executes")
+        ) -> Result<crate::ToolCompletion, ToolError> {
+            let result: Result<ToolResult, ToolError> =
+                async move { unreachable!("constructor validation test never executes") }.await;
+            result.map(crate::ToolCompletion::single)
         }
     }
 

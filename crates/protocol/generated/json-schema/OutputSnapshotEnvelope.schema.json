@@ -76,10 +76,27 @@
       ]
     },
     "OutputStream": {
-      "type": "string",
-      "enum": [
-        "stdout",
-        "stderr"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "stdout",
+            "stderr",
+            "single"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "named": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "named"
+          ]
+        }
       ]
     }
   }

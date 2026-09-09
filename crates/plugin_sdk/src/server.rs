@@ -1915,6 +1915,7 @@ mod tests {
 
     fn declaration() -> ToolDecl {
         ToolDecl {
+            output: Default::default(),
             name: "echo".into(),
             description: "Echo text".into(),
             parameters: json!({
@@ -2045,7 +2046,7 @@ mod tests {
         let response = read_wire(&mut engine_read).await;
         assert_eq!(
             response["result"],
-            json!({"content": "hello", "is_error": false})
+            json!({"output": {"kind":"single", "text":"hello"}, "display":"hello", "is_error": false})
         );
 
         let ping = Request::new(JsonRpcId::Number(3), PLUGIN_PING_METHOD, Some(json!({})));
@@ -2773,7 +2774,7 @@ mod tests {
         ];
         let mut outputs = responses
             .iter()
-            .map(|response| response["result"]["content"].as_str().unwrap())
+            .map(|response| response["result"]["output"]["text"].as_str().unwrap())
             .collect::<Vec<_>>();
         outputs.sort_unstable();
         assert_eq!(outputs, ["first", "second"]);

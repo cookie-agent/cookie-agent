@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 16 prepared built-in tools.
+//! Exact cookie-agent protocol 17 prepared built-in tools.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,6 @@ pub mod fs_cap;
 pub mod goal;
 mod path_args;
 pub mod read;
-pub mod read_tool_result;
 pub mod skill;
 pub mod webfetch;
 pub mod write;
@@ -434,8 +433,7 @@ mod tests {
 
     use super::{
         BuiltinTools, bash::BashTool, delegate::DelegateToolProvider, edit::EditTool,
-        goal::GoalTools, read::ReadTool, read_tool_result::ReadToolResultProvider,
-        write::WriteTool,
+        goal::GoalTools, read::ReadTool, write::WriteTool,
     };
 
     #[test]
@@ -457,10 +455,7 @@ mod tests {
             GoalTools::get_permission_name("goal_update").unwrap(),
             "write"
         );
-        assert_eq!(
-            ReadToolResultProvider::get_permission_name("read_tool_result").unwrap(),
-            "read_tool_result"
-        );
+        assert!(BuiltinTools::get_permission_name("read_tool_result").is_err());
         for name in [
             "delegate_subagent",
             "get_subagent_result",
@@ -483,10 +478,6 @@ mod tests {
             .remove(0);
         assert_eq!(
             read.result_truncation,
-            cookie_agent_engine::ToolResultTruncationPolicy::OptOut
-        );
-        assert_eq!(
-            ReadToolResultProvider::tool_spec().result_truncation,
             cookie_agent_engine::ToolResultTruncationPolicy::OptOut
         );
         assert_eq!(

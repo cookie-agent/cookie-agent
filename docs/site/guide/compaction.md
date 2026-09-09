@@ -1,9 +1,14 @@
 # Compaction
 
 Compaction reduces a long session history to a checkpoint. Internal compaction
-summarizes the discarded history prefix and preserves a bounded suffix of recent
-original messages alongside pinned context. Provider-native compaction instead
-stores an opaque provider window.
+summarizes the entire active history, including recent messages that will also be
+retained unchanged after the summary. Older messages are replaced by the summary
+in model context; the original saved log is preserved. Provider-native compaction
+instead stores an opaque provider window.
+
+Active history means the currently assembled context before compaction, including
+any existing summary and the messages after it. It does not reload historical
+events already replaced by earlier checkpoints.
 
 ## Native provider compaction
 
@@ -69,30 +74,37 @@ The threshold is compared against two signals:
 
 ## What happens when it triggers
 
-1. **Raw-context fit check.** The engine first assembles the unmodified history.
-   It uses the session's calibrated tokens-per-byte estimate when available and
-   otherwise estimates tokens as serialized bytes ÷ 4. A latest real usage value
-   at or below the budget is accepted without estimating. For internal
-   summarization, fit is checked against each resolved compaction model's context
-   limit minus its effective output reserve. An undersized candidate is skipped
-   through the normal fallback path; an unknown context limit uses 16,384 tokens.
-   Agent documents do not cap this input budget. Native compaction uses the bound
-   model's context limit minus the effective compaction output allowance. If that
-   allowance is unknown, the engine reserves 20,000 tokens as conservative
-   summary-output headroom.
-2. **Overflow elision.** When the raw context exceeds that budget, or when a
-   normal model request has already failed for context length, bulky tool outputs
-   (8 KiB or more) from turns older than the last two are replaced with
-   content-addressed artifact references. The context is then reassembled from
-   the elided events. If elision brings an automatic compaction below its trigger
-   threshold, no summarizer call is made.
-   The original truncation artifact remains preferred by
-   [`read_tool_result`](../reference/tools.md#retained-tool-output), so elision
-   of its preview does not discard the retained full output.
-3. **Native attempt.** An opted-in Responses model first attempts native
+1. **Native attempt.** An opted-in Responses model first attempts native
    compaction. A successful native window goes directly to checkpoint commit,
-   without selecting an independent recent-history tail. Otherwise, or after
-   any native failure, the engine uses internal summarization.
+   without selecting independent recent messages. Otherwise, or after any native
+   failure, the engine uses internal summarization. Native compaction uses the
+   bound model's context limit minus the effective compaction output allowance.
+   If that allowance is unknown, the engine reserves 20,000 tokens as conservative
+   summary-output headroom.
+2. **Full-history trial.** Internal summarization first uses the entire active,
+   unpruned history, including the recent messages selected for retention.
+   The local fit check evaluates the exact assembled summarizer input, including
+   its instructions, against the resolved compaction model's context limit minus
+   its effective output reserve. Summarizer admission uses a fixed byte-based
+   estimate (serialized fit-projection bytes ÷ 4, rounded up), not the session's
+   calibrated estimator used for compaction triggers and post-checkpoint budgeting.
+   An unknown context limit uses 16,384 tokens. Agent documents do not cap this
+   input budget.
+3. **Context-fit retry.** A local fit rejection of that exact input or a provider
+   context-length failure permits at most one pruned retry. Other failures do not
+   trigger pruning. The retry uses an in-memory copy of the summarizer input:
+   tool results are retained with `ArtifactStore::retain` and replaced by reference
+   markers with a structured `read` hint using `filePath="artifact://<digest>"`.
+   Saved `ArtifactReference` URIs remain unchanged. Possession of an
+   artifact ID grants read access in the
+   configured artifact store, without a session-ownership check. Structured tool
+   content is retained as serialized JSON, not flattened into original output;
+   the marker labels this format. All outputs of artifact `read` calls are redacted,
+   including named-stream reads. Detection uses the structured `filePath` argument;
+   ordinary filesystem `read` results follow normal tool-output pruning.
+   Both older and recent messages remain in the retry input. This does
+   not emit durable `tool_output_elided` (`ToolOutputElided`) events or change the
+   original saved log or recent retained message contents, even if the retry fails.
 4. **Recent-history selection.** For internal summarization, the engine selects
    a contiguous suffix of original messages. Its effective token target is at
    most `min(keep_recent_tokens, context_limit / 4)`, using integer division,
@@ -103,10 +115,11 @@ The threshold is compared against two signals:
    exceeds the target, no tail is retained; the engine does not exceed the
    target or substitute an older, noncontiguous group. `keep_recent_tokens = 0`
    disables the tail.
-5. **Discarded-prefix summary.** The internal `compaction` agent (see
-   [Internal agents](agents.md#internal-agents)) summarizes only the discarded
-   prefix, not the retained suffix. Its fixed instruction may be extended with
-   the user's focus text. It must return summary text only, at most
+5. **Full-history summary.** The internal `compaction` agent (see
+   [Internal agents](agents.md#internal-agents)) summarizes both older and recent
+   messages; retaining recent messages does not exclude them from its input.
+   Its fixed instruction may be extended with the user's focus text. It must
+   return summary text only, at most
    `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
    built-in compaction agent allows 4,096 output tokens. Authored internal-agent
    documents that omit this limit retain the generic 2,048-token default.
@@ -122,14 +135,15 @@ The next request assembles context in this order:
 1. System prompt and tool definitions.
 2. Pinned `AGENTS.md` context.
 3. Pinned loaded skill bodies.
-4. Summary of the discarded history prefix.
-5. Retained recent original message suffix, followed by any new messages.
+4. Summary of the entire active pre-compaction history.
+5. Recent original messages retained unchanged, followed by any new messages.
 
 Pinned context is preserved separately from the suffix. With retention disabled,
 or when the newest complete group cannot fit, the recent suffix is absent and
-the summary covers the discarded history instead. The retained suffix is not
-duplicated in the summary. Native checkpoints continue to use their opaque
-provider windows rather than this summary-and-tail layout.
+only the summary remains alongside pinned context. The summary may cover recent
+messages even though those messages also remain unchanged after it. Native
+checkpoints continue to use their opaque provider windows rather than this
+summary-and-tail layout.
 
 ## Configuration
 
@@ -150,18 +164,20 @@ compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.
 
 `session.compact` returns whether a checkpoint was actually committed. Manual
-compaction uses raw history when it fits the compaction budget and uses
-tool-output elision only as overflow recovery. Internal summarization still
-separates the retained suffix and summarizes only the discarded prefix.
+compaction follows the same full-history trial and context-fit retry rules.
+The internal summarizer receives both older and recent messages, including those
+retained unchanged after the summary.
 
 ## Events
 
 Compaction produces these event payloads:
 
-- `tool_output_elided` — a bulky output was replaced with an artifact reference
 - `internal_agent_started` / `internal_agent_completed` / `internal_agent_failed`
   / `internal_agent_fallback` — the compaction agent invocation
 - `context_checkpoint_committed` — the checkpoint with boundaries and budgets
+
+The internal summarizer's in-memory pruning retry does not produce
+`tool_output_elided` events.
 
 `context_rehydrated` (`ContextRehydrated` in Rust) is legacy-only. Saved logs
 containing it remain decodable and renderable, but new compactions never reread

@@ -547,6 +547,10 @@ pub struct ToolOutputTruncation {
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
     pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_output: Option<crate::RetainedToolOutput>,
     pub metadata: Value,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ToolOutputTruncation>", required)]
@@ -584,6 +588,24 @@ impl PersistedToolResult {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
         if self.output.len() > Self::MAX_OUTPUT_BYTES {
             return Err(EventSchemaError::ToolOutputTooLarge);
+        }
+        if self.display.as_ref().is_some_and(|display| {
+            !crate::tool_output::validate_display(display, crate::MAX_TOOL_DISPLAY_BYTES)
+        }) {
+            return Err(EventSchemaError::ToolOutputTooLarge);
+        }
+        if let Some(retained) = &self.retained_output {
+            retained.reference.validate()?;
+            if retained.streams.is_empty() || retained.streams.len() > crate::MAX_TOOL_STREAMS {
+                return Err(EventSchemaError::ToolOutputTooLarge);
+            }
+            for stream in &retained.streams {
+                stream.reference.validate()?;
+                if let Some(name) = &stream.name {
+                    crate::validate_tool_stream_name(name)
+                        .map_err(|_| EventSchemaError::InvalidArtifactReference)?;
+                }
+            }
         }
         if serde_json::to_vec(&self.metadata)
             .map_err(|_| EventSchemaError::InvalidJson)?
@@ -631,6 +653,10 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         struct Wire {
             title: SafeDisplayText,
             output: String,
+            #[serde(default)]
+            display: Option<String>,
+            #[serde(default)]
+            retained_output: Option<crate::RetainedToolOutput>,
             metadata: Value,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             truncation: Option<ToolOutputTruncation>,
@@ -642,6 +668,8 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
         let value = Self {
             title: w.title,
             output: w.output,
+            display: w.display,
+            retained_output: w.retained_output,
             metadata: w.metadata,
             truncation: w.truncation,
             attachments: w.attachments,
@@ -684,6 +712,8 @@ pub struct ToolCallPresentation {
 #[serde(deny_unknown_fields)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,
+    #[serde(default)]
+    pub output: crate::ToolOutputDeclaration,
     pub owner: AssistantToolCallRef,
     pub presentation: ToolCallPresentation,
     pub operation_fingerprint: OperationFingerprint,
@@ -2049,9 +2079,13 @@ pub enum EventPayload {
     ToolCallProgress {
         tool_call_id: ToolCallId,
         message: SafeDisplayText,
-        #[serde(default)]
+        #[serde(
+            default,
+            alias = "output_chunk",
+            deserialize_with = "crate::tool_output::deserialize_delta_display"
+        )]
         #[ts(optional = nullable)]
-        output_chunk: Option<SafeDisplayText>,
+        display: Option<String>,
     },
     ToolCallTerminated {
         #[serde(flatten)]
@@ -2475,8 +2509,14 @@ impl EventPayload {
                     .map_err(|_| EventSchemaError::InvalidResolvedModel)?;
             }
             Self::ToolCallStarted { start } => {
+                start.output.validate().map_err(|_| EventSchemaError::InvalidToolTermination)?;
                 if start.owner.model_turn_seq == 0 {
                     return Err(EventSchemaError::ZeroModelTurnSequence);
+                }
+            }
+            Self::ToolCallProgress { display, .. } => {
+                if display.as_ref().is_some_and(|text| !crate::tool_output::validate_display(text, SafeDisplayText::MAX_BYTES)) {
+                    return Err(EventSchemaError::ToolOutputTooLarge);
                 }
             }
             Self::ToolCallTerminated { termination } => termination.validate()?,
@@ -3001,11 +3041,33 @@ pub enum EventSubscriptionMessage {
         last_delivered_seq: u64,
     },
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputStream {
     Stdout,
     Stderr,
+    Single,
+    Named(#[serde(deserialize_with = "crate::tool_output::deserialize_stream_name")] String),
+}
+
+impl OutputStream {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Single => "",
+            Self::Named(name) => name,
+        }
+    }
+
+    pub fn from_channel(name: Option<&str>) -> Self {
+        match name {
+            None => Self::Single,
+            Some("stdout") => Self::Stdout,
+            Some("stderr") => Self::Stderr,
+            Some(name) => Self::Named(name.to_owned()),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]

@@ -71,13 +71,12 @@ fn is_framed_summary_turn(turn: &HistoryTurn) -> bool {
 }
 
 pub(crate) fn tool_output_elision_marker(
-    retained: &ArtifactReference,
+    artifact_id: &str,
     original_bytes: u64,
     additional_message_count: usize,
 ) -> String {
     let mut marker = format!(
-        "[tool output elided; retained at {}; {original_bytes} bytes]",
-        retained.uri
+        "[tool output elided; retained at artifact://{artifact_id}; {original_bytes} bytes]"
     );
     if additional_message_count > 0 {
         marker.push_str(&format!(
@@ -85,6 +84,16 @@ pub(crate) fn tool_output_elision_marker(
         ));
     }
     marker
+}
+
+fn retained_artifact_id(reference: &ArtifactReference) -> Result<&str, HistoryError> {
+    let digest = reference
+        .uri
+        .strip_prefix("artifact://sha256/")
+        .ok_or_else(|| HistoryError::Corrupt("invalid retained artifact reference".into()))?;
+    Sha256Digest::new(digest)
+        .map_err(|_| HistoryError::Corrupt("invalid retained artifact digest".into()))?;
+    Ok(digest)
 }
 
 #[derive(Debug, Error)]
@@ -929,6 +938,18 @@ fn assemble_history_with_replay(
             }
             EventPayload::ToolCallTerminated { termination }
                 if termination.outcome == ToolTerminationOutcome::Completed
+                    || termination
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.retained_output.as_ref())
+                        .is_some_and(|output| output.incomplete)
+                    // Opt-out pages have no retained_output. Only the commit boundary's
+                    // finalized-result reason admits them after cancellation.
+                    || (termination.outcome == ToolTerminationOutcome::Cancelled
+                        && termination.result.is_some()
+                        && termination.error.as_ref().is_some_and(|error| {
+                            error.code.as_str() == crate::runtime::CANCELLED_AFTER_COMPLETION
+                        }))
                     || (termination.outcome == ToolTerminationOutcome::Cancelled
                         && termination
                             .result
@@ -950,7 +971,7 @@ fn assemble_history_with_replay(
                                 ToolResultPart::new(
                                     String::new(),
                                     ToolContent::Text(tool_output_elision_marker(
-                                        retained,
+                                        retained_artifact_id(retained)?,
                                         *original_bytes,
                                         result.additional_messages.len(),
                                     )),
@@ -959,11 +980,23 @@ fn assemble_history_with_replay(
                             )
                         } else {
                             (
-                                tool_result_part(result, termination.tool_call_id, store)?,
+                                tool_result_part(result, store)?,
                                 result.additional_messages.clone(),
                             )
                         };
                     result_part.is_error = termination.outcome != ToolTerminationOutcome::Completed;
+                    if let Some(error) = &termination.error {
+                        match &mut result_part.content {
+                            ToolContent::Mixed(values) => {
+                                values.push(ContentValue::Text(error.message.to_string()))
+                            }
+                            ToolContent::Text(text) => {
+                                text.push('\n');
+                                text.push_str(error.message.as_str());
+                            }
+                            _ => {}
+                        }
+                    }
                     attach_result(
                         &mut logical,
                         &engine_calls,
@@ -1344,20 +1377,22 @@ fn denied_failure(message: &str) -> Option<DeniedToolFailure> {
 
 fn tool_result_part(
     result: &PersistedToolResult,
-    tool_call_id: ToolCallId,
     store: &ArtifactStore,
 ) -> Result<ToolResultPart, HistoryError> {
-    let truncation = result.truncation.as_ref().map(|truncation| {
-        serde_json::json!({
+    let truncation = if let Some(truncation) = &result.truncation {
+        let artifact_id = retained_artifact_id(&truncation.retained)?;
+        Some(serde_json::json!({
             "original_bytes":truncation.original_bytes,
             "original_lines":truncation.original_lines,
-            "retained":truncation.retained,
+            "artifact_id":artifact_id,
             "read_more":{
-                "tool":"read_tool_result",
-                "arguments":{"tool_call_id":tool_call_id}
+                "tool":"read",
+                "arguments":{"filePath":format!("artifact://{artifact_id}")}
             }
-        })
-    });
+        }))
+    } else {
+        None
+    };
     let mut values = vec![
         ContentValue::Text(result.output.clone()),
         ContentValue::Json(serde_json::json!({
@@ -2149,6 +2184,8 @@ mod tests {
         let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
         let session_id = SessionId::new_v7();
         let result = PersistedToolResult {
+            display: None,
+            retained_output: None,
             title: SafeDisplayText::new("Subagent steered").unwrap(),
             output: format!("Subagent steered. [subagent session {session_id}; running]"),
             metadata: serde_json::json!({"session_id": session_id, "status": "running"}),
@@ -2156,7 +2193,7 @@ mod tests {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         };
-        let part = tool_result_part(&result, ToolCallId::new_v7(), &store).unwrap();
+        let part = tool_result_part(&result, &store).unwrap();
         let oven_sdk::ToolContent::Mixed(values) = part.content else {
             panic!("expected mixed tool content");
         };
@@ -2175,8 +2212,9 @@ mod tests {
     fn truncated_tool_result_names_the_readback_tool() {
         let directory = tempfile::tempdir().unwrap();
         let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let call_id = ToolCallId::new_v7();
         let result = PersistedToolResult {
+            display: None,
+            retained_output: None,
             title: SafeDisplayText::new("Truncated").unwrap(),
             output: "preview".into(),
             metadata: serde_json::Value::Null,
@@ -2190,11 +2228,27 @@ mod tests {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         };
-        let encoded = serde_json::to_value(tool_result_part(&result, call_id, &store).unwrap())
-            .unwrap()
-            .to_string();
-        assert!(encoded.contains("read_tool_result"));
-        assert!(encoded.contains(&call_id.to_string()));
+        let oven_sdk::ToolContent::Mixed(values) =
+            tool_result_part(&result, &store).unwrap().content
+        else {
+            panic!("expected mixed tool content");
+        };
+        let oven_sdk::ContentValue::Json(metadata) = &values[1] else {
+            panic!("expected tool result metadata");
+        };
+        assert_eq!(
+            metadata["truncation"]["read_more"],
+            serde_json::json!({
+                "tool": "read",
+                "arguments": {"filePath": format!("artifact://{}", "a".repeat(64))}
+            })
+        );
+        assert_eq!(metadata["truncation"]["artifact_id"], "a".repeat(64));
+        assert!(!metadata.to_string().contains("artifact://sha256/"));
+        assert_eq!(
+            result.truncation.as_ref().unwrap().retained.uri,
+            format!("artifact://sha256/{}", "a".repeat(64))
+        );
     }
 
     #[test]
@@ -2342,19 +2396,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_elision_marker_is_stable_and_contains_the_artifact_reference() {
-        let retained = cookie_agent_protocol::ArtifactReference {
-            uri:
-                "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .into(),
-        };
+    fn tool_elision_marker_is_stable_and_contains_the_bare_artifact_id() {
+        let artifact_id = "a".repeat(64);
         assert_eq!(
-            tool_output_elision_marker(&retained, 12_345, 0),
-            "[tool output elided; retained at artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes]"
+            tool_output_elision_marker(&artifact_id, 12_345, 0),
+            "[tool output elided; retained at artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes]"
         );
         assert_eq!(
-            tool_output_elision_marker(&retained, 12_345, 2),
-            "[tool output elided; retained at artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes] 2 tool-emitted message(s) were elided with this result and are not recoverable."
+            tool_output_elision_marker(&artifact_id, 12_345, 2),
+            "[tool output elided; retained at artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes] 2 tool-emitted message(s) were elided with this result and are not recoverable."
         );
     }
     use crate::{
@@ -4066,6 +4116,7 @@ mod tests {
             run,
             EventPayload::ToolCallStarted {
                 start: ToolCallStart {
+                    output: Default::default(),
                     tool_call_id,
                     owner: owner.clone(),
                     presentation: ToolCallPresentation {
@@ -4090,6 +4141,8 @@ mod tests {
                     owner,
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(PersistedToolResult {
+                        display: None,
+                        retained_output: None,
                         title: SafeDisplayText::new("late result").unwrap(),
                         output: "late tool output".into(),
                         metadata: serde_json::Value::Null,
@@ -4148,6 +4201,8 @@ mod tests {
             provider_item_id: None,
         };
         let result = PersistedToolResult {
+            display: None,
+            retained_output: None,
             title: SafeDisplayText::new("Read README.md").expect("title"),
             output: "contents".into(),
             metadata: serde_json::json!({}),
@@ -4216,6 +4271,7 @@ mod tests {
                 run,
                 EventPayload::ToolCallStarted {
                     start: ToolCallStart {
+                        output: Default::default(),
                         tool_call_id: call,
                         owner: owner.clone(),
                         presentation: ToolCallPresentation {
@@ -4280,6 +4336,47 @@ mod tests {
                 history
             );
         });
+
+        // Cancellation alone (or a success-looking display) is not evidence that an
+        // opt-out result finished. The terminal commit's lifecycle reason is required.
+        for finalized in [false, true] {
+            let mut cancelled = events.clone();
+            for event in &mut cancelled {
+                if let EventPayload::ToolCallTerminated { termination } = &mut event.payload {
+                    termination.outcome = ToolTerminationOutcome::Cancelled;
+                    termination.error = Some(cookie_agent_protocol::SafeToolError {
+                        code: SafeCode::new(if finalized {
+                            crate::runtime::CANCELLED_AFTER_COMPLETION
+                        } else {
+                            "execution_failed"
+                        })
+                        .unwrap(),
+                        message: cookie_agent_protocol::SafeErrorMessage::new("cancelled").unwrap(),
+                    });
+                    let result = termination.result.as_mut().unwrap();
+                    assert!(result.retained_output.is_none());
+                    result.display = Some("looks successfully completed".into());
+                }
+            }
+            let history =
+                assemble_full_history(&cancelled, &restarted_store, &binding, "System prompt.")
+                    .unwrap();
+            let encoded = serde_json::to_string(&history).unwrap();
+            assert_eq!(encoded.contains("contents"), finalized);
+            assert_eq!(encoded.contains("emitted user context"), finalized);
+            assert_eq!(encoded.contains("emitted system context"), finalized);
+            assert!(!encoded.contains("looks successfully completed"));
+            assert!(
+                history
+                    .iter()
+                    .filter_map(|turn| match turn {
+                        HistoryTurn::Tool(message) => Some(&message.results),
+                        _ => None,
+                    })
+                    .flatten()
+                    .all(|result| result.is_error)
+            );
+        }
 
         let (retained, _) = restarted_store.retain(b"contents").expect("retain output");
         events.push(event(

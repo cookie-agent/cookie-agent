@@ -196,6 +196,7 @@ impl ToolProvider for DelegateToolProvider {
         } else {
             vec![
                 ToolSpec {
+                    output: Default::default(),
                     concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
                     result_truncation: result_truncation_policy("delegate_subagent"),
                     name: "delegate_subagent".into(),
@@ -215,6 +216,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    output: Default::default(),
                     concurrency: Default::default(),
                     result_truncation: result_truncation_policy("get_subagent_result"),
                     name: "get_subagent_result".into(),
@@ -232,6 +234,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    output: Default::default(),
                     concurrency: Default::default(),
                     result_truncation: result_truncation_policy("steer_subagent"),
                     name: "steer_subagent".into(),
@@ -248,6 +251,7 @@ impl ToolProvider for DelegateToolProvider {
                     }),
                 },
                 ToolSpec {
+                    output: Default::default(),
                     concurrency: Default::default(),
                     result_truncation: result_truncation_policy("cancel_subagent"),
                     name: "cancel_subagent".into(),
@@ -421,73 +425,79 @@ impl PreparedExecutor for DelegateExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::execution(
-                "prepared subagent operation cancelled",
-            ));
-        }
-        match *self {
-            Self::Invoke {
-                engine,
-                call_id,
-                args,
-            } => {
-                let background = args.background;
-                let handle = engine
-                    .delegate_invoke(DelegateInvocation {
-                        parent_session_id: context.session,
-                        parent_run_id: context.run,
-                        parent_tool_call_id: call_id,
-                        agent_type: args.agent_type,
-                        description: args.description,
-                        prompt: args.prompt,
-                        background,
-                        resume_session_id: args.resume_session_id,
-                        inherit_context: args.inherit_context,
-                    })
-                    .await
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                if background {
-                    let metadata = serde_json::json!({"session_id":handle.child_session_id});
-                    Ok(ToolResult {
-                        title: safe_title("Subagent started"),
-                        output: format!(
-                            "Subagent started. [subagent session {}]",
-                            handle.child_session_id
-                        ),
-                        metadata,
-                        truncation: None,
-                        attachments: Vec::new(),
-                        additional_messages: Vec::new(),
-                    })
-                } else {
-                    engine
-                        .await_delegate(handle)
-                        .await
-                        .map_err(|error| ToolError::execution(error.to_string()))
-                }
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
+            if context.cancellation.is_cancelled() {
+                return Err(ToolError::execution(
+                    "prepared subagent operation cancelled",
+                ));
             }
-            Self::GetResult { engine, args } => engine
-                .get_subagent_result(
-                    context.session,
-                    args.session_id,
-                    args.wait,
-                    args.offset,
-                    args.limit.expect("normalized result limit"),
-                    context.cancellation,
-                )
-                .await
-                .map_err(|error| ToolError::execution(error.to_string())),
-            Self::Cancel { engine, args } => engine
-                .cancel_subagent(context.session, args.session_id, args.reason)
-                .await
-                .map_err(|error| ToolError::execution(error.to_string())),
-            Self::Steer { engine, args } => engine
-                .steer_subagent(context.session, args.session_id, args.message)
-                .await
-                .map_err(|error| ToolError::execution(error.to_string())),
+            match *self {
+                Self::Invoke {
+                    engine,
+                    call_id,
+                    args,
+                } => {
+                    let background = args.background;
+                    let handle = engine
+                        .delegate_invoke(DelegateInvocation {
+                            parent_session_id: context.session,
+                            parent_run_id: context.run,
+                            parent_tool_call_id: call_id,
+                            agent_type: args.agent_type,
+                            description: args.description,
+                            prompt: args.prompt,
+                            background,
+                            resume_session_id: args.resume_session_id,
+                            inherit_context: args.inherit_context,
+                        })
+                        .await
+                        .map_err(|error| ToolError::execution(error.to_string()))?;
+                    if background {
+                        let metadata = serde_json::json!({"session_id":handle.child_session_id});
+                        Ok(ToolResult {
+                            display: None,
+                            retained_output: None,
+                            title: safe_title("Subagent started"),
+                            output: format!(
+                                "Subagent started. [subagent session {}]",
+                                handle.child_session_id
+                            ),
+                            metadata,
+                            truncation: None,
+                            attachments: Vec::new(),
+                            additional_messages: Vec::new(),
+                        })
+                    } else {
+                        engine
+                            .await_delegate(handle)
+                            .await
+                            .map_err(|error| ToolError::execution(error.to_string()))
+                    }
+                }
+                Self::GetResult { engine, args } => engine
+                    .get_subagent_result(
+                        context.session,
+                        args.session_id,
+                        args.wait,
+                        args.offset,
+                        args.limit.expect("normalized result limit"),
+                        context.cancellation,
+                    )
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string())),
+                Self::Cancel { engine, args } => engine
+                    .cancel_subagent(context.session, args.session_id, args.reason)
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string())),
+                Self::Steer { engine, args } => engine
+                    .steer_subagent(context.session, args.session_id, args.message)
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string())),
+            }
         }
+        .await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 

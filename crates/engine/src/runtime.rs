@@ -59,7 +59,9 @@ mod agent_md;
 mod approval_api;
 mod approval_flow;
 mod approval_projection;
+mod artifact_reads;
 mod artifacts;
+mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;
 mod get_history;
@@ -67,6 +69,7 @@ mod helpers;
 mod internal_agents;
 mod mailbox;
 mod model_loop;
+mod output_capture;
 mod producer_claims;
 pub(crate) mod producers;
 mod recovery;
@@ -77,15 +80,22 @@ mod skills;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
-mod tool_results;
 
 use admission::InflightDelegation;
-pub(crate) use artifacts::{ArtifactStore, OutputCapture};
+pub use artifact_reads::ArtifactReadPage;
+pub(crate) use artifact_reads::read_artifact_async;
+pub(crate) use artifacts::ArtifactStore;
+#[cfg(test)]
+pub(crate) use blocking_io::gate as block_artifact_io_for_test;
 use delegation::DelegationRecord;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
+pub(crate) use output_capture::OutputCapture;
+pub(crate) use output_capture::finish_page;
 pub use skills::SkillInvocation;
-pub use tool_results::ToolResultReadPage;
+
+// A terminal result was finalized successfully before cancellation won its commit.
+pub(crate) const CANCELLED_AFTER_COMPLETION: &str = "cancelled_after_completion";
 
 use crate::tool_api::{
     PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall,
@@ -403,6 +413,7 @@ struct PublishedToolSet {
 pub(crate) struct ToolFailure {
     pub(crate) code: ToolCallFailureCode,
     pub(crate) message: String,
+    pub(crate) partial_output: Option<Box<ToolResult>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -441,6 +452,7 @@ impl From<ToolError> for ToolFailure {
         Self {
             code: error.code(),
             message: error.message(),
+            partial_output: None,
         }
     }
 }
@@ -517,6 +529,12 @@ struct PromptSnapshotHook {
 struct PagingRaceHook {
     reached: Mutex<Option<oneshot::Sender<()>>>,
     release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+struct ToolProgressAppendBlock {
+    reached: Arc<tokio::sync::Notify>,
+    release: tokio::sync::Notify,
 }
 
 #[cfg(test)]
@@ -1154,6 +1172,7 @@ pub(crate) struct Inner {
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     residency_mutation: tokio::sync::Mutex<()>,
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
+    output_captures: Mutex<HashMap<ToolCallId, OutputCapture>>,
     finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
     pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     // Runtime-only permission modes keyed by delegation-tree root.
@@ -1211,7 +1230,7 @@ pub(crate) struct Inner {
     #[cfg(test)]
     plugin_diagnostic_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
     #[cfg(test)]
-    tool_progress_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    tool_progress_append_block: Mutex<Option<Arc<ToolProgressAppendBlock>>>,
     #[cfg(test)]
     pub(crate) publication_failure: AtomicBool,
     #[cfg(test)]
@@ -1331,6 +1350,7 @@ impl Engine {
                 actors: Mutex::new(HashMap::new()),
                 residency_mutation: tokio::sync::Mutex::new(()),
                 output_hubs: Mutex::new(HashMap::new()),
+                output_captures: Mutex::new(HashMap::new()),
                 finalized_output_hubs: Mutex::new(VecDeque::new()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 permission_modes: Mutex::new(HashMap::new()),
@@ -1894,13 +1914,18 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub(crate) fn block_tool_progress_appends_for_test(&self) {
+    pub(crate) fn block_tool_progress_appends_for_test(&self) -> Arc<tokio::sync::Notify> {
+        let reached = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
             .tool_progress_append_block
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Arc::new(tokio::sync::Notify::new()));
+            Some(Arc::new(ToolProgressAppendBlock {
+                reached: reached.clone(),
+                release: tokio::sync::Notify::new(),
+            }));
+        reached
     }
 
     #[cfg(test)]

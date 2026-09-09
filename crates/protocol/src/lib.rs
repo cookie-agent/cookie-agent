@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 16 with versionless session events.
+//! Exact cookie-agent protocol 17 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -7,6 +7,9 @@ use std::borrow::Cow;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+mod tool_output;
+pub use tool_output::*;
 
 pub(crate) struct NullableSchema<T>(std::marker::PhantomData<T>);
 
@@ -130,7 +133,7 @@ pub use session::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
@@ -203,8 +206,8 @@ macro_rules! exact_numeric_wire_type {
 
 exact_numeric_wire_type!(
     ProtocolVersion,
-    16,
-    "16",
+    17,
+    "17",
     "The exact protocol wire version."
 );
 exact_numeric_wire_type!(

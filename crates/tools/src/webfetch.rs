@@ -46,9 +46,10 @@ impl ToolProvider for WebfetchTool {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+output: Default::default(),
             name: "webfetch".into(),
             permission_name: "webfetch".into(),
-            description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_tool_result to page retained output by line, including the body.".into(),
+            description: "Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read with the artifact URI in a truncation hint to page retained output, including the body.".into(),
             parameters: schema::<WebfetchArgs>(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
@@ -182,6 +183,8 @@ impl WebfetchArgs {
             "truncated": truncated,
         });
         Ok(PersistedToolResult {
+            display: None,
+            retained_output: None,
             title: safe_title(&self.url),
             output: format!(
                 "final_url: {final_url}\nstatus_code: {status_code}\ncontent_type: {content_type}\ntruncated: {truncated}\n\n{text}"
@@ -203,8 +206,10 @@ impl PreparedExecutor for WebfetchArgs {
     async fn execute(
         self: Box<Self>,
         _context: ToolExecutionContext,
-    ) -> Result<PersistedToolResult, ToolError> {
-        self.fetch().await
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<PersistedToolResult, ToolError> =
+            async move { self.fetch().await }.await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 

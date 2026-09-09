@@ -13,7 +13,7 @@ declaration.
 
 | Tools | Eligibility | Coordination |
 |---|---|---|
-| `read`, `read_tool_result`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
+| `read`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
 | `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
 | MCP tools | Parallel | Each MCP server's service mutex serializes calls to that server; different servers can overlap. |
@@ -54,10 +54,10 @@ Downloads are streamed to a fixed 16 MiB cap. Over-cap responses return the
 fetched prefix with `truncated: true`, not an error. The cap has no input or
 configuration parameter. Full results use the standard event log and result
 store. The standard Bounded policy retains oversized output and sends a preview
-to the model. `read_tool_result` pages the retained header and body by physical
+to the model. `read` with an artifact URI pages the retained header and body by physical
 line; its zero-based offset 5 starts at the body. Follow `next_offset` for
 successive pages. Metadata is separate and is not paged. Grant
-`read: {"tool_result:*": allow}` for result paging.
+`read: {"artifact://*": allow}` for result paging.
 
 Errors distinguish `invalid_url`, `redirect_error`, `timeout`,
 `transport_error`, and `unsupported_content_type` (which names the content type).
@@ -148,13 +148,42 @@ separate artifacts for the terminal result.
 
 ## Retained tool output
 
-For most tools, when a terminal result exceeds the configured line or byte
-limit, the event stores a bounded preview and an
-`artifact://sha256/<digest>` reference to the full original output. Compaction
-may also replace older bulky previews with artifact references. Retained files
-live below the project state directory at `projects/<project-hash>/artifacts/`.
+Tools declare `ToolOutputDeclaration::Single` or an ordered list of 1 to 8 named
+streams. Names are unique, case-sensitive ASCII path segments, 1 to 64 bytes,
+using letters, digits, `_`, `-`, and `.`; `.` and `..` alone are forbidden. The
+same validator governs declarations and artifact stream suffixes.
 
-The self-paginating `read`, `read_tool_result`, and `get_subagent_result` tools
+The runtime captures accepted text chunks into locked temporary files, maintains
+incremental hashes/counts and bounded previews, and publishes full artifacts at
+completion. A single output has one artifact; named output has a generic manifest
+and an artifact for each declared stream, including empty streams. Declaration
+order determines model rendering. Bash uses the same named-output interface as
+other tools; it does not build its own retained-output manifest.
+
+Each stream receives its own configured `[tool_output]` line/byte preview limits.
+Only truncated streams receive a `read(filePath="artifact://<digest>/<stream>",
+offset=...)` hint, where the digest identifies the manifest. Single-output hints
+omit the stream suffix and heading. A partial-line byte cut points back to that
+line, so readback does not skip unseen text. Aggregate preview construction also
+reserves 16 KiB for headings/hints inside the existing 2 MiB output bound; when
+necessary, previews are reduced with truthful read hints.
+
+`ToolProgress.output` carries at most 8 typed chunks and 64 KiB of authoritative
+text per delta. Its optional `display` is independent UI text. The `message` and
+`display` fields are each limited to 1 KiB; the runtime caps their cumulative
+live-presentation budget at 64 KiB per call without stopping authoritative output.
+Final `display` replaces live display and has its own 64 KiB bound. Control
+characters are sanitized while newlines and tabs remain usable in display text.
+Display is never included in model history.
+
+Executors return `ToolCompletion`: `Single`/`Named` supplies terminal output once,
+whereas `Streamed` finalizes accepted deltas without resending them. Resupplying
+terminal output after streaming is an error. Failures and cancellation preserve
+accepted output as incomplete, retain the correct terminal status, and expose the
+error alongside output previews to the model. Terminal events carry
+`retained_output` references and final `display`; replay does not recapture chunks.
+
+The self-paginating `read` and `get_subagent_result` tools
 declare an absolute truncation opt-out. Their requested page is returned in full
 without artifact retention or truncation metadata, regardless of
 `[tool_output]`. Callers bound these results with each tool's offset/limit
@@ -170,32 +199,61 @@ the engine or session from opening.
 
 The idle janitor scans durable `events.jsonl` files for live artifact references
 and removes unreferenced digest files only after a one-hour grace period. It also
-follows retained Bash manifests to their stream artifacts and skips malformed or
-torn event lines. Event appends may remain buffered for up to 8 ms, but a newly
-written digest is younger than the grace period; deduplicating an existing digest
-refreshes its modification time before the event append. Garbage collection and
-artifact retain/commit operations share the artifact write mutex, so a pending
-append cannot race deletion of its retained bytes. Temporary artifact and capture
+follows generic manifests to their stream artifacts and skips malformed or
+torn event lines. Publication guards exclude garbage collection until terminal
+references have been appended and flushed. Concurrent publishers can coexist;
+the artifact write mutex still protects individual retain/commit operations.
+Deduplication refreshes artifact modification time. Temporary artifact and capture
 files also hold an exclusive file lock while their writer is alive. Startup
 cleanup removes only files older than one hour whose lock is immediately
 available, so a silent long-running capture is not mistaken for abandoned work.
 
-`read_tool_result` reads retained content from a prior visible tool call in the
-same session:
+Artifact lookup uses the existing `read` tool:
 
 | Argument | Meaning |
 |---|---|
-| `tool_call_id` | Required UUID of the prior tool call |
+| `filePath` | `artifact://<64 lowercase hex digest>` or `artifact://<digest>/<stream>` |
 | `offset` | Optional zero-based line offset; default `0` |
 | `limit` | Optional line count; default and maximum `2000` |
-| `stream` | For retained Bash manifests, `stdout` or `stderr` |
 
-Resolution prefers the original truncation artifact, then a compaction-elision
-artifact, then the inline terminal output. This means compaction cannot make a
-full truncation artifact unreachable. Reverted tool calls and calls from other
-sessions do not resolve. Returned pages include `next_offset` metadata when more
-lines remain. Pages over the 2 MiB terminal-result limit fail and must be
-requested with a smaller limit.
+**Artifact IDs grant access by possession.** The tool reads the
+named artifact in the configured project store without checking session ownership,
+tool-call visibility, or whether the reference survived a revert. An ID learned
+from another session is usable. IDs remain content-addressed SHA-256 references,
+not random secrets; anyone who can compute an artifact's digest can address it.
+Ordinary `read` approval/preparation rules still apply. Artifact resources use the
+public URI as their permission label and an artifact resource identity, never a
+filesystem-path permission. Dispatch occurs before filesystem normalization or
+existence checks. Malformed artifact URIs do not fall back to filesystem reads.
+Bare hashes, internal `artifact://sha256/` URIs, extra path segments, traversal,
+queries, fragments, and uppercase digests are rejected. Ordinary filesystem read
+formatting, media handling, and permissions are unchanged.
+
+Artifact reads return the stored content without unwrapping JSON. Normal
+single-output artifacts contain the original full text. Named-stream artifacts
+contain their complete individual text. Compaction retry artifacts may contain serialized
+tool-content JSON, including output text, metadata, and references to original
+truncation artifacts. Their markers identify this format and expose usable IDs
+without requiring durable elision events. Follow any nested truncation reference
+to retrieve the original full output rather than its serialized preview.
+
+Without a suffix, an artifact URI reads stored text as-is, including manifest
+JSON; it does not merge streams. A suffix selects a declared name from the generic
+manifest. This is content-based and works for `results`, `diagnostics`, or any
+other valid declared name, not just Bash streams. Unknown names and selection on
+non-manifests are errors. There is no separate `stream` argument. Stored
+`ArtifactReference` values retain the internal `artifact://sha256/<digest>` form.
+
+Returned pages include `next_offset` metadata when more lines remain. A zero
+limit fails; larger limits are capped at 2000 lines. Pages over the 2 MiB
+terminal-result limit fail and must be requested with a smaller limit. Missing
+and corrupt artifacts produce tool errors. Artifact-ID access does not change
+garbage-collection lifetime: unreferenced retry artifacts remain subject to the
+existing one-hour grace period.
+
+```json
+{"filePath":"artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/results","offset":0,"limit":200}
+```
 
 ## Goal checklist tools
 

@@ -56,24 +56,18 @@ impl Server {
         tokio::spawn(async move {
             let shutdown = context.shutdown();
             for _ in 0..10 {
-                let stdout = engine.subscribe_tool_output(tool_call_id, OutputStream::Stdout);
-                let stderr = engine.subscribe_tool_output(tool_call_id, OutputStream::Stderr);
-                if stdout.is_some() || stderr.is_some() {
-                    if let Some((snapshot, receiver)) = stdout {
-                        tokio::spawn(forward_output(
-                            OutputStream::Stdout,
-                            snapshot,
-                            receiver,
-                            context.clone(),
-                        ));
-                    }
-                    if let Some((snapshot, receiver)) = stderr {
-                        tokio::spawn(forward_output(
-                            OutputStream::Stderr,
-                            snapshot,
-                            receiver,
-                            context,
-                        ));
+                if let Some(streams) = engine.tool_output_streams(tool_call_id) {
+                    for stream in streams {
+                        if let Some((snapshot, receiver)) =
+                            engine.subscribe_tool_output(tool_call_id, stream.clone())
+                        {
+                            tokio::spawn(forward_output(
+                                stream,
+                                snapshot,
+                                receiver,
+                                context.clone(),
+                            ));
+                        }
                     }
                     return;
                 }

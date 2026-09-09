@@ -3237,6 +3237,8 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
     }
     output.push_str("</content>");
     ToolResult {
+        display: Some(crate::tool_api::bounded_tool_display(&output)),
+        retained_output: None,
         title: safe_display("Read subagent result"),
         output,
         metadata: serde_json::json!({
@@ -3294,6 +3296,8 @@ fn terminal_delegate_result(
 
 fn structured_delegate_result(title: &str, output: String, metadata: Value) -> ToolResult {
     ToolResult {
+        display: Some(crate::tool_api::bounded_tool_display(&output)),
+        retained_output: None,
         title: safe_display(title),
         output,
         metadata,

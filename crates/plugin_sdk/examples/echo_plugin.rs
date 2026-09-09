@@ -6,6 +6,7 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
     PluginServer::builder("echo", env!("CARGO_PKG_VERSION"))
         .tool(
             ToolDecl {
+                output: Default::default(),
                 name: "echo".into(),
                 description: "Echo text back to the model".into(),
                 parameters: json!({

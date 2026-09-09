@@ -58,6 +58,7 @@ impl ToolProvider for EditTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "edit".into(),
@@ -195,7 +196,8 @@ impl PreparedExecutor for EditExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared edit cancelled before commit",
@@ -203,6 +205,8 @@ impl PreparedExecutor for EditExecutor {
         }
         let outcome = self.target.replace_atomically(&self.new_bytes)?;
         Ok(ToolResult {
+display: None,
+retained_output: None,
             title: crate::safe_title(format!("Edited {}", self.target.display_path.display())),
             output: "Edit applied atomically".into(),
             metadata: serde_json::json!({"new_sha256":Sha256Digest::of_bytes(&self.new_bytes),"cleanup_warning":outcome.cleanup_warning}),
@@ -210,6 +214,8 @@ impl PreparedExecutor for EditExecutor {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         })
+}.await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 

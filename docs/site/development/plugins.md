@@ -32,6 +32,7 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
     PluginServer::builder("echo", "0.1.0")
         .tool(
             ToolDecl {
+                output: Default::default(),
                 name: "echo".into(),
                 description: "Echo text back to the model".into(),
                 parameters: json!({
@@ -128,14 +129,14 @@ and hook-chaining details.
 
 ## Protocol
 
-The extension protocol version is the semantic-version string `0.0.5`. Before version 1.0,
+The extension protocol version is the semantic-version string `0.0.6`. Before version 1.0,
 cookie agent requires an exact version match: additive method or schema changes bump the patch
 version, and plugins must update before connecting to the new engine. A plugin reporting any
 other value is refused and its status contains the reported mismatch.
 
 The host advertises `producer_messaging: true` on a connection only when its
 configuration opts in and the runtime producer handler is installed. The session
-protocol remains 16, and the crate/package version is unchanged. Event history
+protocol is 17, and the crate/package version is unchanged. Event history
 remains additive and versionless.
 
 The engine sends `plugin/initialize` with the protocol version, engine version, and engine
@@ -332,7 +333,7 @@ by chunk, ordinary, or terminal class in their diagnostic message.
 This stream is observational and not durable. Each plugin has an independent bounded 1024-message
 queue. A full queue drops delivery for that plugin, increments its dropped-event status counter,
 and records a session diagnostic. It cannot delay session persistence, another plugin, or the
-engine. There is no event-type filter in protocol 0.0.5; replay and filtered subscriptions remain
+engine. There is no event-type filter in protocol 0.0.6; replay and filtered subscriptions remain
 future work.
 
 Plugins with `subscribe_bus: true` also receive non-durable `plugin/bus_event` notifications.
@@ -378,7 +379,7 @@ receive it normally.
 
 ## Interception
 
-Plugins register hook names in `capabilities.intercept`. The complete 0.0.5 set is
+Plugins register hook names in `capabilities.intercept`. The complete 0.0.6 set is
 `tool_before_call`, `tool_after_result`, `agent_before_start`, `session_before_compact`,
 `user_before_input`, `model_before_request`, `provider_before_headers`,
 `provider_before_request`, `provider_after_response`, `message_end`, `model_before_select`,
@@ -398,8 +399,8 @@ the pinned `ToolSpec` JSON Schema. Hooks cannot alter `permission_name` or `reso
 are never disclosed to plugins, and an allow hook never grants permission.
 
 `plugin/intercept/tool_after_result` observes the tool result and may replace its content before
-termination is committed. Streamed tool chunks are display previews and are
-superseded by the committed terminal content, including plugin replacements.
+termination is committed. Replacements affect model-facing content, not the
+independent final UI display or the retained original stream artifacts.
 `agent_before_start` may append to or replace the system prompt and may
 inject a role-preserving text message. Prompt replacements and appends compose in plugin order.
 Accepted injections are committed as `message_injected` during run setup, before the submitted
@@ -422,7 +423,7 @@ validation before later plugins see them. Parameter adjustments apply with eithe
 `replace`; `replace` requires a complete message list. Prompt-cache markers are placed only after
 the final validated model-hook result.
 
-Pinned Oven adapters in 0.0.5 do not expose their adapter-assembled HTTP headers or raw provider
+Pinned Oven adapters in 0.0.6 do not expose their adapter-assembled HTTP headers or raw provider
 JSON. Accordingly, `provider_before_headers` receives an empty map; requesting a non-empty `set` or
 `delete` mutation records an `unsupported_capability` diagnostic and does not mutate the HTTP
 request. `provider_before_request` operates on Oven's normalized request JSON, not the adapter's raw
@@ -460,9 +461,22 @@ rewritten. The primary resource parameter supplies the approval display argument
 resource when present.
 
 At execution time the engine sends `plugin/tools/call` with the tool name, session and invocation
-IDs, arguments, resource, and an optional cancellation token. The plugin returns `content` and
-`is_error`. A JSON-RPC error, transport failure, timeout, cancellation, or plugin exit fails the
-tool call. `is_error` remains structured tool-result metadata, parallel to MCP tool results.
+IDs, arguments, resource, and an optional cancellation token. The plugin returns
+typed `output`, final UI-only `display`, and `is_error`. Its declaration's `output`
+is single by default, or named with 1 to 8 unique URI-safe stream names. Terminal
+output is `{"kind":"single","text":"..."}` or
+`{"kind":"named","streams":[{"stream":"results","text":"..."}]}`;
+named output supplies every declared stream, including empty ones. The plugin
+transport uses terminal responses; in-process `PreparedExecutor` tools can also
+emit typed deltas and return the `Streamed` completion mode.
+
+The runtime owns capture, previews, manifests, and read hints for plugin output.
+`ToolOutput::success` and `ToolOutput::error` are single-output SDK conveniences;
+authors can set `display` independently. A JSON-RPC error, transport failure,
+timeout, cancellation, plugin exit, or `is_error` marks the call failed/cancelled
+as appropriate. Accepted output is retained as incomplete. `is_error` also remains
+structured metadata, parallel to MCP tool results; UI display is not copied into
+model-facing error text.
 
 Plugin tools use the deny-by-default permission pipeline. They are hidden until
 the agent policy or a session overlay has any `allow` or `ask` rule for the
@@ -499,5 +513,5 @@ terminates the process if needed. Shutdown remains bounded when initialization i
 
 ## Current limitation
 
-Plugin resource methods remain deferred. Protocol 0.0.5 event subscriptions have no replay or
+Plugin resource methods remain deferred. Protocol 0.0.6 event subscriptions have no replay or
 per-event-type filters.

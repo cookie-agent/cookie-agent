@@ -260,24 +260,28 @@ usage projections rebuild from these events after restart, revert, and fork.
 Its `prompt_fingerprint` hashes the authoritative normalized request sent to the provider, while
 `model_attempt_started` remains the earlier cancellation and lifecycle boundary.
 
-`tool_call_progress` contains the existing control-free `message` plus an optional
-control-free `output_chunk`. Bash coalesces stdout and stderr for up to 50 ms or
-4 KiB before emitting chunks; each durable chunk is bounded by the 1 KiB
-`SafeDisplayText` limit. The display preview stops after 1 MiB per call and one
-progress message marks the truncation. The terminal tool result and any
-`tool_output_elided` artifact remain authoritative and retain their existing
-bounds. Historical chunks may be replayed to event consumers, but projections
-replace them when `tool_call_terminated` is reduced.
+`tool_call_started` records the single/named output declaration. Raw output
+subscriptions enumerate these channels, including arbitrary named streams.
+`tool_call_progress` contains a control-free status `message` and optional UI-only
+`display`. Display deltas append; terminal `result.display` replaces them. The
+reader accepts historical `output_chunk` fields, but current writers use `display`.
+Each live message/display field is bounded at 1 KiB, their cumulative per-call
+budget is 64 KiB, and final display has an independent 64 KiB bound. TUI state is
+bounded and never reconstructs display by merging authoritative streams.
 
-Terminal `truncation` metadata and its retained artifact are emitted only for
-tools using the normal bounded result policy. Self-paginating result tools omit
-both and fail instead when a requested page exceeds the 2 MiB event output
-limit.
+Authoritative output chunks go to runtime capture before completion, not into
+unbounded event records. Terminal `retained_output` contains full artifact or
+generic manifest references, ordered per-stream byte/line counts, truncation
+offsets, and an incomplete flag. Failed/cancelled calls retain accepted output
+with their terminal status and error. Self-paginating tools omit output retention
+and fail instead when a requested page exceeds the 2 MiB result bound. Historical
+`truncation` and `tool_output_elided` records remain readable.
 
 During cancellation cleanup, a progress record is considered retained once its
 append command enters the session actor mailbox; actor FIFO then orders it before
 the later terminal command even if persistence has not completed yet. Cleanup
-deadline diagnostics count only progress records that never entered that mailbox.
+deadline diagnostics count only display progress records that never entered that
+mailbox; authoritative chunks already accepted into capture remain retained.
 
 For a batch of tool calls from one model turn, `tool_call_started` events are
 written in model content order before execution begins. Calls may then execute
@@ -321,10 +325,13 @@ continues to recall the newest pending input.
 
 `context_checkpoint_committed` carries a `commit` containing the text summary or
 opaque native checkpoint, `boundaries`, and `budgets`. Internal summaries cover
-only the discarded history prefix; retained recent messages are replayed from
-the original saved history after the summary. System and tool context comes
-first, followed by pinned `AGENTS.md`, loaded skills, the summary, and the recent
-suffix. See [Compaction](../guide/compaction.md) for selection and fit rules.
+the entire active pre-compaction history, including recent messages retained
+unchanged after the summary. Active history is the currently assembled context,
+not a reload of events replaced by earlier checkpoints. The original saved log
+is preserved; retained recent messages are replayed from it. System and tool
+context comes first, followed by pinned `AGENTS.md`, loaded skills, the summary,
+and the recent messages. See [Compaction](../guide/compaction.md) for selection
+and fit rules.
 
 The additive retention fields are optional in saved events:
 

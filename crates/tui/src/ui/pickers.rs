@@ -876,6 +876,8 @@ mod tests {
                     owner,
                     outcome: ToolTerminationOutcome::Completed,
                     result: Some(PersistedToolResult {
+                        display: None,
+                        retained_output: None,
                         title: SafeDisplayText::new("completed").expect("title"),
                         output: "result".into(),
                         metadata: serde_json::Value::Null,

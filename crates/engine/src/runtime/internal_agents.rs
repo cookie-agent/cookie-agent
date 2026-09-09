@@ -71,7 +71,7 @@ impl Engine {
         parent_run: Option<RunId>,
         kind: InternalAgentKind,
         policy: &FrozenInternalAgentPolicy,
-        input: InternalAgentHistoryInput,
+        mut input: InternalAgentHistoryInput,
         execution: InternalAgentExecution<'_>,
     ) -> Result<InternalAgentTextResult, EngineError> {
         let name = match kind {
@@ -80,7 +80,11 @@ impl Engine {
             InternalAgentKind::SessionTitle => "session_title",
         };
         let policy = policy.clone();
+        if kind == InternalAgentKind::ContextCompaction {
+            project_internal_history(&mut input.history);
+        }
         let input_tokens = internal_history_tokens(&input.history, &input.tools)?;
+        let mut only_context_failures = !policy.models.is_empty();
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
         let call = SafeInternalAgentCall {
@@ -228,6 +232,7 @@ impl Engine {
                         input.reject_non_text,
                         binding.descriptor.adapter_id.as_str(),
                     ) {
+                        only_context_failures = false;
                         last_failure = InternalAgentFailure {
                             code: safe_code("invalid_non_text_output"),
                             message: safe_error(
@@ -255,6 +260,7 @@ impl Engine {
                                 .unwrap_or(usize::MAX)
                                 .saturating_mul(4);
                     if output_exceeds_document_limit {
+                        only_context_failures = false;
                         last_failure = InternalAgentFailure {
                             code: safe_code("output_too_large"),
                             message: safe_error("internal agent output exceeded its hard bound"),
@@ -289,6 +295,7 @@ impl Engine {
                     });
                 }
                 Err(error) => {
+                    only_context_failures &= error.kind == oven_sdk::ModelErrorKind::ContextLength;
                     last_failure = InternalAgentFailure {
                         code: safe_code("model_failure"),
                         message: safe_error(&error.message),
@@ -329,6 +336,13 @@ impl Engine {
             execution.actor_direct,
         )
         .await?;
+        if kind == InternalAgentKind::ContextCompaction && only_context_failures {
+            return Err(ModelError::new(
+                oven_sdk::ModelErrorKind::ContextLength,
+                "internal agent input exceeds the available model context",
+            )
+            .into());
+        }
         Err(ModelError::invalid_response("internal agent failed safely").into())
     }
 

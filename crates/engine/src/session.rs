@@ -3668,7 +3668,7 @@ mod tests {
                             EventPayload::ToolCallProgress {
                                 tool_call_id: *tool_call_id,
                                 message: SafeDisplayText::new("progress").expect("progress"),
-                                output_chunk: None,
+                                display: None,
                             },
                             &mut consumed_appends,
                         );
@@ -3764,6 +3764,7 @@ mod tests {
                             Some(run_id),
                             EventPayload::ToolCallStarted {
                                 start: cookie_agent_protocol::ToolCallStart {
+                                    output: Default::default(),
                                     tool_call_id,
                                     owner: owner.clone(),
                                     presentation: cookie_agent_protocol::ToolCallPresentation {

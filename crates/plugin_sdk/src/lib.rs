@@ -29,6 +29,7 @@ pub use cookie_agent_protocol::{
     ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, ExtensionToolCallParams,
     ExtensionUserBeforeInputAction, ExtensionUserBeforeInputParams, ExtensionUserBeforeInputResult,
     ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, SessionId,
+    ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration,
 };
 pub use error::{PluginError, ToolFailure};
 pub use server::{
@@ -42,8 +43,10 @@ pub type ToolDecl = cookie_agent_protocol::ExtensionToolDeclaration;
 /// Successful structured output from a plugin tool handler.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolOutput {
-    /// Text returned to the model.
-    pub content: String,
+    /// Authoritative terminal single or named output.
+    pub output: ToolCompletionOutput,
+    /// Final UI-only display, replacing any live display.
+    pub display: String,
     /// Whether the tool completed with a tool-level error.
     pub is_error: bool,
 }
@@ -52,8 +55,11 @@ impl ToolOutput {
     /// Creates successful tool output.
     #[must_use]
     pub fn success(content: impl Into<String>) -> Self {
+        let text = content.into();
+        let display = display_preview(&text);
         Self {
-            content: content.into(),
+            output: ToolCompletionOutput::Single { text },
+            display,
             is_error: false,
         }
     }
@@ -61,8 +67,11 @@ impl ToolOutput {
     /// Creates tool output marked as an error.
     #[must_use]
     pub fn error(content: impl Into<String>) -> Self {
+        let text = content.into();
+        let display = display_preview(&text);
         Self {
-            content: content.into(),
+            output: ToolCompletionOutput::Single { text },
+            display,
             is_error: true,
         }
     }
@@ -71,10 +80,21 @@ impl ToolOutput {
 impl From<ToolOutput> for cookie_agent_protocol::ExtensionToolCallResult {
     fn from(output: ToolOutput) -> Self {
         Self {
-            content: output.content,
+            output: output.output,
+            display: output.display,
             is_error: output.is_error,
         }
     }
+}
+
+fn display_preview(text: &str) -> String {
+    let mut end = text
+        .len()
+        .min(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].into()
 }
 
 /// A system-prompt or compaction-instruction addendum.

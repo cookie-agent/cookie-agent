@@ -2213,27 +2213,7 @@ fn tool_child_layout(
         output_block_id(section)
             .is_some_and(|id| context.expanded.is_some_and(|blocks| blocks.contains(&id)))
     };
-    let stream_sections = if !tool.has_output_chunks {
-        call_id
-            .into_iter()
-            .flat_map(|call_id| {
-                [
-                    (false, "STDOUT", ToolOutputSection::Stdout),
-                    (true, "STDERR", ToolOutputSection::Stderr),
-                ]
-                .into_iter()
-                .filter_map(move |(stderr, label, section)| {
-                    state.output.get(&(call_id, stderr)).map(|output| {
-                        let gap = if output.has_gap { " [OUTPUT GAP]" } else { "" };
-                        (format!("{label}{gap}:"), section, output)
-                    })
-                })
-            })
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let section_count = usize::from(!tool.detail.is_empty()) + stream_sections.len();
+    let section_count = usize::from(!tool.detail.is_empty());
     let any_output_expanded = [
         ToolOutputSection::Detail,
         ToolOutputSection::Stdout,
@@ -2287,27 +2267,6 @@ fn tool_child_layout(
                 section_expanded(ToolOutputSection::Detail),
                 &mut budget,
                 remaining_sections,
-            ));
-        }
-        for (label, section, output) in stream_sections {
-            remaining_sections -= 1;
-            let expanded = section_expanded(section);
-            let display_bytes = budget
-                .section_capacity(output_section_limits(expanded), remaining_sections)
-                .bytes
-                .saturating_add(4);
-            let (output, original_lines) = output.bounded_text(display_bytes);
-            body.extend(generic_output_lines(
-                Some(&label),
-                OutputText {
-                    text: output.as_ref(),
-                    original_lines,
-                },
-                section,
-                expanded,
-                &mut budget,
-                remaining_sections,
-                context.theme,
             ));
         }
     }
@@ -5599,6 +5558,7 @@ mod tests {
             run,
             EventPayload::ToolCallStarted {
                 start: ToolCallStart {
+                    output: Default::default(),
                     tool_call_id: call_id,
                     owner,
                     presentation: presentation(title, primary),
@@ -5642,6 +5602,8 @@ mod tests {
                     owner: owner(turn_seq, call),
                     outcome,
                     result: completed.then(|| cookie_agent_protocol::PersistedToolResult {
+                        display: None,
+                        retained_output: None,
                         title: SafeDisplayText::new("ran true").expect("result title"),
                         output: "done".into(),
                         metadata: serde_json::Value::Null,
@@ -17645,7 +17607,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multi_section_notices_have_independent_click_regions() {
+    async fn raw_streams_do_not_create_implicit_display_click_regions() {
         let mut app = test_app().await;
         let session = SessionId::new_v7();
         let call_id = ToolCallId::new_v7();
@@ -17665,12 +17627,13 @@ mod tests {
         );
         app.store.sessions.insert(session, state);
         for stream in [OutputStream::Stdout, OutputStream::Stderr] {
-            app.store.apply_output_delta(OutputDelta {
-                call_id,
-                stream,
-                byte_offset: 0,
-                data: STANDARD.encode(text.as_bytes()),
-            });
+            app.store
+                .apply_delivery(ClientDelivery::OutputDelta(OutputDelta {
+                    call_id,
+                    stream,
+                    byte_offset: 0,
+                    data: STANDARD.encode(text.as_bytes()),
+                }));
         }
         app.selected = Some(session);
         app.tree_root = Some(session);
@@ -17687,27 +17650,20 @@ mod tests {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        assert_eq!(
-            sections,
-            HashSet::from([
-                ToolOutputSection::Detail,
-                ToolOutputSection::Stdout,
-                ToolOutputSection::Stderr,
-            ])
-        );
-        let stdout_id = tool_output_id(call_id, ToolOutputSection::Stdout);
-        let stdout = app
+        assert_eq!(sections, HashSet::from([ToolOutputSection::Detail]));
+        let detail_id = tool_output_id(call_id, ToolOutputSection::Detail);
+        let detail = app
             .hit_map
             .blocks
             .iter()
-            .find(|hit| hit.id == stdout_id)
+            .find(|hit| hit.id == detail_id)
             .copied()
-            .expect("stdout notice");
-        app.handle_click(stdout.rect.x, stdout.rect.y).await;
-        assert!(app.expanded_blocks[&session].contains(&stdout_id));
+            .expect("display notice");
+        app.handle_click(detail.rect.x, detail.rect.y).await;
+        assert!(app.expanded_blocks[&session].contains(&detail_id));
         assert!(
             !app.expanded_blocks[&session]
-                .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
+                .contains(&tool_output_id(call_id, ToolOutputSection::Stdout))
         );
         assert!(
             !app.expanded_blocks[&session]
@@ -19334,7 +19290,7 @@ mod tests {
     }
 
     #[test]
-    fn output_snapshot_handoff_and_gaps_stay_ordered() {
+    fn sustained_raw_output_and_gaps_do_not_change_tool_display() {
         let session = SessionId::new_v7();
         let call = ToolCallId::new_v7();
         let mut store = StateStore::default();
@@ -19350,20 +19306,24 @@ mod tests {
                 has_output_chunks: false,
             },
         );
-        store.apply_output_gap(cookie_agent_protocol::OutputGap {
-            call_id: call,
-            stream: OutputStream::Stdout,
-            next_offset: 3,
-        });
-        store.apply_output_delta(OutputDelta {
-            call_id: call,
-            stream: OutputStream::Stdout,
-            byte_offset: 3,
-            data: STANDARD.encode(b"two"),
-        });
-        let output = &store.sessions[&session].output[&(call, false)];
-        assert!(output.has_gap);
-        assert_eq!(output.text(), "two");
+        let before = format!("{store:?}");
+        store.apply_delivery(ClientDelivery::OutputGap(
+            cookie_agent_protocol::OutputGap {
+                call_id: call,
+                stream: OutputStream::Stdout,
+                next_offset: 3,
+            },
+        ));
+        let data = STANDARD.encode(vec![b'x'; 64 * 1024]);
+        for byte_offset in (0..1600).rev() {
+            store.apply_delivery(ClientDelivery::OutputDelta(OutputDelta {
+                call_id: call,
+                stream: OutputStream::Stdout,
+                byte_offset: byte_offset * 64 * 1024,
+                data: data.clone(),
+            }));
+        }
+        assert_eq!(format!("{store:?}"), before);
     }
 
     // ------------------------------------------------------------------

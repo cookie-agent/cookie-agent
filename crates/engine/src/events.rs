@@ -3203,8 +3203,9 @@ struct Subscriber {
 
 #[derive(Debug)]
 struct HubState {
-    streams: [StreamBuffer; 2],
-    subscribers: [Vec<Subscriber>; 2],
+    streams: std::collections::HashMap<String, StreamBuffer>,
+    subscribers: std::collections::HashMap<String, Vec<Subscriber>>,
+    declaration: Vec<OutputStream>,
     finalized: bool,
 }
 
@@ -3223,11 +3224,29 @@ impl OutputHub {
             call_id,
             limit: retention_bytes,
             state: Arc::new(Mutex::new(HubState {
-                streams: [StreamBuffer::default(), StreamBuffer::default()],
-                subscribers: [Vec::new(), Vec::new()],
+                streams: std::collections::HashMap::new(),
+                subscribers: std::collections::HashMap::new(),
+                declaration: vec![OutputStream::Stdout, OutputStream::Stderr],
                 finalized: false,
             })),
         }
+    }
+
+    pub fn declare(&self, declaration: &cookie_agent_protocol::ToolOutputDeclaration) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.declaration = declaration
+            .channels()
+            .iter()
+            .map(|name| OutputStream::from_channel(name.as_deref()))
+            .collect();
+    }
+
+    pub fn streams(&self) -> Vec<OutputStream> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .declaration
+            .clone()
     }
 
     pub fn emit(&self, stream: OutputStream, data: &[u8]) {
@@ -3241,12 +3260,12 @@ impl OutputHub {
         if state.finalized {
             return;
         }
-        let index = stream_index(stream);
+        let index = stream.name().to_owned();
         let (delta, end) = {
-            let buffer = &mut state.streams[index];
+            let buffer = state.streams.entry(index.clone()).or_default();
             let delta = OutputDelta {
                 call_id: self.call_id,
-                stream,
+                stream: stream.clone(),
                 byte_offset: buffer.end,
                 data: STANDARD.encode(data),
             };
@@ -3268,12 +3287,12 @@ impl OutputHub {
             }
             (delta, buffer.end)
         };
-        let subscribers = &mut state.subscribers[index];
+        let subscribers = state.subscribers.entry(index).or_default();
         subscribers.retain_mut(|subscriber| {
             if let Some(next_offset) = subscriber.gap {
                 match subscriber.sender.try_send(OutputMessage::Gap(OutputGap {
                     call_id: self.call_id,
-                    stream,
+                    stream: stream.clone(),
                     next_offset,
                 })) {
                     Ok(()) => subscriber.gap = None,
@@ -3307,8 +3326,8 @@ impl OutputHub {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let index = stream_index(stream);
-        let buffer = &mut state.streams[index];
+        let index = stream.name().to_owned();
+        let buffer = state.streams.entry(index.clone()).or_default();
         let snapshot = OutputSnapshot {
             call_id: self.call_id,
             start_offset: buffer.start,
@@ -3318,7 +3337,7 @@ impl OutputHub {
                 .iter()
                 .map(|chunk| OutputDelta {
                     call_id: self.call_id,
-                    stream,
+                    stream: stream.clone(),
                     byte_offset: chunk.offset,
                     data: STANDARD.encode(&chunk.data),
                 })
@@ -3332,7 +3351,7 @@ impl OutputHub {
         let gap = match gap {
             Some(next_offset) => match sender.try_send(OutputMessage::Gap(OutputGap {
                 call_id: self.call_id,
-                stream,
+                stream: stream.clone(),
                 next_offset,
             })) {
                 Ok(()) => None,
@@ -3344,7 +3363,11 @@ impl OutputHub {
         // A retained finalized hub is a snapshot-only resource. Do not retain a
         // sender for a receiver which can never receive another delta.
         if !state.finalized {
-            state.subscribers[index].push(Subscriber { sender, gap });
+            state
+                .subscribers
+                .entry(index)
+                .or_default()
+                .push(Subscriber { sender, gap });
         }
         (snapshot, receiver)
     }
@@ -3357,14 +3380,7 @@ impl OutputHub {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.finalized = true;
-        state.subscribers = [Vec::new(), Vec::new()];
-    }
-}
-
-const fn stream_index(stream: OutputStream) -> usize {
-    match stream {
-        OutputStream::Stdout => 0,
-        OutputStream::Stderr => 1,
+        state.subscribers.clear();
     }
 }
 
@@ -5217,7 +5233,7 @@ mod tests {
             &EventPayload::ToolCallProgress {
                 tool_call_id,
                 message: SafeDisplayText::new("progress").expect("safe progress"),
-                output_chunk: None,
+                display: None,
             }
         ));
         assert!(event_requires_durable_barrier(
@@ -6091,6 +6107,7 @@ mod tests {
             5,
             EventPayload::ToolCallStarted {
                 start: ToolCallStart {
+                    output: Default::default(),
                     tool_call_id,
                     owner: owner.clone(),
                     presentation: ToolCallPresentation {

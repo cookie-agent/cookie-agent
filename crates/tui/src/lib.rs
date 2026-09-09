@@ -53,11 +53,7 @@ mod tests {
     use jiff::Timestamp;
     use ratatui::{Terminal, backend::TestBackend};
 
-    use crate::{
-        Client,
-        state::{OrderedOutput, StateStore},
-        ui::App,
-    };
+    use crate::{Client, state::StateStore, ui::App};
 
     pub(crate) fn test_run_selection() -> RunSelection {
         RunSelection {
@@ -264,11 +260,6 @@ mod tests {
             tools: Vec::new(),
         })
         .expect("open engine");
-        engine
-            .try_register_tool_provider(Arc::new(
-                cookie_agent_tools::read_tool_result::ReadToolResultProvider::new(engine.clone()),
-            ))
-            .expect("tool result readback");
         if with_skills {
             engine
                 .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(
@@ -361,32 +352,19 @@ mod tests {
     }
 
     #[test]
-    fn output_snapshot_handoff_and_out_of_order_deltas_are_lossless() {
-        let mut output = OrderedOutput::default();
-        output.replace_snapshot(
-            0,
-            3,
-            vec![OutputDelta {
+    fn sustained_unknown_raw_output_does_not_create_tui_state() {
+        let mut store = StateStore::default();
+        let before = format!("{store:?}");
+        let data = STANDARD.encode(vec![b'x'; 64 * 1024]);
+        for byte_offset in (0..1600).rev() {
+            store.apply_delivery(crate::ClientDelivery::OutputDelta(OutputDelta {
                 call_id: call_id(),
                 stream: OutputStream::Stdout,
-                byte_offset: 0,
-                data: STANDARD.encode(b"one"),
-            }],
-        );
-        output.push(OutputDelta {
-            call_id: call_id(),
-            stream: OutputStream::Stdout,
-            byte_offset: 6,
-            data: STANDARD.encode(b"six"),
-        });
-        output.push(OutputDelta {
-            call_id: call_id(),
-            stream: OutputStream::Stdout,
-            byte_offset: 3,
-            data: STANDARD.encode(b"two"),
-        });
-        assert_eq!(output.text(), "onetwosix");
-        assert_eq!(output.next_offset, 9);
+                byte_offset: byte_offset * 64 * 1024,
+                data: data.clone(),
+            }));
+        }
+        assert_eq!(format!("{store:?}"), before);
     }
 
     #[test]

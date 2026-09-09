@@ -287,30 +287,25 @@ impl Engine {
             input.binding,
             &composed_prompt,
         )?;
-        let raw_fits = if let Some(raw_fits) = raw_fit_from_real_usage(
-            input.overflow_recovery,
-            projection
-                .log
-                .latest_real_usage()
-                .map(|(_, observed_tokens)| observed_tokens),
-            |tokens| compaction_input_fits(input.binding, input.internal_policy, tokens),
-        ) {
-            raw_fits
-        } else {
-            let raw_fit_tokens = if input.binding.descriptor.capabilities.compaction
-                == CompactionCapability::Native
-            {
-                self.estimated_request_tokens(input.session, &context.history, input.tools)?
+        // Native compaction keeps its existing durable elision policy. Summary compaction
+        // checks the actual internal-agent request and only prunes a private retry snapshot.
+        let raw_fits =
+            if input.binding.descriptor.capabilities.compaction != CompactionCapability::Native {
+                true
+            } else if let Some(raw_fits) = raw_fit_from_real_usage(
+                input.overflow_recovery,
+                projection
+                    .log
+                    .latest_real_usage()
+                    .map(|(_, observed_tokens)| observed_tokens),
+                |tokens| compaction_input_fits(input.binding, input.internal_policy, tokens),
+            ) {
+                raw_fits
             } else {
-                let (history, _) = compaction_history(
-                    context.history.clone(),
-                    compaction_focus.as_deref(),
-                    &input.internal_policy.agent.composed_prompt,
-                );
-                self.estimated_request_tokens(input.session, &history, input.tools)?
+                let raw_fit_tokens =
+                    self.estimated_request_tokens(input.session, &context.history, input.tools)?;
+                compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
             };
-            compaction_input_fits(input.binding, input.internal_policy, raw_fit_tokens)
-        };
         let context_tokens_before = if raw_fits {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         } else {
@@ -540,11 +535,11 @@ impl Engine {
             return Ok(Arc::from(events));
         }
         let (history, instruction) = compaction_history(
-            prefix,
+            context.history,
             compaction_focus.as_deref(),
             &input.internal_policy.agent.composed_prompt,
         );
-        let summary = self
+        let mut summary = self
             .run_internal_history_agent(
                 input.session,
                 Some(input.run),
@@ -562,9 +557,41 @@ impl Engine {
                 },
             )
             .await;
+        if matches!(&summary, Err(EngineError::Model(error))
+            if error.kind == oven_sdk::ModelErrorKind::ContextLength)
+            && !input.cancellation.is_cancelled()
+        {
+            let history = pruned_compaction_history(
+                &events,
+                &self.inner.artifacts,
+                input.binding,
+                &composed_prompt,
+            )?;
+            let (history, instruction) = compaction_history(
+                history,
+                compaction_focus.as_deref(),
+                &input.internal_policy.agent.composed_prompt,
+            );
+            summary = self
+                .run_internal_history_agent(
+                    input.session,
+                    Some(input.run),
+                    InternalAgentKind::ContextCompaction,
+                    input.internal_policy,
+                    InternalAgentHistoryInput {
+                        history,
+                        summary_source: instruction,
+                        tools: input.tools.to_vec(),
+                        reject_non_text: true,
+                    },
+                    InternalAgentExecution {
+                        cancellation: input.cancellation,
+                        actor_direct: input.actor_direct,
+                    },
+                )
+                .await;
+        }
         let Ok(summary) = summary else {
-            // Deliberately leave history fully intact when the raw context fit. Failed
-            // compaction no longer performs consolation elision on that path.
             return Ok(Arc::from(events));
         };
         if summary.text.trim().is_empty() {
@@ -1052,6 +1079,96 @@ fn compaction_instruction(focus: Option<&str>) -> String {
         || COMPACTION_INSTRUCTION.to_owned(),
         |focus| format!("{COMPACTION_INSTRUCTION}\n\nUser-requested focus: {focus}"),
     )
+}
+
+fn pruned_compaction_history(
+    events: &[StoredEvent],
+    store: &super::artifacts::ArtifactStore,
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    composed_prompt: &str,
+) -> Result<Vec<oven_sdk::HistoryTurn>, EngineError> {
+    // Emitted messages lose their tool ownership after assembly. Remove them in a private
+    // snapshot first, then prune only results in the active checkpoint-aware history.
+    let mut events = events.to_vec();
+    for event in &mut events {
+        if let Event::ToolCallTerminated { termination } = &mut event.payload
+            && let Some(result) = &mut termination.result
+        {
+            result.additional_messages.clear();
+            result.attachments.clear();
+        }
+    }
+    let mut history = assemble_model_context(&events, store, binding, composed_prompt)?.history;
+    let mut retrieval_calls = HashSet::new();
+    for turn in &mut history {
+        match turn {
+            oven_sdk::HistoryTurn::Assistant(turn) => {
+                for part in &turn.message.content {
+                    if let oven_sdk::AssistantPart::ToolCall(call) = part {
+                        if call.name == "read"
+                            && call
+                                .input
+                                .get("filePath")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|path| {
+                                    cookie_agent_protocol::ArtifactReadPath::parse(path).is_ok()
+                                })
+                        {
+                            retrieval_calls.insert(call.id.clone());
+                        } else {
+                            retrieval_calls.remove(&call.id);
+                        }
+                    }
+                }
+                for part in &mut turn.message.content {
+                    if let oven_sdk::AssistantPart::ToolResult(result) = part {
+                        prune_compaction_result(result, &retrieval_calls, store)?;
+                    }
+                }
+            }
+            oven_sdk::HistoryTurn::Tool(message) => {
+                for result in &mut message.results {
+                    prune_compaction_result(result, &retrieval_calls, store)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(history)
+}
+
+fn prune_compaction_result(
+    result: &mut oven_sdk::ToolResultPart,
+    retrieval_calls: &HashSet<String>,
+    store: &super::artifacts::ArtifactStore,
+) -> Result<(), EngineError> {
+    let marker = if retrieval_calls.contains(&result.tool_call_id) {
+        "[artifact read output redacted]".to_owned()
+    } else {
+        let content = match &result.content {
+            oven_sdk::ToolContent::Text(text) => text.as_bytes().to_vec(),
+            content => serde_json::to_vec(content)
+                .map_err(|error| ModelError::invalid_request(error.to_string()))?,
+        };
+        let (_, artifact_id) = store.retain(&content)?;
+        let mut marker =
+            model_history::tool_output_elision_marker(&artifact_id, content.len() as u64, 0);
+        if !matches!(result.content, oven_sdk::ToolContent::Text(_)) {
+            marker.push_str(" Stored as serialized tool content (JSON).");
+        }
+        let read_more = serde_json::json!({
+            "read_more": {
+                "tool": "read",
+                "arguments": {"filePath": format!("artifact://{artifact_id}")}
+            }
+        });
+        marker.push('\n');
+        marker.push_str(&read_more.to_string());
+        marker
+    };
+    result.content = oven_sdk::ToolContent::Text(marker);
+    result.metadata = None;
+    Ok(())
 }
 
 fn compaction_history(
@@ -1544,6 +1661,8 @@ mod tests {
             },
         };
         let result = ToolResult {
+            display: None,
+            retained_output: None,
             title: SafeDisplayText::new("Video").unwrap(),
             output: "x".repeat(60),
             metadata: serde_json::Value::Null,

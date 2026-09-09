@@ -54,6 +54,7 @@ impl ToolProvider for WriteTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "write".into(),
@@ -173,7 +174,8 @@ impl PreparedExecutor for WriteExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution(
                 "prepared write cancelled before commit",
@@ -190,6 +192,8 @@ impl PreparedExecutor for WriteExecutor {
             }
         };
         Ok(ToolResult {
+display: None,
+retained_output: None,
             title: crate::safe_title(format!("Wrote {}", path.display())),
             output: format!("Wrote {} bytes to {}", self.bytes.len(), path.display()),
             metadata: serde_json::json!({"bytes":self.bytes.len(),"cleanup_warning":outcome.cleanup_warning}),
@@ -197,6 +201,8 @@ impl PreparedExecutor for WriteExecutor {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         })
+}.await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 

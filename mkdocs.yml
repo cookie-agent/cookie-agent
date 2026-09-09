@@ -88,6 +88,7 @@ nav:
       - Rust API: reference/api.md
   - Specs:
       - Status and scope: specs/index.md
+      - Tool output streams: specs/tool-output-streams.md
       - Model configuration: specs/model-configuration.md
       - Documentation overhaul: specs/documentation-overhaul.md
       - Goal mode and producers: development/goal-mode.md

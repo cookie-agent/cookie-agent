@@ -89,6 +89,24 @@ pub enum ClientDelivery {
 /// Consumer of ordered protocol notifications and replay deliveries.
 pub trait ClientEventSink: Send + Sync + 'static {
     fn deliver(&self, delivery: ClientDelivery);
+
+    /// Whether to retain raw tool output in replay buffers and deliveries.
+    /// Snapshot barrier bookkeeping is performed regardless of this preference.
+    fn wants_raw_tool_output(&self) -> bool {
+        true
+    }
+}
+
+struct DisplayOnlySink(mpsc::UnboundedSender<ClientDelivery>);
+
+impl ClientEventSink for DisplayOnlySink {
+    fn deliver(&self, delivery: ClientDelivery) {
+        self.0.deliver(delivery);
+    }
+
+    fn wants_raw_tool_output(&self) -> bool {
+        false
+    }
 }
 
 /// Client end of the protocol contract over shared session mechanics.
@@ -389,7 +407,7 @@ struct Subscription {
     rebuild: bool,
     final_seq: u64,
     replay_tools: HashSet<ToolCallId>,
-    awaiting_snapshots: HashSet<(ToolCallId, bool)>,
+    awaiting_snapshots: HashSet<(ToolCallId, String)>,
     snapshot_deadline: Option<Instant>,
     buffered: Vec<ClientDelivery>,
     recovery_requested: Option<bool>,
@@ -447,6 +465,17 @@ impl Client {
         // stalled UI may grow memory, but it is terminal rather than lossy.
         let (delivery_sender, delivery_receiver) = mpsc::unbounded_channel();
         Self::connect_stream_with_sink(transport, delivery_sender, Some(delivery_receiver))
+    }
+
+    /// Connect a display-only consumer without queuing raw tool snapshots,
+    /// deltas, or gaps. Durable events (including display and terminal results)
+    /// and replay barriers are unchanged. Runtime output retention is unaffected.
+    pub fn connect_display_stream<T>(transport: T) -> Self
+    where
+        T: Transport + 'static,
+    {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        Self::connect_stream_with_sink(transport, DisplayOnlySink(sender), Some(receiver))
     }
 
     /// Connect a transport and forward ordered protocol deliveries to a consumer-defined sink.
@@ -1953,9 +1982,23 @@ async fn begin_replay(
         subscription.final_seq = final_seq;
         subscription.rebuild = replay.rebuild;
         subscription.replay_tools = active_tools.iter().copied().collect();
-        subscription.awaiting_snapshots = active_tools
+        subscription.awaiting_snapshots = events
             .iter()
-            .flat_map(|call_id| [(*call_id, false), (*call_id, true)])
+            .filter_map(|event| match &event.payload {
+                EventPayload::ToolCallStarted { start }
+                    if active_tools.contains(&start.tool_call_id) =>
+                {
+                    Some(start)
+                }
+                _ => None,
+            })
+            .flat_map(|start| {
+                start
+                    .output
+                    .channels()
+                    .into_iter()
+                    .map(|name| (start.tool_call_id, name.unwrap_or_default()))
+            })
             .collect();
         subscription.snapshot_deadline = (!subscription.awaiting_snapshots.is_empty())
             .then(|| Instant::now() + Duration::from_millis(250));
@@ -2070,12 +2113,13 @@ async fn route_output(
     recovery: &Arc<RecoveryQueue>,
     tool_sessions: &mut HashMap<ToolCallId, SessionId>,
 ) {
+    let retain_output = deliveries.wants_raw_tool_output();
     let (call_id, stream) = match &delivery {
         ClientDelivery::OutputSnapshot(snapshot) => {
-            (snapshot.snapshot.call_id, stream_key(snapshot.stream))
+            (snapshot.snapshot.call_id, stream_key(&snapshot.stream))
         }
-        ClientDelivery::OutputDelta(delta) => (delta.call_id, stream_key(delta.stream)),
-        ClientDelivery::OutputGap(gap) => (gap.call_id, stream_key(gap.stream)),
+        ClientDelivery::OutputDelta(delta) => (delta.call_id, stream_key(&delta.stream)),
+        ClientDelivery::OutputGap(gap) => (gap.call_id, stream_key(&gap.stream)),
         _ => return,
     };
     let mut buffered = false;
@@ -2090,13 +2134,13 @@ async fn route_output(
                 && subscription.awaiting_snapshots.remove(&(call_id, stream))
             {
                 completes_replay = Some(session_id);
-            } else if !replay_output {
+            } else if !replay_output && retain_output {
                 subscription.buffered.push(delivery.clone());
                 buffered = true;
             }
         }
     }
-    if !buffered {
+    if !buffered && retain_output {
         deliveries.deliver(delivery);
     }
     if let Some(session_id) = completes_replay {
@@ -2216,8 +2260,8 @@ async fn release_expired_replays(
     let _ = recovery;
 }
 
-fn stream_key(stream: OutputStream) -> bool {
-    matches!(stream, OutputStream::Stderr)
+fn stream_key(stream: &OutputStream) -> String {
+    stream.name().to_owned()
 }
 
 #[cfg(test)]
@@ -3060,7 +3104,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replayed_active_tool_snapshots_precede_replay_end() {
+    async fn replayed_named_tool_snapshots_precede_replay_end() {
+        named_tool_replay(false).await;
+    }
+
+    #[tokio::test]
+    async fn display_only_replay_suppresses_sustained_raw_output_before_all_buffers() {
+        named_tool_replay(true).await;
+    }
+
+    async fn named_tool_replay(display_only: bool) {
         let session_id = SessionId::new_v7();
         let call_id = ToolCallId::new_v7();
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
@@ -3068,6 +3121,11 @@ mod tests {
             .await
             .expect("prepare replay");
         let (deliveries, mut receiver) = delivery_channel();
+        let deliveries: Box<dyn ClientEventSink> = if display_only {
+            Box::new(DisplayOnlySink(deliveries))
+        } else {
+            Box::new(deliveries)
+        };
         let (recovery, _recovery_receiver) = recovery();
         let mut tools = HashMap::new();
         let started = StoredEvent {
@@ -3079,6 +3137,7 @@ mod tests {
             timestamp: Timestamp::now(),
             payload: EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
+output: crate::ToolOutputDeclaration::Named { streams: vec!["results".into(), "diagnostics".into()] },
                     tool_call_id: call_id,
                     owner: cookie_agent_protocol::AssistantToolCallRef {
                         model_turn_seq: 1,
@@ -3132,12 +3191,59 @@ mod tests {
             request,
             vec![started],
             &subscriptions,
-            &deliveries,
+            deliveries.as_ref(),
             &recovery,
             &mut tools,
         )
         .await;
-        for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+        if display_only {
+            let live_call = ToolCallId::new_v7();
+            tools.insert(live_call, session_id);
+            // Exercise both replay-owned and live output while the consumer is stalled.
+            let data = "eHh4".repeat(22 * 1024);
+            for offset in 0..1600 {
+                for call_id in [call_id, live_call] {
+                    route_output(
+                        ClientDelivery::OutputDelta(OutputDelta {
+                            call_id,
+                            stream: OutputStream::Named("results".into()),
+                            byte_offset: offset * 66 * 1024,
+                            data: data.clone(),
+                        }),
+                        deliveries.as_ref(),
+                        &subscriptions,
+                        &recovery,
+                        &mut tools,
+                    )
+                    .await;
+                }
+                assert_eq!(receiver.len(), 2);
+                let locked = subscriptions.lock().await;
+                assert!(locked[&session_id].buffered.is_empty());
+                assert_eq!(locked[&session_id].awaiting_snapshots.len(), 2);
+            }
+            let mut progress = event(session_id, 2);
+            progress.payload = EventPayload::ToolCallProgress {
+                tool_call_id: call_id,
+                message: crate::SafeDisplayText::new("working").unwrap(),
+                display: Some("live display".into()),
+            };
+            route_live(
+                EventSubscriptionMessage::Event {
+                    event: Box::new(progress),
+                },
+                deliveries.as_ref(),
+                &subscriptions,
+                &recovery,
+                &mut tools,
+            )
+            .await;
+            assert_eq!(subscriptions.lock().await[&session_id].buffered.len(), 1);
+        }
+        for stream in [
+            OutputStream::Named("results".into()),
+            OutputStream::Named("diagnostics".into()),
+        ] {
             route_output(
                 ClientDelivery::OutputSnapshot(OutputSnapshotEnvelope {
                     stream,
@@ -3148,7 +3254,7 @@ mod tests {
                         chunks: Vec::new(),
                     },
                 }),
-                &deliveries,
+                deliveries.as_ref(),
                 &subscriptions,
                 &recovery,
                 &mut tools,
@@ -3164,18 +3270,31 @@ mod tests {
             receiver.recv().await,
             Some(ClientDelivery::ReplayEvent { .. })
         ));
-        assert!(matches!(
-            receiver.recv().await,
-            Some(ClientDelivery::OutputSnapshot(_))
-        ));
-        assert!(matches!(
-            receiver.recv().await,
-            Some(ClientDelivery::OutputSnapshot(_))
-        ));
+        if !display_only {
+            assert!(matches!(
+                receiver.recv().await,
+                Some(ClientDelivery::OutputSnapshot(_))
+            ));
+            assert!(matches!(
+                receiver.recv().await,
+                Some(ClientDelivery::OutputSnapshot(_))
+            ));
+        }
         assert!(matches!(
             receiver.recv().await,
             Some(ClientDelivery::ReplayEnd { .. })
         ));
+        if display_only {
+            assert!(matches!(receiver.recv().await,
+                Some(ClientDelivery::Live { message, .. })
+                    if matches!(&*message, EventSubscriptionMessage::Event { event }
+                        if matches!(event.payload, EventPayload::ToolCallProgress { display: Some(ref display), .. } if display == "live display"))));
+            let locked = subscriptions.lock().await;
+            assert_eq!(locked[&session_id].cursor, 2);
+            assert!(!locked[&session_id].fetching);
+            assert!(locked[&session_id].awaiting_snapshots.is_empty());
+            assert!(locked[&session_id].buffered.is_empty());
+        }
     }
 
     #[tokio::test]

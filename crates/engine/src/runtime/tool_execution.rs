@@ -5,19 +5,18 @@ use cookie_agent_protocol::{
     ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, InternalAgentKind,
     OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
     PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallPresentation,
-    ToolOutputTruncation,
 };
+use futures_util::FutureExt as _;
 use oven_sdk::{JsonSchema, ToolDefinition};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::artifacts::MAX_ATTACHMENT_BYTES;
 use super::{
-    ActiveRun, ApprovalToolInput, Engine, EngineError, Event, PreparedToolCall, PublishedTool,
-    PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
+    ActiveRun, ApprovalToolInput, Engine, EngineError, Event, OutputCapture, PreparedToolCall,
+    PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
-    artifacts::{ArtifactStore, OutputCapture},
     helpers::{safe_display, sanitize_safe_text, session_depth},
 };
 use crate::{
@@ -39,7 +38,12 @@ fn tool_progress_event(progress: &ToolProgress) -> Event {
     Event::ToolCallProgress {
         tool_call_id: progress.tool_call_id,
         message: safe_display(&progress.message),
-        output_chunk: progress.output_chunk.as_deref().map(safe_display),
+        display: progress.display.as_deref().map(|text| {
+            crate::tool_api::sanitize_tool_display(
+                text,
+                cookie_agent_protocol::SafeDisplayText::MAX_BYTES,
+            )
+        }),
     }
 }
 
@@ -74,7 +78,8 @@ async fn enqueue_cleanup_tool_progress(
         .clone();
     #[cfg(test)]
     if let Some(block) = block {
-        block.notified().await;
+        block.reached.notify_one();
+        block.release.notified().await;
     }
     let completion = engine
         .enqueue_append(
@@ -109,6 +114,7 @@ impl Engine {
             .store
             .get(active.session)
             .map_err(|error| ToolFailure {
+                partial_output: None,
                 code: ToolCallFailureCode::ExecutionFailed,
                 message: error.to_string(),
             })?
@@ -151,6 +157,7 @@ impl Engine {
                 let approval_policy = self
                     .active_internal_policy(active, InternalAgentKind::Approval)
                     .map_err(|error| ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: error.to_string(),
                     })?;
@@ -168,6 +175,7 @@ impl Engine {
                     },
                 )
                 .map_err(|error| ToolFailure {
+                    partial_output: None,
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: error.to_string(),
                 })?;
@@ -185,6 +193,7 @@ impl Engine {
                     )
                     .await
                     .map_err(|error| ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: error.to_string(),
                     })?;
@@ -192,6 +201,7 @@ impl Engine {
                     Ok(())
                 } else {
                     Err(ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: denied_tool_failure(
                             ApprovalDecisionSource::Policy,
@@ -255,6 +265,7 @@ impl Engine {
                     permission_name: None,
                     presentation: fallback_presentation,
                     prepared: Err(ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: error.to_string(),
                     }),
@@ -292,6 +303,7 @@ impl Engine {
                 return PreparedToolCall {
                     intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                     prepared: Err(ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::OperationChanged,
                         message: format!(
                             "tool definition changed after `{}` was published to the model",
@@ -308,6 +320,7 @@ impl Engine {
                 return PreparedToolCall {
                     intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                     prepared: Err(ToolFailure {
+                        partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: format!("tool `{}` was not published to the model", call.name),
                     }),
@@ -332,6 +345,7 @@ impl Engine {
                         (
                             candidate.clone(),
                             crate::ToolSpec {
+                                output: Default::default(),
                                 concurrency: Default::default(),
                                 name: call.name.clone(),
                                 permission_name: permission_name.to_owned(),
@@ -347,6 +361,7 @@ impl Engine {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
+                    partial_output: None,
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: format!("tool `{}` is unavailable", call.name),
                 }),
@@ -373,6 +388,7 @@ impl Engine {
             return PreparedToolCall {
                 intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
                 prepared: Err(ToolFailure {
+                    partial_output: None,
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: format!("tool `{}` is not enabled for this session", call.name),
                 }),
@@ -427,7 +443,7 @@ impl Engine {
         let permission = self.decide_tool_permission(&active, &prepared)?;
         self.resolve_tool_permission(&active, run, &prepared, &permission)
             .await?;
-        self.execute_approved_tool(active, run, prepared, turn_context)
+        self.execute_approved_tool(active, run, prepared, turn_context, false)
             .await
     }
 
@@ -437,6 +453,7 @@ impl Engine {
         run: RunId,
         prepared: PreparedToolCall,
         turn_context: Arc<crate::TurnAgentContext>,
+        retain_output: bool,
     ) -> Result<ToolResult, ToolFailure> {
         let engine = self.clone();
         {
@@ -452,6 +469,18 @@ impl Engine {
                 .as_ref()
                 .map(|interception| interception.spec.result_truncation)
                 .unwrap_or_default();
+            let output_declaration = interception
+                .as_ref()
+                .map(|interception| interception.spec.output.clone())
+                .unwrap_or_default();
+            if result_truncation == crate::ToolResultTruncationPolicy::OptOut
+                && output_declaration != cookie_agent_protocol::ToolOutputDeclaration::Single
+            {
+                return Err(ToolError::execution(
+                    "self-paginating tools require a single output declaration",
+                )
+                .into());
+            }
             let operation = prepared.operation.clone();
             let policy_labels = prepared.policy_labels.clone();
             if let Some(interception) = interception {
@@ -502,6 +531,7 @@ impl Engine {
                             message.clone(),
                         );
                         return Err(ToolFailure {
+                            partial_output: None,
                             code: ToolCallFailureCode::ExecutionFailed,
                             message,
                         });
@@ -530,6 +560,7 @@ impl Engine {
                             message.clone(),
                         );
                         return Err(ToolFailure {
+                            partial_output: None,
                             code: ToolCallFailureCode::ExecutionFailed,
                             message,
                         });
@@ -563,6 +594,7 @@ impl Engine {
                             message.clone(),
                         );
                         return Err(ToolFailure {
+                            partial_output: None,
                             code: ToolCallFailureCode::ExecutionFailed,
                             message,
                         });
@@ -585,6 +617,7 @@ impl Engine {
                 .await
                 .take()
                 .ok_or_else(|| ToolFailure {
+                    partial_output: None,
                     code: ToolCallFailureCode::PreparedCapabilityLost,
                     message: "prepared executor capability was already consumed or lost".into(),
                 })?;
@@ -603,13 +636,30 @@ impl Engine {
                     .get("interactive")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-            let capture = (call.name == "bash")
-                .then(|| OutputCapture::new(engine.inner.artifacts.clone()))
-                .transpose()
-                .map_err(|error| ToolFailure {
-                    code: ToolCallFailureCode::ExecutionFailed,
-                    message: format!("tool output capture setup failed: {error}"),
-                })?;
+            let capture = if retain_output
+                && result_truncation != crate::ToolResultTruncationPolicy::OptOut
+            {
+                Some(
+                    OutputCapture::new(
+                        engine.inner.artifacts.clone(),
+                        output_declaration,
+                        active.policy.result_limits.tool_output_max_lines,
+                        active.policy.result_limits.tool_output_max_bytes,
+                    )
+                    .await
+                    .map_err(ToolFailure::from)?,
+                )
+            } else {
+                None
+            };
+            if let Some(capture) = &capture {
+                engine
+                    .inner
+                    .output_captures
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(call.id, capture.clone());
+            }
             let (stdin_tx, stdin) = ToolStdin::channel(64);
             if interactive {
                 active
@@ -619,25 +669,30 @@ impl Engine {
                     .insert(call.id, stdin_tx);
             }
             let tool_cancellation = active.cancellation.child_token();
-            let invoke = executor.execute(ToolExecutionContext {
+            let invoke = std::panic::AssertUnwindSafe(executor.execute(ToolExecutionContext {
                 session: active.session,
                 run,
-                progress: capture.as_ref().map_or_else(
-                    || ProgressSink::new(progress_tx.clone(), hub.clone()),
-                    |capture| {
-                        ProgressSink::with_capture(
-                            progress_tx.clone(),
-                            hub.clone(),
-                            capture.clone(),
-                        )
-                    },
-                ),
+                progress: if result_truncation == crate::ToolResultTruncationPolicy::OptOut
+                    || capture.is_none()
+                {
+                    ProgressSink::new(progress_tx.clone(), hub.clone())
+                } else {
+                    ProgressSink::with_capture(
+                        progress_tx.clone(),
+                        hub.clone(),
+                        capture.clone().expect("retained output capture"),
+                    )
+                },
                 cancellation: tool_cancellation.clone(),
                 stdin: interactive.then_some(stdin),
                 turn_context,
                 artifacts: engine.inner.artifacts.clone(),
+            }))
+            .catch_unwind()
+            .map(|result| {
+                result.unwrap_or_else(|_| Err(ToolError::execution("tool execution panicked")))
             });
-            tokio::pin!(invoke);
+            let mut invoke = Box::pin(invoke);
             loop {
                 tokio::select! {
                     result = &mut invoke => {
@@ -663,32 +718,24 @@ impl Engine {
                         engine.retain_finalized_output_hub(call.id);
                         return match result {
                             Ok(result) => {
-                                if let Some(capture) = &capture {
-                                    return capture
-                                        .finish(
-                                        result,
-                                        active.policy.result_limits.tool_output_max_lines,
-                                        active.policy.result_limits.tool_output_max_bytes,
-                                    )
-                                        .map_err(|error| ToolFailure {
-                                            code: ToolCallFailureCode::ExecutionFailed,
-                                            message: error.to_string(),
-                                        });
-                                }
-                                bound_tool_result(
-                                    result,
-                                    result_truncation,
-                                    &engine.inner.artifacts,
-                                    active.policy.result_limits.tool_output_max_lines,
-                                    active.policy.result_limits.tool_output_max_bytes,
-                                )
-                                .map_err(ToolFailure::from)
+                                let failed = result.failed;
+                                let message = "tool reported failure".to_owned();
+                                let result = match finalize_output(capture.as_ref(), result, failed, result_truncation).await {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        let mut failure = ToolFailure::from(error);
+                                        failure.partial_output = finalize_output(capture.as_ref(), incomplete_completion(&failure.message), true, result_truncation).await.ok().map(Box::new);
+                                        return Err(failure);
+                                    }
+                                };
+                                if failed {
+                                    Err(ToolFailure { code: ToolCallFailureCode::ExecutionFailed, message, partial_output: Some(Box::new(result)) })
+                                } else { Ok(result) }
                             }
                             Err(error) => {
-                                if let Some(capture) = &capture {
-                                    capture.discard();
-                                }
-                                Err(error.into())
+                                let mut failure = ToolFailure::from(error);
+                                failure.partial_output = finalize_output(capture.as_ref(), incomplete_completion(&failure.message), true, result_truncation).await.ok().map(Box::new);
+                                Err(failure)
                             }
                         };
                     }
@@ -719,7 +766,7 @@ impl Engine {
                             tokio::select! {
                                 result = &mut invoke => {
                                     delegate_result = result.ok().filter(|result| {
-                                        engine.is_delegate_call_result(active.session, run, call.id, result)
+                                        engine.is_delegate_call_result(active.session, run, call.id, &result.result)
                                     });
                                     while let Ok(progress) = progress_rx.try_recv() {
                                         if tokio::time::timeout_at(
@@ -756,20 +803,13 @@ impl Engine {
                                 }
                             }
                         }
-                        if let Some(capture) = &capture {
-                            capture.discard();
-                        }
+                        // Drop unsubmitted I/O admission waits before finalization. Jobs
+                        // already submitted own their permits and are drained by capture.
+                        drop(invoke);
                         hub.finalize();
                         engine.retain_finalized_output_hub(call.id);
                         if !cleanup_timed_out && let Some(result) = delegate_result {
-                            return bound_tool_result(
-                                result,
-                                result_truncation,
-                                &engine.inner.artifacts,
-                                active.policy.result_limits.tool_output_max_lines,
-                                active.policy.result_limits.tool_output_max_bytes,
-                            )
-                            .map_err(ToolFailure::from);
+                            return finalize_output(capture.as_ref(), result, true, result_truncation).await.map_err(ToolFailure::from);
                         }
                         let message = if cleanup_timed_out {
                             format!(
@@ -778,9 +818,11 @@ impl Engine {
                         } else {
                             "tool call cancelled after it started".into()
                         };
+                        let partial_output = finalize_output(capture.as_ref(), incomplete_completion(&message), true, result_truncation).await.ok().map(Box::new);
                         return Err(ToolFailure {
                             code: ToolCallFailureCode::ExecutionFailed,
                             message,
+                            partial_output,
                         });
                     }
                 }
@@ -820,6 +862,7 @@ impl Engine {
                 .tools_for_session(&SessionToolContext::new(session))
                 .map_err(|error| EngineError::MissingTool(error.to_string()))?
             {
+                tool.output.validate().map_err(EngineError::MissingTool)?;
                 let delegation_tool = tool.permission_name == "delegate";
                 let goal_tool = matches!(tool.name.as_str(), "goal_get" | "goal_update");
                 let enabled = (!delegation_tool || delegate_enabled)
@@ -864,6 +907,46 @@ impl Engine {
             tools: published,
         })
     }
+}
+
+async fn finalize_output(
+    capture: Option<&OutputCapture>,
+    completion: crate::ToolCompletion,
+    incomplete: bool,
+    policy: crate::ToolResultTruncationPolicy,
+) -> Result<ToolResult, ToolError> {
+    if let Some(capture) = capture {
+        return capture.finish(completion, incomplete).await;
+    }
+    if policy == crate::ToolResultTruncationPolicy::OptOut {
+        return super::finish_page(completion);
+    }
+    // Direct skill dispatch is nested work, not another model tool-call. Its caller owns
+    // the returned single output, so only the outer tool call captures and publishes it.
+    let mut result = completion.result;
+    match completion.output {
+        cookie_agent_protocol::ToolCompletionOutput::Single { text } => result.output = text,
+        cookie_agent_protocol::ToolCompletionOutput::Streamed if incomplete => {}
+        _ => {
+            return Err(ToolError::execution(
+                "direct skill dispatch requires terminal single output",
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn incomplete_completion(message: &str) -> crate::ToolCompletion {
+    crate::ToolCompletion::streamed(ToolResult {
+        title: safe_display("Incomplete tool output"),
+        output: String::new(),
+        display: Some(crate::tool_api::bounded_tool_display(message)),
+        retained_output: None,
+        metadata: Value::Null,
+        truncation: None,
+        attachments: Vec::new(),
+        additional_messages: Vec::new(),
+    })
 }
 
 pub(super) fn fallback_operation_fingerprint(
@@ -984,71 +1067,6 @@ pub(super) fn redact_presentation(value: &str) -> String {
     }
     sanitized
 }
-pub(super) struct TruncatedToolOutput {
-    pub(super) content: String,
-}
-
-pub(super) fn truncate_tool_output(
-    output: &str,
-    max_lines: usize,
-    max_bytes: usize,
-) -> Option<TruncatedToolOutput> {
-    let lines = output.split('\n').collect::<Vec<_>>();
-    let line_truncated = lines.len() > max_lines;
-    let mut preview = lines
-        .iter()
-        .take(max_lines)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    let byte_truncated = output.len() > max_bytes || preview.len() > max_bytes;
-    if !line_truncated && !byte_truncated {
-        return None;
-    }
-    if preview.len() > max_bytes {
-        let mut boundary = max_bytes;
-        while boundary > 0 && !preview.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        preview.truncate(boundary);
-    }
-    Some(TruncatedToolOutput { content: preview })
-}
-
-pub(crate) fn bound_tool_result(
-    mut result: ToolResult,
-    policy: crate::ToolResultTruncationPolicy,
-    artifacts: &ArtifactStore,
-    max_lines: usize,
-    max_bytes: usize,
-) -> Result<ToolResult, ToolError> {
-    if policy == crate::ToolResultTruncationPolicy::OptOut {
-        result.truncation = None;
-        if result.output.len() > ToolResult::MAX_OUTPUT_BYTES {
-            return Err(ToolError::resource_limit(format!(
-                "tool output is {} bytes; the event limit is {} bytes",
-                result.output.len(),
-                ToolResult::MAX_OUTPUT_BYTES
-            )));
-        }
-        return Ok(result);
-    }
-    let Some(preview) = truncate_tool_output(&result.output, max_lines, max_bytes) else {
-        return Ok(result);
-    };
-    let original_bytes = result.output.len() as u64;
-    let original_lines = result.output.split('\n').count() as u64;
-    let (retained, _) = artifacts
-        .retain(result.output.as_bytes())
-        .map_err(|error| ToolError::execution(error.to_string()))?;
-    result.output = preview.content;
-    result.truncation = Some(ToolOutputTruncation {
-        original_bytes,
-        original_lines,
-        retained,
-    });
-    Ok(result)
-}
 
 pub(crate) fn validate_attachment(
     mime_type: &str,
@@ -1081,13 +1099,11 @@ pub(crate) fn validate_attachment(
 mod tests {
     use std::path::Path;
 
-    use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText, ToolCallId};
+    use cookie_agent_protocol::ToolCallId;
 
     use super::{
-        ArtifactStore, MAX_VIDEO_ATTACHMENT_BYTES, ToolCall, bound_tool_result,
-        fallback_operation_fingerprint, validate_attachment,
+        MAX_VIDEO_ATTACHMENT_BYTES, ToolCall, fallback_operation_fingerprint, validate_attachment,
     };
-    use crate::{ToolError, ToolResultTruncationPolicy};
 
     #[test]
     fn discovery_failure_fingerprints_keep_known_tool_actions() {
@@ -1146,84 +1162,5 @@ mod tests {
         for declared in ["video/mpg", "video/mpeg"] {
             validate_attachment(declared, Path::new("clip.mpg"), &mpeg).unwrap();
         }
-    }
-
-    fn result(output: String) -> PersistedToolResult {
-        PersistedToolResult {
-            title: SafeDisplayText::new("Tool output").unwrap(),
-            output,
-            metadata: serde_json::Value::Null,
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn opted_out_results_ignore_config_limits_without_retention() {
-        let directory = tempfile::tempdir().unwrap();
-        let artifact_path = directory.path().join("artifacts");
-        let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
-        let output = "line\n".repeat(1_000);
-        let bounded = bound_tool_result(
-            result(output.clone()),
-            ToolResultTruncationPolicy::OptOut,
-            &artifacts,
-            1,
-            1,
-        )
-        .unwrap();
-        assert_eq!(bounded.output, output);
-        assert!(bounded.truncation.is_none());
-        assert_eq!(std::fs::read_dir(artifact_path).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn opted_out_result_over_event_limit_is_a_resource_error() {
-        let directory = tempfile::tempdir().unwrap();
-        let artifacts = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let error = bound_tool_result(
-            result("x".repeat(PersistedToolResult::MAX_OUTPUT_BYTES + 1)),
-            ToolResultTruncationPolicy::OptOut,
-            &artifacts,
-            usize::MAX,
-            usize::MAX,
-        )
-        .unwrap_err();
-        assert!(matches!(error, ToolError::ResourceLimit(_)));
-        assert!(error.to_string().contains("event limit"));
-    }
-
-    #[test]
-    fn default_external_tool_policy_still_truncates_and_retains() {
-        let directory = tempfile::tempdir().unwrap();
-        let artifact_path = directory.path().join("artifacts");
-        let artifacts = ArtifactStore::open(artifact_path.clone()).unwrap();
-        let external_spec = crate::ToolSpec {
-            concurrency: Default::default(),
-            name: "mcp_fixture".into(),
-            permission_name: "mcp".into(),
-            description: "External fixture".into(),
-            parameters: serde_json::json!({"type":"object"}),
-            result_truncation: Default::default(),
-        };
-        assert_eq!(
-            external_spec.result_truncation,
-            ToolResultTruncationPolicy::Bounded
-        );
-        let bounded = bound_tool_result(
-            result("first\nsecond\n".into()),
-            external_spec.result_truncation,
-            &artifacts,
-            1,
-            5,
-        )
-        .unwrap();
-        assert_eq!(bounded.output, "first");
-        let truncation = bounded.truncation.expect("bounded truncation metadata");
-        assert_eq!(truncation.original_bytes, 13);
-        assert_eq!(truncation.original_lines, 3);
-        assert!(truncation.retained.uri.starts_with("artifact://sha256/"));
-        assert_eq!(std::fs::read_dir(artifact_path).unwrap().count(), 1);
     }
 }

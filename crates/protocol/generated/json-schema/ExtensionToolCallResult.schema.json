@@ -3,16 +3,94 @@
   "title": "ExtensionToolCallResult",
   "type": "object",
   "properties": {
-    "content": {
+    "display": {
       "type": "string"
     },
     "is_error": {
       "type": "boolean"
+    },
+    "output": {
+      "$ref": "#/$defs/ToolCompletionOutput"
     }
   },
   "additionalProperties": false,
   "required": [
-    "content",
+    "output",
+    "display",
     "is_error"
-  ]
+  ],
+  "$defs": {
+    "ToolCompletionOutput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "single"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "named"
+            },
+            "streams": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ToolOutputChunk"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "streams"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "streamed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ToolOutputChunk": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ]
+    }
+  }
 }

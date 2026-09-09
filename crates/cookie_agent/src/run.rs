@@ -942,7 +942,7 @@ fn subscribe_tool_output(
     state: &mut DriverState,
     output: &mut dyn IoWrite,
 ) -> anyhow::Result<()> {
-    for stream in [OutputStream::Stdout, OutputStream::Stderr] {
+    for stream in engine.tool_output_streams(call_id).unwrap_or_default() {
         if let Some((snapshot, receiver)) = engine.subscribe_tool_output(call_id, stream) {
             for delta in snapshot.chunks {
                 write_tool_delta(output, &delta)?;
@@ -986,7 +986,7 @@ fn write_tool_delta(output: &mut dyn IoWrite, delta: &OutputDelta) -> anyhow::Re
         &JsonToolOutput {
             r#type: "tool_output",
             call_id: delta.call_id,
-            stream: delta.stream,
+            stream: delta.stream.clone(),
             byte_offset: delta.byte_offset,
             data: &delta.data,
         },
@@ -999,7 +999,7 @@ fn write_tool_gap(output: &mut dyn IoWrite, gap: &OutputGap) -> anyhow::Result<(
         &JsonToolOutputGap {
             r#type: "tool_output_gap",
             call_id: gap.call_id,
-            stream: gap.stream,
+            stream: gap.stream.clone(),
             next_offset: gap.next_offset,
         },
     )

@@ -370,7 +370,7 @@ Tool providers publish a static permission name and an optional resource label:
 
 | Tool | Permission name | Resource label |
 |---|---|---|
-| `read` | `read` | Workspace-relative path inside the workspace; absolute path outside it |
+| `read` | `read` | Filesystem path, or the exact `artifact://<digest>[/<stream>]` URI for an artifact |
 | `write`, `edit` | `write` | Workspace-relative path inside the workspace; absolute path outside it |
 | `bash` | `bash` | Complete command string |
 | `delegate_subagent` | `delegate` | Target `agent_type` |
@@ -378,7 +378,6 @@ Tool providers publish a static permission name and an optional resource label:
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | `skill` | Skill name |
 | `goal_get`, `goal_update` | `read`, `write` respectively | `goal:current` |
-| `read_tool_result` | `read` | Tool-result resource |
 | `webfetch` | `webfetch` | Initial URL as given, including its query string |
 
 The `edit` tool uses the `write` permission action. Bash is not parsed into file
@@ -518,10 +517,11 @@ permissions:
     "*https://*.quantumcookie.xyz/*": allow
     "https://review.example.org/*": ask
   read:
-    "tool_result:*": allow
+    "artifact://*": allow
 ```
 
-The `read` rule exposes `read_tool_result` so the model can page long responses.
+The `read` rule permits artifact readback so the model can page long responses.
+It does not grant filesystem reads, and workspace-path patterns do not grant artifact reads.
 Permission is checked once, against the initial URL; redirect destinations are
 not checked, and there is no SSRF protection, host/IP blocklist, or DNS
 pinning, so scope patterns accordingly, including access to local network

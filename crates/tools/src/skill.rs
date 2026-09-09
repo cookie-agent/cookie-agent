@@ -45,44 +45,50 @@ impl PreparedExecutor for SkillExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
-        if self
-            .engine
-            .skill_invocation_context(&self.args.name)
-            .map_err(tool_error)?
-            == Some(cookie_agent_config::SkillContext::Fork)
-        {
-            return self
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
+            if self
                 .engine
-                .execute_skill_fork(
+                .skill_invocation_context(&self.args.name)
+                .map_err(tool_error)?
+                == Some(cookie_agent_config::SkillContext::Fork)
+            {
+                return self
+                    .engine
+                    .execute_skill_fork(
+                        context.session,
+                        context.run,
+                        self.call_id,
+                        &self.args.name,
+                        &self.args.args,
+                    )
+                    .await
+                    .map_err(tool_error);
+            }
+            let invocation = self
+                .engine
+                .invoke_skill(
                     context.session,
-                    context.run,
-                    self.call_id,
+                    Some(context.run),
                     &self.args.name,
                     &self.args.args,
+                    true,
                 )
                 .await
-                .map_err(tool_error);
+                .map_err(tool_error)?;
+            Ok(ToolResult {
+                display: None,
+                retained_output: None,
+                title: safe_title(format!("Loaded skill {}", invocation.name)),
+                output: invocation.rendered,
+                metadata: serde_json::json!({"skill": invocation.name}),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            })
         }
-        let invocation = self
-            .engine
-            .invoke_skill(
-                context.session,
-                Some(context.run),
-                &self.args.name,
-                &self.args.args,
-                true,
-            )
-            .await
-            .map_err(tool_error)?;
-        Ok(ToolResult {
-            title: safe_title(format!("Loaded skill {}", invocation.name)),
-            output: invocation.rendered,
-            metadata: serde_json::json!({"skill": invocation.name}),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        })
+        .await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 
@@ -101,6 +107,7 @@ impl ToolProvider for SkillTool {
             return Ok(Vec::new());
         }
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "skill".into(),

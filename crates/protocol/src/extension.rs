@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.5";
+pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.6";
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "plugin/producer/register";
 pub const PLUGIN_PRODUCER_SEND_METHOD: &str = "plugin/producer/send";
 pub const PLUGIN_PRODUCER_UNREGISTER_METHOD: &str = "plugin/producer/unregister";
@@ -43,7 +43,7 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
     "plugin/intercept/session_before_revert";
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"0.0.5\"")]
+#[ts(type = "\"0.0.6\"")]
 pub struct ExtensionProtocolVersion(());
 
 impl ExtensionProtocolVersion {
@@ -88,7 +88,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","const":"0.0.5"})
+        json_schema!({"type":"string","const":"0.0.6"})
     }
 }
 
@@ -151,6 +151,8 @@ pub struct ExtensionToolDeclaration {
     pub description: String,
     pub parameters: Value,
     pub permission_name: String,
+    #[serde(default)]
+    pub output: crate::ToolOutputDeclaration,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub primary_resource_param: Option<String>,
@@ -305,7 +307,8 @@ pub struct ExtensionToolCallParams {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolCallResult {
-    pub content: String,
+    pub output: crate::ToolCompletionOutput,
+    pub display: String,
     pub is_error: bool,
 }
 

@@ -963,12 +963,18 @@ impl Engine {
             for (id, content_index, model_call_id, provider_item_id, tool, arguments, approval) in
                 &calls
             {
+                let output_declaration = published_tools
+                    .tools
+                    .get(tool.as_str())
+                    .map(|tool| tool.spec.output.clone())
+                    .unwrap_or_default();
                 self.inner
                     .output_hubs
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .entry(*id)
-                    .or_insert_with(|| OutputHub::new(*id, 64 * 1024));
+                    .or_insert_with(|| OutputHub::new(*id, 64 * 1024))
+                    .declare(&output_declaration);
                 let call = ToolCall {
                     id: *id,
                     name: tool.to_string(),
@@ -1000,6 +1006,7 @@ impl Engine {
                     Event::ToolCallStarted {
                         start: ToolCallStart {
                             tool_call_id: *id,
+                            output: output_declaration,
                             owner: cookie_agent_protocol::AssistantToolCallRef {
                                 model_turn_seq: attempt.model_turn_seq,
                                 content_index: *content_index,
@@ -1091,6 +1098,7 @@ impl Engine {
                         Ok(outcome) if outcome.approved => {}
                         Ok(outcome) => {
                             approved_tasks.push(PendingTool::ImmediateFailure(ToolFailure {
+                                partial_output: None,
                                 code: ToolCallFailureCode::ExecutionFailed,
                                 message: denied_tool_failure(
                                     ApprovalDecisionSource::Model,
@@ -1102,6 +1110,7 @@ impl Engine {
                         }
                         Err(error) => {
                             approved_tasks.push(PendingTool::ImmediateFailure(ToolFailure {
+                                partial_output: None,
                                 code: ToolCallFailureCode::ExecutionFailed,
                                 message: error.to_string(),
                             }));
@@ -1213,9 +1222,14 @@ impl Engine {
         task: PendingTool,
         turn_context: Arc<TurnAgentContext>,
     ) -> Result<(), EngineError> {
+        let _publication = ToolOutputPublication {
+            engine: self.clone(),
+            call_id: id,
+        };
         let (mut result, arguments) = if active.cancellation.is_cancelled() {
             (
                 Err(ToolFailure {
+                    partial_output: None,
                     code: ToolCallFailureCode::ExecutionFailed,
                     message: "tool call cancelled after it started".into(),
                 }),
@@ -1226,7 +1240,7 @@ impl Engine {
                 PendingTool::Prepared { prepared, .. } => {
                     let intercepted_arguments = prepared.intercepted_arguments.clone();
                     let result = self
-                        .execute_approved_tool(active.clone(), run, *prepared, turn_context)
+                        .execute_approved_tool(active.clone(), run, *prepared, turn_context, true)
                         .await;
                     let arguments = intercepted_arguments
                         .lock()
@@ -1237,10 +1251,7 @@ impl Engine {
                 PendingTool::ImmediateFailure(failure) => (Err(failure), original_arguments),
             }
         };
-        let cancelled = active.cancellation.is_cancelled()
-            && result
-                .as_ref()
-                .is_ok_and(|result| self.is_delegate_call_result(active.session, run, id, result));
+        let cancelled = active.cancellation.is_cancelled();
         let (mut result_content, is_error) = match &result {
             Ok(result) => (result.output.clone(), cancelled),
             Err(failure) => (failure.message.clone(), true),
@@ -2034,6 +2045,26 @@ impl Engine {
             return;
         }
         tokio::time::sleep(delay).await;
+    }
+}
+
+struct ToolOutputPublication {
+    engine: Engine,
+    call_id: ToolCallId,
+}
+
+impl Drop for ToolOutputPublication {
+    fn drop(&mut self) {
+        if let Some(capture) = self
+            .engine
+            .inner
+            .output_captures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.call_id)
+        {
+            capture.release_publication();
+        }
     }
 }
 

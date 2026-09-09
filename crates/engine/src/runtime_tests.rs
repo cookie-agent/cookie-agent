@@ -1206,6 +1206,7 @@ impl ToolProvider for TestStreamingBashProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "bash".into(),
@@ -1314,13 +1315,15 @@ impl PreparedExecutor for TestStreamingBashExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
         context
             .progress
             .send(ToolProgress {
+output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative start\n".into() }],
                 tool_call_id: self.call_id,
                 message: "bash stdout".into(),
-                output_chunk: Some(if self.command == "timeout" {
+                display: Some(if self.command == "timeout" {
                     "stdout before internal timeout".into()
                 } else {
                     "before cancellation".into()
@@ -1332,9 +1335,10 @@ impl PreparedExecutor for TestStreamingBashExecutor {
             context
                 .progress
                 .send(ToolProgress {
+output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative error\n".into() }],
                     tool_call_id: self.call_id,
                     message: "bash stderr".into(),
-                    output_chunk: Some("stderr before internal timeout".into()),
+                    display: Some("stderr before internal timeout".into()),
                 })
                 .await?;
             return Err(ToolError::execution("bash timed out"));
@@ -1357,9 +1361,10 @@ impl PreparedExecutor for TestStreamingBashExecutor {
         context
             .progress
             .send(ToolProgress {
+output: vec![cookie_agent_protocol::ToolOutputChunk { stream: None, text: "authoritative cleanup\n".into() }],
                 tool_call_id: self.call_id,
                 message: "bash stdout".into(),
-                output_chunk: Some("during cancellation cleanup".into()),
+                display: Some("during cancellation cleanup".into()),
             })
             .await?;
         self.cleanup_progress_sent.notify_one();
@@ -1374,6 +1379,8 @@ impl PreparedExecutor for TestStreamingBashExecutor {
             "session-shaped" | "null-session-shaped"
         ) {
             return Ok(cookie_agent_protocol::PersistedToolResult {
+display: None,
+retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("External result").unwrap(),
                 output: "external cleanup result".into(),
                 metadata: if self.command == "session-shaped" {
@@ -1387,6 +1394,8 @@ impl PreparedExecutor for TestStreamingBashExecutor {
             });
         }
         Err(ToolError::execution("streaming bash cancelled"))
+}.await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 
@@ -1429,6 +1438,46 @@ struct TestParallelToolProvider {
     barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 
+struct TestOptOutProvider(TestParallelToolProvider);
+
+#[async_trait]
+impl ToolProvider for TestOptOutProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.opt-out"
+    }
+    fn tools_for_session(&self, context: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        let mut tools = self.0.tools_for_session(context)?;
+        for tool in &mut tools {
+            tool.result_truncation = crate::ToolResultTruncationPolicy::OptOut;
+        }
+        Ok(tools)
+    }
+    fn get_permission_name(name: &str) -> Result<&'static str, ToolError> {
+        TestParallelToolProvider::get_permission_name(name)
+    }
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        self.0.get_permission_resource(name, arguments)
+    }
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        self.0.get_display_argument(name, arguments)
+    }
+    async fn prepare(
+        &self,
+        context: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        self.0.prepare(context, call).await
+    }
+}
+
 struct TestParallelToolExecutor {
     name: String,
     delay_ms: u64,
@@ -1464,6 +1513,7 @@ impl ToolProvider for TestParallelToolProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            output: Default::default(),
             concurrency: ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: name.into(),
@@ -1592,29 +1642,35 @@ impl PreparedExecutor for TestParallelToolExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        let _active = self.state.enter(self.name.clone());
-        if let Some(barrier) = &self.barrier {
-            barrier.wait().await;
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
+            let _active = self.state.enter(self.name.clone());
+            if let Some(barrier) = &self.barrier {
+                barrier.wait().await;
+            }
+            if self.wait_for_cancellation {
+                context.cancellation.cancelled().await;
+            }
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
+            if self.fail {
+                return Err(ToolError::execution(format!("{} failed", self.name)));
+            }
+            Ok(cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
+                title: cookie_agent_protocol::SafeDisplayText::new("parallel test result")
+                    .expect("result title"),
+                output: format!("{} completed", self.name),
+                metadata: serde_json::json!({"name":self.name}),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            })
         }
-        if self.wait_for_cancellation {
-            context.cancellation.cancelled().await;
-        }
-        if self.delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
-        }
-        if self.fail {
-            return Err(ToolError::execution(format!("{} failed", self.name)));
-        }
-        Ok(cookie_agent_protocol::PersistedToolResult {
-            title: cookie_agent_protocol::SafeDisplayText::new("parallel test result")
-                .expect("result title"),
-            output: format!("{} completed", self.name),
-            metadata: serde_json::json!({"name":self.name}),
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        })
+        .await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 
@@ -1694,6 +1750,7 @@ impl ToolProvider for TestDelegateProvider {
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok((!targets.is_empty())
             .then(|| ToolSpec {
+                output: Default::default(),
                 concurrency: crate::ToolConcurrency::Parallel,
                 result_truncation: Default::default(),
                 name: "delegate_subagent".to_owned(),
@@ -1802,73 +1859,79 @@ impl PreparedExecutor for TestDelegateExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        let TestDelegateExecutor {
-            engine,
-            call_id,
-            args,
-        } = *self;
-        let staged_restart = args.prompt == "staged restart";
-        if staged_restart {
-            engine.stage_skill_fork_for_test(
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
+            let TestDelegateExecutor {
+                engine,
                 call_id,
-                &cookie_agent_protocol::StagedSkillPayload {
-                    provenance: cookie_agent_protocol::StagedSkillProvenance::SkillFork,
-                    name: "restart-skill".into(),
-                    args: String::new(),
-                    rendered_body: "Restart recovered skill body".into(),
-                    source_path: "/skills/restart-skill/SKILL.md".into(),
-                    base_dir: "/skills/restart-skill".into(),
-                    supporting_files: Vec::new(),
-                    grants: vec![cookie_agent_protocol::PermissionRule {
-                        action: PermissionAction::Bash,
-                        resource: WildcardPattern::new("git *").expect("grant"),
-                        effect: PermissionEffect::Allow,
-                    }],
-                    model: None,
-                },
-            );
-        }
-        let background = args.background;
-        let prompt = if staged_restart {
-            "Apply the staged skill `restart-skill`.".into()
-        } else {
-            args.prompt
-        };
-        let handle = engine
-            .delegate_invoke(DelegateInvocation {
-                parent_session_id: context.session,
-                parent_run_id: context.run,
-                parent_tool_call_id: call_id,
-                agent_type: args.agent_type,
-                description: args.description,
-                prompt,
-                background,
-                resume_session_id: args.resume_session_id,
-                inherit_context: args.inherit_context,
-            })
-            .await
-            .map_err(|error| ToolError::execution(error.to_string()))?;
-        if background {
-            let metadata = serde_json::json!({"session_id":handle.child_session_id});
-            Ok(cookie_agent_protocol::PersistedToolResult {
-                title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
-                    .expect("title"),
-                output: format!(
-                    "Subagent started. [subagent session {}]",
-                    handle.child_session_id
-                ),
-                metadata,
-                truncation: None,
-                attachments: Vec::new(),
-                additional_messages: Vec::new(),
-            })
-        } else {
-            engine
-                .await_delegate(handle)
+                args,
+            } = *self;
+            let staged_restart = args.prompt == "staged restart";
+            if staged_restart {
+                engine.stage_skill_fork_for_test(
+                    call_id,
+                    &cookie_agent_protocol::StagedSkillPayload {
+                        provenance: cookie_agent_protocol::StagedSkillProvenance::SkillFork,
+                        name: "restart-skill".into(),
+                        args: String::new(),
+                        rendered_body: "Restart recovered skill body".into(),
+                        source_path: "/skills/restart-skill/SKILL.md".into(),
+                        base_dir: "/skills/restart-skill".into(),
+                        supporting_files: Vec::new(),
+                        grants: vec![cookie_agent_protocol::PermissionRule {
+                            action: PermissionAction::Bash,
+                            resource: WildcardPattern::new("git *").expect("grant"),
+                            effect: PermissionEffect::Allow,
+                        }],
+                        model: None,
+                    },
+                );
+            }
+            let background = args.background;
+            let prompt = if staged_restart {
+                "Apply the staged skill `restart-skill`.".into()
+            } else {
+                args.prompt
+            };
+            let handle = engine
+                .delegate_invoke(DelegateInvocation {
+                    parent_session_id: context.session,
+                    parent_run_id: context.run,
+                    parent_tool_call_id: call_id,
+                    agent_type: args.agent_type,
+                    description: args.description,
+                    prompt,
+                    background,
+                    resume_session_id: args.resume_session_id,
+                    inherit_context: args.inherit_context,
+                })
                 .await
-                .map_err(|error| ToolError::execution(error.to_string()))
+                .map_err(|error| ToolError::execution(error.to_string()))?;
+            if background {
+                let metadata = serde_json::json!({"session_id":handle.child_session_id});
+                Ok(cookie_agent_protocol::PersistedToolResult {
+                    display: None,
+                    retained_output: None,
+                    title: cookie_agent_protocol::SafeDisplayText::new("Subagent started")
+                        .expect("title"),
+                    output: format!(
+                        "Subagent started. [subagent session {}]",
+                        handle.child_session_id
+                    ),
+                    metadata,
+                    truncation: None,
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
+                })
+            } else {
+                engine
+                    .await_delegate(handle)
+                    .await
+                    .map_err(|error| ToolError::execution(error.to_string()))
+            }
         }
+        .await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 
@@ -1889,6 +1952,7 @@ impl ToolProvider for TestWriteProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "write".to_owned(),
@@ -1976,17 +2040,23 @@ impl PreparedExecutor for TestWriteExecutor {
     async fn execute(
         self: Box<Self>,
         _context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        self.executed.set();
-        Ok(cookie_agent_protocol::PersistedToolResult {
-            title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
-                .expect("result title"),
-            output: "executed".to_owned(),
-            metadata: serde_json::Value::Null,
-            truncation: None,
-            attachments: Vec::new(),
-            additional_messages: Vec::new(),
-        })
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
+            self.executed.set();
+            Ok(cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
+                title: cookie_agent_protocol::SafeDisplayText::new("approval test write")
+                    .expect("result title"),
+                output: "executed".to_owned(),
+                metadata: serde_json::Value::Null,
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            })
+        }
+        .await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 
@@ -2005,6 +2075,7 @@ impl ToolProvider for TestMediaReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
@@ -2096,34 +2167,40 @@ impl PreparedExecutor for TestMediaReadExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        let bytes =
-            fs::read(&self.path).map_err(|error| ToolError::execution(error.to_string()))?;
-        let mime = crate::approved_media_type(&self.path, &bytes)?
-            .ok_or_else(|| ToolError::execution("test read expected media"))?;
-        let gate = crate::gate_attachment(
-            context.turn_context.adapter_family,
-            &context.turn_context.capabilities,
-            mime,
-            &bytes,
-        );
-        if let Some(error) = crate::attachment_gate_error(
-            gate,
-            mime,
-            &context.turn_context.model,
-            context.turn_context.adapter,
-        ) {
-            return Err(ToolError::execution(error));
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> = async move {
+            let bytes =
+                fs::read(&self.path).map_err(|error| ToolError::execution(error.to_string()))?;
+            let mime = crate::approved_media_type(&self.path, &bytes)?
+                .ok_or_else(|| ToolError::execution("test read expected media"))?;
+            let gate = crate::gate_attachment(
+                context.turn_context.adapter_family,
+                &context.turn_context.capabilities,
+                mime,
+                &bytes,
+            );
+            if let Some(error) = crate::attachment_gate_error(
+                gate,
+                mime,
+                &context.turn_context.model,
+                context.turn_context.adapter,
+            ) {
+                return Err(ToolError::execution(error));
+            }
+            let attachment = context.retain_attachment(mime, None, &bytes)?;
+            Ok(cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
+                title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
+                output: format!("Attached {mime}."),
+                metadata: serde_json::Value::Null,
+                truncation: None,
+                attachments: vec![attachment],
+                additional_messages: Vec::new(),
+            })
         }
-        let attachment = context.retain_attachment(mime, None, &bytes)?;
-        Ok(cookie_agent_protocol::PersistedToolResult {
-            title: cookie_agent_protocol::SafeDisplayText::new("Read attachment").unwrap(),
-            output: format!("Attached {mime}."),
-            metadata: serde_json::Value::Null,
-            truncation: None,
-            attachments: vec![attachment],
-            additional_messages: Vec::new(),
-        })
+        .await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 
@@ -2214,6 +2291,7 @@ impl ToolProvider for OrderedToolDefinitionProvider {
             .tools
             .iter()
             .map(|(name, permission_name)| ToolSpec {
+                output: Default::default(),
                 concurrency: Default::default(),
                 result_truncation: Default::default(),
                 name: (*name).into(),
@@ -2282,6 +2360,7 @@ impl ToolProvider for TestToolDefinitionProvider {
         ]
         .into_iter()
         .map(|(name, permission_name)| ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: name.into(),
@@ -6039,6 +6118,402 @@ async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order()
 }
 
 #[tokio::test]
+async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publication() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[(
+                "page-call",
+                "parallel_read",
+                serde_json::json!({"name":"page"}),
+            )]),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Opt-out capture admission\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRead a page.\n",
+    );
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestOptOutProvider(TestParallelToolProvider {
+            state: Arc::new(ParallelToolState::default()),
+            barrier: None,
+        })));
+    let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempts = attempted.clone();
+    fixture
+        .engine
+        .inner
+        .artifacts
+        .io_test_hook
+        .set(Arc::new(move |operation, _| {
+            if operation.starts_with("capture_") {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(std::io::Error::other("capture storage is unavailable"));
+            }
+            Ok(())
+        }));
+    let publication = fixture
+        .engine
+        .inner
+        .artifacts
+        .publication
+        .clone()
+        .write_owned()
+        .await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("no-capture-page").unwrap(),
+                selection,
+                input: "read the page".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let terminal = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        terminal.outcome,
+        ToolTerminationOutcome::Completed,
+        "{:?}",
+        terminal.error
+    );
+    let result = terminal.result.as_ref().unwrap();
+    assert_eq!(result.output, "page completed");
+    assert_eq!(result.display.as_deref(), Some("page completed"));
+    assert!(result.retained_output.is_none());
+    assert!(result.truncation.is_none());
+    assert_eq!(attempted.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(captured.await.unwrap().len(), 2);
+    drop(publication);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_commit() {
+    let (endpoint, responses, captured) = scripted_channel_server(1).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[(
+                "race-call",
+                "parallel_read",
+                serde_json::json!({"name":"race"}),
+            )]),
+        ))
+        .unwrap();
+    let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Cancellation commit race\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest terminal commit cancellation.\n",
+    );
+    let markers = tempfile::tempdir().unwrap();
+    let reached = markers.path().join("after-result.jsonl");
+    let release = markers.path().join("release");
+    let mut plugin = interception_plugin(
+        "commit_gate",
+        &[
+            (
+                "FIXTURE_CAPABILITIES",
+                serde_json::json!({
+                    "producer_messaging":false,"tools":false,"resources":false,
+                    "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                    "publish_session_events":false,"intercept":["tool_after_result"]
+                })
+                .to_string(),
+            ),
+            ("FIXTURE_INTERCEPT_FILE", reached.display().to_string()),
+            (
+                "FIXTURE_INTERCEPT_RELEASE_FILE",
+                release.display().to_string(),
+            ),
+        ],
+    );
+    plugin.interception_timeout_ms = 30_000;
+    reopen_with_interception_plugins(&mut fixture, vec![("commit_gate".into(), plugin)]).await;
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::new(ParallelToolState::default()),
+            barrier: None,
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("commit-race").unwrap(),
+                selection: selection.clone(),
+                input: "finish then cancel".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap()
+        .run_id;
+
+    // The hook is reached only after successful capture finalization and the caller's
+    // cancellation snapshot. Keep it blocked until the actor has processed cancellation.
+    let hook = tokio::time::timeout(test_timeout(5), async {
+        loop {
+            if let Some(value) = fs::read_to_string(&reached)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            {
+                break value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("after-result hook reached");
+    assert_eq!(hook["params"]["result_content"], "race completed");
+    assert_eq!(hook["params"]["is_error"], false);
+    fixture.engine.cancel_run(run).await.unwrap();
+    fs::write(&release, b"release").unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    wait_for_run_inactive(&fixture.engine, run).await;
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let terminations = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+                Some(termination)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminations.len(), 1);
+    let terminal = terminations[0];
+    assert_eq!(terminal.outcome, ToolTerminationOutcome::Cancelled);
+    assert!(terminal.error.is_some());
+    let result = terminal.result.as_ref().unwrap();
+    assert_eq!(result.output, "race completed");
+    assert_eq!(
+        result.display.as_deref(),
+        Some("Tool cancelled; retained output is incomplete.")
+    );
+    let retained = result.retained_output.as_ref().unwrap();
+    assert!(retained.incomplete);
+    assert_eq!(
+        retained.streams[0].sha256,
+        Sha256Digest::of_bytes(b"race completed")
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+            .unwrap()
+            .content,
+        "race completed"
+    );
+    let policy = frozen_root_policy(&fixture, &selection);
+    let context = crate::model_history::assemble_model_context(
+        &events,
+        &fixture.engine.inner.artifacts,
+        policy.selected_suffix.first().unwrap(),
+        &policy.agent.composed_prompt,
+    )
+    .unwrap();
+    let results = context
+        .history
+        .iter()
+        .filter_map(|turn| match turn {
+            oven_sdk::HistoryTurn::Tool(message) => Some(&message.results),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tool_call_id, "race-call");
+    assert!(results[0].is_error);
+    assert!(
+        matches!(&results[0].content, oven_sdk::ToolContent::Mixed(parts)
+        if parts.iter().any(|part| matches!(part, oven_sdk::ContentValue::Text(text) if text == "race completed")))
+    );
+    let history = serde_json::to_string(&context.history).unwrap();
+    assert!(
+        !history.contains("retained output is incomplete"),
+        "display must remain UI-only"
+    );
+    assert_eq!(captured.await.unwrap().len(), 1);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[(
+                "plugin-named-call",
+                "fixture_named",
+                serde_json::json!({}),
+            )]),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Plugin named output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  plugin: allow\n---\nUse the named plugin output.\n",
+    );
+    let full = "r".repeat(70_000);
+    let plugin = interception_plugin(
+        "named_plugin",
+        &[
+            (
+                "FIXTURE_CAPABILITIES",
+                serde_json::json!({
+                    "producer_messaging":false,"tools":true,"resources":false,
+                    "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                    "publish_session_events":false,"intercept":[]
+                })
+                .to_string(),
+            ),
+            (
+                "FIXTURE_TOOLS",
+                serde_json::json!([{
+                    "name":"fixture_named","description":"Named output fixture",
+                    "parameters":{"type":"object","additionalProperties":false},
+                    "permission_name":"named_output","primary_resource_param":null,
+                    "output":{"kind":"named","streams":["results","diagnostics","empty"]}
+                }])
+                .to_string(),
+            ),
+            (
+                "FIXTURE_TOOL_RESULT",
+                serde_json::json!({
+                    "output":{"kind":"named","streams":[
+                        {"stream":"empty","text":""},
+                        {"stream":"diagnostics","text":"warning\n"},
+                        {"stream":"results","text":full}
+                    ]},
+                    "display":"PLUGIN_UI_ONLY","is_error":false
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    reopen_with_interception_plugins(&mut fixture, vec![("named_plugin".into(), plugin)]).await;
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("plugin-named-output").unwrap(),
+                selection,
+                input: "produce named output".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let terminal = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination } => Some(termination),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        terminal.outcome,
+        ToolTerminationOutcome::Completed,
+        "{:?}",
+        terminal.error
+    );
+    let result = terminal.result.as_ref().unwrap();
+    assert_eq!(result.display.as_deref(), Some("PLUGIN_UI_ONLY"));
+    let retained = result.retained_output.as_ref().unwrap();
+    assert!(!retained.incomplete);
+    assert_eq!(
+        retained
+            .streams
+            .iter()
+            .map(|stream| stream.name.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["results", "diagnostics", "empty"]
+    );
+    assert!(retained.streams[0].truncated);
+    assert_eq!(retained.streams[0].next_offset, Some(0));
+    assert!(!retained.streams[1].truncated);
+    assert_eq!(retained.streams[2].byte_length, 0);
+    let manifest_id = retained
+        .reference
+        .uri
+        .strip_prefix("artifact://sha256/")
+        .unwrap();
+    for (name, expected) in [
+        ("results", full.as_str()),
+        ("diagnostics", "warning\n"),
+        ("empty", ""),
+    ] {
+        assert_eq!(
+            fixture
+                .engine
+                .read_artifact(&format!("artifact://{manifest_id}/{name}"), 0, 1)
+                .unwrap()
+                .content,
+            expected
+        );
+    }
+    let requests = captured.await.unwrap();
+    assert!(requests[1].contains(&format!("artifact://{manifest_id}/results")));
+    assert!(requests[1].contains("[diagnostics]"));
+    assert!(!requests[1].contains("PLUGIN_UI_ONLY"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn cancelling_parallel_tools_terminates_every_started_call_once() {
     let (endpoint, responses, captured) = scripted_channel_server(1).await;
     responses
@@ -6085,7 +6560,7 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
             RunStartParams {
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("parallel-cancellation").expect("client run ID"),
-                selection,
+                selection: selection.clone(),
                 input: "start cancellable tools".into(),
             },
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
@@ -6129,6 +6604,47 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
         })
         .count();
     assert_eq!((starts, terminations, run_cancelled), (3, 3, 1));
+    let policy = frozen_root_policy(&fixture, &selection);
+    let context = crate::model_history::assemble_model_context(
+        &events,
+        &fixture.engine.inner.artifacts,
+        policy.selected_suffix.first().unwrap(),
+        &policy.agent.composed_prompt,
+    )
+    .unwrap();
+    let model_results = context
+        .history
+        .iter()
+        .filter_map(|turn| match turn {
+            oven_sdk::HistoryTurn::Tool(message) => Some(&message.results),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(model_results.len(), 3);
+    for terminal in events.iter().filter_map(|event| match &event.payload {
+        EventPayload::ToolCallTerminated { termination } if event.run_id == Some(run) => {
+            Some(termination)
+        }
+        _ => None,
+    }) {
+        assert_eq!(terminal.outcome, ToolTerminationOutcome::Cancelled);
+        let result = terminal.result.as_ref().expect("retained cancelled output");
+        assert!(result.retained_output.as_ref().unwrap().incomplete);
+        assert_eq!(
+            result.display.as_deref(),
+            Some("Tool cancelled; retained output is incomplete.")
+        );
+        let model_result = model_results
+            .iter()
+            .find(|result| result.tool_call_id == terminal.owner.model_call_id.as_str())
+            .unwrap();
+        assert!(model_result.is_error);
+        assert!(
+            matches!(&model_result.content, oven_sdk::ToolContent::Mixed(parts)
+            if parts.iter().any(|part| matches!(part, oven_sdk::ContentValue::Text(text) if text == &result.output)))
+        );
+    }
     assert_eq!(captured.await.expect("cancellation server").len(), 1);
     fixture.engine.shutdown().await;
 }
@@ -7453,6 +7969,22 @@ async fn scripted_server_with_delayed_response(
     tokio::sync::oneshot::Receiver<()>,
     Arc<tokio::sync::Notify>,
 ) {
+    scripted_server_with_status_and_delay(
+        bodies.into_iter().map(|body| (200, body)).collect(),
+        delayed_index,
+    )
+    .await
+}
+
+async fn scripted_server_with_status_and_delay(
+    bodies: Vec<(u16, String)>,
+    delayed_index: usize,
+) -> (
+    String,
+    tokio::task::JoinHandle<Vec<String>>,
+    tokio::sync::oneshot::Receiver<()>,
+    Arc<tokio::sync::Notify>,
+) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -7465,7 +7997,7 @@ async fn scripted_server_with_delayed_response(
     let task = tokio::spawn(async move {
         let mut reached_tx = Some(reached_tx);
         let mut requests = Vec::new();
-        for (index, body) in bodies.into_iter().enumerate() {
+        for (index, (status, body)) in bodies.into_iter().enumerate() {
             let (mut socket, _) = listener.accept().await.expect("delayed accept");
             let mut request = Vec::new();
             let mut buffer = [0_u8; 8192];
@@ -7504,8 +8036,13 @@ async fn scripted_server_with_delayed_response(
                 }
                 task_release.notified().await;
             }
+            let content_type = if status == 200 {
+                "text/event-stream"
+            } else {
+                "application/json"
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Response\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = socket.write_all(response.as_bytes()).await;
@@ -7516,11 +8053,263 @@ async fn scripted_server_with_delayed_response(
     (format!("http://{address}/v1"), task, reached_rx, release)
 }
 
+struct NamedOutputProvider {
+    failed: bool,
+}
+struct NamedOutputExecutor(ToolCallId, bool);
+
+#[async_trait]
+impl ToolProvider for NamedOutputProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.named-output"
+    }
+    fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            name: "named_output".into(),
+            permission_name: "read".into(),
+            description: "Produce named output".into(),
+            parameters: serde_json::json!({"type":"object","additionalProperties":false}),
+            concurrency: ToolConcurrency::Parallel,
+            result_truncation: Default::default(),
+            output: cookie_agent_protocol::ToolOutputDeclaration::Named {
+                streams: vec!["results".into(), "diagnostics".into(), "empty".into()],
+            },
+        }])
+    }
+    fn get_permission_name(_: &str) -> Result<&'static str, ToolError> {
+        Ok("read")
+    }
+    fn get_permission_resource(
+        &self,
+        _: &str,
+        _: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Ok(("read", Some("named_output".into())))
+    }
+    fn get_display_argument(&self, _: &str, _: &serde_json::Value) -> Result<String, ToolError> {
+        Ok("named output".into())
+    }
+    async fn prepare(
+        &self,
+        _: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"named-output"),
+            vec![ApprovalCapability {
+                action: PermissionAction::Read,
+                operation: PreparedCapabilityOperation::new("test:named-output").unwrap(),
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Read,
+                canonical: PreparedResourceIdentity::new(format!(
+                    "test:{}",
+                    Sha256Digest::of_bytes(b"named_output")
+                ))
+                .unwrap(),
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    b"named-output",
+                ),
+                binding_lifetime: PreparedBindingLifetime::ProcessLocal,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .unwrap();
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(NamedOutputExecutor(call.id, self.failed)),
+        )?
+        .with_policy_labels(vec!["named_output".into()])
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for NamedOutputExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+    async fn execute(
+        self: Box<Self>,
+        context: ToolExecutionContext,
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        for index in 0..4 {
+            context
+                .progress
+                .send(ToolProgress {
+                    tool_call_id: self.0,
+                    message: "output".into(),
+                    display: (index == 0).then(|| "UI_LIVE_ONLY".into()),
+                    output: vec![cookie_agent_protocol::ToolOutputChunk {
+                        stream: Some("results".into()),
+                        text: "x".repeat(32 * 1024),
+                    }],
+                })
+                .await?;
+            if index == 1 {
+                context
+                    .progress
+                    .send(ToolProgress {
+                        tool_call_id: self.0,
+                        message: "diagnostic".into(),
+                        display: None,
+                        output: vec![cookie_agent_protocol::ToolOutputChunk {
+                            stream: Some("diagnostics".into()),
+                            text: "diagnostic\n".into(),
+                        }],
+                    })
+                    .await?;
+            }
+        }
+        let mut completion =
+            crate::ToolCompletion::streamed(cookie_agent_protocol::PersistedToolResult {
+                title: cookie_agent_protocol::SafeDisplayText::new("Named output").unwrap(),
+                output: String::new(),
+                display: Some("UI_FINAL_ONLY".into()),
+                retained_output: None,
+                metadata: serde_json::Value::Null,
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            });
+        completion.failed = self.1;
+        Ok(completion)
+    }
+}
+
+#[tokio::test]
+async fn named_output_streams_publish_readable_manifests_without_display_leaking_to_model() {
+    for failed in [false, true] {
+        let call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"named-call\",\"type\":\"function\",\"function\":{\"name\":\"named_output\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n";
+        let done = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let (endpoint, requests, _, _) =
+            scripted_server_with_delayed_response(vec![call.into(), done.into()], usize::MAX).await;
+        let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+            &endpoint,
+            "---\ndescription: Named output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nUse named output.\n",
+        );
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(NamedOutputProvider { failed }));
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("named-output").unwrap(),
+                    selection,
+                    input: "produce output".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+        let events = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events();
+        let termination = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolCallTerminated { termination } => Some(termination),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            termination.outcome,
+            if failed {
+                ToolTerminationOutcome::Failed
+            } else {
+                ToolTerminationOutcome::Completed
+            },
+            "{:?}",
+            termination.error
+        );
+        let result = termination.result.as_ref().unwrap();
+        assert_eq!(result.display.as_deref(), Some("UI_FINAL_ONLY"));
+        let retained = result.retained_output.as_ref().unwrap();
+        assert_eq!(retained.incomplete, failed);
+        assert_eq!(
+            retained
+                .streams
+                .iter()
+                .map(|stream| stream.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["results", "diagnostics", "empty"]
+        );
+        let manifest = retained
+            .reference
+            .uri
+            .strip_prefix("artifact://sha256/")
+            .unwrap();
+        assert_eq!(
+            fixture
+                .engine
+                .read_artifact(&format!("artifact://{manifest}/results"), 0, 1)
+                .unwrap()
+                .content,
+            "x".repeat(128 * 1024)
+        );
+        assert_eq!(
+            fixture
+                .engine
+                .read_artifact(&format!("artifact://{manifest}/diagnostics"), 0, 1)
+                .unwrap()
+                .content,
+            "diagnostic\n"
+        );
+        assert!(
+            fixture
+                .engine
+                .read_artifact(&format!("artifact://{manifest}/empty"), 0, 1)
+                .unwrap()
+                .content
+                .is_empty()
+        );
+        assert!(
+            result
+                .output
+                .contains(&format!("artifact://{manifest}/results"))
+        );
+        assert!(
+            !result
+                .output
+                .contains(&format!("artifact://{manifest}/diagnostics"))
+        );
+        assert_eq!(
+            fixture
+                .engine
+                .tool_output_streams(termination.tool_call_id)
+                .unwrap()
+                .iter()
+                .map(|stream| stream.name())
+                .collect::<Vec<_>>(),
+            ["results", "diagnostics", "empty"]
+        );
+        let requests = requests.await.unwrap();
+        assert!(requests[1].contains("[results]"));
+        assert!(requests[1].contains("[diagnostics]"));
+        assert!(!requests[1].contains("UI_LIVE_ONLY"));
+        assert!(!requests[1].contains("UI_FINAL_ONLY"));
+        fixture.engine.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn lazy_mcp_preemption_rejects_the_plugin_tool_published_to_the_model() {
     const PLUGIN_FIXTURE: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
     const MCP_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mcp_server.py");
+
     let first = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"plugin-call\",\"type\":\"function\",\"function\":{\"name\":\"fixture_echo_text\",\"arguments\":\"{\\\"plugin_arg\\\":\\\"published-schema\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
     let second = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
     let (endpoint, server, reached, release) =
@@ -8079,6 +8868,30 @@ fn append_compaction_tool_history(
     result: cookie_agent_protocol::PersistedToolResult,
     latest_usage: u64,
 ) -> ToolCallId {
+    append_named_compaction_tool_history(
+        fixture,
+        session,
+        run,
+        binding,
+        result,
+        (
+            "bash",
+            serde_json::json!({"command": "produce historical output"}),
+        ),
+        Some(latest_usage),
+    )
+}
+
+fn append_named_compaction_tool_history(
+    fixture: &Fixture,
+    session: SessionId,
+    run: cookie_agent_protocol::RunId,
+    binding: &cookie_agent_protocol::FrozenModelBinding,
+    result: cookie_agent_protocol::PersistedToolResult,
+    tool: (&str, serde_json::Value),
+    latest_usage: Option<u64>,
+) -> ToolCallId {
+    let (name, input) = tool;
     let tool_call_id = ToolCallId::new_v7();
     let model_call_id =
         cookie_agent_protocol::ModelCallId::new(format!("compaction-history-tool-{tool_call_id}"))
@@ -8173,8 +8986,8 @@ fn append_compaction_tool_history(
         vec![cookie_agent_protocol::PersistedAssistantPart::ToolCall {
             id: model_call_id,
             provider_item_id: None,
-            name: cookie_agent_protocol::SafeCode::new("bash").unwrap(),
-            input: serde_json::json!({"command": "produce historical output"}),
+            name: cookie_agent_protocol::SafeCode::new(name).unwrap(),
+            input,
             raw_input: None,
             metadata: None,
         }],
@@ -8189,6 +9002,7 @@ fn append_compaction_tool_history(
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::ToolCallStarted {
                 start: cookie_agent_protocol::ToolCallStart {
+                    output: Default::default(),
                     tool_call_id,
                     owner: owner.clone(),
                     presentation: cookie_agent_protocol::ToolCallPresentation {
@@ -8231,11 +9045,14 @@ fn append_compaction_tool_history(
             model_turn_seq + 2,
             first_attempt_ordinal + 2,
             cookie_agent_protocol::Usage {
-                input_tokens: Some(latest_usage),
+                input_tokens: latest_usage,
                 ..cookie_agent_protocol::Usage::default()
             },
         ),
-    ] {
+    ]
+    .into_iter()
+    .take(if latest_usage.is_some() { 2 } else { 0 })
+    {
         append_model_turn(
             model_turn_seq,
             attempt_ordinal,
@@ -8251,8 +9068,8 @@ fn append_compaction_tool_history(
 }
 
 #[tokio::test]
-async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
-    use crate::{ToolResultTruncationPolicy, runtime::tool_execution::bound_tool_result};
+async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_readback() {
+    use crate::{ToolCompletion, runtime::OutputCapture};
     use cookie_agent_protocol::{PersistedToolResult, SafeDisplayText};
 
     let response = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
@@ -8291,6 +9108,8 @@ async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
         "content_type": "text/plain", "truncated": false,
     });
     let result = |output: String| PersistedToolResult {
+        display: None,
+        retained_output: None,
         title: SafeDisplayText::new("Webfetch output").unwrap(),
         output,
         metadata: metadata.clone(),
@@ -8298,21 +9117,30 @@ async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     };
-    let bounded = bound_tool_result(
-        result(output.clone()),
-        ToolResultTruncationPolicy::Bounded,
-        &fixture.engine.inner.artifacts,
+    let capture = OutputCapture::new(
+        fixture.engine.inner.artifacts.clone(),
+        Default::default(),
         10,
         1024,
     )
+    .await
     .unwrap();
-    assert!(bounded.output.len() <= 1024);
-    assert!(output.starts_with(&bounded.output));
+    let bounded = capture
+        .finish(ToolCompletion::single(result(output.clone())), false)
+        .await
+        .unwrap();
+    let raw_preview = bounded.output.split_once("\n[Truncated.").unwrap().0;
+    assert!(raw_preview.len() <= 1024);
+    assert!(output.starts_with(raw_preview));
     assert_eq!(bounded.metadata, metadata);
-    let truncation = bounded.truncation.as_ref().unwrap();
-    assert_eq!(truncation.original_bytes, output.len() as u64);
-    assert_eq!(truncation.original_lines, output.split('\n').count() as u64);
-    let call = append_compaction_tool_history(
+    let retained = bounded.retained_output.as_ref().unwrap();
+    assert_eq!(retained.streams[0].byte_length, output.len() as u64);
+    assert_eq!(
+        retained.streams[0].line_count,
+        output.lines().count() as u64
+    );
+    let preview = bounded.output.clone();
+    append_compaction_tool_history(
         &fixture,
         session.session_id,
         run.run_id,
@@ -8320,15 +9148,64 @@ async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
         bounded,
         1,
     );
+    capture.release_publication();
+
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let context = crate::model_history::assemble_model_context(
+        &events,
+        &fixture.engine.inner.artifacts,
+        policy.selected_suffix.first().unwrap(),
+        &policy.agent.composed_prompt,
+    )
+    .unwrap();
+    let tool_result = context
+        .history
+        .iter()
+        .find_map(|turn| match turn {
+            oven_sdk::HistoryTurn::Tool(message) => message.results.first(),
+            _ => None,
+        })
+        .expect("model-facing tool result");
+    let oven_sdk::ToolContent::Mixed(values) = &tool_result.content else {
+        panic!("expected preview and structured truncation notice");
+    };
+    assert!(matches!(&values[0], oven_sdk::ContentValue::Text(text) if text == &preview));
+    let oven_sdk::ContentValue::Json(details) = &values[1] else {
+        panic!("expected model-facing result metadata");
+    };
+    assert_eq!(details["metadata"], metadata);
+    assert!(details["truncation"].is_null());
+    let uri = preview
+        .split_once("read(filePath=\"")
+        .unwrap()
+        .1
+        .split('"')
+        .next()
+        .unwrap();
+    let artifact_id = cookie_agent_protocol::ArtifactReadPath::parse(uri)
+        .unwrap()
+        .digest;
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ToolCallTerminated { termination }
+            if termination.result.as_ref().and_then(|result| result.retained_output.as_ref())
+                .is_some_and(|retained| retained.reference.uri == format!("artifact://sha256/{artifact_id}"))
+    )));
 
     let lines = output.split_inclusive('\n').collect::<Vec<_>>();
     let mut reconstructed = String::new();
     for offset in (0..lines.len()).step_by(2_000) {
         let page = fixture
             .engine
-            .read_tool_result(session.session_id, call, None, offset as u64, 2_000)
+            .read_artifact(uri, offset as u64, 2_000)
             .unwrap();
-        assert_eq!(page.source, "truncation");
+        assert_eq!(page.source, "artifact");
         assert!(!page.content.is_empty());
         assert!(page.content.len() < PersistedToolResult::MAX_OUTPUT_BYTES);
         assert_eq!(
@@ -8341,24 +9218,17 @@ async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
         );
         reconstructed.push_str(&page.content);
         // Readback opts out of preview truncation, so each page must fit that path.
-        assert!(
-            bound_tool_result(
-                result(page.content),
-                ToolResultTruncationPolicy::OptOut,
-                &fixture.engine.inner.artifacts,
-                10,
-                1024,
-            )
-            .unwrap()
-            .truncation
-            .is_none()
-        );
+        let page =
+            crate::runtime::finish_page(ToolCompletion::single(result(page.content))).unwrap();
+        assert!(page.retained_output.is_none());
+        assert!(page.truncation.is_none());
     }
     assert_eq!(reconstructed, output);
+    assert!(reconstructed.len() > preview.len());
     for offset in [lines.len(), lines.len() + 2_000] {
         let page = fixture
             .engine
-            .read_tool_result(session.session_id, call, None, offset as u64, 2_000)
+            .read_artifact(uri, offset as u64, 2_000)
             .unwrap();
         assert!(page.content.is_empty());
         assert_eq!(page.next_offset_lines, None);
@@ -8368,7 +9238,7 @@ async fn oversized_webfetch_output_is_retained_and_read_back_in_line_pages() {
 }
 
 #[tokio::test]
-async fn retained_tool_results_page_across_truncation_elision_revert_and_sessions() {
+async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert() {
     let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let (endpoint, captured, _reached, _release) =
         scripted_server_with_delayed_response(vec![root_body.to_owned()], usize::MAX).await;
@@ -8395,6 +9265,8 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
         |output: &str,
          truncation: Option<cookie_agent_protocol::ToolOutputTruncation>,
          metadata: serde_json::Value| cookie_agent_protocol::PersistedToolResult {
+            display: None,
+            retained_output: None,
             title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
             output: output.into(),
             metadata,
@@ -8404,7 +9276,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
         };
 
     let full = "zero\none\ntwo\nthree";
-    let (retained, _) = artifacts.retain(full.as_bytes()).unwrap();
+    let (retained, retained_id) = artifacts.retain(full.as_bytes()).unwrap();
     let truncated_call = append_compaction_tool_history(
         &fixture,
         session.session_id,
@@ -8415,7 +9287,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
             Some(cookie_agent_protocol::ToolOutputTruncation {
                 original_bytes: full.len() as u64,
                 original_lines: 4,
-                retained,
+                retained: retained.clone(),
             }),
             serde_json::Value::Null,
         ),
@@ -8423,13 +9295,13 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
     );
     let page = fixture
         .engine
-        .read_tool_result(session.session_id, truncated_call, None, 1, 2)
+        .read_artifact(&format!("artifact://{retained_id}"), 1, 2)
         .unwrap();
     assert_eq!(page.content, "one\ntwo\n");
     assert_eq!(page.next_offset_lines, Some(3));
-    assert_eq!(page.source, "truncation");
+    assert_eq!(page.source, "artifact");
 
-    let (elided_preview, _) = artifacts.retain(b"zero\n").unwrap();
+    let (elided_preview, preview_id) = artifacts.retain(b"zero\n").unwrap();
     fixture
         .engine
         .append_direct(
@@ -8439,93 +9311,23 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
             EventPayload::ToolOutputElided {
                 tool_call_id: truncated_call,
                 original_bytes: full.len() as u64,
-                retained: elided_preview,
+                retained: elided_preview.clone(),
             },
         )
         .unwrap();
     let page = fixture
         .engine
-        .read_tool_result(session.session_id, truncated_call, None, 2, 2)
+        .read_artifact(&format!("artifact://{retained_id}"), 2, 2)
         .unwrap();
     assert_eq!(page.content, "two\nthree");
-    assert_eq!(page.source, "truncation");
-
-    let missing_call = append_compaction_tool_history(
-        &fixture,
-        session.session_id,
-        run.run_id,
-        binding,
-        result(
-            "preview",
-            Some(cookie_agent_protocol::ToolOutputTruncation {
-                original_bytes: 10,
-                original_lines: 1,
-                retained: cookie_agent_protocol::ArtifactReference {
-                    uri: format!("artifact://sha256/{}", "a".repeat(64)),
-                },
-            }),
-            serde_json::Value::Null,
-        ),
-        1,
-    );
-    assert!(
-        fixture
-            .engine
-            .read_tool_result(session.session_id, missing_call, None, 0, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("artifact missing")
-    );
-
-    let (stdout_ref, stdout_digest) = artifacts.retain(b"out-0\nout-1\n").unwrap();
-    let (stderr_ref, stderr_digest) = artifacts.retain(b"err-0\nerr-1\n").unwrap();
-    let manifest = serde_json::to_vec(&serde_json::json!({
-        "title":"Bash",
-        "streams":{
-            "stdout":{"reference":stdout_ref,"sha256":stdout_digest,"byte_length":12},
-            "stderr":{"reference":stderr_ref,"sha256":stderr_digest,"byte_length":12}
-        }
-    }))
-    .unwrap();
-    let (manifest_ref, _) = artifacts.retain(&manifest).unwrap();
-    let bash_call = append_compaction_tool_history(
-        &fixture,
-        session.session_id,
-        run.run_id,
-        binding,
-        result(
-            "stdout:\nout-0\n\nstderr:\nerr-0\n",
-            Some(cookie_agent_protocol::ToolOutputTruncation {
-                original_bytes: 42,
-                original_lines: 6,
-                retained: manifest_ref,
-            }),
-            serde_json::json!({"streams":true}),
-        ),
-        1,
-    );
+    assert_eq!(page.source, "artifact");
+    assert_ne!(retained.uri, elided_preview.uri);
     let page = fixture
         .engine
-        .read_tool_result(session.session_id, bash_call, Some("stderr"), 1, 1)
+        .read_artifact(&format!("artifact://{preview_id}"), 0, 1)
         .unwrap();
-    assert_eq!(page.content, "err-1\n");
-    assert_eq!(page.source, "truncation.stderr");
-
-    let inline_call = append_compaction_tool_history(
-        &fixture,
-        session.session_id,
-        run.run_id,
-        binding,
-        result("inline-0\ninline-1\n", None, serde_json::Value::Null),
-        1,
-    );
-    let other = fixture.engine.create_session(selection).unwrap();
-    assert!(
-        fixture
-            .engine
-            .read_tool_result(other.session_id, inline_call, None, 0, 1)
-            .is_err()
-    );
+    assert_eq!(page.content, "zero\n");
+    assert_eq!(page.next_offset_lines, None);
     let termination_seq = fixture
         .engine
         .inner
@@ -8537,7 +9339,7 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
         .iter()
         .find_map(|event| match &event.payload {
             EventPayload::ToolCallTerminated { termination }
-                if termination.tool_call_id == inline_call =>
+                if termination.tool_call_id == truncated_call =>
             {
                 Some(event.seq)
             }
@@ -8555,31 +9357,269 @@ async fn retained_tool_results_page_across_truncation_elision_revert_and_session
             },
         )
         .unwrap();
-    assert!(
-        fixture
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(!events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ToolCallTerminated { termination } if termination.tool_call_id == truncated_call
+    )));
+    for (artifact_id, expected) in [(&retained_id, full), (&preview_id, "zero\n")] {
+        let page = fixture
             .engine
-            .read_tool_result(session.session_id, inline_call, None, 0, 1)
-            .is_err()
-    );
+            .read_artifact(&format!("artifact://{artifact_id}"), 0, 10)
+            .unwrap();
+        assert_eq!(page.content, expected);
+        assert_eq!(page.next_offset_lines, None);
+    }
     fixture.engine.shutdown().await;
     assert_eq!(captured.await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() {
+async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
+    let fixture = fixture();
+    let content = "line\n".repeat(2_002);
+    let (_, artifact_id) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(content.as_bytes())
+        .unwrap();
+    // There is no session or tool event referencing this artifact.
+    let page = fixture
+        .engine
+        .read_artifact(&format!("artifact://{artifact_id}"), 0, u64::MAX)
+        .unwrap();
+    assert_eq!(page.content, "line\n".repeat(2_000));
+    assert_eq!(page.next_offset_lines, Some(2_000));
+    assert_eq!(page.source, "artifact");
+    let page = fixture
+        .engine
+        .read_artifact(&format!("artifact://{artifact_id}"), 2_000, 2)
+        .unwrap();
+    assert_eq!(page.content, "line\nline\n");
+    assert_eq!(page.next_offset_lines, None);
+    let page = fixture
+        .engine
+        .read_artifact(&format!("artifact://{artifact_id}"), u64::MAX, 1)
+        .unwrap();
+    assert!(page.content.is_empty());
+    assert_eq!(page.next_offset_lines, None);
+    assert!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{artifact_id}"), 0, 0)
+            .is_err()
+    );
+
+    let (_, large_id) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(&vec![
+            b'x';
+            cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
+                + 1
+        ])
+        .unwrap();
+    assert!(matches!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{large_id}"), 0, 1),
+        Err(ToolError::ResourceLimit(_))
+    ));
+
+    let (stdout, stdout_digest) = fixture.engine.inner.artifacts.retain(b"out\n").unwrap();
+    let (stderr, stderr_digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(b"err-0\nerr-1\n")
+        .unwrap();
+    let manifest = serde_json::to_vec(&cookie_agent_protocol::ToolOutputManifest {
+        streams: vec![
+            cookie_agent_protocol::RetainedToolStream {
+                name: Some("stdout".into()),
+                reference: stdout,
+                sha256: Sha256Digest::new(stdout_digest).unwrap(),
+                byte_length: 4,
+                line_count: 1,
+                truncated: false,
+                next_offset: None,
+            },
+            cookie_agent_protocol::RetainedToolStream {
+                name: Some("stderr".into()),
+                reference: stderr,
+                sha256: Sha256Digest::new(stderr_digest).unwrap(),
+                byte_length: 12,
+                line_count: 2,
+                truncated: false,
+                next_offset: None,
+            },
+        ],
+    })
+    .unwrap();
+    let (_, manifest_id) = fixture.engine.inner.artifacts.retain(&manifest).unwrap();
+    let page = fixture
+        .engine
+        .read_artifact(&format!("artifact://{manifest_id}/stderr"), 1, 1)
+        .unwrap();
+    assert_eq!(page.content, "err-1\n");
+    assert_eq!(page.source, "artifact.stderr");
+    assert!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{manifest_id}/unknown"), 0, 1)
+            .is_err()
+    );
+    let raw_manifest = fixture
+        .engine
+        .read_artifact(&format!("artifact://{manifest_id}"), 0, 1)
+        .unwrap();
+    assert_eq!(raw_manifest.content.as_bytes(), manifest);
+    let serialized = serde_json::to_vec(&oven_sdk::ToolContent::Text(
+        "ordinary non-Bash output".into(),
+    ))
+    .unwrap();
+    let (_, serialized_id) = fixture.engine.inner.artifacts.retain(&serialized).unwrap();
+    let raw_serialized = fixture
+        .engine
+        .read_artifact(&format!("artifact://{serialized_id}"), 0, 1)
+        .unwrap();
+    assert_eq!(raw_serialized.content.as_bytes(), serialized);
+    for id in [&artifact_id, &serialized_id] {
+        for stream in ["stdout", "stderr"] {
+            let error = fixture
+                .engine
+                .read_artifact(&format!("artifact://{id}/{stream}"), 0, 1)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("artifact is not a named-stream manifest")
+            );
+        }
+    }
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
+    let fixture = fixture();
+    for id in [
+        String::new(),
+        format!("artifact://sha256/{}", "a".repeat(64)),
+        "A".repeat(64),
+        "a".repeat(63),
+        "a".repeat(65),
+        "g".repeat(64),
+        format!("{}\n", "a".repeat(64)),
+        "../outside".into(),
+        "%2e%2e%2foutside".into(),
+        "artifact://sha256/../outside".into(),
+        "artifact://sha256/%2e%2e%2foutside".into(),
+        "artifact://sha256//etc/passwd".into(),
+        format!("artifact://sha256/{}", "A".repeat(64)),
+        format!("artifact://sha256/{}/../outside", "a".repeat(64)),
+        format!("artifact://sha256/{}?other", "a".repeat(64)),
+        "artifact://sha256/short".into(),
+        "file:///etc/passwd".into(),
+    ] {
+        let error = fixture
+            .engine
+            .read_artifact(&format!("artifact://{id}"), 0, 1)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("64-character lowercase SHA-256 digest"),
+            "{id}: {error}"
+        );
+    }
+    let missing = "0".repeat(64);
+    assert!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{missing}"), 0, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("artifact missing")
+    );
+    let (_, digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(b"original\n")
+        .unwrap();
+    let artifacts = fixture
+        .engine
+        .inner
+        .store
+        .project_dir_path()
+        .join("artifacts");
+    fs::write(artifacts.join(&digest), b"modified\n").unwrap();
+    assert!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{digest}"), 0, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its digest")
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persisting_elision() {
     const RAW_MARKER: &str = "RAW_COMPACTION_TOOL_OUTPUT";
+    const FULL_OUTPUT_MARKER: &str = "FULL_OUTPUT_BEYOND_TRUNCATED_PREVIEW";
+    const SMALL_MARKER: &str = "SMALL_RECENT_TOOL_OUTPUT";
+    const RETRIEVED_MARKER: &str = "SMALL_RECENT_RETRIEVED_OUTPUT";
+    const EMITTED_MARKER: &str = "TOOL_EMITTED_CONTENT_TO_REMOVE";
     let root_body = "data: {\"choices\":[{\"delta\":{\"content\":\"initial complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let summary_body = "data: {\"choices\":[{\"delta\":{\"content\":\"compacted summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
 
-    for (output_bytes, latest_usage, context_tokens, expect_elision) in [
-        (80 * 1024, 20_000, 100_000, false),
-        (80 * 1024, 20_000, 4_096, true),
+    let context_error = (400, r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}"#.to_owned());
+    let other_error = (400, r#"{"error":{"message":"unrelated invalid request","type":"invalid_request_error","code":"invalid_request"}}"#.to_owned());
+    let success = (200, summary_body.to_owned());
+    let empty = (200, summary_body.replace("compacted summary", ""));
+    let oversized = (
+        200,
+        summary_body.replace("compacted summary", &"x".repeat(2_000)),
+    );
+    let non_text = (200, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned());
+
+    for (context_tokens, responses, expect_elision, expect_checkpoint) in [
+        (100_000, vec![success.clone()], false, true),
+        (4_096, vec![success.clone()], true, true),
+        (100_000, vec![context_error.clone(), success], true, true),
+        (100_000, vec![other_error.clone()], false, false),
+        (100_000, vec![empty], false, false),
+        (100_000, vec![oversized], false, false),
+        (100_000, vec![non_text], false, false),
+        (
+            100_000,
+            vec![context_error.clone(), other_error],
+            true,
+            false,
+        ),
+        (
+            100_000,
+            vec![context_error.clone(), context_error],
+            true,
+            false,
+        ),
     ] {
-        let (endpoint, captured, _reached, _release) = scripted_server_with_delayed_response(
-            vec![root_body.to_owned(), summary_body.to_owned()],
-            usize::MAX,
-        )
-        .await;
+        let provider_retry = responses.len() == 2;
+        let mut bodies = vec![(200, root_body.to_owned())];
+        bodies.extend(responses);
+        let (endpoint, captured, _reached, _release) =
+            scripted_server_with_status_and_delay(bodies, usize::MAX).await;
         let (mut fixture, selection) =
             custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
                 &endpoint,
@@ -8596,7 +9636,8 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                 None,
             );
         fixture.engine.shutdown().await;
-        fixture.config.runtime.context_compaction.keep_recent_tokens = 0;
+        fixture.config.runtime.context_compaction.keep_recent_tokens =
+            if provider_retry { 1_000 } else { 0 };
         fixture.engine = reopen_engine(&fixture);
         let session = fixture
             .engine
@@ -8619,10 +9660,14 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         let owner_policy = frozen_root_policy(&fixture, &selection);
         let binding = owner_policy.selected_suffix.first().expect("binding");
-        let output = format!(
-            "{RAW_MARKER}{}",
-            "x".repeat(output_bytes - RAW_MARKER.len())
-        );
+        let output = format!("{RAW_MARKER}{}", "x".repeat(80 * 1024 - RAW_MARKER.len()));
+        let full_output = format!("{output}\n{FULL_OUTPUT_MARKER}\n");
+        let (full_output_reference, _) = fixture
+            .engine
+            .inner
+            .artifacts
+            .retain(full_output.as_bytes())
+            .expect("retain full output behind truncated preview");
         let image_bytes = vec![7_u8; 1024 * 1024];
         let (image_reference, image_digest) = fixture
             .engine
@@ -8643,17 +9688,92 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             run.run_id,
             binding,
             cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
                 title: cookie_agent_protocol::SafeDisplayText::new("Historical output").unwrap(),
                 output,
                 metadata: serde_json::Value::Null,
-                truncation: None,
-                attachments: vec![image_attachment],
+                truncation: Some(cookie_agent_protocol::ToolOutputTruncation {
+                    original_bytes: full_output.len() as u64,
+                    original_lines: 2,
+                    retained: full_output_reference,
+                }),
+                attachments: vec![image_attachment.clone()],
                 additional_messages: Vec::new(),
             },
-            latest_usage,
+            20_000,
         );
+        for (tool, output) in [
+            (
+                (
+                    "read",
+                    serde_json::json!({"filePath": format!("artifact://{}", "a".repeat(64))}),
+                ),
+                format!("LARGE_RETRIEVED_OUTPUT{}", "r".repeat(9 * 1024)),
+            ),
+            (
+                (
+                    "read",
+                    serde_json::json!({"filePath": "/tmp/ordinary-file.txt"}),
+                ),
+                SMALL_MARKER.to_owned(),
+            ),
+            (
+                (
+                    "read",
+                    serde_json::json!({"filePath": format!("artifact://{}/results", "b".repeat(64))}),
+                ),
+                RETRIEVED_MARKER.to_owned(),
+            ),
+        ] {
+            append_named_compaction_tool_history(
+                &fixture,
+                session.session_id,
+                run.run_id,
+                binding,
+                cookie_agent_protocol::PersistedToolResult {
+                    display: None,
+                    retained_output: None,
+                    title: cookie_agent_protocol::SafeDisplayText::new("Recent output").unwrap(),
+                    output,
+                    metadata: serde_json::Value::Null,
+                    truncation: None,
+                    attachments: vec![image_attachment.clone()],
+                    additional_messages: [
+                        cookie_agent_protocol::ToolEmittedMessageRole::User,
+                        cookie_agent_protocol::ToolEmittedMessageRole::System,
+                    ]
+                    .into_iter()
+                    .map(|role| {
+                        cookie_agent_protocol::ToolEmittedMessage::new(
+                            role,
+                            vec![
+                                cookie_agent_protocol::ToolEmittedContent::Text(
+                                    EMITTED_MARKER.into(),
+                                ),
+                                cookie_agent_protocol::ToolEmittedContent::File(
+                                    image_attachment.clone(),
+                                ),
+                            ],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+                },
+                tool,
+                None,
+            );
+        }
+        let before = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events();
 
-        assert!(
+        assert_eq!(
             fixture
                 .engine
                 .compact_session(
@@ -8662,7 +9782,8 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
                     cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
                 )
                 .await
-                .expect("manual compaction")
+                .expect("manual compaction"),
+            expect_checkpoint
         );
         let events = fixture
             .engine
@@ -8672,21 +9793,158 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             .expect("compacted projection")
             .log
             .events();
-        let commit = events
-            .iter()
-            .find_map(|event| match &event.payload {
-                EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
-                _ => None,
-            })
-            .expect("compaction checkpoint");
-        assert_eq!(commit.budgets.keep_recent_tokens, 0);
-        assert_eq!(commit.boundaries.recent_from_seq, None);
-        assert_eq!(
-            events
+        assert!(
+            !events
                 .iter()
-                .any(|event| matches!(event.payload, EventPayload::ToolOutputElided { .. })),
+                .any(|event| matches!(event.payload, EventPayload::ToolOutputElided { .. }))
+        );
+        assert_eq!(
+            &events[..before.len()],
+            before.as_slice(),
+            "compaction must preserve every original event, including tool output and emitted content"
+        );
+        let requests = captured.await.expect("captured compaction requests");
+        assert_eq!(requests.len(), if provider_retry { 3 } else { 2 });
+        if provider_retry {
+            for marker in [
+                RAW_MARKER,
+                SMALL_MARKER,
+                RETRIEVED_MARKER,
+                EMITTED_MARKER,
+                "LARGE_RETRIEVED_OUTPUT",
+            ] {
+                assert!(
+                    requests[1].contains(marker),
+                    "raw first trial lost {marker}"
+                );
+            }
+            assert!(!requests[1].contains("[tool output elided; retained at "));
+        }
+        let summary_request = requests.last().expect("summarizer request");
+        for marker in [
+            RAW_MARKER,
+            SMALL_MARKER,
+            RETRIEVED_MARKER,
+            EMITTED_MARKER,
+            "LARGE_RETRIEVED_OUTPUT",
+        ] {
+            assert_eq!(
+                summary_request.contains(marker),
+                !expect_elision,
+                "unexpected pruning for {marker}"
+            );
+        }
+        assert_eq!(
+            summary_request.contains("[artifact read output redacted]"),
             expect_elision
         );
+        assert_eq!(
+            summary_request.contains("[tool output elided; retained at "),
+            expect_elision
+        );
+        assert_eq!(
+            summary_request.contains("\u{27e6}elided media attachment: image/png\u{27e7}"),
+            !expect_elision
+        );
+        assert!(!summary_request.contains("input_image"));
+        assert!(!summary_request.contains("cookie_agent.compaction.tool_call_id"));
+        assert!(!summary_request.contains(FULL_OUTPUT_MARKER));
+        if expect_elision {
+            let body = request_body(summary_request);
+            let messages = body["messages"].as_array().unwrap();
+            let results = messages
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .collect::<Vec<_>>();
+            assert_eq!(results.len(), 4);
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter_map(|message| message["tool_calls"].as_array())
+                    .map(Vec::len)
+                    .sum::<usize>(),
+                4
+            );
+            for (result, marker) in [(results[0], RAW_MARKER), (results[2], SMALL_MARKER)] {
+                let text = result["content"].as_str().unwrap();
+                // Read the retry artifact using only the marker, without a session or UUID.
+                let hint: serde_json::Value =
+                    serde_json::from_str(text.split_once('\n').unwrap().1)
+                        .expect("structured retrieval hint");
+                assert_eq!(hint["read_more"]["tool"], "read");
+                assert!(hint["read_more"]["arguments"].get("tool_call_id").is_none());
+                let artifact_path = hint["read_more"]["arguments"]["filePath"].as_str().unwrap();
+                assert!(cookie_agent_protocol::ArtifactReadPath::parse(artifact_path).is_ok());
+                assert!(text.contains(&format!("retained at {artifact_path};")));
+                let page = fixture
+                    .engine
+                    .read_artifact(artifact_path, 0, 10)
+                    .expect("public readback using only the marker hint");
+                assert_eq!(page.source, "artifact");
+                assert!(text.contains("serialized tool content (JSON)"));
+                let oven_sdk::ToolContent::Mixed(values) =
+                    serde_json::from_str(&page.content).unwrap()
+                else {
+                    panic!("retry artifact preserves serialized tool content");
+                };
+                assert!(
+                    matches!(&values[0], oven_sdk::ContentValue::Text(text) if text.contains(marker))
+                );
+                if marker == RAW_MARKER {
+                    let oven_sdk::ContentValue::Json(metadata) = &values[1] else {
+                        panic!("serialized result metadata");
+                    };
+                    let original_path =
+                        metadata["truncation"]["read_more"]["arguments"]["filePath"]
+                            .as_str()
+                            .unwrap();
+                    assert!(cookie_agent_protocol::ArtifactReadPath::parse(original_path).is_ok());
+                    let full_page = fixture.engine.read_artifact(original_path, 0, 10).unwrap();
+                    assert_eq!(full_page.content, full_output);
+                    assert_ne!(original_path, artifact_path);
+                }
+            }
+            for result in [results[1], results[3]] {
+                assert_eq!(result["content"], "[artifact read output redacted]");
+            }
+            if expect_checkpoint {
+                let retained = fixture
+                    .engine
+                    .get_history(session.session_id, EngineHistoryView::Assembled)
+                    .await
+                    .unwrap();
+                assert!(
+                    !serde_json::to_string(&retained)
+                        .unwrap()
+                        .contains(RAW_MARKER)
+                );
+            }
+        }
+        let commit = events.iter().find_map(|event| match &event.payload {
+            EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
+            _ => None,
+        });
+        assert_eq!(commit.is_some(), expect_checkpoint);
+        let Some(commit) = commit else {
+            fixture.engine.shutdown().await;
+            continue;
+        };
+        assert_eq!(
+            commit.budgets.keep_recent_tokens,
+            if provider_retry { 1_000 } else { 0 }
+        );
+        assert_eq!(commit.boundaries.recent_from_seq.is_some(), provider_retry);
+        if provider_retry {
+            let retained = fixture
+                .engine
+                .get_history(session.session_id, EngineHistoryView::Assembled)
+                .await
+                .unwrap();
+            let retained = serde_json::to_string(&retained).unwrap();
+            assert!(retained.contains(RETRIEVED_MARKER));
+            assert!(retained.contains(EMITTED_MARKER));
+            assert!(!retained.contains("[artifact read output redacted]"));
+        }
 
         let input_events = events
             .iter()
@@ -8708,18 +9966,6 @@ async fn compaction_uses_raw_context_when_it_fits_and_elides_only_on_overflow() 
             (serialized_bytes as u64).div_ceil(4)
         );
 
-        let requests = captured.await.expect("captured compaction requests");
-        let summary_request = requests.get(1).expect("summarizer request");
-        assert_eq!(summary_request.contains(RAW_MARKER), !expect_elision);
-        assert_eq!(
-            summary_request.contains("[tool output elided; retained at artifact://sha256/"),
-            expect_elision
-        );
-        assert_eq!(
-            summary_request.contains("\u{27e6}elided media attachment: image/png\u{27e7}"),
-            !expect_elision
-        );
-        assert!(!summary_request.contains("input_image"));
         fixture.engine.shutdown().await;
     }
 }
@@ -8941,8 +10187,8 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     let first_summary_request = &requests[2];
     assert!(first_summary_request.contains(OLD_USER));
     assert!(first_summary_request.contains(OLD_ASSISTANT));
-    assert!(!first_summary_request.contains(RECENT_USER));
-    assert!(!first_summary_request.contains(RECENT_ASSISTANT));
+    assert!(first_summary_request.contains(RECENT_USER));
+    assert!(first_summary_request.contains(RECENT_ASSISTANT));
     let owner_replay_request = &requests[3];
     assert!(owner_replay_request.contains("first checkpoint summary"));
     assert!(owner_replay_request.contains(RECENT_USER));
@@ -8953,8 +10199,10 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
     assert!(second_summary_request.contains("first checkpoint summary"));
     assert!(second_summary_request.contains(RECENT_USER));
     assert!(second_summary_request.contains(RECENT_ASSISTANT));
-    assert!(!second_summary_request.contains(NEW_USER));
-    assert!(!second_summary_request.contains(NEW_ASSISTANT));
+    assert!(second_summary_request.contains(NEW_USER));
+    assert!(second_summary_request.contains(NEW_ASSISTANT));
+    assert!(!second_summary_request.contains(OLD_USER));
+    assert!(!second_summary_request.contains(OLD_ASSISTANT));
     fixture.engine.shutdown().await;
 }
 
@@ -11265,8 +12513,16 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             EventPayload::ToolCallTerminated { termination }
                 if termination.tool_call_id == call_id =>
             {
-                assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
-                assert!(termination.result.is_none());
+                assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+                let result = termination.result.as_ref().expect("incomplete output");
+                let retained = result.retained_output.as_ref().unwrap();
+                assert!(retained.incomplete);
+                let page = fixture
+                    .engine
+                    .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+                    .unwrap();
+                assert_eq!(page.content, "authoritative start\nauthoritative cleanup\n");
+                assert!(!result.output.contains("before cancellation"));
                 assert_eq!(
                     termination.error.as_ref().unwrap().message.as_str(),
                     "tool call cancelled after it started"
@@ -11281,7 +12537,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .filter_map(|event| match &event.payload {
             EventPayload::ToolCallProgress {
                 tool_call_id,
-                output_chunk: Some(chunk),
+                display: Some(chunk),
                 ..
             } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
             _ => None,
@@ -11425,8 +12681,11 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
         let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
             unreachable!("awaited tool termination");
         };
-        assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
-        assert!(termination.result.is_none());
+        assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+        let result = termination.result.as_ref().expect("incomplete output");
+        assert!(result.retained_output.as_ref().unwrap().incomplete);
+        assert!(result.metadata.is_null());
+        assert!(!result.output.contains("external cleanup result"));
         assert_eq!(
             termination.error.unwrap().message.as_str(),
             "tool call cancelled after it started"
@@ -11438,6 +12697,8 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
 
 #[tokio::test]
 async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
+    use futures_util::FutureExt as _;
+
     let (fixture, session_id, run_id, call_id, stdin_received, cleanup_progress_sent, captured) =
         start_streaming_bash_test_run("wedge", true).await;
     fixture
@@ -11453,16 +12714,31 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     tokio::time::timeout(test_timeout(2), stdin_received.notified())
         .await
         .expect("executor received stdin");
-    fixture.engine.block_tool_progress_appends_for_test();
+    let cleanup_progress_blocked = fixture.engine.block_tool_progress_appends_for_test();
+    // Hold the blocking job after it enqueues progress but before send().await can
+    // resume. Progress receipt, not the producer's continuation, proves acceptance.
+    let (delivery_enqueued, release_delivery) = crate::runtime::block_artifact_io_for_test(
+        &fixture.engine.inner.artifacts,
+        "capture_delivery",
+        None,
+    );
     let cancelled_at = std::time::Instant::now();
     fixture
         .engine
         .cancel_run(run_id)
         .await
         .expect("cancel wedged run");
-    tokio::time::timeout(test_timeout(1), cleanup_progress_sent.notified())
+    tokio::time::timeout(test_timeout(1), cleanup_progress_blocked.notified())
         .await
-        .expect("cleanup progress accepted");
+        .expect("cleanup progress reached the wedged appender");
+    tokio::time::timeout(test_timeout(1), delivery_enqueued)
+        .await
+        .expect("blocking delivery reached")
+        .expect("blocking job enqueued progress");
+    assert!(cleanup_progress_sent.notified().now_or_never().is_none());
+    release_delivery
+        .send(())
+        .expect("release delivered I/O job");
     let terminal = await_event(
         &fixture.engine,
         session_id,
@@ -11479,8 +12755,25 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     let EventPayload::ToolCallTerminated { termination } = terminal.payload else {
         unreachable!("awaited tool termination")
     };
-    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
-    assert!(termination.result.is_none());
+    assert!(
+        cleanup_progress_sent.notified().now_or_never().is_none(),
+        "the wedged consumer must not need the producer continuation"
+    );
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Cancelled);
+    let result = termination
+        .result
+        .as_ref()
+        .expect("incomplete output survives display discard");
+    let retained = result.retained_output.as_ref().unwrap();
+    assert!(retained.incomplete);
+    assert_eq!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+            .unwrap()
+            .content,
+        "authoritative start\nauthoritative cleanup\n"
+    );
     let error_message = termination
         .error
         .expect("termination error")
@@ -11540,7 +12833,7 @@ async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
         .filter_map(|event| match &event.payload {
             EventPayload::ToolCallProgress {
                 tool_call_id,
-                output_chunk: Some(chunk),
+                display: Some(chunk),
                 ..
             } if *tool_call_id == call_id => Some((event.seq, chunk.as_str())),
             _ => None,
@@ -13465,7 +14758,7 @@ async fn unsigned_replay_rejection_uses_normal_fallback_without_reasoning_remova
 }
 
 #[tokio::test]
-async fn compaction_prefix_preserves_eligible_reasoning_before_recent_tail_boundary() {
+async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() {
     const OLD_PREFIX: &str = "UNSIGNED_REPLAY_OLD_PREFIX";
     const RECENT_TAIL: &str = "UNSIGNED_REPLAY_RECENT_TAIL";
 
@@ -13604,7 +14897,7 @@ async fn compaction_prefix_preserves_eligible_reasoning_before_recent_tail_bound
         "internal summary request lost eligible native reasoning"
     );
     assert!(summary_request.contains(OLD_PREFIX));
-    assert!(!summary_request.contains(RECENT_TAIL));
+    assert!(summary_request.contains(RECENT_TAIL));
     assert!(anthropic_request_has_unsigned_thinking(summary_request));
     fixture.engine.shutdown().await;
 }
@@ -13697,9 +14990,22 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
                 "5m"
             );
         } else {
-            assert!(requests[1].contains(
-                "Cannot attach image/png: the active model \\\"custom.test/group/model\\\" does not accept image inputs"
-            ));
+            let tool_result = &follow_up["messages"][2]["content"][0];
+            assert_eq!(tool_result["is_error"], true);
+            let parts: Vec<oven_sdk::ContentValue> = serde_json::from_str(
+                tool_result["content"]
+                    .as_str()
+                    .expect("serialized error content"),
+            )
+            .unwrap();
+            let text = parts
+                .iter()
+                .filter_map(|part| match part {
+                    oven_sdk::ContentValue::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            assert!(text.contains("Cannot attach image/png: the active model \"custom.test/group/model\" does not accept image inputs"), "{text}");
             let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
             let events = projection.log.events();
             let termination = events
@@ -19708,6 +21014,7 @@ impl ToolProvider for DivergentReadProvider {
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: Default::default(),
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "read".into(),
@@ -19804,8 +21111,10 @@ impl PreparedExecutor for DivergentReadExecutor {
     async fn execute(
         self: Box<Self>,
         _context: ToolExecutionContext,
-    ) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
-        unreachable!("divergence test never executes")
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        let result: Result<cookie_agent_protocol::PersistedToolResult, ToolError> =
+            async move { unreachable!("divergence test never executes") }.await;
+        result.map(crate::ToolCompletion::single)
     }
 }
 

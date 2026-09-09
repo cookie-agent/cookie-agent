@@ -195,7 +195,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 16);
+    assert_eq!(PROTOCOL_VERSION, 17);
+    assert_eq!(
+        serde_json::to_value(ProtocolVersion::current()).unwrap(),
+        json!(PROTOCOL_VERSION)
+    );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
@@ -499,6 +504,8 @@ fn tool_result_with_additional_messages(additional_messages: Value) -> Value {
 fn tool_emitted_messages_round_trip_and_empty_results_stay_compact() {
     let digest = Sha256Digest::of_bytes(b"emitted file");
     let result = PersistedToolResult {
+        display: None,
+        retained_output: None,
         title: SafeDisplayText::new("Tool result").unwrap(),
         output: "done".into(),
         metadata: Value::Null,
@@ -717,7 +724,7 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         EventPayload::ToolCallProgress {
             tool_call_id,
             message: SafeDisplayText::new("working").expect("message"),
-            output_chunk: None,
+            display: None,
         }
     );
 
@@ -725,12 +732,12 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         "type": "tool_call_progress",
         "tool_call_id": tool_call_id,
         "message": "bash stdout",
-        "output_chunk": "partial output"
+        "display": "partial output"
     }))
     .expect("optional output chunk parses");
     assert!(matches!(
         chunk_progress.payload,
-        EventPayload::ToolCallProgress { output_chunk: Some(chunk), .. }
+        EventPayload::ToolCallProgress { display: Some(chunk), .. }
             if chunk.as_str() == "partial output"
     ));
 }

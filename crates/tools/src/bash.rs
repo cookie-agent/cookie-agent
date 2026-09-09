@@ -2,7 +2,6 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -66,57 +65,13 @@ struct BashExecutor {
 
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
-pub const OUTPUT_CHUNK_CUMULATIVE_CAP: usize = 1024 * 1024;
-const OUTPUT_CHUNK_TRUNCATED_MESSAGE: &str =
-    "Live bash output truncated after 1 MiB; the terminal result remains authoritative";
-
-#[derive(Debug, Default)]
-struct OutputPreviewState {
-    emitted: usize,
-    stopped: bool,
-}
-
-#[derive(Debug, Default)]
-struct OutputPreviewBudget {
-    state: Mutex<OutputPreviewState>,
-}
-
-impl OutputPreviewBudget {
-    fn retain(&self, chunk: &str) -> (Option<String>, bool) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.stopped {
-            return (None, false);
-        }
-        let remaining = OUTPUT_CHUNK_CUMULATIVE_CAP.saturating_sub(state.emitted);
-        if remaining == 0 {
-            state.stopped = true;
-            return (None, !chunk.is_empty());
-        }
-        let end = chunk
-            .char_indices()
-            .take_while(|(index, character)| index + character.len_utf8() <= remaining)
-            .map(|(index, character)| index + character.len_utf8())
-            .last()
-            .unwrap_or(0);
-        let retained = &chunk[..end];
-        state.emitted += retained.len();
-        state.stopped = end < chunk.len();
-        (
-            (!retained.is_empty()).then(|| retained.to_owned()),
-            state.stopped,
-        )
-    }
-}
 
 fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(bytes);
     let mut chunks = Vec::new();
     let mut chunk = String::new();
     for character in text.chars() {
-        let character = if character.is_control() {
+        let character = if character.is_control() && !matches!(character, '\n' | '\t') {
             ' '
         } else {
             character
@@ -135,35 +90,19 @@ fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
 async fn emit_preview(
     progress: &ProgressSink,
     tool_call_id: ToolCallId,
-    stream: OutputStream,
+    stream: &OutputStream,
     bytes: &[u8],
-    budget: &OutputPreviewBudget,
-    truncation_emitted: &std::sync::atomic::AtomicBool,
 ) -> Result<(), ToolError> {
-    let stream_name = match stream {
-        OutputStream::Stdout => "stdout",
-        OutputStream::Stderr => "stderr",
-    };
+    let stream_name = stream.name();
     for chunk in sanitized_chunks(bytes) {
-        let (retained, truncated) = budget.retain(&chunk);
-        if let Some(output_chunk) = retained {
-            progress
-                .send(ToolProgress {
-                    tool_call_id,
-                    message: format!("bash {stream_name}"),
-                    output_chunk: Some(output_chunk),
-                })
-                .await?;
-        }
-        if truncated && !truncation_emitted.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            progress
-                .send(ToolProgress {
-                    tool_call_id,
-                    message: OUTPUT_CHUNK_TRUNCATED_MESSAGE.into(),
-                    output_chunk: None,
-                })
-                .await?;
-        }
+        progress
+            .send(ToolProgress {
+                output: Vec::new(),
+                tool_call_id,
+                message: format!("bash {stream_name}"),
+                display: Some(chunk),
+            })
+            .await?;
     }
     Ok(())
 }
@@ -173,13 +112,10 @@ async fn read_output<R>(
     stream: OutputStream,
     progress: ProgressSink,
     tool_call_id: ToolCallId,
-    budget: Arc<OutputPreviewBudget>,
-    truncation_emitted: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<Vec<u8>, ToolError>
+) -> Result<(), ToolError>
 where
     R: AsyncRead + Unpin,
 {
-    let mut output = Vec::new();
     let mut pending = Vec::new();
     let mut read_buffer = [0_u8; OUTPUT_CHUNK_FLUSH_BYTES];
     let flush = tokio::time::sleep(OUTPUT_CHUNK_FLUSH_INTERVAL);
@@ -190,50 +126,92 @@ where
                 let count = read.map_err(|error| ToolError::execution(error.to_string()))?;
                 if count == 0 {
                     if !pending.is_empty() {
-                        emit_preview(
+                        flush_output(
                             &progress,
                             tool_call_id,
-                            stream,
-                            &pending,
-                            &budget,
-                            &truncation_emitted,
+                            &stream,
+                            (&mut pending, true),
                         ).await?;
                     }
-                    return Ok(output);
+                    return Ok(());
                 }
                 let bytes = &read_buffer[..count];
-                progress.output(stream, bytes);
-                output.extend_from_slice(bytes);
                 if pending.is_empty() {
                     flush.as_mut().reset(tokio::time::Instant::now() + OUTPUT_CHUNK_FLUSH_INTERVAL);
                 }
                 pending.extend_from_slice(bytes);
                 if pending.len() >= OUTPUT_CHUNK_FLUSH_BYTES {
-                    emit_preview(
+                    flush_output(
                         &progress,
                         tool_call_id,
-                        stream,
-                        &pending,
-                        &budget,
-                        &truncation_emitted,
+                        &stream,
+                        (&mut pending, false),
                     ).await?;
-                    pending.clear();
                 }
             }
             () = &mut flush, if !pending.is_empty() => {
-                emit_preview(
+                flush_output(
                     &progress,
                     tool_call_id,
-                    stream,
-                    &pending,
-                    &budget,
-                    &truncation_emitted,
+                    &stream,
+                    (&mut pending, false),
                 ).await?;
-                pending.clear();
                 flush.as_mut().reset(tokio::time::Instant::now() + OUTPUT_CHUNK_FLUSH_INTERVAL);
             }
         }
     }
+}
+
+async fn flush_output(
+    progress: &ProgressSink,
+    tool_call_id: ToolCallId,
+    stream: &OutputStream,
+    pending: (&mut Vec<u8>, bool),
+) -> Result<(), ToolError> {
+    let (pending, eof) = pending;
+    let mut text = String::new();
+    let mut consumed = 0;
+    while consumed < pending.len() {
+        match std::str::from_utf8(&pending[consumed..]) {
+            Ok(valid) => {
+                text.push_str(valid);
+                consumed = pending.len();
+            }
+            Err(error) => {
+                let end = consumed + error.valid_up_to();
+                text.push_str(
+                    std::str::from_utf8(&pending[consumed..end]).expect("valid UTF-8 prefix"),
+                );
+                consumed = end;
+                if let Some(length) = error.error_len() {
+                    text.push('\u{fffd}');
+                    consumed += length;
+                } else if eof {
+                    text.push('\u{fffd}');
+                    consumed = pending.len();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    pending.drain(..consumed);
+    if text.is_empty() {
+        return Ok(());
+    }
+    let name = stream.name();
+    progress
+        .send(ToolProgress {
+            tool_call_id,
+            message: String::new(),
+            display: None,
+            output: vec![cookie_agent_protocol::ToolOutputChunk {
+                stream: Some(name.into()),
+                text: text.clone(),
+            }],
+        })
+        .await?;
+    emit_preview(progress, tool_call_id, stream, text.as_bytes()).await
 }
 
 #[cfg(unix)]
@@ -340,6 +318,9 @@ impl ToolProvider for BashTool {
 
     fn tools_for_session(&self, _: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
         Ok(vec![ToolSpec {
+            output: cookie_agent_protocol::ToolOutputDeclaration::Named {
+                streams: vec!["stdout".into(), "stderr".into()],
+            },
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: Default::default(),
             name: "bash".into(),
@@ -510,23 +491,17 @@ impl BashExecutor {
             .stderr
             .take()
             .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
-        let budget = Arc::new(OutputPreviewBudget::default());
-        let truncation_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
-            Arc::clone(&budget),
-            Arc::clone(&truncation_emitted),
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
-            budget,
-            truncation_emitted,
         ));
         let stdin_task = if self.args.interactive {
             let mut child_stdin = child
@@ -604,17 +579,17 @@ impl BashExecutor {
             task.abort();
         }
         grouped.kill_group();
-        let stdout = stdout_task
+        stdout_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
-        let stderr = stderr_task
+        stderr_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
-        let stdout = String::from_utf8_lossy(&stdout);
-        let stderr = String::from_utf8_lossy(&stderr);
         Ok(ToolResult {
+            display: Some(format!("Bash finished with status {:?}", status.code())),
+            retained_output: None,
             title: crate::safe_title("Bash"),
-            output: format!("{stdout}{stderr}"),
+            output: String::new(),
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             truncation: None,
             attachments: Vec::new(),
@@ -662,23 +637,17 @@ impl BashExecutor {
             .stderr()
             .take()
             .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
-        let budget = Arc::new(OutputPreviewBudget::default());
-        let truncation_emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
-            Arc::clone(&budget),
-            Arc::clone(&truncation_emitted),
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
-            budget,
-            truncation_emitted,
         ));
         let stdin_task = if self.args.interactive {
             let mut child_stdin = child
@@ -753,17 +722,17 @@ impl BashExecutor {
             task.abort();
         }
         grouped.kill_and_reap().await;
-        let stdout = stdout_task
+        stdout_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
-        let stderr = stderr_task
+        stderr_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
-        let stdout = String::from_utf8_lossy(&stdout);
-        let stderr = String::from_utf8_lossy(&stderr);
         Ok(ToolResult {
+            display: Some(format!("Bash finished with status {:?}", status.code())),
+            retained_output: None,
             title: crate::safe_title("Bash"),
-            output: format!("{stdout}{stderr}"),
+            output: String::new(),
             metadata: serde_json::json!({"status":status.code(),"success":status.success()}),
             truncation: None,
             attachments: Vec::new(),
@@ -782,9 +751,18 @@ impl PreparedExecutor for BashExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
-        self.execute_process(context.progress, context.cancellation, context.stdin)
-            .await
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
+            self.execute_process(context.progress, context.cancellation, context.stdin)
+                .await
+        }
+        .await;
+        result.map(|result| {
+            let failed = result.metadata["success"] == false;
+            let mut completion = cookie_agent_engine::ToolCompletion::streamed(result);
+            completion.failed = failed;
+            completion
+        })
     }
 }
 
@@ -1106,8 +1084,8 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     use super::{
-        BashArgs, BashExecutor, BashTool, OUTPUT_CHUNK_CUMULATIVE_CAP, OutputPreviewBudget,
-        read_output, resolve_executable, resolve_executable_in_path,
+        BashArgs, BashExecutor, BashTool, read_output, resolve_executable,
+        resolve_executable_in_path,
     };
 
     #[test]
@@ -1381,28 +1359,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_reader_streams_bounded_sanitized_chunks_and_retains_full_output() {
+    async fn output_reader_preserves_utf8_across_pipe_reads_and_flushes() {
+        let root = tempfile::tempdir().unwrap();
+        let call_id = ToolCallId::new_v7();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let hub = OutputHub::new(call_id, 64 * 1024);
+        let progress = ProgressSink::for_test(
+            sender,
+            hub.clone(),
+            root.path().join("artifacts"),
+            cookie_agent_protocol::ToolOutputDeclaration::Named {
+                streams: vec!["stdout".into(), "stderr".into()],
+            },
+        )
+        .await
+        .unwrap();
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let reading = tokio::spawn(read_output(reader, OutputStream::Stdout, progress, call_id));
+        writer.write_all(&[0xe2]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        assert!(receiver.try_recv().is_err());
+        writer.write_all(&[0x82, 0xac, b'\n']).await.unwrap();
+        writer.shutdown().await.unwrap();
+        reading.await.unwrap().unwrap();
+        assert_eq!(
+            receiver.recv().await.unwrap().display.as_deref(),
+            Some("\u{20ac}\n")
+        );
+        let (snapshot, _) = hub.subscribe(OutputStream::Stdout, 1);
+        assert_eq!(snapshot.end_offset, 4);
+        assert_eq!(snapshot.chunks[0].data, "4oKsCg==");
+    }
+
+    #[tokio::test]
+    async fn output_reader_streams_bounded_display_without_buffering_full_output() {
+        let root = tempfile::tempdir().unwrap();
         let call_id = ToolCallId::new_v7();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(2_048);
-        let progress = ProgressSink::new(progress_tx, OutputHub::new(call_id, 64 * 1024));
+        let progress = ProgressSink::for_test(
+            progress_tx,
+            OutputHub::new(call_id, 64 * 1024),
+            root.path().join("artifacts"),
+            cookie_agent_protocol::ToolOutputDeclaration::Named {
+                streams: vec!["stdout".into(), "stderr".into()],
+            },
+        )
+        .await
+        .unwrap();
         let (mut writer, reader) = tokio::io::duplex(2 * 1024 * 1024);
-        let read = tokio::spawn(read_output(
-            reader,
-            OutputStream::Stdout,
-            progress,
-            call_id,
-            std::sync::Arc::new(OutputPreviewBudget::default()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        ));
+        let read = tokio::spawn(read_output(reader, OutputStream::Stdout, progress, call_id));
         writer.write_all(b"first\n").await.expect("first output");
         let first = tokio::time::timeout(std::time::Duration::from_millis(250), progress_rx.recv())
             .await
             .expect("first chunk timeout")
             .expect("first chunk");
-        assert_eq!(first.output_chunk.as_deref(), Some("first "));
+        assert_eq!(first.display.as_deref(), Some("first\n"));
         assert!(!read.is_finished());
 
-        let overflow = vec![b'x'; OUTPUT_CHUNK_CUMULATIVE_CAP + 1];
+        let overflow = vec![b'x'; cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES * 2 + 1];
         writer.write_all(&overflow).await.expect("overflow output");
         writer.shutdown().await.expect("output eof");
         drop(writer);
@@ -1411,29 +1425,20 @@ mod tests {
         while let Some(progress) = progress_rx.recv().await {
             chunks.push(progress);
         }
-        let output = read.await.expect("reader task").expect("read complete");
-        assert_eq!(&output[..6], b"first\n");
-        assert_eq!(output.len(), overflow.len() + 6);
+        read.await.expect("reader task").expect("read complete");
         assert!(chunks.iter().all(|progress| {
             progress
-                .output_chunk
+                .display
                 .as_ref()
                 .is_none_or(|chunk| chunk.len() <= SafeDisplayText::MAX_BYTES)
         }));
-        assert_eq!(
+        assert!(
             chunks
                 .iter()
-                .filter_map(|progress| progress.output_chunk.as_ref())
+                .filter_map(|progress| progress.display.as_ref())
                 .map(String::len)
-                .sum::<usize>(),
-            OUTPUT_CHUNK_CUMULATIVE_CAP
-        );
-        assert_eq!(
-            chunks
-                .iter()
-                .filter(|progress| progress.message.contains("terminal result"))
-                .count(),
-            1
+                .sum::<usize>()
+                <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
         );
     }
 
@@ -1441,6 +1446,7 @@ mod tests {
     async fn real_bash_timeout_drains_progress_before_terminal_completion() {
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             let root = tempfile::tempdir().expect("root");
+            let artifacts = tempfile::tempdir().expect("artifact root");
             let call_id = ToolCallId::new_v7();
             let executable_path = resolve_executable("bash").expect("bash executable");
             let executor = BashExecutor {
@@ -1456,7 +1462,16 @@ mod tests {
                     .expect("prepared executable"),
             };
             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
-            let progress = ProgressSink::new(progress_tx, OutputHub::new(call_id, 64 * 1024));
+            let progress = ProgressSink::for_test(
+                progress_tx,
+                OutputHub::new(call_id, 64 * 1024),
+                artifacts.path().join("artifacts"),
+                cookie_agent_protocol::ToolOutputDeclaration::Named {
+                    streams: vec!["stdout".into(), "stderr".into()],
+                },
+            )
+            .await
+            .unwrap();
             let execute = executor.execute_process(
                 progress,
                 tokio_util::sync::CancellationToken::new(),
@@ -1469,7 +1484,7 @@ mod tests {
                 tokio::select! {
                     progress = progress_rx.recv(), if progress_open => {
                         if let Some(progress) = progress {
-                            if let Some(chunk) = progress.output_chunk {
+                            if let Some(chunk) = progress.display {
                                 event_order.push(("progress", chunk));
                             }
                         } else {
@@ -1478,7 +1493,7 @@ mod tests {
                     }
                     result = &mut execute => {
                         while let Ok(progress) = progress_rx.try_recv() {
-                            if let Some(chunk) = progress.output_chunk {
+                            if let Some(chunk) = progress.display {
                                 event_order.push(("progress", chunk));
                             }
                         }
@@ -1488,7 +1503,7 @@ mod tests {
                 }
             };
 
-            assert!(error.to_string().contains("bash timed out"));
+            assert!(error.to_string().contains("bash timed out"), "{error}");
             assert_eq!(event_order.last().map(|event| event.0), Some("terminal"));
             assert!(
                 event_order[..event_order.len() - 1]

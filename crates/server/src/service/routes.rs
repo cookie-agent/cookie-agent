@@ -292,7 +292,7 @@ impl ServerProtocol for Server {
         {
             Ok(subscription) => subscription,
             Err(EngineError::SessionOwnedByAnotherProcess(_)) => {
-                // Protocol 16 has no separate snapshot RPC. Return only the replay
+                // Protocol 17 has no separate snapshot RPC. Return only the replay
                 // half of this response and deliberately register no live tail.
                 return self
                     .engine

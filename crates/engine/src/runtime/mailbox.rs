@@ -83,6 +83,18 @@ impl Engine {
             .map(|hub| hub.subscribe(stream, 256))
     }
 
+    pub fn tool_output_streams(
+        &self,
+        call_id: ToolCallId,
+    ) -> Option<Vec<cookie_agent_protocol::OutputStream>> {
+        self.inner
+            .output_hubs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&call_id)
+            .map(|hub| hub.streams())
+    }
+
     pub(super) fn retain_finalized_output_hub(&self, call: ToolCallId) {
         const FINALIZED_HUB_RETENTION: usize = 128;
         let mut finalized = self
@@ -174,6 +186,7 @@ impl Engine {
         result: Result<ToolResult, String>,
     ) -> Result<(), EngineError> {
         let result = result.map_err(|message| ToolFailure {
+            partial_output: None,
             code: ToolCallFailureCode::ExecutionFailed,
             message,
         });
@@ -241,9 +254,75 @@ impl Engine {
         session: SessionId,
         run: Option<RunId>,
         origin: EventOrigin,
-        event: Event,
+        mut event: Event,
         recovery: bool,
     ) -> Result<StoredEvent, EngineError> {
+        if let Event::ToolCallTerminated { termination } = &mut event {
+            // Finalization and after-result hooks can await after the executor succeeds.
+            // Freeze status and retained-output state together at this append boundary.
+            let cancelled = run.is_some_and(|run| {
+                self.inner
+                    .active
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&run)
+                    .is_some_and(|active| {
+                        active.session == session && active.cancellation.is_cancelled()
+                    })
+            });
+            if cancelled
+                && matches!(
+                    termination.outcome,
+                    ToolTerminationOutcome::Completed | ToolTerminationOutcome::Failed
+                )
+            {
+                let finalized = termination.outcome == ToolTerminationOutcome::Completed;
+                termination.outcome = ToolTerminationOutcome::Cancelled;
+                termination.error.get_or_insert_with(|| SafeToolError {
+                    code: if finalized {
+                        super::safe_code(super::CANCELLED_AFTER_COMPLETION)
+                    } else {
+                        ToolCallFailureCode::ExecutionFailed.safe_code()
+                    },
+                    message: safe_error("tool call cancelled after it started"),
+                });
+            }
+            if termination.outcome != ToolTerminationOutcome::Completed
+                && let Some(result) = &mut termination.result
+            {
+                let was_incomplete = result.retained_output.as_mut().map(|retained| {
+                    let was_incomplete = retained.incomplete;
+                    retained.incomplete = true;
+                    was_incomplete
+                });
+                if termination.outcome == ToolTerminationOutcome::Cancelled
+                    || was_incomplete.is_some_and(|incomplete| {
+                        !incomplete
+                            || result
+                                .display
+                                .as_ref()
+                                .is_none_or(|display| display.trim().is_empty())
+                    })
+                {
+                    result.display = Some(
+                        match termination.outcome {
+                            ToolTerminationOutcome::Cancelled => {
+                                if result.retained_output.is_some() {
+                                    "Tool cancelled; retained output is incomplete."
+                                } else {
+                                    "Tool cancelled; output is incomplete."
+                                }
+                            }
+                            ToolTerminationOutcome::Interrupted => {
+                                "Tool interrupted; retained output is incomplete."
+                            }
+                            _ => "Tool failed; retained output is incomplete.",
+                        }
+                        .into(),
+                    );
+                }
+            }
+        }
         let was_persisted = self.inner.store.is_persisted(session)?;
         let envelope = if recovery {
             self.inner
@@ -1609,7 +1688,7 @@ impl Engine {
                                     },
                                     result: Some(result),
                                     error: cancelled.then(|| SafeToolError {
-                                        code: ToolCallFailureCode::ExecutionFailed.safe_code(),
+                                        code: super::safe_code(super::CANCELLED_AFTER_COMPLETION),
                                         message: safe_error("tool call cancelled after it started"),
                                     }),
                                 },
@@ -1618,8 +1697,12 @@ impl Engine {
                                 termination: ToolCallTermination {
                                     tool_call_id,
                                     owner,
-                                    outcome: ToolTerminationOutcome::Failed,
-                                    result: None,
+                                    outcome: if cancelled {
+                                        ToolTerminationOutcome::Cancelled
+                                    } else {
+                                        ToolTerminationOutcome::Failed
+                                    },
+                                    result: failure.partial_output.map(|result| *result),
                                     error: Some(SafeToolError {
                                         code: failure.code.safe_code(),
                                         message: safe_error(&failure.message),
@@ -1633,9 +1716,19 @@ impl Engine {
                             super::event_origin("engine:tool-result"),
                             event,
                         )?;
+                        self.inner.store.get(session)?.log.flush()?;
                         Ok(true)
                     })()
                 };
+                if let Some(capture) = self
+                    .inner
+                    .output_captures
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&tool_call_id)
+                {
+                    capture.release_publication();
+                }
                 let _ = reply.send(response);
             }
             SessionCommand::ResolveDelegateFailureIfPending {

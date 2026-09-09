@@ -52,7 +52,7 @@ for line in sys.stdin:
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.5"),
+                "protocol_version": os.environ.get("FIXTURE_PROTOCOL_VERSION", "0.0.6"),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
                 "capabilities": json.loads(os.environ.get(
@@ -92,8 +92,9 @@ for line in sys.stdin:
         send({
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": {
-                "content": content,
+            "result": json.loads(os.environ["FIXTURE_TOOL_RESULT"]) if "FIXTURE_TOOL_RESULT" in os.environ else {
+                "output": {"kind": "single", "text": content},
+                "display": content[:65536],
                 "is_error": os.environ.get("FIXTURE_TOOL_ERROR") == "1",
             },
         })
@@ -136,6 +137,11 @@ for line in sys.stdin:
                     "params": message.get("params", {}),
                 }, separators=(",", ":")) + "\n")
         time.sleep(int(os.environ.get("FIXTURE_INTERCEPT_DELAY_MS", "0")) / 1000)
+        release_file = os.environ.get("FIXTURE_INTERCEPT_RELEASE_FILE")
+        gate_tool = os.environ.get("FIXTURE_INTERCEPT_GATE_TOOL")
+        if release_file and (not gate_tool or message.get("params", {}).get("tool") == gate_tool):
+            while not os.path.exists(release_file):
+                time.sleep(0.01)
         if os.environ.get("FIXTURE_CRASH_DURING_INTERCEPT") == "1":
             os._exit(19)
         result_env = {

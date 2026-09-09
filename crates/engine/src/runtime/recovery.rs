@@ -518,6 +518,7 @@ pub(crate) fn restart_approval_decision() -> ApprovalFinalDecision {
 
 pub(crate) fn restart_tool_failure() -> ToolFailure {
     ToolFailure {
+        partial_output: None,
         code: ToolCallFailureCode::PreparedCapabilityLost,
         message: "prepared capability lost during daemon restart".into(),
     }

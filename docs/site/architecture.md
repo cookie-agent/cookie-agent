@@ -53,7 +53,7 @@ identity
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
-| `tools` | Built-in `read`, `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `steer_subagent`, `cancel_subagent`), `skill`, goal, and `read_tool_result` providers. |
+| `tools` | Built-in `read` (filesystem and artifact URIs), `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `steer_subagent`, `cancel_subagent`), `skill`, and goal providers. |
 | `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public `load_auth_token` / `validate_websocket_url` APIs. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
@@ -300,7 +300,7 @@ input for them and refreshes the snapshot when reopened; there is no live event
 tail. Forking a foreign snapshot is allowed because the new fork has its own
 lock. Grants and grant invalidations committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Protocol 16 is unchanged; ownership failures use an ordinary fault
+wins. Ownership failures in protocol 17 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -342,7 +342,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 16 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 17 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`,
 plugin bus events through `events.plugin`, and tool output through separate

@@ -33,10 +33,7 @@ use cookie_agent_protocol::{
     ClientRunId, EventPayload, EventSubscriptionMessage, PermissionAction, PermissionEffect,
     RunSelection, RunStartParams, SessionId, StoredEvent,
 };
-use cookie_agent_tools::{
-    BuiltinTools, delegate::DelegateToolProvider, read_tool_result::ReadToolResultProvider,
-    skill::SkillTool,
-};
+use cookie_agent_tools::{BuiltinTools, delegate::DelegateToolProvider, skill::SkillTool};
 use tempfile::TempDir;
 
 #[path = "../../../test-support/config_harness.rs"]
@@ -235,6 +232,10 @@ impl ProcessFixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_plugins(Vec::new()).await
+    }
+
+    async fn with_plugins(plugins: Vec<(String, cookie_agent_config::PluginConfig)>) -> Self {
         let root = tempfile::tempdir().expect("fixture root");
         make_private(root.path());
         let workspace = root.path().join("workspace");
@@ -252,7 +253,8 @@ impl Fixture {
         let provider_store_path = root.path().join("providers");
         fs::create_dir(&provider_store_path).expect("provider store directory");
         make_private(&provider_store_path);
-        let configuration = load(&workspace).expect("test configuration");
+        let mut configuration = load(&workspace).expect("test configuration");
+        configuration.plugins.extend(plugins);
         let model_manager = Arc::new(
             ModelManager::new_with_headers(
                 configuration.runtime.providers.clone(),
@@ -273,9 +275,6 @@ impl Fixture {
         engine
             .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
             .expect("delegate tools");
-        engine
-            .try_register_tool_provider(Arc::new(ReadToolResultProvider::new(engine.clone())))
-            .expect("tool result readback");
         engine
             .try_register_tool_provider(Arc::new(SkillTool::new(engine.clone())))
             .expect("skill tool");
@@ -454,6 +453,245 @@ fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
             | EventPayload::RunCancelled { .. }
             | EventPayload::RunInterrupted { .. }
     )
+}
+
+#[tokio::test]
+async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
+    for artifact_read in [true, false] {
+        let markers = tempfile::tempdir().unwrap();
+        let reached = markers.path().join("after-result.jsonl");
+        let release = markers.path().join("release");
+        let plugin =
+            serde_json::from_value::<cookie_agent_config::PluginConfig>(serde_json::json!({
+                "command":"/usr/bin/python3","args":[PLUGIN_FIXTURE],
+                "interception_timeout_ms":30000,
+                "env":{
+                    "FIXTURE_NAME":"opt_out_gate","FIXTURE_TOOLS":"[]",
+                    "FIXTURE_CAPABILITIES":serde_json::json!({
+                        "producer_messaging":false,"tools":false,"resources":false,
+                        "subscribe_events":false,"subscribe_bus":false,"publish_bus":false,
+                        "publish_session_events":false,"intercept":["tool_after_result"]
+                    }).to_string(),
+                    "FIXTURE_INTERCEPT_FILE":reached.to_str().unwrap(),
+                    "FIXTURE_INTERCEPT_RELEASE_FILE":release.to_str().unwrap(),
+                    "FIXTURE_INTERCEPT_GATE_TOOL":"read"
+                }
+            }))
+            .unwrap();
+        let fixture = Fixture::with_plugins(vec![("opt_out_gate".into(), plugin)]).await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !fixture
+                .engine
+                .plugin_statuses()
+                .iter()
+                .any(|plugin| plugin.state == cookie_agent_engine::PluginState::Connected)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("plugin ready");
+
+        // Seed an artifact through the real Bash/runtime pipeline, then read from a
+        // different session. The read itself must not publish another artifact.
+        fixture.server.enqueue(MockResponse::Sse(tool_response(
+            "bash",
+            r#"{"command":"printf 'zero\\none\\ntwo\\n'"}"#,
+        )));
+        fixture
+            .server
+            .enqueue(MockResponse::Sse(final_response("seeded")));
+        let mut seed_args = run_args("seed output");
+        seed_args.output = Some(OutputMode::Json);
+        seed_args.permission_mode = PermissionModeArg::Yolo;
+        let seed = fixture.run(seed_args, "").await;
+        assert_eq!(seed.code, 0, "{}", seed.stderr);
+        let seed_events = parse_json_lines(&seed.stdout)
+            .into_iter()
+            .filter(|record| record["type"] == "event")
+            .map(|record| serde_json::from_value::<StoredEvent>(record["event"].clone()).unwrap())
+            .collect::<Vec<_>>();
+        let selection = seed_events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted { selection, .. } => Some(selection.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let retained = seed_events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ToolCallTerminated { termination } => termination
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.retained_output.as_ref()),
+                _ => None,
+            })
+            .unwrap();
+        let manifest = retained
+            .reference
+            .uri
+            .strip_prefix("artifact://sha256/")
+            .unwrap();
+        let path = if artifact_read {
+            format!("artifact://{manifest}/stdout")
+        } else {
+            let path = fixture.workspace.join("page.txt");
+            fs::write(&path, "zero\none\ntwo\n").unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        let project = fs::read_dir(fixture._root.path().join("data/projects"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let artifacts = project.join("artifacts");
+        let artifact_files = || {
+            let mut files = fs::read_dir(&artifacts)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            files.sort();
+            files
+        };
+        let before = artifact_files();
+        fixture.server.enqueue(MockResponse::Sse(tool_response(
+            "read",
+            &serde_json::json!({"filePath":path,"offset":1,"limit":1}).to_string(),
+        )));
+        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        fixture
+            .engine
+            .set_permission_mode(
+                session.session_id,
+                cookie_agent_protocol::PermissionMode::Yolo,
+            )
+            .unwrap();
+        let run = fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new("opt-out-cancel").unwrap(),
+                    selection,
+                    input: "read one page".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap()
+            .run_id;
+        let hook = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(text) = fs::read_to_string(&reached)
+                    && let Some(hook) = text
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .find(|hook| hook["params"]["tool"] == "read")
+                {
+                    break hook;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("finalized read reached after-result gate");
+        assert_eq!(hook["params"]["is_error"], false);
+        let page = hook["params"]["result_content"].as_str().unwrap();
+        if artifact_read {
+            assert_eq!(page, "one\n");
+        } else {
+            assert!(page.contains("2: one\n"));
+        }
+        fixture.engine.cancel_run(run).await.unwrap();
+        fs::write(&release, b"release").unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_for_session_terminal(&fixture.engine, session.session_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (events, _) = fixture
+            .engine
+            .subscribe(session.session_id, None)
+            .await
+            .unwrap();
+        let terminals = events
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ToolCallTerminated { termination } => Some(termination),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1);
+        let terminal = terminals[0];
+        assert_eq!(
+            terminal.outcome,
+            cookie_agent_protocol::ToolTerminationOutcome::Cancelled
+        );
+        assert_eq!(
+            terminal.error.as_ref().unwrap().code.as_str(),
+            "cancelled_after_completion"
+        );
+        let result = terminal.result.as_ref().unwrap();
+        assert_eq!(result.output, page);
+        assert_eq!(
+            result.display.as_deref(),
+            Some("Tool cancelled; output is incomplete.")
+        );
+        assert!(result.retained_output.is_none());
+        assert!(result.truncation.is_none());
+        assert_eq!(result.metadata["offset"], 1);
+        assert_eq!(result.metadata["limit"], 1);
+        if artifact_read {
+            assert_eq!(result.metadata["next_offset"], 2);
+            assert_eq!(result.metadata["filePath"], path);
+        } else {
+            assert_eq!(result.metadata["kind"], "text");
+            assert_eq!(result.metadata["total_lines"], 3);
+        }
+        let history = serde_json::to_value(
+            fixture
+                .engine
+                .get_history(session.session_id, EngineHistoryView::Assembled)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let tool = history
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|turn| turn["type"] == "tool")
+            .unwrap();
+        let model_result = &tool["value"]["results"][0];
+        assert_eq!(model_result["is_error"], true);
+        let parts = model_result["content"]["value"].as_array().unwrap();
+        assert!(
+            parts
+                .iter()
+                .any(|part| part["type"] == "text" && part["value"] == page)
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|part| part["type"] == "json" && part["value"]["metadata"] == result.metadata)
+        );
+        assert!(
+            !history
+                .to_string()
+                .contains("Tool cancelled; output is incomplete.")
+        );
+        assert_eq!(
+            artifact_files(),
+            before,
+            "opt-out read must not create artifacts"
+        );
+        fixture.shutdown().await;
+    }
 }
 
 #[tokio::test]

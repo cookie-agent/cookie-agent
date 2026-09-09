@@ -35,6 +35,7 @@ impl GoalTools {
 
     fn get_spec() -> ToolSpec {
         ToolSpec {
+output: Default::default(),
             concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "goal_get".into(),
@@ -46,6 +47,7 @@ impl GoalTools {
 
     fn update_spec() -> ToolSpec {
         ToolSpec {
+output: Default::default(),
             concurrency: Default::default(),
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::OptOut,
             name: "goal_update".into(),
@@ -199,47 +201,53 @@ impl PreparedExecutor for GoalExecutor {
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
-    ) -> Result<ToolResult, ToolError> {
-        if context.cancellation.is_cancelled() {
-            return Err(ToolError::execution("goal tool was cancelled"));
-        }
-        let (title, result) = match *self {
-            Self::Get { engine, session } => {
-                if context.session != session {
-                    return Err(ToolError::operation_changed("session changed"));
-                }
-                (
-                    "Current goal",
-                    serde_json::to_value(engine.goal_get(session).await.map_err(tool_error)?)
-                        .map_err(tool_error)?,
-                )
+    ) -> Result<cookie_agent_engine::ToolCompletion, ToolError> {
+        let result: Result<ToolResult, ToolError> = async move {
+            if context.cancellation.is_cancelled() {
+                return Err(ToolError::execution("goal tool was cancelled"));
             }
-            Self::Update {
-                engine,
-                session,
-                params,
-            } => {
-                if context.session != session {
-                    return Err(ToolError::operation_changed("session changed"));
-                }
-                (
-                    "Updated goal checklist",
-                    serde_json::to_value(
-                        engine
-                            .goal_update(session, params)
-                            .await
+            let (title, result) = match *self {
+                Self::Get { engine, session } => {
+                    if context.session != session {
+                        return Err(ToolError::operation_changed("session changed"));
+                    }
+                    (
+                        "Current goal",
+                        serde_json::to_value(engine.goal_get(session).await.map_err(tool_error)?)
                             .map_err(tool_error)?,
                     )
-                    .map_err(tool_error)?,
-                )
-            }
-        };
-        goal_result(title, result)
+                }
+                Self::Update {
+                    engine,
+                    session,
+                    params,
+                } => {
+                    if context.session != session {
+                        return Err(ToolError::operation_changed("session changed"));
+                    }
+                    (
+                        "Updated goal checklist",
+                        serde_json::to_value(
+                            engine
+                                .goal_update(session, params)
+                                .await
+                                .map_err(tool_error)?,
+                        )
+                        .map_err(tool_error)?,
+                    )
+                }
+            };
+            goal_result(title, result)
+        }
+        .await;
+        result.map(cookie_agent_engine::ToolCompletion::single)
     }
 }
 
 fn goal_result(title: &str, result: serde_json::Value) -> Result<ToolResult, ToolError> {
     Ok(ToolResult {
+        display: None,
+        retained_output: None,
         title: safe_title(title),
         output: serde_json::to_string_pretty(&result).map_err(tool_error)?,
         metadata: serde_json::Value::Null,
