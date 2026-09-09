@@ -137,6 +137,15 @@ fn copy_private_test_tree(source: &std::path::Path, target: &std::path::Path) {
         if crate::ownership::is_owner_lock_path(&entry.path()) {
             continue;
         }
+        // Unpublished captures are live, locked scratch files, not recovery state.
+        if source.file_name().is_some_and(|name| name == "artifacts")
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".capture-") && name.ends_with(".tmp"))
+        {
+            continue;
+        }
         let destination = target.join(entry.file_name());
         if entry.file_type().expect("snapshot type").is_dir() {
             copy_private_test_tree(&entry.path(), &destination);
@@ -144,6 +153,33 @@ fn copy_private_test_tree(source: &std::path::Path, target: &std::path::Path) {
             write_private_test_file(&destination, fs::read(entry.path()).expect("snapshot file"));
         }
     }
+}
+
+#[test]
+fn recovery_snapshot_preserves_published_artifacts_but_not_live_captures() {
+    let source = private_tempdir();
+    let target = private_tempdir();
+    let snapshot = target.path().join("snapshot");
+    let artifacts = source.path().join("artifacts");
+    let store = crate::ArtifactStore::open(artifacts.clone()).unwrap();
+    let (_, digest) = store.retain(b"published output").unwrap();
+    let name = format!(".capture-{}-output0.tmp", uuid::Uuid::now_v7());
+    let capture = store.create_capture_file(&name).unwrap();
+    write_private_test_file(&source.path().join("events.jsonl"), b"durable events");
+
+    copy_private_test_tree(source.path(), &snapshot);
+
+    assert!(artifacts.join(&name).exists());
+    assert!(!snapshot.join("artifacts").join(&name).exists());
+    assert_eq!(
+        fs::read(snapshot.join("artifacts").join(digest)).unwrap(),
+        b"published output"
+    );
+    assert_eq!(
+        fs::read(snapshot.join("events.jsonl")).unwrap(),
+        b"durable events"
+    );
+    drop(capture);
 }
 
 fn python_command() -> &'static str {
@@ -7758,28 +7794,46 @@ async fn scripted_queued_resume_server() -> (
                 }
             }),
         ];
-        let body = format!(
-            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
-            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
-        );
-        write_scripted_sse(&mut second_parent, &body).await;
-
         let mut slot_holder = None;
-        let mut parent_done = false;
-        while slot_holder.is_none() || !parent_done {
-            let (mut socket, request) =
-                accept_scripted_planned_request(&listener, "queued resume admission request").await;
-            let request = String::from_utf8(request).expect("queued resume admission request text");
-            requests.push(request.clone());
-            if MatchedScriptedResponse::last_message_role("tool", String::new())
-                .matches(request.as_bytes())
-            {
-                write_scripted_sse(&mut socket, &scripted_text_body("parent queued resume")).await;
-                parent_done = true;
-            } else {
-                slot_holder = Some(socket);
+        // Parallel calls need not enter delegation admission in model order. Wait for
+        // each tool result before requesting the resume and then its duplicate.
+        for mut call in calls {
+            call["index"] = serde_json::json!(0);
+            let body = format!(
+                "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[call]},"finish_reason":null}]})
+            );
+            write_scripted_sse(&mut second_parent, &body).await;
+            let mut next_parent = None;
+            while slot_holder.is_none() || next_parent.is_none() {
+                let (socket, request) =
+                    accept_scripted_planned_request(&listener, "queued resume admission request")
+                        .await;
+                let request =
+                    String::from_utf8(request).expect("queued resume admission request text");
+                requests.push(request.clone());
+                if MatchedScriptedResponse::last_message_role("tool", String::new())
+                    .matches(request.as_bytes())
+                {
+                    assert!(next_parent.replace(socket).is_none());
+                } else {
+                    assert!(
+                        MatchedScriptedResponse::last_message_contains(
+                            "hold the only slot",
+                            String::new(),
+                        )
+                        .matches(request.as_bytes())
+                    );
+                    assert!(slot_holder.replace(socket).is_none());
+                }
             }
+            second_parent = next_parent.expect("parent continuation after delegation");
         }
+        write_scripted_sse(
+            &mut second_parent,
+            &scripted_text_body("parent queued resume"),
+        )
+        .await;
         let _ = queued_tx.send(());
         let _ = release_rx.await;
         let mut slot_holder = slot_holder.expect("slot holder request");
@@ -18528,7 +18582,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
             if input == "queued terminal resume correction"
     )));
     assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(1));
-    assert_eq!(server.await.expect("queued resume server").len(), 8);
+    assert_eq!(server.await.expect("queued resume server").len(), 10);
     fixture.engine.shutdown().await;
 }
 

@@ -1327,9 +1327,9 @@ mod windows {
         fn open_paged(&self, name: &str) -> std::io::Result<Option<fs::File>> {
             use std::os::windows::fs::OpenOptionsExt as _;
 
-            // FILE_SHARE_READ | FILE_SHARE_WRITE. Omitting FILE_SHARE_DELETE pins the path
-            // until the cache evicts and closes this handle.
-            const PAGED_READ_SHARE_MODE: u32 = 0x1 | 0x2;
+            // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE. Pin the file, not
+            // its path, so GC can unlink it while a checked-out reader finishes.
+            const PAGED_READ_SHARE_MODE: u32 = 0x1 | 0x2 | 0x4;
             let path = self.directory.join(name);
             match fs::OpenOptions::new()
                 .read(true)
@@ -1529,7 +1529,7 @@ mod windows {
         }
 
         #[test]
-        fn cached_handle_blocks_same_length_replacement_with_preserved_mtime() {
+        fn cached_handle_pins_same_length_replacement_with_preserved_mtime() {
             let temporary = tempfile::tempdir().expect("temporary root");
             let artifacts = temporary.path().join("artifacts");
             let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
@@ -1555,10 +1555,8 @@ mod windows {
                 .expect("open replacement")
                 .set_times(std::fs::FileTimes::new().set_modified(modified))
                 .expect("preserve replacement mtime");
-            assert!(
-                cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
-                    .is_err()
-            );
+            cookie_agent_models::secure_store::replace_windows_path(&replacement, &path)
+                .expect("replace cached artifact path");
 
             assert_eq!(
                 store
@@ -1566,6 +1564,12 @@ mod windows {
                     .expect("read pinned artifact")
                     .content,
                 String::from_utf8_lossy(original)
+            );
+            drop(store);
+            let reopened = ArtifactStore::open(artifacts).expect("reopen replaced artifact");
+            assert_eq!(
+                reopened.read_paged(&digest, 0, 2).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
             );
         }
     }
