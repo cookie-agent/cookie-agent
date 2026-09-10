@@ -123,6 +123,7 @@ impl ScrollbarGeometry {
 pub struct ConversationScroll {
     pub(super) offset: usize,
     pub(super) following: bool,
+    max_offset: Option<usize>,
 }
 
 impl Default for ConversationScroll {
@@ -130,6 +131,7 @@ impl Default for ConversationScroll {
         let mut scroll = Self {
             offset: 0,
             following: false,
+            max_offset: None,
         };
         scroll.bottom();
         scroll
@@ -143,6 +145,7 @@ impl ConversationScroll {
 
     pub(super) fn clamp(&mut self, total_lines: usize, viewport_height: u16) {
         let max_offset = Self::max_offset(total_lines, viewport_height);
+        self.max_offset = Some(max_offset);
         self.offset = if self.following {
             max_offset
         } else {
@@ -168,9 +171,9 @@ impl ConversationScroll {
         );
     }
     pub(super) fn down(&mut self, lines: usize) {
-        self.following = false;
-        self.offset = self.offset.saturating_add(lines);
+        self.scroll_to(self.offset.saturating_add(lines));
     }
+    #[cfg(test)]
     pub fn top(&mut self) {
         self.following = false;
         self.offset = 0;
@@ -181,12 +184,10 @@ impl ConversationScroll {
 
     /// Absolute top offset from a scrollbar thumb/track gesture.
     pub(super) fn scroll_to(&mut self, offset: usize) {
-        if offset == 0 {
-            self.top();
-            return;
-        }
-        self.following = false;
+        // Resolve the gesture against the last rendered content, before an
+        // output append can move the bottom on the next frame.
         self.offset = offset;
+        self.following = self.max_offset.is_some_and(|max| offset >= max);
     }
 
     pub fn reveal(&mut self, region: BlockRegion, viewport_height: u16) {
@@ -282,6 +283,60 @@ pub(super) struct LayoutCache {
     #[cfg(test)]
     pub(super) item_assembly_passes: u64,
     pub(super) assistant_part_layout_passes: u64,
+}
+
+#[derive(Clone, Copy)]
+enum ScrollAnchorPoint {
+    Item(u64),
+    BlockStart(BlockId),
+    BlockEnd(BlockId),
+}
+
+impl LayoutCache {
+    /// The closest stable boundary before the viewport, plus its row offset.
+    /// Block ends also anchor text following a tool within one assistant item.
+    fn scroll_anchor(&self, offset: usize) -> Option<(ScrollAnchorPoint, usize)> {
+        self.items
+            .iter()
+            .zip(&self.item_offsets)
+            .map(|(item, start)| (ScrollAnchorPoint::Item(item.key.id), start.lines))
+            .chain(
+                self.layout
+                    .regions
+                    .iter()
+                    // Output notices move after the newly revealed lines;
+                    // anchor their containing tool's content instead.
+                    .filter(|region| !matches!(region.id, BlockId::ToolOutput { .. }))
+                    .flat_map(|region| {
+                        [
+                            (ScrollAnchorPoint::BlockStart(region.id), region.start_line),
+                            (ScrollAnchorPoint::BlockEnd(region.id), region.end_line),
+                        ]
+                    }),
+            )
+            .filter(|(_, line)| *line <= offset)
+            .max_by_key(|(_, line)| *line)
+            .map(|(point, line)| (point, offset - line))
+    }
+
+    fn anchor_line(&self, point: ScrollAnchorPoint) -> Option<usize> {
+        match point {
+            ScrollAnchorPoint::Item(id) => self
+                .items
+                .iter()
+                .zip(&self.item_offsets)
+                .find_map(|(item, start)| (item.key.id == id).then_some(start.lines)),
+            ScrollAnchorPoint::BlockStart(id) | ScrollAnchorPoint::BlockEnd(id) => self
+                .layout
+                .regions
+                .iter()
+                .find(|region| region.id == id)
+                .map(|region| match point {
+                    ScrollAnchorPoint::BlockStart(_) => region.start_line,
+                    _ => region.end_line,
+                }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -722,13 +777,21 @@ impl App {
         };
         let clock_bucket = self.clock_bucket();
         let draft_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
+        let anchor_key = self.layout_cache.key;
+        let anchor = (!self.conversation_scroll.following)
+            .then(|| {
+                self.layout_cache
+                    .scroll_anchor(self.conversation_scroll.offset)
+            })
+            .flatten();
+        let mut layout_changed = false;
         let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
             self.store
                 .sessions
                 .get(&session_id)
                 .map(|state| (session_id, state))
         }) {
-            ensure_cached_transcript_layout(
+            layout_changed = !ensure_cached_transcript_layout(
                 &mut self.layout_cache,
                 session_id,
                 state,
@@ -777,6 +840,13 @@ impl App {
             )
         });
         let content_height = layout.lines.len() + notice_lines.len();
+        if layout_changed
+            && anchor_key == self.layout_cache.key
+            && let Some((point, row_offset)) = anchor
+            && let Some(line) = self.layout_cache.anchor_line(point)
+        {
+            self.conversation_scroll.offset = line.saturating_add(row_offset);
+        }
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
@@ -871,6 +941,9 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
+        // An explicit layout change preserves what the user is reading. Only
+        // output received while already following should advance to the tail.
+        self.conversation_scroll.following = false;
         let expanded = self.expanded_blocks.entry(session_id).or_default();
         if !expanded.insert(block_id) {
             expanded.remove(&block_id);
@@ -3576,6 +3649,10 @@ fn role_block_lines(
     width: u16,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    let diagnostic = matches!(
+        role,
+        Role::Debug | Role::Internal | Role::Warning | Role::Error
+    );
     let (label, marker, gutter, style) = match role {
         Role::User => ("USER", "┌─", "│ ", theme.user()),
         Role::Action => ("ACTION", "--", "│ ", theme.user()),
@@ -3627,6 +3704,27 @@ fn role_block_lines(
             Role::Error => "E",
             Role::Internal => "I",
         };
+        if diagnostic {
+            if width == 0 {
+                return Vec::new();
+            }
+            if body.len() == 1 && body[0].width() + 4 <= usize::from(width) {
+                return repeated_prefixed_wrapped_line(
+                    vec![Span::styled(format!("[{short}] "), style)],
+                    body.into_iter().next().expect("one diagnostic line"),
+                    width,
+                );
+            }
+            let mut lines = wrapped_line(Line::styled(format!("[{short}]"), style), width);
+            for line in body {
+                lines.extend(repeated_prefixed_wrapped_line(
+                    vec![Span::styled(gutter, style)],
+                    line,
+                    width,
+                ));
+            }
+            return lines;
+        }
         let mut lines = Vec::new();
         for (index, line) in body.into_iter().enumerate() {
             let prefix = if index == 0 {
@@ -3650,7 +3748,15 @@ fn role_block_lines(
         )
     };
     for line in body {
-        lines.extend(prefixed_wrapped_line(gutter.into(), style, line, width));
+        if diagnostic {
+            lines.extend(repeated_prefixed_wrapped_line(
+                vec![Span::styled(gutter, style)],
+                line,
+                width,
+            ));
+        } else {
+            lines.extend(prefixed_wrapped_line(gutter.into(), style, line, width));
+        }
     }
     lines
 }
@@ -3695,7 +3801,11 @@ fn repeated_prefixed_wrapped_line(
     .into_iter()
     .map(|line| {
         let mut spans = prefix.clone();
-        spans.extend(line.spans);
+        // Keep inherited text styling on the content, not on its gutter.
+        spans.extend(line.spans.into_iter().map(|mut span| {
+            span.style = line.style.patch(span.style);
+            span
+        }));
         Line::from(spans)
     })
     .collect()
@@ -3789,7 +3899,7 @@ pub(super) fn append_word(
     width: usize,
 ) {
     let word_width = UnicodeWidthStr::width(word.as_str());
-    if word_width <= width {
+    if *current_width + word_width <= width {
         append_span(current, word, style);
         *current_width += word_width;
         return;
@@ -3956,6 +4066,20 @@ fn extract_line(
     }
     let remaining: Vec<&ratatui::text::Span<'static>> = spans.collect();
     let rest: String = remaining.iter().map(|span| span.content.as_ref()).collect();
+    // Standalone narrow headers carry the diagnostic style on the Line and
+    // have no content gutter. Identical message text follows a gutter, so it
+    // remains copyable rather than being classified by its text alone.
+    if gutter_width == 0
+        && match rest.as_str() {
+            "[D]" => line.style == theme.muted(),
+            "[I]" => line.style == theme.internal(),
+            "[W]" => line.style == theme.warning(),
+            "[E]" => line.style == theme.error(),
+            _ => false,
+        }
+    {
+        return None;
+    }
     if (gutter_width == 0 || only_quote_gutters)
         && CHROME_ROW_PREFIXES
             .iter()
@@ -12758,6 +12882,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn committed_fallback_updates_next_draft_but_preserves_explicit_picker_reset() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let a = resolved_model(None);
+        let mut b = a.clone();
+        b.selection.model = "gateway/fallback-model".parse().unwrap();
+        b.model_id = cookie_agent_protocol::ProviderModelId::new("fallback-model").unwrap();
+        b.selection_fingerprint = Sha256Digest::of_bytes(b"fallback");
+        app.models = vec![
+            model_descriptor(),
+            catalog_model("gateway/fallback-model", &[], None),
+        ];
+        app.sessions = vec![session_meta(session)];
+        app.set_selected_session(session);
+        let start = run_started_with_suffix(session, 2, run, vec![a.clone(), b.clone()]);
+        let mut committed = turn_committed(
+            session,
+            3,
+            run,
+            AttemptId::new_v7(),
+            3,
+            vec![],
+            vec![],
+            None,
+        );
+        if let EventPayload::ModelTurnCommitted { resolved_model, .. } = &mut committed.payload {
+            *resolved_model = b.clone();
+        }
+        let events = vec![
+            session_created_with(session, 1, AGENT, vec![a.clone(), b.clone()], 0),
+            start.clone(),
+            committed.clone(),
+        ];
+        for event in &events {
+            app.handle_delivery(ClientDelivery::Live {
+                message: Box::new(EventSubscriptionMessage::Event {
+                    event: Box::new(event.clone()),
+                }),
+                generation: 0,
+            })
+            .await;
+        }
+        assert_eq!(app.draft.as_ref().unwrap().model, b.selection);
+        assert_eq!(
+            app.store.sessions[&session]
+                .run_selected_suffix
+                .as_ref()
+                .unwrap()[0]
+                .selection,
+            a.selection,
+            "frozen run history is unchanged"
+        );
+        app.set_draft_model(a.selection.model.clone());
+        assert!(app.draft_reset_fallback);
+        committed.seq = 4;
+        app.handle_delivery(ClientDelivery::Live {
+            message: Box::new(EventSubscriptionMessage::Event {
+                event: Box::new(committed),
+            }),
+            generation: 0,
+        })
+        .await;
+        assert_eq!(
+            app.draft.as_ref().unwrap().model,
+            a.selection,
+            "late commits cannot override the explicit draft"
+        );
+        let mut restarted = test_app().await;
+        restarted.models = app.models.clone();
+        restarted.sessions = vec![session_meta(session)];
+        for event in events {
+            restarted.store.apply_event(event);
+        }
+        restarted.set_selected_session(session);
+        assert_eq!(
+            restarted.draft.as_ref().unwrap().model,
+            b.selection,
+            "watch/replay uses session progress, not creation selection"
+        );
+    }
+
+    #[tokio::test]
     async fn model_agent_and_refresh_normalization_preserve_only_valid_draft_parts() {
         let mut app = test_app().await;
         let first = model_descriptor();
@@ -13827,8 +14034,305 @@ mod tests {
         scroll.clamp(200, 10);
         assert!(!scroll.following);
         scroll.scroll_to(ConversationScroll::max_offset(200, 10));
-        scroll.clamp(200, 10);
         assert!(scroll.following);
+        scroll.clamp(220, 10);
+        assert_eq!(scroll.offset, 210, "follow output arriving before redraw");
+        scroll.up(3);
+        scroll.down(3);
+        assert!(scroll.following);
+        scroll.clamp(240, 10);
+        assert_eq!(scroll.offset, 230);
+    }
+
+    /// Render actual viewport cells without the border or moving scrollbar.
+    fn conversation_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
+        let viewport = app.hit_map.conversation.unwrap();
+        let buffer = terminal.backend().buffer();
+        (viewport.y..viewport.bottom())
+            .map(|y| {
+                (viewport.x..viewport.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    async fn expansion_scroll_app(kind: &str) -> (App, SessionId, BlockId) {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let body = "expanded\n".repeat(70);
+        let (mut state, block) = match kind {
+            "thinking" => (
+                assistant_state(vec![AssistantChild::Thinking {
+                    id: 2,
+                    version: 0,
+                    text: body.clone(),
+                }]),
+                BlockId::Thinking(2),
+            ),
+            "tool" => {
+                let state =
+                    read_tool_state("src/a/long/path/main.rs", ToolStatus::Completed, &body);
+                let block = BlockId::Tool(read_tool_id(&state));
+                (state, block)
+            }
+            _ => {
+                let mut store = StateStore::default();
+                let payload = match kind {
+                    "plugin" => EventPayload::MessageInjected {
+                        role: cookie_agent_protocol::ExtensionMessageRole::User,
+                        input: body.clone(),
+                    },
+                    "compaction" => EventPayload::ContextCheckpointCommitted {
+                        commit: checkpoint_commit(&body),
+                    },
+                    "system" => {
+                        let EventPayload::RunStarted { mut agent, .. } = run_started_with_suffix(
+                            session,
+                            1,
+                            run_id(),
+                            vec![resolved_model(None)],
+                        )
+                        .payload
+                        else {
+                            unreachable!()
+                        };
+                        agent.composed_prompt = body.clone();
+                        let state = SessionState {
+                            run_snapshot: Some(agent),
+                            ..SessionState::default()
+                        };
+                        app.store.sessions.insert(session, state);
+                        app.selected = Some(session);
+                        app.tree_root = Some(session);
+                        return (app, session, BlockId::SystemPrompt);
+                    }
+                    "producer" => {
+                        producer_accepted(
+                            session,
+                            1,
+                            ProducerMessageId::new_v7(),
+                            ProducerOwner::Plugin {
+                                plugin: "build".into(),
+                            },
+                            ProducerDeliveryMode::Queue,
+                            &body,
+                            None,
+                        )
+                        .payload
+                    }
+                    _ => unreachable!(),
+                };
+                store.apply_event(runless_event(session, 1, payload));
+                let mut state = store.sessions.remove(&session).unwrap();
+                if kind == "producer" {
+                    for item in &mut state.transcript {
+                        if let TranscriptItem::ProducerMessage { status, .. } = item {
+                            *status = ProducerMessageStatus::Consumed;
+                        }
+                    }
+                }
+                let block = transcript_layout(&state, None, 80).regions[0].id;
+                (state, block)
+            }
+        };
+        let mut prefix = tall_transcript_state(40).transcript;
+        // Keep synthetic prefix identities separate from the fixture's items.
+        for item in &mut prefix {
+            if let TranscriptItem::Event { id, .. } = item {
+                *id += 10_000;
+            }
+        }
+        prefix.append(&mut state.transcript);
+        state.transcript = prefix;
+        app.store.sessions.insert(session, state);
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        (app, session, block)
+    }
+
+    #[tokio::test]
+    async fn expansion_at_bottom_preserves_header_and_preceding_screen_rows() {
+        for kind in [
+            "thinking",
+            "tool",
+            "plugin",
+            "compaction",
+            "producer",
+            "system",
+        ] {
+            for width in [100, 28] {
+                let (mut app, _, block) = expansion_scroll_app(kind).await;
+                let before = conversation_rows(&mut app, width, 24);
+                let hit = *app
+                    .hit_map
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == block)
+                    .unwrap();
+                let offset = app.conversation_scroll.offset;
+                let header_row = usize::from(hit.rect.y - app.hit_map.conversation.unwrap().y);
+                assert!(app.conversation_scroll.following, "{kind} at {width}");
+                app.handle_click(hit.rect.x, hit.rect.y).await;
+                let after = conversation_rows(&mut app, width, 24);
+                let expanded = app
+                    .hit_map
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == block)
+                    .unwrap();
+                assert_eq!(expanded.rect.y, hit.rect.y, "{kind} at {width}");
+                assert_eq!(
+                    &after[..header_row],
+                    &before[..header_row],
+                    "{kind} at {width}"
+                );
+                assert_eq!(app.conversation_scroll.offset, offset, "{kind} at {width}");
+                assert!(!app.conversation_scroll.following, "{kind} at {width}");
+                app.toggle_block(block);
+                conversation_rows(&mut app, width, 24);
+                assert_eq!(
+                    app.conversation_scroll.offset, offset,
+                    "collapse {kind} at {width}"
+                );
+                assert!(app.conversation_scroll.following);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn expansion_above_viewport_keeps_following_content_anchored() {
+        let (mut app, session, block) = expansion_scroll_app("thinking").await;
+        let state = app.store.sessions.get_mut(&session).unwrap();
+        let TranscriptItem::Assistant { children, .. } = state.transcript.last_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        children.push(AssistantChild::Text {
+            id: 3,
+            version: 0,
+            markdown: MarkdownDocument::new("after thinking\n\n".repeat(60)),
+        });
+        for width in [100, 28] {
+            app.conversation_scroll.bottom();
+            let before = conversation_rows(&mut app, width, 24);
+            let offset = app.conversation_scroll.offset;
+            for _ in 0..3 {
+                app.toggle_block(block);
+                let expanded = conversation_rows(&mut app, width, 24);
+                assert_eq!(expanded, before);
+                assert!(app.conversation_scroll.offset > offset);
+                app.toggle_block(block);
+                assert_eq!(conversation_rows(&mut app, width, 24), before);
+                assert_eq!(app.conversation_scroll.offset, offset);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn collapse_near_bottom_clamps_to_the_last_valid_offset() {
+        let (mut app, _, block) = expansion_scroll_app("tool").await;
+        conversation_rows(&mut app, 80, 24);
+        let collapsed_bottom = app.conversation_scroll.offset;
+        app.toggle_block(block);
+        conversation_rows(&mut app, 80, 24);
+        app.conversation_scroll.bottom();
+        conversation_rows(&mut app, 80, 24);
+        assert!(app.conversation_scroll.offset > collapsed_bottom);
+        app.toggle_block(block);
+        conversation_rows(&mut app, 80, 24);
+        assert_eq!(app.conversation_scroll.offset, collapsed_bottom);
+        assert!(app.conversation_scroll.following);
+    }
+
+    #[tokio::test]
+    async fn nested_output_expansion_keeps_the_visible_prefix_in_place() {
+        let (mut app, _, block) = expansion_scroll_app("tool").await;
+        app.toggle_block(block);
+        app.conversation_scroll.bottom();
+        let before = conversation_rows(&mut app, 80, 24);
+        let notice = *app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| matches!(hit.id, BlockId::ToolOutput { .. }))
+            .unwrap();
+        let row = usize::from(notice.rect.y - app.hit_map.conversation.unwrap().y);
+        let offset = app.conversation_scroll.offset;
+        app.handle_click(notice.rect.x, notice.rect.y).await;
+        let after = conversation_rows(&mut app, 80, 24);
+        assert_eq!(&after[..row], &before[..row]);
+        assert_eq!(app.conversation_scroll.offset, offset);
+        assert!(!app.conversation_scroll.following);
+    }
+
+    #[tokio::test]
+    async fn streaming_follows_only_when_already_at_bottom_across_expansion_and_scroll() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        for event in [
+            session_created(session, 1),
+            attempt_started(session, 2, run, attempt, None),
+            reasoning_delta(session, 3, run, attempt, &"thought\n".repeat(70)),
+        ] {
+            app.store.apply_event(event);
+        }
+        conversation_rows(&mut app, 60, 24);
+        let block = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| matches!(hit.id, BlockId::Thinking(_)))
+            .unwrap()
+            .id;
+        let mut seq = 4;
+        for _ in 0..3 {
+            app.conversation_scroll.top();
+            conversation_rows(&mut app, 60, 24);
+            app.toggle_block(block);
+            let before = conversation_rows(&mut app, 60, 24);
+            let offset = app.conversation_scroll.offset;
+            app.handle_delivery(ClientDelivery::Live {
+                message: Box::new(EventSubscriptionMessage::Event {
+                    event: Box::new(text_delta(
+                        session,
+                        seq,
+                        run,
+                        attempt,
+                        &"agent progress\n\n".repeat(40),
+                    )),
+                }),
+                generation: 0,
+            })
+            .await;
+            seq += 1;
+            let after = conversation_rows(&mut app, 60, 24);
+            assert_eq!(app.conversation_scroll.offset, offset);
+            // Thinking's streaming label may settle when text begins.
+            assert_eq!(&after[3..], &before[3..]);
+            assert!(!app.conversation_scroll.following);
+
+            // Return to the old bottom, then receive output before any redraw.
+            app.conversation_scroll.scroll_to(usize::MAX);
+            assert!(app.conversation_scroll.following);
+            app.store
+                .apply_event(text_delta(session, seq, run, attempt, "\n\nnew tail\n\n"));
+            seq += 1;
+            let rows = conversation_rows(&mut app, 60, 24);
+            assert!(rows.iter().any(|row| row.contains("new tail")));
+            assert_eq!(
+                app.conversation_scroll.offset,
+                app.scrollbar_geometry.unwrap().max_offset
+            );
+            app.toggle_block(block);
+            conversation_rows(&mut app, 60, 24);
+        }
     }
 
     #[tokio::test]
@@ -16454,6 +16958,170 @@ mod tests {
                 assert_eq!(rendered, "· diagnostic");
             } else {
                 assert!(rendered.contains(level.badge()), "{}", level.name());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_gutters_cover_hard_breaks_soft_wraps_and_scrolled_rows() {
+        let text = format!(
+            "intro\n\n  indented\nparagraph\n\n  {}\nlast",
+            "e\u{301}界👩‍💻abcdefgh".repeat(40)
+        );
+        for (level, gutter) in [
+            (crate::state::EventLevel::Debug, "· "),
+            (crate::state::EventLevel::Info, "· "),
+            (crate::state::EventLevel::Warning, "│ "),
+            (crate::state::EventLevel::Error, "! "),
+        ] {
+            let mut app = test_app().await;
+            let session = SessionId::new_v7();
+            app.selected = Some(session);
+            app.tree_root = Some(session);
+            app.tui_config.minimum_event_level = crate::state::EventLevel::Debug;
+            app.store.sessions.insert(
+                session,
+                SessionState {
+                    transcript: vec![TranscriptItem::Event {
+                        id: 1,
+                        version: 0,
+                        level,
+                        text: text.clone(),
+                    }],
+                    ..SessionState::default()
+                },
+            );
+            // Reflow the same app, then clip at different visual rows.
+            for width in [24, 12, 38] {
+                app.conversation_scroll.top();
+                conversation_rows(&mut app, width, 16);
+                let content_width = app.hit_map.conversation.unwrap().width;
+                let lines = &app.layout_cache.layout.lines;
+                assert!(
+                    lines
+                        .iter()
+                        .all(|line| line.width() <= usize::from(content_width))
+                );
+                let body_start = lines
+                    .iter()
+                    .position(|line| {
+                        line.spans
+                            .first()
+                            .is_some_and(|span| span.content == gutter)
+                    })
+                    .unwrap();
+                let body = &lines[body_start..];
+                assert!(body.len() > text.lines().count());
+                assert!(body.iter().all(|line| line.spans[0].content == gutter));
+                assert!(body.iter().any(|line| line.to_string() == gutter));
+                let copied =
+                    extract_selection(body, (0, 0), (body.len() - 1, u16::MAX), &app.theme);
+                assert!(!copied.contains('│'));
+                assert!(!copied.contains('!'));
+                assert!(!copied.contains('·'));
+                assert!(copied.contains("intro\n\n  "));
+                // Soft wraps add line breaks, but retain indentation and every
+                // combining/ZWJ grapheme without inserting gutter characters.
+                assert_eq!(copied.replace('\n', ""), text.replace('\n', ""));
+                for row_offset in [0, 2, 5] {
+                    app.conversation_scroll.scroll_to(body_start + row_offset);
+                    let visible = conversation_rows(&mut app, width, 16);
+                    assert!(visible.iter().all(|row| row.starts_with(gutter)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_wrapping_preserves_span_styles_indentation_and_graphemes() {
+        use ratatui::style::Color;
+
+        let theme = Theme::default();
+        let inherited = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let explicit = Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::ITALIC);
+        let text = "e\u{301}界👩‍💻".repeat(12);
+        for width in [6, 8, 10, 24] {
+            let lines = role_block(
+                Role::Warning,
+                vec![
+                    Line::from(vec![
+                        Span::raw("  indented"),
+                        Span::styled(text.clone(), explicit),
+                    ])
+                    .style(inherited),
+                ],
+                width,
+                &theme,
+            );
+            assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+            let body = lines
+                .iter()
+                .filter(|line| line.spans.first().is_some_and(|span| span.content == "│ "))
+                .collect::<Vec<_>>();
+            assert!(body.len() > 1);
+            let mut content = String::new();
+            for line in body {
+                assert_eq!(line.spans[0].style, theme.warning());
+                for span in line.spans.iter().skip(1) {
+                    content.push_str(&span.content);
+                    assert!(span.style.add_modifier.contains(Modifier::BOLD));
+                    if span.style.fg == Some(Color::Red) {
+                        assert!(span.style.add_modifier.contains(Modifier::ITALIC));
+                        assert!(span.content.graphemes(true).all(|grapheme| {
+                            ["e\u{301}", "界", "👩‍💻"].contains(&grapheme)
+                        }));
+                    } else {
+                        assert_eq!(span.style.fg, Some(Color::Cyan));
+                    }
+                }
+            }
+            assert_eq!(content, format!("  indented{text}"));
+        }
+    }
+
+    #[test]
+    fn full_diagnostic_copy_omits_narrow_headers_but_preserves_literal_tags() {
+        for theme in [
+            Theme::default(),
+            Theme::new(ThemeKind::Mono, ColorLevel::None),
+            Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        ] {
+            for (role, header) in [
+                (Role::Debug, "[D]"),
+                (Role::Internal, "[I]"),
+                (Role::Warning, "[W]"),
+                (Role::Error, "[E]"),
+            ] {
+                let message = "message\n[D]\n[I]\n[W]\n[E]\n\n  x";
+                for width in [6, 7, 80] {
+                    let lines = role_block(
+                        role,
+                        message
+                            .lines()
+                            .map(|line| Line::from(line.to_owned()))
+                            .collect(),
+                        width,
+                        &theme,
+                    );
+                    if width < 8 {
+                        assert_eq!(lines[0].to_string(), header);
+                        assert_eq!(extract_line(&lines[0], 0, u16::MAX, &theme), None);
+                    }
+                    let expected = match width {
+                        6 => message.replacen("message", "mess\nage", 1),
+                        7 => message.replacen("message", "messa\nge", 1),
+                        _ => message.to_owned(),
+                    };
+                    assert_eq!(
+                        extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme),
+                        expected,
+                        "{header} at width {width}"
+                    );
+                }
             }
         }
     }
