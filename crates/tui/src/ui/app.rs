@@ -8032,7 +8032,9 @@ impl App {
 
     fn agent_panel_visible(&self) -> bool {
         match self.agent_panel_mode {
-            AgentPanelMode::Auto => self.tree_has_live_delegated_agents(),
+            AgentPanelMode::Auto => {
+                self.tree_has_live_delegated_agents() || !self.watching_root_session()
+            }
             AgentPanelMode::Shown => true,
             AgentPanelMode::Hidden => false,
         }

@@ -7268,6 +7268,153 @@ mod tests {
         wait_for_recorded_request(&recorded, "session.tree", 1).await;
     }
 
+    fn assert_agent_panel_visible(app: &mut App, visible: bool) {
+        let rows = frame_rows(app, 80, 24);
+        assert_eq!(rows.iter().any(|row| row.contains("Agents")), visible);
+        assert_eq!(app.hit_map.tree.is_some(), visible);
+    }
+
+    #[tokio::test]
+    async fn agent_panel_keeps_watched_subagent_history_after_completion_at_each_depth() {
+        for nested in [false, true] {
+            let mut app = test_app().await;
+            let (client, _recorded, _incoming) = live_recording_client();
+            app.client = client;
+            let root = SessionId::new_v7();
+            let child = SessionId::new_v7();
+            let watched = if nested { SessionId::new_v7() } else { child };
+            let mut watched_meta = delegated_meta(watched, root, "worker");
+            watched_meta.status = SessionStatus::Running;
+            if nested
+                && let SessionOrigin::Delegated {
+                    parent_session_id,
+                    depth,
+                    ..
+                } = &mut watched_meta.origin
+            {
+                *parent_session_id = child;
+                *depth = 2;
+            }
+            let watched_tree = SessionTree {
+                session: watched_meta,
+                children: Vec::new(),
+            };
+            let child_tree = if nested {
+                let mut child_meta = delegated_meta(child, root, "parent");
+                child_meta.status = SessionStatus::Completed;
+                SessionTree {
+                    session: child_meta,
+                    children: vec![watched_tree],
+                }
+            } else {
+                watched_tree
+            };
+            app.tree_root = Some(root);
+            app.tree = Some(SessionTree {
+                session: session_meta(root),
+                children: vec![child_tree],
+            });
+            app.set_selected_session(root);
+            assert_agent_panel_visible(&mut app, true);
+            app.watch_session(watched);
+            assert_agent_panel_visible(&mut app, true);
+            let conversation_y = app.hit_map.conversation.unwrap().y;
+
+            app.handle_delivery(live_event(event(
+                watched,
+                3,
+                run_id(),
+                EventPayload::RunCompleted { final_text: None },
+            )))
+            .await;
+            assert_agent_panel_visible(&mut app, true);
+            assert_eq!(app.hit_map.conversation.unwrap().y, conversation_y);
+            assert_eq!(app.selected, Some(watched));
+            assert_eq!(app.tree_root, Some(root));
+
+            // An empty cursor replay must not change the watched-history rule.
+            app.handle_delivery(ClientDelivery::ReplayStart {
+                session_id: watched,
+                generation: 0,
+                final_seq: 3,
+                rebuild: false,
+            })
+            .await;
+            assert_agent_panel_visible(&mut app, true);
+            app.handle_delivery(ClientDelivery::ReplayEnd {
+                session_id: watched,
+                generation: 0,
+                final_seq: 3,
+            })
+            .await;
+            assert_agent_panel_visible(&mut app, true);
+
+            app.watch_session(root);
+            assert_agent_panel_visible(&mut app, false);
+            // Selecting already-completed history also enables automatic display.
+            app.watch_session(watched);
+            assert_agent_panel_visible(&mut app, true);
+            app.collapsed_sessions.insert(root);
+            assert_eq!(app.tree_entries().len(), 1);
+            assert_agent_panel_visible(&mut app, true);
+            app.watch_session(root);
+            assert_agent_panel_visible(&mut app, false);
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_panel_manual_override_wins_for_completed_history_and_rerooting() {
+        let mut app = test_app().await;
+        let (client, _recorded, _incoming) = live_recording_client();
+        app.client = client;
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let mut child_meta = delegated_meta(child, root, "worker");
+        child_meta.status = SessionStatus::Completed;
+        app.sessions = vec![session_meta(root), child_meta.clone()];
+        let tree = SessionTree {
+            session: session_meta(root),
+            children: vec![SessionTree {
+                session: child_meta.clone(),
+                children: Vec::new(),
+            }],
+        };
+        app.tree_root = Some(root);
+        app.tree = Some(tree.clone());
+        app.set_selected_session(root);
+        assert_agent_panel_visible(&mut app, false);
+        app.run_command(SlashCommand::HideAgentPanel).await;
+        app.watch_session(child);
+        assert_agent_panel_visible(&mut app, false);
+        app.watch_session(root);
+        app.reroot_tree(root);
+        app.tree = Some(tree);
+        app.watch_session(child);
+        assert_agent_panel_visible(&mut app, false);
+
+        app.run_command(SlashCommand::ShowAgentPanel).await;
+        assert_agent_panel_visible(&mut app, true);
+        app.watch_session(root);
+        assert_agent_panel_visible(&mut app, true);
+
+        // A different root resets the override as before. Delegated identity
+        // comes from metadata, even when the watched child is the tree's root.
+        app.run_command(SlashCommand::HideAgentPanel).await;
+        app.reroot_tree(child);
+        assert_agent_panel_visible(&mut app, true);
+        app.tree = Some(SessionTree {
+            session: child_meta,
+            children: Vec::new(),
+        });
+        assert_agent_panel_visible(&mut app, true);
+        app.reroot_tree(root);
+        app.tree = Some(SessionTree {
+            session: session_meta(root),
+            children: Vec::new(),
+        });
+        assert_agent_panel_visible(&mut app, false);
+    }
+
     #[test]
     fn composer_grows_with_text_rows_and_reclaims_conversation() {
         let area = Rect::new(0, 0, 80, 24);
