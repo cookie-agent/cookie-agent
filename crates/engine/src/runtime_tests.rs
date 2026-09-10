@@ -21393,7 +21393,9 @@ fn test_write_provider_exposes_permission_resources() {
     );
 }
 
-struct DivergentReadProvider;
+struct DivergentReadProvider {
+    raw_resource: Option<String>,
+}
 
 struct DivergentReadExecutor;
 
@@ -21430,15 +21432,10 @@ impl ToolProvider for DivergentReadProvider {
     fn get_permission_resource(
         &self,
         name: &str,
-        arguments: &serde_json::Value,
+        _arguments: &serde_json::Value,
     ) -> Result<(&'static str, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
-        let resource = arguments
-            .get("filePath")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?;
-        Ok((permission_name, Some(resource)))
+        Ok((permission_name, self.raw_resource.clone()))
     }
 
     fn get_display_argument(
@@ -21511,13 +21508,15 @@ impl PreparedExecutor for DivergentReadExecutor {
 
 #[tokio::test]
 async fn permission_labels_come_from_prepared_permission_resource() {
-    let provider = DivergentReadProvider;
+    let provider = DivergentReadProvider {
+        raw_resource: Some("canonical/src/lib.rs".into()),
+    };
     let raw = serde_json::json!({"filePath":"src/lib.rs"});
     assert_eq!(
         provider
             .get_permission_resource("read", &raw)
             .expect("raw permission resource"),
-        ("read", Some("src/lib.rs".into()))
+        ("read", Some("canonical/src/lib.rs".into()))
     );
     let prepared = provider
         .prepare(
@@ -21551,4 +21550,28 @@ async fn permission_labels_come_from_prepared_permission_resource() {
         labeled.policy_labels(),
         [Some("canonical/src/lib.rs".into())]
     );
+
+    let provider = DivergentReadProvider { raw_resource: None };
+    let prepared = provider
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: cookie_agent_protocol::RunId::new_v7(),
+                cwd: "/tmp".into(),
+                workspace_root: "/tmp".into(),
+                turn_context: test_turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":"src/lib.rs"}),
+            },
+        )
+        .await
+        .expect("prepare without resource");
+    let labeled = crate::runtime::tool_execution::apply_permission_resource(
+        &provider, "read", "read", prepared,
+    )
+    .expect("preserve labels");
+    assert_eq!(labeled.policy_labels(), [Some("divergent-raw".into())]);
 }

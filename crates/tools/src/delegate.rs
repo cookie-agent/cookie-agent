@@ -124,14 +124,14 @@ impl DelegateToolProvider {
                 vec![resource],
                 &cwd,
             )?,
-            permission_resource: Some(agent_type.to_string()),
+            policy_label: agent_type.to_string(),
         })
     }
 }
 
 struct PreparedToolParts {
     operation: cookie_agent_protocol::PreparedOperationIdentity,
-    permission_resource: Option<String>,
+    policy_label: String,
 }
 
 #[async_trait]
@@ -371,11 +371,8 @@ impl ToolProvider for DelegateToolProvider {
                 ));
             }
         };
-        let prepared = PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?;
-        match parts.permission_resource {
-            Some(resource) => prepared.with_policy_labels(vec![resource]),
-            None => prepared.with_permission_resource(None),
-        }
+        PreparedTool::new(parts.operation, normalized, None, Box::new(executor))?
+            .with_policy_labels(vec![parts.policy_label])
     }
 }
 
@@ -655,7 +652,8 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                delegate_permission_resource(name, &arguments).expect("loose resource"),
+                delegate_permission_resource(name, &arguments)
+                    .expect("provider-managed label resource"),
                 None
             );
         }

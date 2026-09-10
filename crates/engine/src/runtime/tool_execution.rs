@@ -1031,7 +1031,12 @@ pub(crate) fn apply_permission_resource(
             "prepared permission capability does not match provider metadata",
         ));
     }
-    prepared.with_permission_resource(resource)
+    // A provider may return None when it manages policy labels while preparing
+    // the operation. Providers that need the loose marker set it explicitly.
+    match resource {
+        Some(resource) => prepared.with_permission_resource(Some(resource)),
+        None => Ok(prepared),
+    }
 }
 
 pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {

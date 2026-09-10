@@ -2247,6 +2247,39 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
                 })
         })
         .expect("delegated child session");
+    let parent_session: SessionId = serde_json::from_value(
+        parent_records.last().expect("parent summary")["session_id"].clone(),
+    )
+    .expect("parent session ID");
+
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "get_subagent_result",
+        &serde_json::json!({"session_id": child_session}).to_string(),
+    )));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("retrieved child result")));
+    let mut result_args = run_args("retrieve the delegated result");
+    result_args.resume_session = Some(parent_session);
+    result_args.output = Some(OutputMode::Json);
+    let result_run = fixture.run(result_args, "").await;
+    assert_eq!(result_run.code, 0, "{}", result_run.stderr);
+    let result_records = parse_json_lines(&result_run.stdout);
+    let result_tool_call_id = result_records
+        .iter()
+        .find_map(|record| {
+            let payload = &record["event"]["payload"];
+            (payload["type"] == "tool_call_started"
+                && payload["presentation"]["title"] == "get_subagent_result")
+                .then(|| payload["tool_call_id"].clone())
+        })
+        .expect("get_subagent_result tool call");
+    assert!(result_records.iter().any(|record| {
+        let payload = &record["event"]["payload"];
+        payload["type"] == "tool_call_terminated"
+            && payload["tool_call_id"] == result_tool_call_id
+            && payload["outcome"] == "completed"
+    }));
 
     fixture.server.enqueue(MockResponse::Sse(tool_response(
         "bash",
