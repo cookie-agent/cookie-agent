@@ -374,7 +374,7 @@ Tool providers publish a static permission name and an optional resource label:
 | `write`, `edit` | `write` | Workspace-relative path inside the workspace; absolute path outside it |
 | `bash` | `bash` | Complete command string |
 | `delegate_subagent` | `delegate` | Target `agent_type` |
-| `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | None (permission-name-only check) |
+| `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | Owned subagent's `agent_type` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | `skill` | Skill name |
 | `goal_get`, `goal_update` | `read`, `write` respectively | `goal:current` |
@@ -485,21 +485,18 @@ that permits it. Review them and work only in repositories you trust.
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls
 `delegate_subagent`, `get_subagent_result`, `steer_subagent`, and
-`cancel_subagent`. Only `delegate_subagent` matches agent-specific patterns.
+`cancel_subagent`. All four tools use the target subagent's agent type as their
+permission resource.
 Result, steer, and cancel retain their existing ownership and argument
-validation, but permission evaluation for them uses only the bare effect or
-`"*"`. Their approval display still shows the owned `session_id`; display text is
-independent of the permission resource.
+validation, and permission evaluation uses that agent type. Their approval
+display still shows the owned `session_id`; display text is independent of the
+permission resource.
 
 This changes existing mapped delegation policies. For example,
 `delegate: {reviewer: allow, "*": deny}` allows `delegate_subagent` targeting
 `reviewer`, but denies `get_subagent_result`, `steer_subagent`, and
-`cancel_subagent` because their permission-name-only checks use the `"*": deny`
-fallback and ignore the `reviewer` pattern.
-The prepared resource identity for these three tools also changed. Existing
-tree grants issued for their former agent- or session-scoped identities do not
-carry over: old grants can no longer auto-approve these operations, so any call
-whose new resource-less policy evaluates to `ask` requires approval again.
+`cancel_subagent` for other agent types. Existing tree grants issued for their
+former identities do not carry over.
 Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
 
 `delegate_subagent` replaces the former `delegate` tool name without an alias.

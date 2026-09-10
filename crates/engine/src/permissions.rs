@@ -1597,9 +1597,8 @@ mod tests {
     }
 
     #[test]
-    fn steer_subagent_uses_loose_delegate_permission_and_can_be_denied() {
-        let session = cookie_agent_protocol::SessionId::new_v7().to_string();
-        let resource = resource(PermissionAction::Delegate, &session, session.as_bytes());
+    fn steer_subagent_matches_owned_child_agent_type_in_delegate_map() {
+        let resource = resource(PermissionAction::Delegate, "reviewer", b"reviewer");
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(b"steer args"),
             vec![ApprovalCapability {
@@ -1611,22 +1610,35 @@ mod tests {
             Sha256Digest::of_bytes(b"context"),
         )
         .expect("prepared steer operation");
-        let decision = PermissionPipeline::default().decide_operation(
+        let allowed = PermissionPipeline::default().decide_operation(
             &policy(vec![rule(
-                "deny-session-tools",
+                "allow-reviewer",
                 PermissionAction::Delegate,
-                "*",
-                PermissionEffect::Deny,
+                "reviewer",
+                PermissionEffect::Allow,
             )]),
             &operation,
-            &[None],
+            &[Some("reviewer".into())],
             std::path::Path::new("/workspace"),
         );
         assert_eq!(
             PermissionPipeline::action_for_permission_name("delegate").expect("delegate action"),
             PermissionAction::Delegate
         );
-        assert_eq!(decision.effect, PermissionEffect::Deny);
+        assert_eq!(allowed.effect, PermissionEffect::Allow);
+
+        let denied = PermissionPipeline::default().decide_operation(
+            &policy(vec![rule(
+                "allow-explorer",
+                PermissionAction::Delegate,
+                "explorer",
+                PermissionEffect::Allow,
+            )]),
+            &operation,
+            &[Some("reviewer".into())],
+            std::path::Path::new("/workspace"),
+        );
+        assert_eq!(denied.effect, PermissionEffect::Deny);
     }
 
     #[test]

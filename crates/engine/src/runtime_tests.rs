@@ -19571,6 +19571,23 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
             .to_string()
             .contains("not owned by the caller")
     );
+    let foreign_result_error = fixture
+        .engine
+        .get_subagent_result(
+            foreign.session_id,
+            child_session_id,
+            false,
+            0,
+            2000,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("foreign parent cannot read child result");
+    assert!(
+        foreign_result_error
+            .to_string()
+            .contains("not owned by the caller")
+    );
     let missing_id = SessionId::new_v7();
     let missing_error = fixture
         .engine

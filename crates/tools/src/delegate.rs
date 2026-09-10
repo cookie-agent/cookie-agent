@@ -101,7 +101,6 @@ impl DelegateToolProvider {
     }
 
     fn operation(
-        &self,
         ctx: &ToolPreparationContext,
         name: &str,
         args: &impl Serialize,
@@ -126,33 +125,6 @@ impl DelegateToolProvider {
                 &cwd,
             )?,
             permission_resource: Some(agent_type.to_string()),
-        })
-    }
-
-    fn unscoped_operation(
-        ctx: &ToolPreparationContext,
-        name: &str,
-        args: &impl Serialize,
-        operation_name: &str,
-    ) -> Result<PreparedToolParts, ToolError> {
-        let resource = prepared_resource(
-            PermissionAction::Delegate,
-            "permission",
-            b"delegate",
-            b"delegate",
-            PreparedBindingLifetime::RestartStable,
-            ApprovalResourceSource::PrimaryOperation,
-        )?;
-        let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
-        Ok(PreparedToolParts {
-            operation: prepared_operation(
-                name,
-                args,
-                vec![(PermissionAction::Delegate, operation_name)],
-                vec![resource],
-                &cwd,
-            )?,
-            permission_resource: None,
         })
     }
 }
@@ -329,7 +301,7 @@ impl ToolProvider for DelegateToolProvider {
                     return Err(ToolError::execution("delegate target is not allowed"));
                 }
                 let parts =
-                    self.operation(&ctx, "delegate_subagent", &args, "spawn", &args.agent_type)?;
+                    Self::operation(&ctx, "delegate_subagent", &args, "spawn", &args.agent_type)?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::Invoke {
@@ -346,10 +318,12 @@ impl ToolProvider for DelegateToolProvider {
                     return Err(ToolError::execution("limit must be positive"));
                 }
                 args.limit = Some(limit);
-                self.engine
+                let agent_type = self
+                    .engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = Self::unscoped_operation(&ctx, "get_subagent_result", &args, "read")?;
+                let parts =
+                    Self::operation(&ctx, "get_subagent_result", &args, "read", &agent_type)?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::GetResult {
@@ -360,10 +334,11 @@ impl ToolProvider for DelegateToolProvider {
             }
             "cancel_subagent" => {
                 let args = parse_cancel(&call.arguments)?;
-                self.engine
+                let agent_type = self
+                    .engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = Self::unscoped_operation(&ctx, "cancel_subagent", &args, "cancel")?;
+                let parts = Self::operation(&ctx, "cancel_subagent", &args, "cancel", &agent_type)?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::Cancel {
@@ -377,10 +352,11 @@ impl ToolProvider for DelegateToolProvider {
                 if args.message.trim().is_empty() {
                     return Err(ToolError::execution("message must not be empty"));
                 }
-                self.engine
+                let agent_type = self
+                    .engine
                     .subagent_agent_type(ctx.session, args.session_id)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = Self::unscoped_operation(&ctx, "steer_subagent", &args, "steer")?;
+                let parts = Self::operation(&ctx, "steer_subagent", &args, "steer", &agent_type)?;
                 let normalized = serde_json::to_value(&args)
                     .map_err(|error| ToolError::execution(error.to_string()))?;
                 let executor = DelegateExecutor::Steer {
@@ -538,7 +514,7 @@ mod tests {
         ToolError, ToolPreparationContext, ToolProvider, permissions::ApprovalStore,
     };
     use cookie_agent_protocol::{
-        ApprovalId, ApprovalResourceSource, OperationFingerprint, PermissionAction,
+        AgentId, ApprovalId, ApprovalResourceSource, OperationFingerprint, PermissionAction,
         PreparedBindingLifetime, RunId, SessionId, TreeApprovalGrant, TreeApprovalGrantId,
     };
     use serde::Serialize;
@@ -563,9 +539,10 @@ mod tests {
             workspace_root: cwd.path().to_owned(),
             turn_context: crate::test_turn_context(),
         };
+        let agent_type = AgentId::new("reviewer").expect("agent type");
         let current =
-            DelegateToolProvider::unscoped_operation(&context, name, args, operation_name)
-                .expect("current unscoped operation")
+            DelegateToolProvider::operation(&context, name, args, operation_name, &agent_type)
+                .expect("current agent-scoped operation")
                 .operation;
         let old_resource = crate::prepared_resource(
             PermissionAction::Delegate,
@@ -600,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_scoped_delegate_grants_do_not_match_unscoped_session_tools() {
+    fn legacy_scoped_delegate_grants_do_not_match_current_session_tools() {
         let session_id = SessionId::new_v7();
         assert_legacy_grant_does_not_match(
             "get_subagent_result",
@@ -612,7 +589,7 @@ mod tests {
                 limit: Some(super::DEFAULT_RESULT_LIMIT),
             },
             "agent",
-            b"reviewer",
+            b"explorer",
         );
         assert_legacy_grant_does_not_match(
             "cancel_subagent",
@@ -622,7 +599,7 @@ mod tests {
                 reason: None,
             },
             "agent",
-            b"reviewer",
+            b"explorer",
         );
         let session = session_id.to_string();
         assert_legacy_grant_does_not_match(
