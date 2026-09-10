@@ -25,7 +25,8 @@ earlier checkpoints. A local fit rejection of the exact assembled summarizer inp
 or a provider context-length failure permits at most one pruned retry; other
 failures do not trigger pruning. The retry changes only an in-memory copy of the
 summarizer input, using `ArtifactStore::retain` and artifact-ID reference markers
-for tool results and redacting all output from artifact `read` calls, detected by
+for tool results and replacing output from artifact `read` calls with
+`[artifact read output omitted for compaction]`, detected by
 the tool name plus its structured `filePath` URI. Ordinary filesystem reads are
 pruned normally. Markers include a `read` hint with `filePath="artifact://<digest>"`;
 internal stored references retain their URI format. Possession of that ID grants

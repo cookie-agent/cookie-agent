@@ -1624,16 +1624,10 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_tool_reports_its_actual_output_even_when_run_recovers() {
-    for (command, fills_diagnostic) in [
-        (
-            "printf '%06000d' 0; printf 'Required asset missing' >&2; exit 23",
-            false,
-        ),
-        (
-            "printf '%06000d' 0; printf 'Required asset missing é'; exit 23",
-            true,
-        ),
+async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
+    for command in [
+        "printf '%06000d' 0; printf 'Required asset missing' >&2; exit 23",
+        "printf '%06000d' 0; printf 'Required asset missing é'; exit 23",
     ] {
         let fixture = Fixture::new().await;
         fixture.server.enqueue(MockResponse::Sse(tool_response(
@@ -1649,12 +1643,16 @@ async fn failed_tool_reports_its_actual_output_even_when_run_recovers() {
         let result = fixture.run(args, "").await;
         assert_eq!(result.code, 0, "{}", result.stderr);
         assert!(
-            result.stderr.contains("Required asset missing"),
+            !result.stderr.contains("Required asset missing"),
             "{}",
             result.stderr
         );
         assert!(!result.stderr.contains("tool reported failure"));
-        assert!(result.stderr.contains("status: 23"), "{}", result.stderr);
+        assert!(
+            !result.stderr.contains("execution_failed"),
+            "{}",
+            result.stderr
+        );
         let records = parse_json_lines(&result.stdout);
         let event: StoredEvent = serde_json::from_value(
             records
@@ -1667,29 +1665,38 @@ async fn failed_tool_reports_its_actual_output_even_when_run_recovers() {
         let EventPayload::ToolCallTerminated { termination } = &event.payload else {
             unreachable!()
         };
-        assert!(termination.result.as_ref().unwrap().output.len() > 4096);
-        let diagnostic = termination.error.as_ref().unwrap().message.as_str();
-        assert!(diagnostic.contains("Required asset missing"));
-        assert!(diagnostic.contains("status: 23"));
-        assert!(diagnostic.len() <= 4096);
-        if fills_diagnostic {
-            assert!(diagnostic.len() >= 4090);
-        }
-        let consumed = cookie_agent_protocol::diagnostics::tool(termination);
-        assert!(consumed.contains("Required asset missing"));
-        assert!(consumed.contains("status: 23"));
-        assert_eq!(consumed.matches("execution_failed:").count(), 1);
-        assert!(consumed.len() <= 4096);
-        if fills_diagnostic {
-            assert!(consumed.ends_with("Required asset missing é"));
-        }
+        assert_eq!(
+            termination.outcome,
+            cookie_agent_protocol::ToolTerminationOutcome::Completed
+        );
+        assert!(termination.error.is_none());
+        let output = termination.result.as_ref().unwrap();
+        assert!(output.output.len() > 4096);
+        assert!(output.output.contains("Required asset missing"));
+        assert_eq!(output.metadata["status"], 23);
+        let display = output.display.as_ref().unwrap();
+        assert!(display.contains("Required asset missing"));
+        assert!(display.ends_with("Exit status: 23"));
         #[cfg(feature = "tui")]
         {
             let mut store = cookie_agent_tui::state::StateStore::default();
             let session_id = event.session_id;
-            store.apply_event(event);
+            for record in &records {
+                if let Some(event) = record.get("event") {
+                    store.apply_event(serde_json::from_value(event.clone()).unwrap());
+                }
+            }
             let state = &store.sessions[&session_id];
-            assert!(state.transcript.iter().any(|item| matches!(item, cookie_agent_tui::state::TranscriptItem::Event { level: cookie_agent_tui::state::EventLevel::Error, text, .. } if text.contains("Required asset missing") && text.contains("status: 23"))));
+            assert!(!state.transcript.iter().any(|item| matches!(
+                item,
+                cookie_agent_tui::state::TranscriptItem::Event {
+                    level: cookie_agent_tui::state::EventLevel::Error,
+                    ..
+                }
+            )));
+            let tool = &state.tools[&termination.tool_call_id];
+            assert_eq!(tool.status, cookie_agent_tui::state::ToolStatus::Completed);
+            assert_eq!(&tool.detail, display);
         }
         fixture.shutdown().await;
     }
@@ -1741,7 +1748,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
                 if let EventSubscriptionMessage::Event { event } = message
                     && matches!(&event.payload, EventPayload::PluginDiagnostic { plugin, .. } if plugin == "review_guard") {
                     assert!(event.run_id.is_none());
-                    assert!(!serde_json::to_string(&event).unwrap().contains("secret-tail"));
+                    assert!(serde_json::to_string(&event).unwrap().contains("secret-tail"));
                     release.send(()).unwrap();
                     return;
                 }
@@ -1773,7 +1780,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
         "{}",
         result.stderr
     );
-    assert!(!result.stderr.contains("secret-tail"), "{}", result.stderr);
+    assert!(result.stderr.contains("secret-tail"), "{}", result.stderr);
     fixture.shutdown().await;
 }
 
@@ -1823,6 +1830,7 @@ async fn successful_internal_fallback_still_explains_rejected_backend() {
             result.stderr
         );
         assert!(result.stderr.contains("HTTP 400"));
+        // The pinned SDK replaces this field before handing diagnostics to the engine.
         assert!(!result.stderr.contains("secret-tail"));
         let (saved, _) = fixture
             .engine
@@ -1881,14 +1889,15 @@ async fn anthropic_http_400_diagnostics_reach_all_clients_and_persisted_events()
                 result.stderr
             );
         }
-        for secret in [
-            "hidden-key",
-            "hidden-token",
-            "fixture-anthropic-key",
-            "header-pair-secret",
-        ] {
+        // The SDK already redacts these fields; the application cannot recover them.
+        for secret in ["hidden-key", "hidden-token", "fixture-anthropic-key"] {
             assert!(!result.stderr.contains(secret));
             assert!(!result.stdout.contains(secret));
+        }
+        // Preserve the text supplied by the SDK, including header pairs it leaves intact.
+        assert!(result.stderr.contains("header-pair-secret"));
+        if mode == OutputMode::Json {
+            assert!(result.stdout.contains("header-pair-secret"));
         }
         let requests = fixture.server.requests();
         assert_eq!(

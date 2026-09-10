@@ -34,7 +34,7 @@ struct OAuthFixtureState {
     reject_all_access: AtomicBool,
     reject_refresh: AtomicBool,
     transient_refresh_failure: AtomicBool,
-    reject_code_exchange: AtomicBool,
+    code_exchange_error: Mutex<Option<String>>,
     token_expires_in: AtomicU64,
     mcp2_bearer_requests: AtomicUsize,
     pkce: Mutex<Vec<(String, String)>>,
@@ -62,7 +62,7 @@ impl OAuthFixture {
             reject_all_access: AtomicBool::new(false),
             reject_refresh: AtomicBool::new(false),
             transient_refresh_failure: AtomicBool::new(false),
-            reject_code_exchange: AtomicBool::new(false),
+            code_exchange_error: Mutex::new(None),
             token_expires_in: AtomicU64::new(3600),
             mcp2_bearer_requests: AtomicUsize::new(0),
             pkce: Mutex::new(Vec::new()),
@@ -320,11 +320,14 @@ async fn handle_request(
                 .lock()
                 .expect("code capture")
                 .push(params.get("code").cloned().unwrap_or_default());
-            if state.reject_code_exchange.load(Ordering::SeqCst) {
-                return json_response(
+            let error_body = state.code_exchange_error.lock().unwrap().clone();
+            if let Some(body) = error_body {
+                return respond(
                     &mut stream,
                     "400 Bad Request",
-                    json!({"error":"invalid_grant","error_description":"oauth-token-sentinel"}),
+                    "application/json",
+                    &[],
+                    &body,
                 )
                 .await;
             }
@@ -647,7 +650,7 @@ async fn oauth_challenge_callback_persistence_refresh_and_revocation() {
     let status = restarted.statuses().remove(0);
     assert_eq!(status.state, McpServerState::NeedsAuth);
     assert!(
-        !status
+        status
             .message
             .unwrap_or_default()
             .contains("oauth-token-sentinel")
@@ -1187,12 +1190,13 @@ async fn eager_readiness_finishes_at_needs_auth_without_waiting_for_browser_flow
 }
 
 #[tokio::test]
-async fn token_exchange_errors_are_redacted() {
+async fn token_exchange_errors_preserve_bounded_response_bodies() {
+    for body in [
+        json!({"error":"custom_rejection","error_description":"oauth-token-sentinel", "password":"visible-password"}).to_string(),
+        format!("oauth-token-sentinel visible-password\u{1b}\u{202e}\n{}", "é".repeat(4096)),
+    ] {
     let fixture = OAuthFixture::start().await;
-    fixture
-        .state
-        .reject_code_exchange
-        .store(true, Ordering::SeqCst);
+    *fixture.state.code_exchange_error.lock().unwrap() = Some(body.clone());
     let directory = tempfile::tempdir().expect("project data");
     let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
     registry
@@ -1209,9 +1213,51 @@ async fn token_exchange_errors_are_redacted() {
         .expect("OAuth callback response");
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     wait_for_state(&registry, McpServerState::NeedsAuth).await;
+    wait_for_auth_flow(&registry, false).await;
     let message = registry.statuses()[0].message.clone().unwrap_or_default();
     assert!(message.contains("authorization failed"));
-    assert!(!message.contains("oauth-token-sentinel"));
+    assert!(message.contains("oauth-token-sentinel"), "{message}");
+    assert!(message.contains("visible-password"), "{message}");
+    assert!(message.contains("HTTP 400"), "{message}");
+    assert!(!message.contains(['\u{1b}', '\u{202e}']));
+    assert!(message.len() <= cookie_agent_protocol::DiagnosticText::MAX_BYTES);
+    if body.len() > 4096 { assert!(message.ends_with("[diagnostic truncated]")); }
+    registry.shutdown().await;
+    fixture.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_callback_denial_preserves_error_description() {
+    let fixture = OAuthFixture::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let registry = oauth_registry(&directory, fixture.mcp_url(), "remote");
+    registry
+        .server("remote")
+        .unwrap()
+        .connect()
+        .await
+        .expect_err("authorization required");
+    let authorization_url = registry.begin_auth("remote").await.unwrap();
+    let params = authorization_parameters(&authorization_url);
+    let mut callback = url::Url::parse(&params["redirect_uri"]).unwrap();
+    callback
+        .query_pairs_mut()
+        .append_pair("error", "access_denied")
+        .append_pair(
+            "error_description",
+            "password=visible; user declined\u{1b}\u{202e}",
+        );
+    let response = reqwest::get(callback).await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    wait_for_auth_flow(&registry, false).await;
+    let message = registry.statuses()[0].message.clone().unwrap();
+    assert!(message.contains("access_denied"), "{message}");
+    assert!(
+        message.contains("password=visible; user declined"),
+        "{message}"
+    );
+    assert!(!message.contains(['\u{1b}', '\u{202e}']));
     registry.shutdown().await;
     fixture.stop().await;
 }

@@ -177,13 +177,14 @@ combination of tool name `read` and its structured `filePath` argument:
    do not trigger pruning.
 3. In that private retry snapshot, replace ordinary tool output with usable
    artifact read references, regardless of output size or recency.
-4. Redact all output from artifact `read` calls instead of retaining another copy:
+4. Omit all output from artifact `read` calls instead of retaining another copy:
    content, metadata, attachments, and tool-emitted messages. This applies to all
    streams and both small and recent results. Keep call/result pairing intact.
 5. Ordinary filesystem `read` is not artifact retrieval and follows the ordinary
    tool-output pruning path. Parse arguments structurally, not by substring
    matching serialized JSON or matching the tool name alone.
-6. Do not create another artifact containing a redacted artifact-read result.
+6. Replace artifact-read output with `[artifact read output omitted for compaction]`
+   in the private retry input; do not create another artifact containing that marker.
 7. Pruning must not mutate saved history or the recent suffix retained after the
    summary. Failure, empty/non-text output, or an invalid summary leaves the
    original context intact. No durable elision events for the private retry.
@@ -225,7 +226,7 @@ Implementation is complete only after tests cover:
 - No repeated truncation/retention of artifact pages; unchanged filesystem/media
   reads and their permission checks; absence of the removed tool registration.
 - UI append/final-replacement semantics, bounded rendering, and live/replay parity.
-- Full-history compaction, context-only retry, artifact-read-only redaction,
+- Full-history compaction, context-only retry, artifact-read output omitted for compaction,
   unchanged recent suffix/logs, and failure preserving original context.
 
 Run the required build, workspace tests, formatting, stable/MSRV Clippy, generated

@@ -1,5 +1,5 @@
-//! Bounded user-facing diagnostics. This is pattern-based redaction, not a guarantee
-//! against arbitrary secret echoes. Never pass request headers or credential stores.
+//! Bounded user-facing diagnostics. Preserve diagnostic content while removing
+//! terminal/format controls and truncating text to the display budget.
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -7,346 +7,12 @@ use serde_json::Value;
 
 use crate::{DiagnosticText, ModelErrorSummary, SafeErrorMessage};
 
-fn sensitive(key: &str) -> bool {
-    let key: String = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        key.as_str(),
-        "headers" | "request" | "requestheaders" | "requestbody"
-    ) || key.ends_with("token")
-        || [
-            "authorization",
-            "password",
-            "passwd",
-            "secret",
-            "apikey",
-            "credential",
-            "cookie",
-            "privatekey",
-        ]
-        .iter()
-        .any(|part| key.contains(part))
-}
-
-fn scrub_json(value: &mut Value, known_secrets: &[&str]) {
-    match value {
-        Value::Object(map) => {
-            let credential_header = map
-                .iter()
-                .any(|(key, value)| value.as_str().is_some_and(|name| header_name(key, name)));
-            for (key, value) in map {
-                if sensitive(key) || (credential_header && key.eq_ignore_ascii_case("value")) {
-                    *value = Value::String("[REDACTED]".into());
-                } else {
-                    scrub_json(value, known_secrets);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                scrub_json(value, known_secrets);
-            }
-        }
-        Value::String(text) => *text = scrub_text(text, known_secrets),
-        _ => {}
-    }
-}
-
-fn header_name(key: &str, value: &str) -> bool {
-    key.eq_ignore_ascii_case("name") && sensitive(value)
-}
-
-// Return the end of a quoted token, respecting escaped quotes and backslashes.
-// An unfinished token consumes the remainder: partial credentials must not leak.
-fn quoted_end(bytes: &[u8], start: usize) -> usize {
-    let quote = bytes[start];
-    let mut index = start + 1;
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index = (index + 2).min(bytes.len());
-        } else if bytes[index] == quote {
-            return index + 1;
-        } else {
-            index += 1;
-        }
-    }
-    bytes.len()
-}
-
-// Double quotes delimit JSON strings. Single quotes delimit configuration keys
-// only when followed by an assignment; prose apostrophes must not hide fragments.
-fn quote_start(value: &str, start: usize) -> bool {
-    let bytes = value.as_bytes();
-    if bytes[start] == b'"' {
-        return true;
-    }
-    if bytes[start] != b'\''
-        || value[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-    {
-        return false;
-    }
-    let end = quoted_end(bytes, start);
-    if end <= start + 1 || bytes[end - 1] != b'\'' {
-        return false;
-    }
-    let suffix = value[end..].trim_start();
-    suffix.starts_with([':', '='])
-}
-
-fn decoded_token(token: &str) -> Option<String> {
-    if token.starts_with('"') {
-        serde_json::from_str(token).ok()
+/// Preserve LF/tab, remove terminal/format controls, and truncate at UTF-8 boundaries.
+pub fn sanitize(value: &str, maximum: usize) -> String {
+    let mut text = if let Ok(json) = serde_json::from_str::<Value>(value) {
+        serde_json::to_string_pretty(&json).expect("JSON value serializes")
     } else {
-        token
-            .strip_prefix('\'')?
-            .strip_suffix('\'')
-            .map(str::to_owned)
-    }
-}
-
-// Collect sibling value ranges in each object before rendering, so value/name
-// order does not matter. Unfinished outer objects are finalized at EOF, too.
-fn header_value_ranges(value: &str) -> Vec<std::ops::Range<usize>> {
-    #[derive(Default)]
-    struct Fields {
-        credential: bool,
-        values: Vec<std::ops::Range<usize>>,
-    }
-    fn finish(fields: Fields, ranges: &mut Vec<std::ops::Range<usize>>) {
-        if fields.credential {
-            ranges.extend(fields.values);
-        }
-    }
-    let bytes = value.as_bytes();
-    let mut scopes = vec![Fields::default()];
-    let mut ranges = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        let start = index;
-        if quote_start(value, index) {
-            index = quoted_end(bytes, index);
-        } else if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
-            while index < bytes.len()
-                && (bytes[index].is_ascii_alphanumeric() || b"_-".contains(&bytes[index]))
-            {
-                index += 1;
-            }
-        } else {
-            match bytes[index] {
-                b'{' | b'[' => scopes.push(Fields::default()),
-                b'}' | b']' if scopes.len() > 1 => finish(scopes.pop().unwrap(), &mut ranges),
-                _ => {}
-            }
-            index += value[index..].chars().next().unwrap().len_utf8();
-            continue;
-        }
-        let token = &value[start..index];
-        let decoded = decoded_token(token);
-        let key = decoded.as_deref().unwrap_or(token);
-        let mut separator = index;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        if separator == bytes.len() || !matches!(bytes[separator], b':' | b'=') {
-            continue;
-        }
-        let mut value_start = separator + 1;
-        while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
-            value_start += 1;
-        }
-        let end = value_end(bytes, value_start);
-        let fields = scopes.last_mut().unwrap();
-        if key.eq_ignore_ascii_case("value") {
-            fields.values.push(value_start..end);
-        } else if let Some(name) = decoded_token(&value[value_start..end]) {
-            fields.credential |= header_name(key, &name);
-        }
-        index = value_start;
-    }
-    for fields in scopes {
-        finish(fields, &mut ranges);
-    }
-    ranges.sort_by_key(|range| range.start);
-    ranges
-}
-
-fn value_end(bytes: &[u8], start: usize) -> usize {
-    if start == bytes.len() {
-        return start;
-    }
-    if matches!(bytes[start], b'"' | b'\'') {
-        return quoted_end(bytes, start);
-    }
-    if matches!(bytes[start], b'{' | b'[') {
-        let mut stack = vec![bytes[start]];
-        let mut index = start + 1;
-        while index < bytes.len() {
-            match bytes[index] {
-                b'"' | b'\'' => {
-                    index = quoted_end(bytes, index);
-                    continue;
-                }
-                b'{' | b'[' => stack.push(bytes[index]),
-                b'}' | b']' => {
-                    let expected = if bytes[index] == b'}' { b'{' } else { b'[' };
-                    if stack.pop() != Some(expected) {
-                        return bytes.len();
-                    }
-                    if stack.is_empty() {
-                        return index + 1;
-                    }
-                }
-                _ => {}
-            }
-            index += 1;
-        }
-        return bytes.len();
-    }
-    let mut end = start;
-    while end < bytes.len()
-        && !bytes[end].is_ascii_whitespace()
-        && !b"&,;<>}]\"'".contains(&bytes[end])
-    {
-        end += 1;
-    }
-    // Authorization values commonly include a scheme followed by a credential.
-    if bytes[start..end].eq_ignore_ascii_case(b"bearer")
-        || bytes[start..end].eq_ignore_ascii_case(b"basic")
-    {
-        while end < bytes.len() && bytes[end].is_ascii_whitespace() {
-            end += 1;
-        }
-        while end < bytes.len()
-            && !bytes[end].is_ascii_whitespace()
-            && !b"&,;<>}".contains(&bytes[end])
-        {
-            end += 1;
-        }
-    }
-    end
-}
-
-fn replace_known(value: &str, secrets: &[&str]) -> String {
-    let mut text = value.to_owned();
-    for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
-        text = text.replace(secret, "[REDACTED]");
-    }
-    text
-}
-
-// Recognize field assignments even inside prefixed or incomplete JSON. Sensitive
-// nested objects/arrays are consumed as a unit; malformed values fail closed.
-fn scrub_fields(value: &str, known_secrets: &[&str]) -> String {
-    let bytes = value.as_bytes();
-    let mut output = String::new();
-    let mut index = 0;
-    let mut header_values = header_value_ranges(value).into_iter().peekable();
-    while index < bytes.len() {
-        while header_values
-            .peek()
-            .is_some_and(|range| range.start < index)
-        {
-            header_values.next();
-        }
-        if header_values
-            .peek()
-            .is_some_and(|range| range.start == index)
-        {
-            let range = header_values.next().unwrap();
-            output.push_str("\"[REDACTED]\"");
-            index = range.end;
-            continue;
-        }
-        let start = index;
-        let quoted = quote_start(value, index);
-        if quoted {
-            index = quoted_end(bytes, index);
-        } else if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
-            while index < bytes.len()
-                && (bytes[index].is_ascii_alphanumeric() || b"_-".contains(&bytes[index]))
-            {
-                index += 1;
-            }
-        } else {
-            let character = value[index..].chars().next().unwrap();
-            output.push(character);
-            index += character.len_utf8();
-            continue;
-        }
-        let token = &value[start..index];
-        let decoded = if bytes[start] == b'"' {
-            serde_json::from_str::<String>(token).ok()
-        } else {
-            None
-        };
-        let key = decoded
-            .as_deref()
-            .unwrap_or_else(|| token.trim_matches(['\'', '"']));
-        let mut separator = index;
-        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-            separator += 1;
-        }
-        if separator < bytes.len() && matches!(bytes[separator], b':' | b'=') && sensitive(key) {
-            let mut value_start = separator + 1;
-            while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
-                value_start += 1;
-            }
-            output.push_str(&replace_known(&value[start..value_start], known_secrets));
-            output.push_str("\"[REDACTED]\"");
-            index = value_end(bytes, value_start);
-        } else if let Some(decoded) = decoded {
-            // Decode before applying known-value redaction (e.g. review\u002dsecret).
-            let scrubbed = scrub_text(&decoded, known_secrets);
-            output.push_str(&serde_json::to_string(&scrubbed).expect("string serializes"));
-        } else {
-            output.push_str(&replace_known(token, known_secrets));
-        }
-    }
-    output
-}
-
-fn scrub_text(value: &str, known_secrets: &[&str]) -> String {
-    static PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-        vec![
-            (
-                Regex::new(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=~:-]+").unwrap(),
-                "$1 [REDACTED]",
-            ),
-            (Regex::new(r"\bsk-[A-Za-z0-9_-]+").unwrap(), "[REDACTED]"),
-            (
-                Regex::new(r"(?i)(https?://)[^\s/@]+:[^\s/@]+@").unwrap(),
-                "$1[REDACTED]@",
-            ),
-            (
-                Regex::new(r"(?i)([?&](?:key|sig|signature|auth)=)[^\s&#]+").unwrap(),
-                "$1[REDACTED]",
-            ),
-        ]
-    });
-    let mut text = scrub_fields(value, known_secrets);
-    for (pattern, replacement) in PATTERNS.iter() {
-        text = pattern.replace_all(&text, *replacement).into_owned();
-    }
-    replace_known(&text, known_secrets)
-}
-
-/// Scrub raw and decoded values before UTF-8 truncation. Preserve LF/tab and
-/// remove terminal/format controls. This cannot recognize arbitrary secret echoes.
-pub fn sanitize(value: &str, known_secrets: &[&str], maximum: usize) -> String {
-    let mut text = if let Ok(mut json) = serde_json::from_str::<Value>(value) {
-        scrub_json(&mut json, known_secrets);
-        replace_known(
-            &serde_json::to_string_pretty(&json).expect("JSON value serializes"),
-            known_secrets,
-        )
-    } else {
-        scrub_text(value, known_secrets)
+        value.to_owned()
     };
     static CONTROLS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[\p{Cc}\p{Cf}&&[^\n\t]]").unwrap());
@@ -367,15 +33,12 @@ pub fn sanitize(value: &str, known_secrets: &[&str], maximum: usize) -> String {
 }
 
 pub fn detail(value: &str) -> DiagnosticText {
-    DiagnosticText::new(sanitize(value, &[], DiagnosticText::MAX_BYTES))
-        .expect("sanitized diagnostic")
+    DiagnosticText::new(sanitize(value, DiagnosticText::MAX_BYTES)).expect("sanitized diagnostic")
 }
 
 pub fn headline(value: &str) -> SafeErrorMessage {
-    SafeErrorMessage::new(
-        sanitize(value, &[], SafeErrorMessage::MAX_BYTES).replace(['\n', '\t'], " "),
-    )
-    .expect("sanitized headline")
+    SafeErrorMessage::new(sanitize(value, SafeErrorMessage::MAX_BYTES).replace(['\n', '\t'], " "))
+        .expect("sanitized headline")
 }
 
 pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
@@ -468,8 +131,7 @@ pub fn internal_fallback(
 
 pub fn tool(termination: &crate::ToolCallTermination) -> String {
     if let Some(error) = &termination.error {
-        // The persisted message may already fill its budget. Preserve both its
-        // status/context and final cause when adding the error-code prefix.
+        // Preserve both status/context and final cause when adding the prefix.
         return excerpt(
             &format!("{}: {}", error.code, error.message),
             DiagnosticText::MAX_BYTES,
@@ -486,8 +148,7 @@ pub fn tool(termination: &crate::ToolCallTermination) -> String {
 
 pub fn tool_result(result: &crate::PersistedToolResult) -> String {
     let mut parts = vec![excerpt(result.title.as_str(), 256)];
-    // Keep exit/source context ahead of output, with a separate budget for each
-    // diagnostic field so a large error object cannot bury the process status.
+    // Give status/source context and each output field separate budgets.
     for key in [
         "status",
         "exit_code",
@@ -507,8 +168,7 @@ pub fn tool_result(result: &crate::PersistedToolResult) -> String {
         }
     }
     let mut sections = tool_sections(result);
-    // Named stream headings are emitted by the runtime in declaration order.
-    // Give each declared stream a budget, prioritizing diagnostic streams.
+    // Named stream headings come from the runtime in declaration order.
     sections.sort_by_key(|(name, _)| match *name {
         "stderr" | "diagnostics" | "errors" | "error" => 0,
         "stdout" => 2,
@@ -568,16 +228,15 @@ fn tool_sections(result: &crate::PersistedToolResult) -> Vec<(&str, &str)> {
     sections
 }
 
-// Scrub the whole section before retaining its head and tail. Error summaries
-// commonly occur at the end of a noisy stream; clipping must not split secrets.
+// Keep the head and tail: final causes often follow a noisy stream.
 fn excerpt(value: &str, maximum: usize) -> String {
-    let clean = sanitize(value, &[], usize::MAX);
+    let clean = sanitize(value, usize::MAX);
     if clean.len() <= maximum {
         return clean;
     }
     const MARKER: &str = "\n[diagnostic truncated]\n";
     if maximum < MARKER.len() {
-        return sanitize(&clean, &[], maximum);
+        return sanitize(&clean, maximum);
     }
     let mut head = (maximum - MARKER.len()) / 2;
     let mut tail = clean.len() - (maximum - MARKER.len() - head);
@@ -622,77 +281,45 @@ pub fn rpc(error: &crate::JsonRpcError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn credential_header_pairs_are_scrubbed_in_every_supported_container() {
-        for name in [
-            "Authorization",
-            "aUtHoRiZaTiOn",
-            "X-Api-Key",
-            "Proxy-Authorization",
-            "Set-Cookie",
-            "X-Auth-Token",
-        ] {
-            for reversed in [false, true] {
-                let object = if reversed {
-                    format!(
-                        r#"{{"value":"opaque-review-credential","NAME":"{name}","message":"Harmless message"}}"#
-                    )
-                } else {
-                    format!(
-                        r#"{{"name":"{name}","VALUE":"opaque-review-credential","message":"Harmless message"}}"#
-                    )
-                };
-                let embedded = serde_json::json!({"message": object}).to_string();
-                for input in [
-                    object.clone(),
-                    format!("gateway: {object}"),
-                    format!("gateway: {}", &object[..object.len() - 1]),
-                    embedded,
-                ] {
-                    let output = sanitize(&input, &[], 4096);
-                    assert!(!output.contains("opaque-review-credential"), "{output}");
-                    assert!(output.contains("Harmless message"), "{output}");
-                    assert!(output.contains("[REDACTED]"), "{output}");
-                }
-            }
-        }
-        let output = detail(
-            r#"gateway: [{"name":"X-Api-Key","value":"opaque-review-credential"},{"name":"Content-Type","value":"application/json","message":"Harmless message"}]"#,
+    fn diagnostics_preserve_credentials_in_json_and_prose() {
+        let input = r#"{"password":"hidden","nested":[{"api_key":"hidden2"}],"access_token":"literal","echo":"Bearer opaque Basic abc sk-other https://user:pass@host/?token=query&sig=signed","headers":[{"name":"Authorization","value":"credential"}]}"#;
+        let text = sanitize(input, 4096);
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            serde_json::from_str::<Value>(input).unwrap()
         );
-        assert!(!output.as_str().contains("opaque-review-credential"));
-        assert!(output.as_str().contains("application/json"));
-        assert!(output.as_str().contains("Harmless message"));
         for input in [
-            r#"gateway: {"name":"X-Api-Key","value":"opaque-review-credential"#,
-            r#"gateway: {'name':'X-Api-Key','value':'opaque-review-credential'}"#,
-            r#"gateway: {"name":"Authorization","value":{"parts":["opaque-review-credential""#,
+            format!("gateway: {input}"),
+            r#"Couldn't decode response: {"password":"review\"secret-tail"#.into(),
+            "Bearer opaque Basic abc sk-other https://user:pass@host/?key=query&sig=signed".into(),
         ] {
-            assert!(!detail(input).as_str().contains("opaque-review-credential"));
+            assert_eq!(sanitize(&input, 4096), input);
         }
     }
 
     #[test]
-    fn prose_apostrophes_do_not_hide_credential_fragments_or_escaped_known_values() {
-        for input in [
-            r#"Couldn't decode upstream response: {"password":"credential-value","message":"Harmless message"}"#,
-            r#"Provider's response: {"message":"review\u002dsecret","reason":"Harmless message"}"#,
-            r#"Couldn't decode upstream response: {"password":"review\"secret-tail","message":"Harmless message"}"#,
-            r#"Provider's response: {"credentials":{"parts":["credential-value"]},"message":"Harmless message"}"#,
-            r#"The providers' response: {"password":"credential-value","message":"Harmless message"}"#,
-            r#"A stray ' before JSON: {"password":"credential-value","message":"Harmless message"}"#,
-            r#"Couldn't decode config: {'password':'review\'secret-tail','message':'Harmless message'}"#,
-        ] {
-            let output = sanitize(input, &["review-secret"], 4096);
-            for secret in [
-                "credential-value",
-                "review-secret",
-                r"review\u002dsecret",
-                "secret-tail",
-            ] {
-                assert!(!output.contains(secret), "{output}");
-            }
-            assert!(output.contains("Harmless message"), "{output}");
-        }
+    fn diagnostic_bounds_utf8_controls_and_preserves_gateway_text() {
+        let text = sanitize(
+            &format!(
+                "<html>Gateway\nfailed</html>\u{1b}\u{202e}{}",
+                "é".repeat(4096)
+            ),
+            4096,
+        );
+        assert!(text.starts_with("<html>Gateway\nfailed</html>"));
+        assert!(!text.contains(['\u{1b}', '\u{202e}']));
+        assert!(text.len() <= 4096);
+        assert!(text.ends_with("[diagnostic truncated]"));
+    }
+
+    #[test]
+    fn diagnostic_wire_rejects_terminal_controls_and_oversized_text() {
+        assert!(DiagnosticText::new("one\ntwo\tthree").is_ok());
+        assert!(DiagnosticText::new("escape\u{1b}").is_err());
+        assert!(DiagnosticText::new("bidi\u{202e}").is_err());
+        assert!(DiagnosticText::new("x".repeat(4097)).is_err());
     }
 
     #[test]
@@ -742,14 +369,13 @@ mod tests {
             let reference = crate::ArtifactReference {
                 uri: format!("artifact://sha256/{digest}"),
             };
-            let output = format!(
-                "[results]\n{}\n\n[trace]\n{}\nCustom final cause",
-                "r".repeat(6000),
-                "t".repeat(6000)
-            );
             let result = crate::PersistedToolResult {
                 title: crate::SafeDisplayText::new("Search").unwrap(),
-                output,
+                output: format!(
+                    "[results]\n{}\n\n[trace]\n{}\nCustom final cause",
+                    "r".repeat(6000),
+                    "t".repeat(6000)
+                ),
                 display: Some("Finished".into()),
                 metadata: serde_json::json!({"status":23,"source":"/work/input"}),
                 truncation: None,
@@ -782,40 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn decoded_nested_json_and_prefixed_strings_scrub_known_values() {
-        for input in [
-            r#"{"message":"review\u002dsecret","nested":[{"echo":"review-secret"}]}"#,
-            r#"gateway: {"message":"review\u002dsecret"}"#,
-        ] {
-            let text = sanitize(input, &["review-secret"], 4096);
-            assert!(!text.contains("review-secret"), "{text}");
-            assert!(!text.contains(r"review\u002dsecret"), "{text}");
-            assert!(text.contains("[REDACTED]"));
-        }
-    }
-
-    #[test]
-    fn quoted_and_nested_credentials_fail_closed_even_in_incomplete_json() {
-        for input in [
-            r#"gateway: {"password":"review\"secret-tail","message":"Useful cause"}"#,
-            r#"gateway: {"password":"review\\\"secret-tail","message":"Useful cause"}"#,
-            r#"gateway: {'password':'review\'secret-tail','message':'Useful cause'}"#,
-            r#"gateway: {"pass\u0077ord":"review\"secret-tail","message":"Useful cause"}"#,
-            r#"gateway: {"credentials":{"first":"review","second":["secret-tail"]},"message":"Useful cause"}"#,
-            r#"gateway: {"credentials":{"first":"review","second":["secret-tail""#,
-            r#"gateway: {"credentials":{"first":"review","second":["secret-tail"},"message":"hidden after malformed object"}"#,
-            r#"gateway: {"password":"review\"secret-tail"#,
-        ] {
-            let text = sanitize(input, &[], 4096);
-            assert!(!text.contains("review"), "{text}");
-            assert!(!text.contains("secret-tail"), "{text}");
-            assert!(text.contains("[REDACTED]"), "{text}");
-            if input.ends_with("Useful cause\"}") {
-                assert!(text.contains("Useful cause"), "{text}");
-            }
-        }
-    }
-    #[test]
     fn legacy_failures_and_summaries_read_and_new_diagnostics_round_trip() {
         let old = serde_json::json!({"type":"run_failed", "error":"invalid request"});
         let mut event: crate::EventPayload = serde_json::from_value(old.clone()).unwrap();
@@ -832,74 +424,20 @@ mod tests {
         let decoded: crate::EventPayload = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
     }
-    #[test]
-    fn diagnostic_redacts_nested_json_tokens_urls_and_known_values() {
-        let text = sanitize(
-            r#"{"error":{"message":"bad option","password":"hidden","nested":[{"api_key":"hidden2"}],"echo":"Bearer opaque sk-other https://user:pass@host/?token=query"},"known":"literal"}"#,
-            &["literal"],
-            4096,
-        );
-        for secret in [
-            "hidden",
-            "hidden2",
-            "opaque",
-            "sk-other",
-            "user:pass",
-            "=query",
-            "literal",
-        ] {
-            assert!(!text.contains(secret), "{text}");
-        }
-        assert!(text.contains("bad option"));
-        assert!(text.contains('\n'));
-        serde_json::from_str::<Value>(&text).expect("redacted JSON remains readable JSON");
-    }
-    #[test]
-    fn diagnostic_bounds_utf8_controls_and_preserves_gateway_text() {
-        let text = sanitize(
-            &format!(
-                "<html>Gateway\nfailed</html>\u{1b}\u{202e}{}",
-                "é".repeat(4096)
-            ),
-            &[],
-            4096,
-        );
-        assert!(text.starts_with("<html>Gateway\nfailed</html>"));
-        assert!(!text.contains(['\u{1b}', '\u{202e}']));
-        assert!(text.len() <= 4096);
-        assert!(text.ends_with("[diagnostic truncated]"));
-    }
 
     #[test]
-    fn useful_token_limits_survive_redaction() {
-        let text = detail(r#"{"max_tokens":1024,"token_count":900,"access_token":"secret-value"}"#);
-        let json: Value = serde_json::from_str(text.as_str()).unwrap();
-        assert_eq!(json["max_tokens"], 1024);
-        assert_eq!(json["token_count"], 900);
-        assert_eq!(json["access_token"], "[REDACTED]");
-    }
-
-    #[test]
-    fn diagnostic_wire_rejects_terminal_controls_and_oversized_text() {
-        assert!(DiagnosticText::new("one\ntwo\tthree").is_ok());
-        assert!(DiagnosticText::new("escape\u{1b}").is_err());
-        assert!(DiagnosticText::new("bidi\u{202e}").is_err());
-        assert!(DiagnosticText::new("x".repeat(4097)).is_err());
-    }
-    #[test]
-    fn rpc_display_selects_cause_without_disclosing_arbitrary_data() {
+    fn rpc_display_selects_cause_and_debug_remains_redacted() {
         let error = crate::JsonRpcError {
             code: -32603,
             message: "operation failed".into(),
             data: Some(
-                serde_json::json!({"cause":"file missing", "path":"/work/config.toml", "line":7, "credentials":"secret", "request":{"body":"private"}}),
+                serde_json::json!({"cause":"password=visible", "path":"/work/config.toml", "line":7}),
             ),
         };
         let display = rpc(&error);
-        assert!(display.contains("file missing"));
+        assert!(display.contains("password=visible"));
         assert!(display.contains("/work/config.toml"));
         assert!(display.contains("line: 7"));
-        assert!(!display.contains("private"));
-        assert!(!format!("{error:?}").contains("file missing"));
+        assert!(!format!("{error:?}").contains("password=visible"));
     }
 }

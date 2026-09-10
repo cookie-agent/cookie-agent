@@ -45,7 +45,6 @@ impl Client {
             .map_err(|error| {
                 ClientError::WebSocket(cookie_agent_protocol::diagnostics::sanitize(
                     &cookie_agent_protocol::diagnostics::error_chain(&error),
-                    &[token],
                     4096,
                 ))
             })

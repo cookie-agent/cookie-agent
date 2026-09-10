@@ -10,14 +10,17 @@ members of protocol 17.
 
 ## Error diagnostics
 
-`ModelErrorSummary.response_body` is an optional, redacted `DiagnosticText`
-(maximum 4,096 UTF-8 bytes; newlines and tabs permitted). It is used for terminal,
+`ModelErrorSummary.response_body` is an optional `DiagnosticText` that preserves
+the supplied content, with terminal/Unicode format controls removed or replaced
+and a maximum of 4,096 UTF-8 bytes, including any truncation marker. Newlines and
+tabs are permitted. It is used for terminal,
 fallback, and internal-agent model failures. `run_failed` keeps its short `error`
 and optionally includes `model_error` and `resolved_model`. Missing fields in old
 events default to null and are omitted when serialized; this is an additive
 event change without a protocol version bump.
 
-Generic engine RPC failures include bounded, sanitized `data.detail`. Clients
+Generic engine RPC failures include bounded, terminal-safe `data.detail` without
+application-level secret-pattern or sensitive-field redaction. Clients
 explicitly render selected diagnostic data such as message, reason, cause, path,
 and revision information; `JsonRpcError` Debug formatting continues to redact
 data. No request headers or credential dumps are added. See

@@ -9919,7 +9919,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             );
         }
         assert_eq!(
-            summary_request.contains("[artifact read output redacted]"),
+            summary_request.contains("[artifact read output omitted for compaction]"),
             expect_elision
         );
         assert_eq!(
@@ -9989,7 +9989,10 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 }
             }
             for result in [results[1], results[3]] {
-                assert_eq!(result["content"], "[artifact read output redacted]");
+                assert_eq!(
+                    result["content"],
+                    "[artifact read output omitted for compaction]"
+                );
             }
             if expect_checkpoint {
                 let retained = fixture
@@ -10027,7 +10030,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             let retained = serde_json::to_string(&retained).unwrap();
             assert!(retained.contains(RETRIEVED_MARKER));
             assert!(retained.contains(EMITTED_MARKER));
-            assert!(!retained.contains("[artifact read output redacted]"));
+            assert!(!retained.contains("[artifact read output omitted for compaction]"));
         }
 
         let input_events = events

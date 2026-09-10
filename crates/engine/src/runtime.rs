@@ -791,7 +791,7 @@ impl PluginDiagnosticAccumulator {
 }
 
 fn normalize_plugin_diagnostic_message(message: &str) -> String {
-    cookie_agent_protocol::diagnostics::sanitize(message, &[], PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
+    cookie_agent_protocol::diagnostics::sanitize(message, PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
         .replace(['\n', '\t'], " ")
 }
 

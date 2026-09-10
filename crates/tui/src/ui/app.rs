@@ -4484,7 +4484,7 @@ impl App {
                 .blocks
                 .iter()
                 .rev()
-                .find(|hit| over(hit.rect))
+                .find(|hit| hit.toggle_rect.is_some_and(over))
                 .map(|hit| HoverTarget::TranscriptBlock(hit.id));
         }
         None
@@ -4570,7 +4570,7 @@ impl App {
                     .blocks
                     .iter()
                     .find(|hit| hit.id == id)
-                    .and_then(|hit| hit.hover_rect)
+                    .and_then(|hit| hit.hover_rect.map(|rect| rect.intersection(hit.rect)))
                 {
                     patch(frame, rect, self.theme.block_hover());
                 }
@@ -5014,7 +5014,10 @@ impl App {
             .blocks
             .iter()
             .rev()
-            .find(|hit| contains(hit.rect, column, row))
+            .find(|hit| {
+                hit.toggle_rect
+                    .is_some_and(|rect| contains(rect, column, row))
+            })
             .copied()
         {
             self.toggle_block(hit.id);

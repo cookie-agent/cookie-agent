@@ -1786,7 +1786,38 @@ fn reduce_event(
                 ToolTerminationOutcome::Failed | ToolTerminationOutcome::Interrupted
             )
             .then(|| cookie_agent_protocol::diagnostics::tool(&termination));
-            let detail = match (termination.result, termination.error) {
+            let streamed = state
+                .tools
+                .get(&tool_call_id)
+                .filter(|tool| tool.has_output_chunks && !tool.detail.trim().is_empty())
+                .map(|tool| tool.detail.clone());
+            // Named capture can contain just [stdout]/[stderr] headings with no bytes.
+            let partial_output = termination.result.as_ref().is_some_and(|result| {
+                !result.output.trim().is_empty()
+                    && result.retained_output.as_ref().is_none_or(|retained| {
+                        retained.streams.iter().any(|stream| stream.byte_length > 0)
+                    })
+            });
+            let has_output = streamed.is_some()
+                || partial_output
+                || termination.result.as_ref().is_some_and(|result| {
+                    result
+                        .display
+                        .as_ref()
+                        .is_some_and(|display| !display.trim().is_empty())
+                });
+            let mut detail = match (termination.result, termination.error) {
+                (Some(result), _) if failed && partial_output => result.output,
+                (Some(result), _)
+                    if failed
+                        && result
+                            .display
+                            .as_ref()
+                            .is_none_or(|display| display.trim().is_empty())
+                        && streamed.is_some() =>
+                {
+                    streamed.unwrap_or_default()
+                }
                 (Some(result), _) if result.display.is_some() => result.display.unwrap_or_default(),
                 (Some(result), _) if !failed => render_tool_result(
                     result.title.as_str(),
@@ -1802,15 +1833,25 @@ fn reduce_event(
                     &result.attachments,
                     &result.additional_messages,
                 ),
+                (_, _) if failed && streamed.is_some() => streamed.unwrap_or_default(),
                 (_, Some(error)) => error.message.to_string(),
                 _ => String::new(),
             };
+            if failed
+                && has_output
+                && let Some(message) = &failure_message
+                && !detail.starts_with(message)
+            {
+                // The renderer bounds output lines; keep the failure reason ahead of them.
+                detail = format!("{message}\n{detail}");
+            }
+            let inline_output = has_output && state.tools.contains_key(&tool_call_id);
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
             }
-            if let Some(message) = failure_message {
+            if let Some(message) = failure_message.filter(|_| !inline_output) {
                 push_event(
                     state,
                     EventLevel::Error,
@@ -3232,44 +3273,130 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_tool_display_cannot_hide_its_diagnostic_on_replay() {
+    fn tool_failures_with_output_stay_inline_on_replay() {
         let session = SessionId::new_v7();
-        let event = stored_event(
-            session,
-            None,
-            1,
-            EventPayload::ToolCallTerminated {
-                termination: cookie_agent_protocol::ToolCallTermination {
-                    tool_call_id: ToolCallId::new_v7(),
-                    owner: AssistantToolCallRef {
-                        model_turn_seq: 1,
-                        content_index: 0,
-                        model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
-                        provider_item_id: None,
-                    },
-                    outcome: ToolTerminationOutcome::Failed,
-                    result: Some(cookie_agent_protocol::PersistedToolResult {
-                        title: cookie_agent_protocol::SafeDisplayText::new("Read").unwrap(),
-                        output: "File missing".into(),
-                        display: Some("Finished".into()),
-                        metadata: serde_json::Value::Null,
-                        retained_output: None,
-                        truncation: None,
-                        attachments: vec![],
-                        additional_messages: vec![],
-                    }),
-                    error: Some(cookie_agent_protocol::SafeToolError {
-                        code: cookie_agent_protocol::SafeCode::new("not_found").unwrap(),
-                        message: cookie_agent_protocol::SafeErrorMessage::new(
-                            "Required file /work/Report.md missing",
+        // No output, partial result, streamed output, display-only, and a normal bash exit 1.
+        for case in 0..5 {
+            let call = ToolCallId::new_v7();
+            let owner = AssistantToolCallRef {
+                model_turn_seq: 1,
+                content_index: 0,
+                model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+                provider_item_id: None,
+            };
+            let start = stored_event(
+                session,
+                None,
+                1,
+                EventPayload::ToolCallStarted {
+                    start: cookie_agent_protocol::ToolCallStart {
+                        tool_call_id: call,
+                        owner: owner.clone(),
+                        output: Default::default(),
+                        presentation: cookie_agent_protocol::ToolCallPresentation {
+                            title: cookie_agent_protocol::SafeDisplayText::new(if case == 4 {
+                                "bash"
+                            } else {
+                                "read"
+                            })
+                            .unwrap(),
+                            primary_argument: None,
+                        },
+                        operation_fingerprint: serde_json::from_value(
+                            serde_json::json!({"digest": "1".repeat(64)}),
                         )
                         .unwrap(),
-                    }),
+                    },
                 },
-            },
-        );
-        let state = reduce_session_events(session, 0, &[event]);
-        assert!(state.transcript.iter().any(|item| matches!(item, TranscriptItem::Event { level: EventLevel::Error, text, .. } if text.contains("Required file /work/Report.md missing"))));
+            );
+            let event = stored_event(
+                session,
+                None,
+                3,
+                EventPayload::ToolCallTerminated {
+                    termination: cookie_agent_protocol::ToolCallTermination {
+                        tool_call_id: call,
+                        owner,
+                        outcome: if case == 4 {
+                            ToolTerminationOutcome::Completed
+                        } else {
+                            ToolTerminationOutcome::Failed
+                        },
+                        result: Some(cookie_agent_protocol::PersistedToolResult {
+                            title: cookie_agent_protocol::SafeDisplayText::new("Read").unwrap(),
+                            output: if case == 1 {
+                                "File missing".into()
+                            } else {
+                                String::new()
+                            },
+                            display: match case {
+                                1 => Some("Finished".into()),
+                                3 => Some("File missing".into()),
+                                4 => Some("stdout\nstderr\nExit status: 1".into()),
+                                _ => None,
+                            },
+                            metadata: serde_json::json!({"status": 1, "success": false}),
+                            retained_output: None,
+                            truncation: None,
+                            attachments: vec![],
+                            additional_messages: vec![],
+                        }),
+                        error: (case != 4).then(|| cookie_agent_protocol::SafeToolError {
+                            code: cookie_agent_protocol::SafeCode::new("not_found").unwrap(),
+                            message: cookie_agent_protocol::SafeErrorMessage::new(
+                                "Required file /work/Report.md missing",
+                            )
+                            .unwrap(),
+                        }),
+                    },
+                },
+            );
+            let mut events = vec![start];
+            if case == 2 {
+                events.push(stored_event(
+                    session,
+                    None,
+                    2,
+                    EventPayload::ToolCallProgress {
+                        tool_call_id: call,
+                        message: cookie_agent_protocol::SafeDisplayText::new("output").unwrap(),
+                        display: Some("File missing".into()),
+                    },
+                ));
+            }
+            events.push(event);
+            let state = reduce_session_events(session, 0, &events);
+            let has_error_event = state.transcript.iter().any(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::Event {
+                        level: EventLevel::Error,
+                        ..
+                    }
+                )
+            });
+            assert_eq!(has_error_event, case == 0, "case {case}");
+            let tool = &state.tools[&call];
+            assert_eq!(
+                tool.status,
+                if case == 4 {
+                    ToolStatus::Completed
+                } else {
+                    ToolStatus::Failed
+                }
+            );
+            if case == 4 {
+                assert_eq!(tool.detail, "stdout\nstderr\nExit status: 1");
+            } else {
+                assert!(
+                    tool.detail
+                        .contains("Required file /work/Report.md missing")
+                );
+                if case != 0 {
+                    assert!(tool.detail.contains("File missing"));
+                }
+            }
+        }
     }
 
     #[test]
@@ -3321,8 +3448,8 @@ mod tests {
         assert_eq!(errors.len(), 2);
         for text in errors {
             assert!(text.contains("Temperature unsupported"));
-            assert!(!text.contains("secret-tail"));
-            assert!(!text.contains("opaque-review-credential"));
+            assert!(text.contains("secret-tail"));
+            assert!(text.contains("opaque-review-credential"));
             assert!(text.contains("HTTP 400"));
             assert!(text.contains("Request-ID"));
             assert!(text.contains('\n'));

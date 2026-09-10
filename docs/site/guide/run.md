@@ -154,8 +154,11 @@ HTTP status, provider code, request ID, and response body. The same diagnostics
 are retained in session events and shown on replay. Model fallback and internal
 agent failures also include the available response diagnostics. Error rows show
 multiline text by default; expand the tool row for its display output.
-Failed tools show their failure reason even when they supplied separate display
-text. Their bounded diagnostics prioritize exit status, source context, and
+Failed tools show their failure reason before their bounded inline output, even
+when they supplied separate display text. Tools with usable output do not add a
+separate TUI error row; output-less failures still do. A bash command's non-zero
+exit code is normal result data, not a tool failure. Genuine execution failures
+such as timeouts remain failures. Bounded diagnostics prioritize exit status, source context, and
 diagnostic streams such as stderr. Each stream gets space for its beginning and
 end so loud stdout cannot hide a later failure cause. MCP connection failures
 appear in `/mcp`; plugin initialization and RPC
@@ -164,7 +167,7 @@ errors identify invalid settings and, for file/parse failures, available paths
 and locations without printing configuration source lines.
 Transport failures retain send/receive context for pending calls and appear as
 connection diagnostics in the TUI. Rejected WebSocket handshakes show a bounded,
-redacted response body when supplied, without printing response headers.
+response body with its content preserved when supplied, without printing response headers.
 
 `cookie run` writes failure diagnostics to stderr even with `--output none` and
 without `--verbose`. JSON output retains diagnostic event fields and adds an
@@ -176,23 +179,21 @@ Exit codes retain their existing meanings.
 
 Response bodies are capped at 4,096 UTF-8 bytes with a truncation marker. JSON is
 formatted for reading; plaintext and HTML gateway errors remain plain text.
-Terminal controls and Unicode format controls are removed. Common credential
-fields, bearer/basic credentials, `sk-` keys, URL credentials, and known secret
-values available at the boundary are redacted in both raw and decoded JSON strings
-before truncation. Header records pairing a sensitive `name` with a sibling
-`value` are also redacted, including prefixed and incomplete JSON. Prose
-apostrophes do not prevent inspection of following JSON. Quoted credentials
-respect escapes; unfinished credential
-objects/arrays may cause the remaining diagnostic text to be omitted. Request headers
-and credential stores are not diagnostic output. Pattern matching cannot detect
-every arbitrary secret echoed by a remote service; retained diagnostics have the
-same access and persistence rules as other session events.
+Terminal controls and Unicode format controls are stripped or replaced with spaces;
+newlines and tabs are preserved. The application does not redact credential-like
+text, sensitive field names, header records within a response body, or echoed
+secret values. It does not add request headers or credential-store dumps to
+diagnostics. MCP OAuth failures likewise preserve bounded response bodies and
+authorization error descriptions. Retained diagnostics have the same access and
+persistence rules as other session events.
 
 The pinned model SDK preserves sanitized HTTP error-body text for OpenAI,
 OpenAI-compatible, Anthropic, Google, Google Vertex, Bedrock, Azure, and Cohere.
 SDK body retention is bounded to 64 KiB; the application further sanitizes and
-bounds displayed and persisted body diagnostics to 4 KiB. Redaction has the
-pattern-based limits described above. A body is available only when the provider
+bounds displayed and persisted body diagnostics to 4 KiB. The pinned SDK still
+redacts some provider response fields before the application receives them; the
+application preserves the text it receives and cannot recover replaced values.
+A body is available only when the provider
 returned one: validation, connection, or cancellation errors may have no HTTP
 response body. Missing detail is not reconstructed or fetched with another API
 request.

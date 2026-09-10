@@ -68,12 +68,8 @@ pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
             .and_then(|value| SafeCode::new(normalize_code(value)).ok()),
         request_id: error.diagnostics.request_id.as_deref().and_then(|value| {
             SafeDisplayText::new(
-                cookie_agent_protocol::diagnostics::sanitize(
-                    value,
-                    &[],
-                    SafeDisplayText::MAX_BYTES,
-                )
-                .replace(['\n', '\t'], " "),
+                cookie_agent_protocol::diagnostics::sanitize(value, SafeDisplayText::MAX_BYTES)
+                    .replace(['\n', '\t'], " "),
             )
             .ok()
         }),
@@ -85,7 +81,7 @@ pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
 }
 
 fn normalize_code(value: &str) -> String {
-    let value = cookie_agent_protocol::diagnostics::sanitize(value, &[], SafeCode::MAX_BYTES);
+    let value = cookie_agent_protocol::diagnostics::sanitize(value, SafeCode::MAX_BYTES);
     let mut code = value
         .chars()
         .map(|character| {
@@ -157,7 +153,7 @@ mod tests {
     use super::{ErrorPolicy, classify};
 
     #[test]
-    fn summary_preserves_provider_diagnostics_and_redacts_body() {
+    fn summary_preserves_provider_diagnostics_and_body() {
         let error = ModelError::invalid_request("invalid request")
             .with_http_status(400)
             .with_vendor_code("bad_parameter")
@@ -168,7 +164,7 @@ mod tests {
         let summary = super::summary(&error);
         let body = summary.response_body.as_ref().unwrap().as_str();
         assert!(body.contains("unsupported temperature"));
-        assert!(!body.contains("private-value"));
+        assert!(body.contains("private-value"));
         assert_eq!(summary.http_status, Some(400));
         assert_eq!(summary.request_id.unwrap().as_str(), "req-400");
         assert_eq!(summary.vendor_code.unwrap().as_str(), "bad_parameter");

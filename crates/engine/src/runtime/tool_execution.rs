@@ -17,7 +17,7 @@ use super::{
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
-    helpers::{safe_display, sanitize_safe_text, session_depth},
+    helpers::{safe_display, session_depth},
 };
 use crate::{
     events::OutputHub,
@@ -1044,28 +1044,8 @@ pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {
 pub(crate) fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
     ToolCallPresentation {
         title: safe_display(name),
-        primary_argument: Some(safe_display(&redact_presentation(primary))),
+        primary_argument: Some(safe_display(primary)),
     }
-}
-
-pub(super) fn redact_presentation(value: &str) -> String {
-    const SECRET_MARKERS: [&str; 6] = [
-        "token",
-        "secret",
-        "password",
-        "api_key",
-        "apikey",
-        "authorization",
-    ];
-    let mut sanitized = sanitize_safe_text(value, 512);
-    let lowercase = sanitized.to_ascii_lowercase();
-    if SECRET_MARKERS
-        .iter()
-        .any(|marker| lowercase.contains(marker))
-    {
-        sanitized = "<redacted>".into();
-    }
-    sanitized
 }
 
 pub(crate) fn validate_attachment(
@@ -1097,6 +1077,14 @@ pub(crate) fn validate_attachment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presentation_preserves_arguments_and_strips_controls() {
+        let presentation = super::tool_presentation("bash", "cat secret.txt; TOKEN=visible\u{1b}");
+        let argument = presentation.primary_argument.unwrap();
+        assert!(argument.as_str().contains("cat secret.txt; TOKEN=visible"));
+        assert!(!argument.as_str().contains('\u{1b}'));
+    }
+
     use std::path::Path;
 
     use cookie_agent_protocol::ToolCallId;

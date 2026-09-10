@@ -2,6 +2,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -33,6 +34,7 @@ use tokio::process::Child;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
+    sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -65,6 +67,27 @@ struct BashExecutor {
 
 pub const OUTPUT_CHUNK_FLUSH_BYTES: usize = 4 * 1024;
 pub const OUTPUT_CHUNK_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+
+#[derive(Default)]
+struct MergedOutput {
+    text: String,
+    truncated: bool,
+}
+
+impl MergedOutput {
+    fn append(&mut self, chunk: &str) {
+        if self.truncated {
+            return;
+        }
+        let room = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES.saturating_sub(self.text.len());
+        let mut end = chunk.len().min(room);
+        while !chunk.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&chunk[..end]);
+        self.truncated = end < chunk.len();
+    }
+}
 
 fn sanitized_chunks(bytes: &[u8]) -> Vec<String> {
     let text = String::from_utf8_lossy(bytes);
@@ -112,11 +135,13 @@ async fn read_output<R>(
     stream: OutputStream,
     progress: ProgressSink,
     tool_call_id: ToolCallId,
+    merged: Arc<Mutex<MergedOutput>>,
 ) -> Result<(), ToolError>
 where
     R: AsyncRead + Unpin,
 {
     let mut pending = Vec::new();
+    let mut undecoded = Vec::new();
     let mut read_buffer = [0_u8; OUTPUT_CHUNK_FLUSH_BYTES];
     let flush = tokio::time::sleep(OUTPUT_CHUNK_FLUSH_INTERVAL);
     tokio::pin!(flush);
@@ -124,6 +149,16 @@ where
         tokio::select! {
             read = reader.read(&mut read_buffer) => {
                 let count = read.map_err(|error| ToolError::execution(error.to_string()))?;
+                undecoded.extend_from_slice(&read_buffer[..count]);
+                let text = decode_output(&mut undecoded, count == 0);
+                {
+                    // Record read arrival, independently of the per-pipe preview batches.
+                    // Separate pipes cannot reconstruct the process's exact write order.
+                    let mut merged = merged.lock().await;
+                    for chunk in sanitized_chunks(text.as_bytes()) {
+                        merged.append(&chunk);
+                    }
+                }
                 if count == 0 {
                     if !pending.is_empty() {
                         flush_output(
@@ -162,13 +197,7 @@ where
     }
 }
 
-async fn flush_output(
-    progress: &ProgressSink,
-    tool_call_id: ToolCallId,
-    stream: &OutputStream,
-    pending: (&mut Vec<u8>, bool),
-) -> Result<(), ToolError> {
-    let (pending, eof) = pending;
+fn decode_output(pending: &mut Vec<u8>, eof: bool) -> String {
     let mut text = String::new();
     let mut consumed = 0;
     while consumed < pending.len() {
@@ -196,6 +225,17 @@ async fn flush_output(
         }
     }
     pending.drain(..consumed);
+    text
+}
+
+async fn flush_output(
+    progress: &ProgressSink,
+    tool_call_id: ToolCallId,
+    stream: &OutputStream,
+    pending: (&mut Vec<u8>, bool),
+) -> Result<(), ToolError> {
+    let (pending, eof) = pending;
+    let text = decode_output(pending, eof);
     if text.is_empty() {
         return Ok(());
     }
@@ -491,17 +531,20 @@ impl BashExecutor {
             .stderr
             .take()
             .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
+            merged.clone(),
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
+            merged.clone(),
         ));
         let stdin_task = if self.args.interactive {
             let mut child_stdin = child
@@ -585,8 +628,14 @@ impl BashExecutor {
         stderr_task
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
+        if status.code().is_none() {
+            return Err(ToolError::execution("bash terminated by a signal"));
+        }
         Ok(ToolResult {
-            display: Some(format!("Bash finished with status {:?}", status.code())),
+            display: Some(completed_display(
+                std::mem::take(&mut *merged.lock().await),
+                status.code(),
+            )),
             retained_output: None,
             title: crate::safe_title("Bash"),
             output: String::new(),
@@ -637,17 +686,20 @@ impl BashExecutor {
             .stderr()
             .take()
             .ok_or_else(|| ToolError::execution("bash stderr pipe missing"))?;
+        let merged = Arc::new(Mutex::new(MergedOutput::default()));
         let stdout_task = tokio::spawn(read_output(
             stdout,
             OutputStream::Stdout,
             progress.clone(),
             self.tool_call_id,
+            merged.clone(),
         ));
         let stderr_task = tokio::spawn(read_output(
             stderr,
             OutputStream::Stderr,
             progress,
             self.tool_call_id,
+            merged.clone(),
         ));
         let stdin_task = if self.args.interactive {
             let mut child_stdin = child
@@ -729,7 +781,10 @@ impl BashExecutor {
             .await
             .map_err(|error| ToolError::execution(error.to_string()))??;
         Ok(ToolResult {
-            display: Some(format!("Bash finished with status {:?}", status.code())),
+            display: Some(completed_display(
+                std::mem::take(&mut *merged.lock().await),
+                status.code(),
+            )),
             retained_output: None,
             title: crate::safe_title("Bash"),
             output: String::new(),
@@ -757,13 +812,32 @@ impl PreparedExecutor for BashExecutor {
                 .await
         }
         .await;
-        result.map(|result| {
-            let failed = result.metadata["success"] == false;
-            let mut completion = cookie_agent_engine::ToolCompletion::streamed(result);
-            completion.failed = failed;
-            completion
-        })
+        result.map(cookie_agent_engine::ToolCompletion::streamed)
     }
+}
+
+fn completed_display(merged: MergedOutput, status: Option<i32>) -> String {
+    let mut output = merged.text;
+    let suffix = if status != Some(0) {
+        format!(
+            "\nExit status: {}",
+            status.map_or_else(|| "unknown".into(), |code| code.to_string())
+        )
+    } else {
+        String::new()
+    };
+    const MARKER: &str = "\n[display truncated]";
+    let maximum = cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - suffix.len();
+    if merged.truncated || output.len() > maximum {
+        let mut end = output.len().min(maximum - MARKER.len());
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        output.truncate(end);
+        output.push_str(MARKER);
+    }
+    output.push_str(&suffix);
+    output
 }
 
 #[cfg(unix)]
@@ -1375,13 +1449,21 @@ mod tests {
         .await
         .unwrap();
         let (mut writer, reader) = tokio::io::duplex(64);
-        let reading = tokio::spawn(read_output(reader, OutputStream::Stdout, progress, call_id));
+        let merged = std::sync::Arc::new(tokio::sync::Mutex::new(super::MergedOutput::default()));
+        let reading = tokio::spawn(read_output(
+            reader,
+            OutputStream::Stdout,
+            progress,
+            call_id,
+            merged.clone(),
+        ));
         writer.write_all(&[0xe2]).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(75)).await;
         assert!(receiver.try_recv().is_err());
         writer.write_all(&[0x82, 0xac, b'\n']).await.unwrap();
         writer.shutdown().await.unwrap();
         reading.await.unwrap().unwrap();
+        assert_eq!(merged.lock().await.text, "€\n");
         assert_eq!(
             receiver.recv().await.unwrap().display.as_deref(),
             Some("\u{20ac}\n")
@@ -1407,7 +1489,14 @@ mod tests {
         .await
         .unwrap();
         let (mut writer, reader) = tokio::io::duplex(2 * 1024 * 1024);
-        let read = tokio::spawn(read_output(reader, OutputStream::Stdout, progress, call_id));
+        let merged = Default::default();
+        let read = tokio::spawn(read_output(
+            reader,
+            OutputStream::Stdout,
+            progress,
+            call_id,
+            std::sync::Arc::clone(&merged),
+        ));
         writer.write_all(b"first\n").await.expect("first output");
         let first = tokio::time::timeout(std::time::Duration::from_millis(250), progress_rx.recv())
             .await
@@ -1426,6 +1515,8 @@ mod tests {
             chunks.push(progress);
         }
         read.await.expect("reader task").expect("read complete");
+        assert!(merged.lock().await.text.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+        assert!(merged.lock().await.truncated);
         assert!(chunks.iter().all(|progress| {
             progress
                 .display
@@ -1439,6 +1530,104 @@ mod tests {
                 .map(String::len)
                 .sum::<usize>()
                 <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
+        );
+    }
+
+    #[tokio::test]
+    async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
+        use cookie_agent_engine::PreparedExecutor;
+        for status in [0, 1, 7] {
+            let root = tempfile::tempdir().unwrap();
+            let artifacts = tempfile::tempdir().unwrap();
+            let call_id = ToolCallId::new_v7();
+            let executable = resolve_executable("bash").unwrap();
+            let executor = BashExecutor {
+                tool_call_id: call_id,
+                args: BashArgs {
+                    command: format!(
+                        "for i in 1 2 3; do printf 'stdout %s\\n' \"$i\"; sleep 0.02; printf 'stderr %s é\\n' \"$i\" >&2; sleep 0.02; done; exit {status}"
+                    ),
+                    timeout: 2_000,
+                    interactive: false,
+                },
+                cwd: crate::fs_cap::prepare_existing(Path::new("/"), root.path()).unwrap(),
+                executable: crate::fs_cap::prepare_existing(Path::new("/"), &executable).unwrap(),
+            };
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+            let mut context = cookie_agent_engine::ToolExecutionContext::for_test(
+                artifacts.path().join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .unwrap();
+            context.progress = ProgressSink::for_test(
+                sender,
+                OutputHub::new(call_id, 64 * 1024),
+                artifacts.path().join("streams"),
+                cookie_agent_protocol::ToolOutputDeclaration::Named {
+                    streams: vec!["stdout".into(), "stderr".into()],
+                },
+            )
+            .await
+            .unwrap();
+            let completion = Box::new(executor).execute(context).await.unwrap();
+            assert!(!completion.failed, "exit {status} is command data");
+            assert_eq!(completion.result.metadata["status"], status);
+            assert_eq!(completion.result.metadata["success"], status == 0);
+            let mut previews = String::new();
+            while let Some(progress) = receiver.recv().await {
+                if let Some(display) = progress.display {
+                    previews.push_str(&display);
+                }
+            }
+            // Writes arrive less than 50 ms apart, so flush-order capture would group them.
+            let mut expected = String::new();
+            for index in 1..=3 {
+                let stdout = format!("stdout {index}\n");
+                let stderr = format!("stderr {index} é\n");
+                assert!(previews.contains(&stdout));
+                assert!(previews.contains(&stderr));
+                expected.push_str(&stdout);
+                expected.push_str(&stderr);
+            }
+            if status != 0 {
+                expected.push_str(&format!("\nExit status: {status}"));
+            }
+            assert_eq!(
+                completion.result.display.as_deref(),
+                Some(expected.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn merged_display_bounds_unicode_and_keeps_exit_status() {
+        let mut merged = super::MergedOutput::default();
+        merged.append(&"a".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES - 1));
+        merged.append("é");
+        merged.append("z");
+        assert!(
+            !merged.text.ends_with('z'),
+            "capture remains a prefix after overflow"
+        );
+        let display = super::completed_display(merged, Some(1));
+        assert!(display.len() <= cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+        assert!(display.ends_with("[display truncated]\nExit status: 1"));
+    }
+
+    #[tokio::test]
+    async fn signalled_bash_is_still_a_tool_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let prepared = prepare(root.path(), "kill -TERM $$").await;
+        let context = cookie_agent_engine::ToolExecutionContext::for_test(
+            artifacts.path().join("artifacts"),
+            crate::test_turn_context(),
+        )
+        .unwrap();
+        let error = prepared.execute_for_test(context).await.unwrap_err();
+        assert!(
+            error.to_string().contains("terminated by a signal"),
+            "{error}"
         );
     }
 

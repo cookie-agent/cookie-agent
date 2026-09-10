@@ -415,7 +415,7 @@ mod tests {
 
     #[cfg(debug_assertions)]
     #[test]
-    fn run_start_debug_codes_are_allowlisted_and_secret_free() {
+    fn run_start_debug_codes_are_allowlisted_and_causes_preserve_text() {
         let secret = "plugin-secret-value";
         for (error, expected) in [
             (
@@ -436,7 +436,10 @@ mod tests {
             let fault: cookie_agent_protocol::ServerFault = run_start_fault(error).into();
             let data = fault.data.expect("debug diagnostic data");
             assert_eq!(data["debug_code"], expected);
-            assert!(!data.to_string().contains(secret));
+            assert_eq!(
+                data.to_string().contains(secret),
+                expected != "config_skill_listing_budget"
+            );
         }
     }
 }

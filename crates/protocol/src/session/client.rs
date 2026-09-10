@@ -2408,13 +2408,13 @@ mod tests {
             } else {
                 "TLS peer reset"
             }));
-            assert!(!error.contains("private-value"));
+            assert!(error.contains("private-value"));
             let delivery = tokio::time::timeout(Duration::from_secs(3), deliveries.recv())
                 .await
                 .unwrap()
                 .unwrap();
             assert!(
-                matches!(delivery, ClientDelivery::Disconnected { error } if error.contains(if fail_send { "socket write refused" } else { "TLS peer reset" }) && !error.contains("private-value"))
+                matches!(delivery, ClientDelivery::Disconnected { error } if error.contains(if fail_send { "socket write refused" } else { "TLS peer reset" }) && error.contains("private-value"))
             );
         }
     }

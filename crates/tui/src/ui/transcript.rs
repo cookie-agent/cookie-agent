@@ -437,6 +437,7 @@ pub(super) struct BlockHit {
     pub(super) rect: Rect,
     pub(super) id: BlockId,
     pub(super) hover_rect: Option<Rect>,
+    pub(super) toggle_rect: Option<Rect>,
 }
 
 // Layout cache validity depends on each independent render input; grouping them
@@ -1698,6 +1699,9 @@ fn media_file_layout(
             MAX_EXPANDED_BODY_BYTES,
         ));
     }
+    let header_lines = body.first().map_or(0, |header| {
+        assistant_body_line(header.clone(), context.width, context.theme).len()
+    });
     let lines = body
         .into_iter()
         .flat_map(|line| assistant_body_line(line, context.width, context.theme))
@@ -1707,7 +1711,7 @@ fn media_file_layout(
             id: block_id,
             start_line: 0,
             end_line: lines.len(),
-            header_lines: None,
+            header_lines: Some(header_lines),
         }],
         lines,
         user_seq: None,
@@ -2145,6 +2149,7 @@ fn assistant_child_layout(
                 width,
                 theme,
             );
+            let header_lines = lines.len();
             if key.expanded {
                 lines.extend(body);
             }
@@ -2153,7 +2158,7 @@ fn assistant_child_layout(
                     id: block_id,
                     start_line: 0,
                     end_line: lines.len(),
-                    header_lines: None,
+                    header_lines: Some(header_lines),
                 }],
                 lines,
                 user_seq: None,
@@ -3665,7 +3670,7 @@ fn role_block_lines(
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
-    if matches!(role, Role::Goal | Role::Action) {
+    if matches!(role, Role::User | Role::Goal | Role::Action) {
         if width == 0 {
             return Vec::new();
         }
@@ -3675,6 +3680,7 @@ fn role_block_lines(
                 match role {
                     Role::Goal => "G",
                     Role::Action => "A",
+                    Role::User => "U",
                     _ => "P",
                 }
             )
@@ -3955,6 +3961,26 @@ pub(super) fn block_hit(
             u16::try_from(end - start).unwrap_or(u16::MAX),
         ),
         id: region.id,
+        toggle_rect: if matches!(region.id, BlockId::ToolOutput { .. }) {
+            // Output regions are built solely from append_output_notice rows.
+            (region.start_line >= scroll_offset).then(|| {
+                Rect::new(
+                    viewport.x,
+                    viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
+                    viewport.width,
+                    1,
+                )
+            })
+        } else {
+            (start < header_end).then(|| {
+                Rect::new(
+                    viewport.x,
+                    viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
+                    viewport.width,
+                    u16::try_from(header_end - start).unwrap_or(u16::MAX),
+                )
+            })
+        },
         hover_rect: (start < header_end).then(|| {
             Rect::new(
                 viewport.x,
@@ -7564,7 +7590,8 @@ mod tests {
                         app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
                         assert_eq!(
                             app.hover,
-                            Some(HoverTarget::TranscriptBlock(BlockId::SystemPrompt))
+                            hit.toggle_rect
+                                .map(|_| HoverTarget::TranscriptBlock(BlockId::SystemPrompt))
                         );
                         terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
                         let after = terminal.backend().buffer();
@@ -9284,6 +9311,19 @@ mod tests {
         assert!(!rendered.contains('…'));
         assert!(!rendered.contains("failed"));
 
+        // A command's exit code is data on a completed tool.
+        state.tools.get_mut(&call_id).expect("tool").detail = "Exit status: 1".into();
+        let expanded = HashSet::from([BlockId::Tool(call_id)]);
+        let rendered = transcript_layout(&state, Some(&expanded), 60)
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Exit status: 1"));
+        assert!(!rendered.contains("failed"));
+
+        // Genuine execution failures still carry the inline suffix.
         state.tools.get_mut(&call_id).expect("tool").status = ToolStatus::Failed;
         let rendered = transcript_layout(&state, None, 60)
             .lines
@@ -10772,6 +10812,106 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn replayed_failure_diagnostic_precedes_output_beyond_the_render_budget() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let call_id = ToolCallId::new_v7();
+        let output = "output line\n".repeat(1500);
+        for streamed in [false, true] {
+            let attempt = AttemptId::new_v7();
+            let mut terminal = tool_terminated(
+                session,
+                5,
+                run,
+                call_id,
+                3,
+                "bash",
+                cookie_agent_protocol::ToolTerminationOutcome::Failed,
+            );
+            let EventPayload::ToolCallTerminated { termination } = &mut terminal.payload else {
+                unreachable!()
+            };
+            termination.error.as_mut().unwrap().message =
+                SafeErrorMessage::new("bash timed out").unwrap();
+            if !streamed {
+                termination.result = Some(cookie_agent_protocol::PersistedToolResult {
+                    title: SafeDisplayText::new("Bash").unwrap(),
+                    output: output.clone(),
+                    display: None,
+                    metadata: serde_json::Value::Null,
+                    retained_output: None,
+                    truncation: None,
+                    attachments: Vec::new(),
+                    additional_messages: Vec::new(),
+                });
+            }
+            let mut events = vec![
+                session_created(session, 1),
+                attempt_started(session, 2, run, attempt, None),
+                turn_committed(
+                    session,
+                    3,
+                    run,
+                    attempt,
+                    3,
+                    vec![tool_part("bash")],
+                    Vec::new(),
+                    None,
+                ),
+                tool_started(session, 4, run, call_id, 3, "bash"),
+            ];
+            if streamed {
+                for (index, chunk) in output.as_bytes().chunks(440).enumerate() {
+                    events.push(event(
+                        session,
+                        5 + index as u64,
+                        run,
+                        EventPayload::ToolCallProgress {
+                            tool_call_id: call_id,
+                            message: SafeDisplayText::new("bash stdout").unwrap(),
+                            display: Some(String::from_utf8(chunk.to_vec()).unwrap()),
+                        },
+                    ));
+                }
+            }
+            terminal.seq = events.last().unwrap().seq + 1;
+            events.push(terminal);
+            let mut store = StateStore::default();
+            assert!(store.rebuild_session(session, 0, events));
+            let state = &store.sessions[&session];
+            assert!(!state.transcript.iter().any(|item| matches!(
+                item,
+                TranscriptItem::Event {
+                    level: crate::state::EventLevel::Error,
+                    ..
+                }
+            )));
+            for expand_output in [false, true] {
+                let mut expanded = HashSet::from([BlockId::Tool(call_id)]);
+                if expand_output {
+                    expanded.insert(tool_output_id(call_id, ToolOutputSection::Detail));
+                }
+                let layout = transcript_layout(state, Some(&expanded), 80);
+                let rows = layout
+                    .lines
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                assert!(
+                    rows.iter().any(|row| row.contains("bash timed out")),
+                    "streamed={streamed}, expanded={expand_output}"
+                );
+                assert!(
+                    rows.iter()
+                        .filter(|row| row.contains("output line"))
+                        .count()
+                        < 1500
+                );
+            }
+        }
     }
 
     #[test]
@@ -17835,7 +17975,8 @@ mod tests {
                 app.hover = app.hover_target_at(hit.rect.x, hit.rect.y);
                 assert_eq!(
                     app.hover,
-                    Some(HoverTarget::TranscriptBlock(BlockId::Tool(id)))
+                    hit.toggle_rect
+                        .map(|_| HoverTarget::TranscriptBlock(BlockId::Tool(id)))
                 );
                 terminal.draw(|frame| app.draw_for_test(frame)).unwrap();
                 let after = terminal.backend().buffer();
@@ -18373,6 +18514,7 @@ mod tests {
         assert_eq!(hit.rect.y, 2);
         assert_eq!(hit.rect.height, 3);
         assert_eq!(hit.hover_rect.unwrap(), Rect::new(0, 2, 40, 1));
+        assert_eq!(hit.toggle_rect, hit.hover_rect);
         let tool = BlockRegion {
             header_lines: Some(3),
             ..region
@@ -18386,6 +18528,20 @@ mod tests {
             Some(Rect::new(0, 0, 40, 2))
         );
         assert_eq!(block_hit(tool, viewport, 13).unwrap().hover_rect, None);
+        assert_eq!(block_hit(tool, viewport, 13).unwrap().toggle_rect, None);
+        assert_eq!(
+            block_hit(tool, viewport, 11).unwrap().toggle_rect,
+            Some(Rect::new(0, 0, 40, 2))
+        );
+        let notice = BlockRegion {
+            id: tool_output_id(ToolCallId::new_v7(), ToolOutputSection::Detail),
+            ..region
+        };
+        assert_eq!(
+            block_hit(notice, viewport, 8).unwrap().toggle_rect,
+            Some(Rect::new(0, 2, 40, 1))
+        );
+        assert_eq!(block_hit(notice, viewport, 11).unwrap().toggle_rect, None);
         assert_eq!(
             block_hit(region, viewport, 13).unwrap().hover_rect,
             Some(Rect::new(0, 0, 40, 1))
@@ -18409,13 +18565,44 @@ mod tests {
         );
         rendered_frame(&mut app, 80, 24);
         let block = app.hit_map.blocks.first().copied().expect("block hit");
-        app.handle_click(block.rect.x, block.rect.y).await;
+        let title = block.toggle_rect.expect("title");
+        app.handle_click(title.x, title.y).await;
         assert!(
             app.expanded_blocks
                 .get(&session)
                 .is_some_and(|set| set.contains(&block.id))
         );
         assert!(!app.input_focused);
+        rendered_frame(&mut app, 80, 24);
+        let block = app.hit_map.blocks.first().copied().unwrap();
+        let body_row = block.toggle_rect.unwrap().bottom();
+        assert!(body_row < block.rect.bottom());
+        assert_eq!(app.hover_target_at(block.rect.x, body_row), None);
+        app.handle_click(block.rect.x, body_row).await;
+        assert!(app.expanded_blocks[&session].contains(&block.id));
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.rect.x + 2,
+            body_row,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            block.rect.x + 7,
+            body_row,
+        ))
+        .await;
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            block.rect.x + 7,
+            body_row,
+        ))
+        .await;
+        assert!(matches!(
+            app.selection,
+            Some(TextSelection::Conversation { .. })
+        ));
+        assert!(app.expanded_blocks[&session].contains(&block.id));
     }
 
     #[tokio::test]
@@ -18441,7 +18628,9 @@ mod tests {
             .find(|hit| hit.id == tool_output_id(call_id, ToolOutputSection::Detail))
             .copied()
             .expect("collapsed output notice");
-        app.handle_click(notice.rect.x, notice.rect.y).await;
+        let toggle = notice.toggle_rect.expect("notice toggle");
+        assert_eq!(toggle.height, 1);
+        app.handle_click(toggle.x, toggle.y).await;
         assert!(
             app.expanded_blocks[&session]
                 .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
@@ -18455,7 +18644,22 @@ mod tests {
             .find(|hit| hit.id == tool_output_id(call_id, ToolOutputSection::Detail))
             .copied()
             .expect("expanded output collapse notice");
-        app.handle_click(collapse.rect.x, collapse.rect.y).await;
+        let tool = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == BlockId::Tool(call_id))
+            .copied()
+            .unwrap();
+        let body_row = tool.toggle_rect.unwrap().bottom();
+        assert_eq!(app.hover_target_at(tool.rect.x, body_row), None);
+        app.handle_click(tool.rect.x, body_row).await;
+        assert!(
+            app.expanded_blocks[&session]
+                .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
+        );
+        let toggle = collapse.toggle_rect.expect("collapse toggle");
+        app.handle_click(toggle.x, toggle.y).await;
         assert!(
             !app.expanded_blocks[&session]
                 .contains(&tool_output_id(call_id, ToolOutputSection::Detail))
@@ -18515,7 +18719,8 @@ mod tests {
             .find(|hit| hit.id == detail_id)
             .copied()
             .expect("display notice");
-        app.handle_click(detail.rect.x, detail.rect.y).await;
+        let toggle = detail.toggle_rect.expect("display toggle");
+        app.handle_click(toggle.x, toggle.y).await;
         assert!(app.expanded_blocks[&session].contains(&detail_id));
         assert!(
             !app.expanded_blocks[&session]
@@ -21285,6 +21490,35 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_user_gutters_repeat_and_copy_without_chrome() {
+        let theme = Theme::default();
+        let lines = role_block(
+            Role::User,
+            vec![Line::from(
+                "a user line long enough to wrap at this width for sure",
+            )],
+            24,
+            &theme,
+        );
+        assert!(lines.len() > 2);
+        assert!(
+            lines
+                .iter()
+                .skip(1)
+                .all(|line| line.to_string().starts_with("│ "))
+        );
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(text);
+        let copied = extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme);
+        assert!(!copied.contains('│'));
+        assert!(copied.contains("enough to wrap at this"));
+    }
+
+    #[test]
     fn extraction_keeps_code_indentation_behind_real_gutters() {
         let theme = Theme::default();
         // A fenced code line whose content begins with a two-space span
@@ -21300,7 +21534,7 @@ mod tests {
         .into_iter()
         .flat_map(|line| assistant_body_line(line, 60, &theme))
         .collect::<Vec<_>>();
-        // A wrapped user row's continuation indent still strips.
+        // A wrapped user row repeats its gutter; copying strips every gutter.
         lines.extend(role_block(
             Role::User,
             vec![Line::from(
@@ -21316,11 +21550,11 @@ mod tests {
             "code indentation preserved: {extracted:?}"
         );
         // One copied line per rendered row: the wrapped user row's
-        // continuations strip their two-space indent and join with
+        // continuations strip their gutter and join with
         // newlines, exactly as displayed.
         assert!(
             extracted.contains("\nenough to wrap at this"),
-            "continuation indent stripped: {extracted:?}"
+            "continuation gutter stripped: {extracted:?}"
         );
     }
 

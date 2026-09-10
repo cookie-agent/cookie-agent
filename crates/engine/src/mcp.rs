@@ -124,6 +124,7 @@ struct ServerRuntime {
     registry: Weak<RegistryInner>,
     progress: AsyncMutex<HashMap<ToolCallId, crate::ProgressSink>>,
     auth_challenge: Mutex<Option<String>>,
+    oauth_response_error: Arc<Mutex<Option<String>>>,
     auth_flow: Mutex<Option<OAuthFlowState>>,
     auth_generation: AtomicU64,
     auth_lock: AsyncMutex<()>,
@@ -241,15 +242,16 @@ struct StrictStoredCredentials {
     issuer: Option<String>,
 }
 
-struct RedactingOAuthHttpClient {
+struct McpOAuthHttpClient {
     follow_redirects: reqwest::Client,
     stop_redirects: reqwest::Client,
-    authorization_code: OAuthAuthorizationCodeRelay,
+    exchange: OAuthExchangeState,
 }
 
 #[derive(Clone, Default)]
-struct OAuthAuthorizationCodeRelay {
+struct OAuthExchangeState {
     code: Arc<Mutex<Option<zeroize::Zeroizing<String>>>>,
+    response_error: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug)]
@@ -739,8 +741,8 @@ impl StrictStoredCredentials {
     }
 }
 
-impl RedactingOAuthHttpClient {
-    fn new(authorization_code: OAuthAuthorizationCodeRelay) -> Result<Self, ToolError> {
+impl McpOAuthHttpClient {
+    fn new(exchange: OAuthExchangeState) -> Result<Self, ToolError> {
         let base = || {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -756,12 +758,20 @@ impl RedactingOAuthHttpClient {
         Ok(Self {
             follow_redirects,
             stop_redirects,
-            authorization_code,
+            exchange,
         })
     }
 }
 
-impl OAuthAuthorizationCodeRelay {
+impl OAuthExchangeState {
+    fn diagnostic(&self, error: &(dyn std::error::Error + 'static)) -> String {
+        self.response_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .unwrap_or_else(|| cookie_agent_protocol::diagnostics::error_chain(error))
+    }
+
     fn install(&self, code: String) {
         *self
             .code
@@ -802,7 +812,7 @@ impl OAuthAuthorizationCodeRelay {
     }
 }
 
-impl OAuthHttpClient for RedactingOAuthHttpClient {
+impl OAuthHttpClient for McpOAuthHttpClient {
     fn execute(&self, operation: rmcp::transport::OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
         Box::pin(async move {
             let client = match operation.redirect_policy {
@@ -812,8 +822,7 @@ impl OAuthHttpClient for RedactingOAuthHttpClient {
             };
             let timeout = operation.timeout;
             let mut oauth_request = operation.request;
-            self.authorization_code
-                .restore_in_request(&mut oauth_request);
+            self.exchange.restore_in_request(&mut oauth_request);
             let mut request = reqwest::Request::try_from(oauth_request)
                 .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)?;
             *request.timeout_mut() = timeout;
@@ -835,9 +844,19 @@ impl OAuthHttpClient for RedactingOAuthHttpClient {
                 }
                 body.extend_from_slice(&chunk);
             }
-            if !status.is_success() {
-                body = redacted_oauth_error_body(status, &body);
-            }
+            // Keep the original response for OAuth error classification. Retain a bounded
+            // display copy because rmcp can discard the body on parse failures.
+            *self
+                .exchange
+                .response_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = (!status.is_success()).then(|| {
+                cookie_agent_protocol::diagnostics::detail(&format!(
+                    "OAuth HTTP {status}\nResponse body:\n{}",
+                    String::from_utf8_lossy(&body)
+                ))
+                .to_string()
+            });
             let mut response = http::Response::builder().status(status).version(version);
             for (name, value) in &headers {
                 response = response.header(name, value);
@@ -849,28 +868,19 @@ impl OAuthHttpClient for RedactingOAuthHttpClient {
     }
 }
 
-fn redacted_oauth_error_body(status: reqwest::StatusCode, body: &[u8]) -> Vec<u8> {
-    let reported = serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-    let code = match reported.as_deref() {
-        Some(
-            code @ ("invalid_request"
-            | "invalid_client"
-            | "invalid_grant"
-            | "unauthorized_client"
-            | "unsupported_grant_type"
-            | "invalid_scope"),
-        ) => code,
-        _ if status.is_server_error() => "server_error",
-        _ => "invalid_request",
-    };
-    serde_json::to_vec(&serde_json::json!({ "error": code })).unwrap_or_default()
+fn parse_oauth_callback(url: &str) -> Result<AuthorizationCallback, String> {
+    AuthorizationCallback::from_redirect_url(url).map_err(|error| {
+        let mut message = error.to_string();
+        if let Ok(url) = url::Url::parse(url) {
+            for (key, value) in url
+                .query_pairs()
+                .filter(|(key, _)| matches!(key.as_ref(), "error" | "error_description"))
+            {
+                message.push_str(&format!("\n{key}: {value}"));
+            }
+        }
+        cookie_agent_protocol::diagnostics::detail(&message).to_string()
+    })
 }
 
 fn oauth_store_startup_error(path: &Path) -> ToolError {
@@ -1261,6 +1271,7 @@ impl McpRegistry {
                 registry: Arc::downgrade(&inner),
                 progress: AsyncMutex::new(HashMap::new()),
                 auth_challenge: Mutex::new(None),
+                oauth_response_error: Arc::default(),
                 auth_flow: Mutex::new(None),
                 auth_generation: AtomicU64::new(0),
                 auth_lock: AsyncMutex::new(()),
@@ -1463,6 +1474,7 @@ impl McpRegistry {
             registry: Arc::downgrade(&self.inner),
             progress: AsyncMutex::new(HashMap::new()),
             auth_challenge: Mutex::new(None),
+            oauth_response_error: Arc::default(),
             auth_flow: Mutex::new(None),
             auth_generation: AtomicU64::new(0),
             auth_lock: AsyncMutex::new(()),
@@ -1685,14 +1697,7 @@ impl ServerRuntime {
     }
 
     fn fail(&self, message: String) {
-        let secrets = self
-            .loaded
-            .config
-            .headers
-            .values()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let message = cookie_agent_protocol::diagnostics::sanitize(&message, &secrets, 4096);
+        let message = cookie_agent_protocol::diagnostics::sanitize(&message, 4096);
         if self.superseded.is_cancelled() {
             return;
         }
@@ -1704,7 +1709,7 @@ impl ServerRuntime {
         self.set_status(McpServerState::Failed, Some(message));
     }
 
-    fn mark_needs_auth(&self, challenge: Option<String>) {
+    fn mark_needs_auth(&self, challenge: Option<String>, reason: &str) {
         if self.superseded.is_cancelled() {
             return;
         }
@@ -1717,9 +1722,20 @@ impl ServerRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        let response_error = self
+            .oauth_response_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let reason = response_error.as_deref().unwrap_or(reason);
         self.set_status(
             McpServerState::NeedsAuth,
-            Some("OAuth authorization required; authenticate to connect".into()),
+            Some(
+                cookie_agent_protocol::diagnostics::detail(&format!(
+                    "OAuth authorization required; authenticate to connect\n{reason}"
+                ))
+                .to_string(),
+            ),
         );
     }
 
@@ -1780,16 +1796,23 @@ impl ServerRuntime {
 
     async fn authorization_manager(
         &self,
-    ) -> Result<(AuthorizationManager, OAuthAuthorizationCodeRelay), ToolError> {
+    ) -> Result<(AuthorizationManager, OAuthExchangeState), ToolError> {
         let url = self.loaded.config.url.as_ref().ok_or_else(|| {
             ToolError::execution("OAuth is available only for remote MCP servers")
         })?;
-        let authorization_code = OAuthAuthorizationCodeRelay::default();
-        let http_client = RedactingOAuthHttpClient::new(authorization_code.clone())?;
+        *self
+            .oauth_response_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        let authorization_code = OAuthExchangeState {
+            response_error: self.oauth_response_error.clone(),
+            ..Default::default()
+        };
+        let http_client = McpOAuthHttpClient::new(authorization_code.clone())?;
         let mut manager =
             AuthorizationManager::new_with_oauth_http_client(url, Arc::new(http_client))
                 .await
-                .map_err(|_| ToolError::execution("MCP OAuth setup failed"))?;
+                .map_err(|error| ToolError::execution(authorization_code.diagnostic(&error)))?;
         manager.set_credential_store(self.oauth_store()?);
         Ok((manager, authorization_code))
     }
@@ -1845,12 +1868,12 @@ impl ServerRuntime {
         let metadata = manager
             .resolve_metadata_from_challenge(challenge.as_deref())
             .await
-            .map_err(|_| ToolError::execution("MCP OAuth discovery failed"))?;
+            .map_err(|error| ToolError::execution(authorization_code.diagnostic(&error)))?;
         manager.set_metadata(metadata.metadata);
         request = apply_oauth_settings(request, &settings);
         let session = AuthorizationSession::new(manager, request)
             .await
-            .map_err(|_| ToolError::execution("MCP OAuth client registration failed"))?;
+            .map_err(|(_, error)| ToolError::execution(authorization_code.diagnostic(&error)))?;
         let authorization_url = session.get_authorization_url().to_owned();
         let cancellation = CancellationToken::new();
         let generation = self.auth_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -1915,31 +1938,36 @@ impl ServerRuntime {
                 () = task_registry.shutdown.cancelled() => return,
                 () = server.superseded.cancelled() => return,
             };
-            let callback = AuthorizationCallback::from_redirect_url(&callback_url);
-            let exchanged = if let Ok(callback) = callback {
-                authorization_code.install(callback.code);
-                tokio::select! {
-                    result = session.handle_callback_with_issuer(
-                        REDACTED_AUTHORIZATION_CODE,
-                        &callback.csrf_token,
-                        callback.issuer.as_deref(),
-                    ) => result.is_ok(),
-                    () = cancellation.cancelled() => return,
-                    () = task_registry.shutdown.cancelled() => return,
-                    () = server.superseded.cancelled() => return,
+            let exchanged = match parse_oauth_callback(&callback_url) {
+                Ok(callback) => {
+                    authorization_code.install(callback.code);
+                    tokio::select! {
+                        result = session.handle_callback_with_issuer(
+                            REDACTED_AUTHORIZATION_CODE,
+                            &callback.csrf_token,
+                            callback.issuer.as_deref(),
+                        ) => result.map_err(|error| authorization_code.diagnostic(&error)),
+                        () = cancellation.cancelled() => return,
+                        () = task_registry.shutdown.cancelled() => return,
+                        () = server.superseded.cancelled() => return,
+                    }
                 }
-            } else {
-                false
+                Err(error) => Err(error),
             };
             drop(auth_guard);
-            let _ = write_oauth_browser_response(&mut browser, exchanged).await;
+            let _ = write_oauth_browser_response(&mut browser, exchanged.is_ok()).await;
             if !server.finish_auth_flow(generation) {
                 return;
             }
-            if !exchanged {
+            if let Err(message) = exchanged {
                 server.set_status(
                     McpServerState::NeedsAuth,
-                    Some("OAuth authorization failed; authenticate to try again".into()),
+                    Some(
+                        cookie_agent_protocol::diagnostics::detail(&format!(
+                            "OAuth authorization failed; authenticate to try again\n{message}"
+                        ))
+                        .to_string(),
+                    ),
                 );
                 return;
             }
@@ -2164,7 +2192,10 @@ impl ServerRuntime {
                 Ok(Err(error))
                     if self.oauth_enabled() && initialize_error_requires_auth(&error) =>
                 {
-                    self.mark_needs_auth(error.auth_challenge().map(str::to_owned));
+                    self.mark_needs_auth(
+                        error.auth_challenge().map(str::to_owned),
+                        &cookie_agent_protocol::diagnostics::error_chain(&error),
+                    );
                     return Err(ToolError::execution(format!(
                         "MCP server `{}` requires OAuth authorization",
                         self.name
@@ -2197,7 +2228,10 @@ impl ServerRuntime {
         let tools = match tools {
             Ok(tools) => tools,
             Err(error) if self.oauth_enabled() && service_error_requires_auth(&error) => {
-                self.mark_needs_auth(auth_challenge(&error));
+                self.mark_needs_auth(
+                    auth_challenge(&error),
+                    &cookie_agent_protocol::diagnostics::error_chain(&error),
+                );
                 let _ = service.close_with_timeout(Duration::from_secs(4)).await;
                 return Err(ToolError::execution(format!(
                     "MCP server `{}` requires OAuth authorization",
@@ -2330,7 +2364,10 @@ impl ServerRuntime {
         match result {
             Ok(Ok(tools)) => self.publish_tools(generation, tools),
             Ok(Err(error)) if self.oauth_enabled() && service_error_requires_auth(&error) => {
-                self.mark_needs_auth(auth_challenge(&error));
+                self.mark_needs_auth(
+                    auth_challenge(&error),
+                    &cookie_agent_protocol::diagnostics::error_chain(&error),
+                );
             }
             Ok(Err(error)) => self
                 .publish_refresh_failure(generation, format!("tools/list refresh failed: {error}")),
@@ -2644,7 +2681,7 @@ impl PreparedExecutor for McpExecutor {
                 Err(error)
                     if self.server.oauth_enabled() && service_error_requires_auth(&error) =>
                 {
-                    self.server.mark_needs_auth(auth_challenge(&error));
+                    self.server.mark_needs_auth(auth_challenge(&error), &cookie_agent_protocol::diagnostics::error_chain(&error));
                     Err(ToolError::execution(format!(
                         "MCP server `{}` requires OAuth authorization",
                         self.server.name

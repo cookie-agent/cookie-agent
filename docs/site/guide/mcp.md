@@ -83,6 +83,11 @@ returns the server to `needs_auth` instead of repeatedly opening a browser flow.
 A transient refresh failure also returns to `needs_auth` immediately; Cookie
 Agent does not silently retry token requests or open a browser flow.
 
+OAuth failures show the available response body or authorization error description
+in the MCP diagnostic, capped at 4,096 UTF-8 bytes. Content is preserved, including
+credential-like text returned by the server; terminal and Unicode format controls
+are stripped or replaced. This does not change credential storage or Debug formatting.
+
 Authorization codes are held only by a one-shot in-memory relay. Cookie Agent
 passes a fixed redacted surrogate through rmcp's traced exchange path and restores
 the real code only in the outbound token request, preventing debug logs from

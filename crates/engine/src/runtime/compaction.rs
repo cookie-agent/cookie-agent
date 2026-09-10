@@ -1143,7 +1143,8 @@ fn prune_compaction_result(
     store: &super::artifacts::ArtifactStore,
 ) -> Result<(), EngineError> {
     let marker = if retrieval_calls.contains(&result.tool_call_id) {
-        "[artifact read output redacted]".to_owned()
+        // This is a private summary-input copy; the original result stays in history.
+        "[artifact read output omitted for compaction]".to_owned()
     } else {
         let content = match &result.content {
             oven_sdk::ToolContent::Text(text) => text.as_bytes().to_vec(),

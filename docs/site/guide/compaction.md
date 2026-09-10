@@ -99,7 +99,8 @@ The threshold is compared against two signals:
    artifact ID grants read access in the
    configured artifact store, without a session-ownership check. Structured tool
    content is retained as serialized JSON, not flattened into original output;
-   the marker labels this format. All outputs of artifact `read` calls are redacted,
+   the marker labels this format. All outputs of artifact `read` calls are replaced
+   with `[artifact read output omitted for compaction]` in the private retry input,
    including named-stream reads. Detection uses the structured `filePath` argument;
    ordinary filesystem `read` results follow normal tool-output pruning.
    Both older and recent messages remain in the retry input. This does

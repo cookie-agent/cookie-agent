@@ -1,0 +1,8 @@
+---
+source: crates/tui/src/ui/transcript.rs
+expression: text
+---
+┌─ USER
+│ a user line long
+│ enough to wrap at this
+│ width for sure

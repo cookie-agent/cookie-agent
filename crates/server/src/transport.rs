@@ -65,31 +65,22 @@ impl WebSocketTransport {
         let request = authenticated_request(url, token)?;
         let (socket, _) = tokio_tungstenite::connect_async(request)
             .await
-            .map_err(|error| websocket_error(&error, &[token]))?;
+            .map_err(|error| websocket_error(&error))?;
         Ok(Self { socket })
     }
 }
 
-fn websocket_error(
-    error: &tokio_tungstenite::tungstenite::Error,
-    secrets: &[&str],
-) -> TransportError {
+fn websocket_error(error: &tokio_tungstenite::tungstenite::Error) -> TransportError {
     let mut message = error.to_string();
     if let tokio_tungstenite::tungstenite::Error::Http(response) = error
         && let Some(body) = response.body()
     {
         message.push_str(&format!(
             "\nResponse body:\n{}",
-            cookie_agent_protocol::diagnostics::sanitize(
-                &String::from_utf8_lossy(body),
-                secrets,
-                4096
-            )
+            cookie_agent_protocol::diagnostics::sanitize(&String::from_utf8_lossy(body), 4096)
         ));
     }
-    TransportError::Other(cookie_agent_protocol::diagnostics::sanitize(
-        &message, secrets, 4096,
-    ))
+    TransportError::Other(cookie_agent_protocol::diagnostics::sanitize(&message, 4096))
 }
 
 #[async_trait]
@@ -102,7 +93,7 @@ impl Transport for WebSocketTransport {
         self.socket
             .send(Message::Text(text.into()))
             .await
-            .map_err(|error| websocket_error(&error, &[]))
+            .map_err(|error| websocket_error(&error))
     }
 
     async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
@@ -114,7 +105,7 @@ impl Transport for WebSocketTransport {
                 Some(Ok(Message::Close(_))) | None => return Ok(None),
                 Some(Ok(_)) => {}
                 Some(Err(error)) => {
-                    return Err(websocket_error(&error, &[]));
+                    return Err(websocket_error(&error));
                 }
             }
         }
@@ -150,22 +141,21 @@ mod tests {
     use super::authenticated_request;
 
     #[test]
-    fn websocket_rejection_scrubs_decoded_body_before_adding_context() {
+    fn websocket_rejection_preserves_decoded_body_and_context() {
         let response = tokio_tungstenite::tungstenite::http::Response::builder().status(403)
             .body(Some(br#"{"message":"review\u002dsecret","password":"review\"secret-tail","reason":"Useful cause"}"#.to_vec())).unwrap();
-        let error = super::websocket_error(
-            &tokio_tungstenite::tungstenite::Error::Http(Box::new(response)),
-            &["review-secret"],
-        )
+        let error = super::websocket_error(&tokio_tungstenite::tungstenite::Error::Http(Box::new(
+            response,
+        )))
         .to_string();
         assert!(error.contains("403"));
         assert!(error.contains("Useful cause"));
-        assert!(!error.contains("review"));
-        assert!(!error.contains("secret-tail"));
+        assert!(error.contains("review-secret"));
+        assert!(error.contains("secret-tail"));
     }
 
     #[test]
-    fn websocket_rejection_shows_body_without_headers_or_known_token() {
+    fn websocket_rejection_shows_body_including_echoed_token() {
         let response = tokio_tungstenite::tungstenite::http::Response::builder()
             .status(403)
             .header("set-cookie", "private-cookie")
@@ -173,14 +163,13 @@ mod tests {
                 b"Gateway denied the connection; echoed opaque-known-value".to_vec(),
             ))
             .unwrap();
-        let error = super::websocket_error(
-            &tokio_tungstenite::tungstenite::Error::Http(Box::new(response)),
-            &["opaque-known-value"],
-        )
+        let error = super::websocket_error(&tokio_tungstenite::tungstenite::Error::Http(Box::new(
+            response,
+        )))
         .to_string();
         assert!(error.contains("403"));
         assert!(error.contains("Gateway denied the connection"));
-        assert!(!error.contains("opaque-known-value"));
+        assert!(error.contains("opaque-known-value"));
         assert!(!error.contains("private-cookie"));
     }
 
