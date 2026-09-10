@@ -886,6 +886,7 @@ reasoning = { type = "effort", value = "high" }
     let body: serde_json::Value =
         serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert_eq!(body["reasoning"]["effort"], "high");
+    assert!(body["reasoning"].get("mode").is_none());
     assert_eq!(body["store"], false);
     assert!(body.get("messages").is_none());
 }

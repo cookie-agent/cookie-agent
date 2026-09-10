@@ -17,8 +17,9 @@ use cookie_agent_models::{
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelCost,
         CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
-        CatalogProviderRecord, CatalogRequest, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
-        CatalogTransport, CatalogTransportFuture, CatalogTransportResponse, PicoUsdPerMillion,
+        CatalogProviderRecord, CatalogReasoningOption, CatalogRequest, CatalogRuntimeState,
+        CatalogSnapshot, CatalogSource, CatalogTransport, CatalogTransportFuture,
+        CatalogTransportResponse, PicoUsdPerMillion,
     },
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
@@ -354,6 +355,65 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, ou
             "local-alias"
         );
     }
+}
+
+#[tokio::test]
+async fn managed_openai_responses_effort_is_not_serialized_as_mode() {
+    let (endpoint, captured) = capture_http_request().await;
+    let mut snapshot = (*catalog()).clone();
+    let provider = snapshot
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap();
+    provider.api = Some(format!("{endpoint}/v1"));
+    let model = provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap();
+    model.reasoning = true;
+    model.temperature = Some(false);
+    model.reasoning_options = vec![CatalogReasoningOption::Effort {
+        values: vec![Some("medium".into())],
+    }];
+    let temporary = TempDir::new().unwrap();
+    let definition =
+        toml::from_str::<ProviderDefinition>("source = \"models_dev\"\napi_key = \"test-key\"\n")
+            .unwrap();
+    let manager = ModelManager::new(
+        BTreeMap::from([(ProviderId::new("openai").unwrap(), definition)]),
+        Arc::new(snapshot),
+        store(&temporary),
+    )
+    .unwrap();
+    let resolved = manager
+        .current()
+        .resolve(&cookie_agent_identity::ModelSelection {
+            model: "openai/gpt-5-mini".parse().unwrap(),
+            variant: Some(cookie_agent_identity::VariantId::new("medium").unwrap()),
+        })
+        .unwrap();
+    let error = resolved
+        .model()
+        .stream(
+            resolved.prepare_request(oven_sdk::Request::new(vec![])),
+            oven_sdk::AbortSignal::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.diagnostics.http_status, Some(500));
+    let wire = captured.await.unwrap();
+    let body: serde_json::Value =
+        serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["reasoning"]["effort"], "medium");
+    assert!(body["reasoning"].get("mode").is_none());
 }
 
 #[tokio::test]

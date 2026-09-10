@@ -246,7 +246,6 @@ fn adapter_config(
                         .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
                 },
                 "options": {
-                    "reasoning_mode": reasoning.and_then(reasoning_effort),
                     "parallel_tool_calls": model.capabilities.parallel_tool_calls
                 }
             })
@@ -262,7 +261,6 @@ fn adapter_config(
                 }
             },
             "options": {
-                "reasoning_mode": reasoning.and_then(reasoning_effort),
                 "parallel_tool_calls": model.capabilities.parallel_tool_calls
             }
         }),
@@ -345,7 +343,7 @@ fn adapter_config(
                     json!({ "kind": "unsupported" })
                 }
             },
-            "options": { "reasoning_mode": reasoning.and_then(reasoning_effort) }
+            "options": {}
         }),
         OvenAdapterFamily::CohereV2Chat => json!({
             "adaptor": "cohere",
