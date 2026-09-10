@@ -1962,11 +1962,15 @@ mod windows_tests {
         let mut parent = wrapped.spawn().expect("spawn suspended job parent");
         let leaf_pids = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Ok(pids) = std::fs::read_to_string(&pid_file) {
-                    break pids
-                        .split(',')
-                        .map(|pid| pid.parse::<u32>().expect("leaf pid"))
-                        .collect::<Vec<_>>();
+                // The writer's `File::create` is observable before its
+                // `write_all`; retry until the pid list is fully present.
+                let ready = std::fs::read_to_string(&pid_file).ok().and_then(|pids| {
+                    pids.split(',')
+                        .map(|pid| pid.parse::<u32>().ok())
+                        .collect::<Option<Vec<_>>>()
+                });
+                if let Some(pids) = ready {
+                    break pids;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
