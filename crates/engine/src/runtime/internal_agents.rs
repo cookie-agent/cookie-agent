@@ -795,6 +795,7 @@ pub(super) fn internal_history_tokens(
 
 const OPENAI_RESPONSES_ADAPTER_ID: &str = "oven.openai.responses";
 const OPENAI_RESPONSES_CONTINUATION_KIND: &str = "openai.responses.reasoning_continuation";
+const OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND: &str = "openai.responses.message_continuation";
 
 fn invalid_internal_output(
     parts: &[oven_sdk::AssistantPart],
@@ -804,37 +805,38 @@ fn invalid_internal_output(
     reject_non_text
         && parts.iter().any(|part| {
             !matches!(part, oven_sdk::AssistantPart::Text(_) | oven_sdk::AssistantPart::Reasoning(_))
-                && !matches!(part, oven_sdk::AssistantPart::Custom(custom) if valid_openai_responses_continuation(custom, adapter_id))
+                && !matches!(part, oven_sdk::AssistantPart::Custom(custom) if valid_openai_responses_transport_part(custom, adapter_id))
         })
 }
 
-fn valid_openai_responses_continuation(part: &oven_sdk::CustomPart, adapter_id: &str) -> bool {
-    if adapter_id != OPENAI_RESPONSES_ADAPTER_ID
-        || part.kind != OPENAI_RESPONSES_CONTINUATION_KIND
-        || part.metadata.is_some()
-    {
+fn valid_openai_responses_transport_part(part: &oven_sdk::CustomPart, adapter_id: &str) -> bool {
+    if adapter_id != OPENAI_RESPONSES_ADAPTER_ID || part.metadata.is_some() {
         return false;
     }
     let Some(data) = part.data.as_object() else {
         return false;
     };
-    if data.len() != 2 || !data.contains_key("item_id") || !data.contains_key("encrypted_sha256") {
-        return false;
-    }
-    let Some(item_id) = data.get("item_id").and_then(serde_json::Value::as_str) else {
-        return false;
+    let digest = match part.kind.as_str() {
+        OPENAI_RESPONSES_CONTINUATION_KIND
+            if data.len() == 2
+                && data
+                    .get("item_id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| !id.is_empty()) =>
+        {
+            data.get("encrypted_sha256")
+        }
+        OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND if data.len() == 1 => data.get("item_sha256"),
+        _ => None,
     };
-    let Some(encrypted_sha256) = data
-        .get("encrypted_sha256")
+    digest
         .and_then(serde_json::Value::as_str)
-    else {
-        return false;
-    };
-    !item_id.is_empty()
-        && encrypted_sha256.len() == 64
-        && encrypted_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDecisionKind> {
@@ -859,9 +861,9 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 mod tests {
     use super::{
         FrozenInternalAgentPolicy, InternalAgentLimits, OPENAI_RESPONSES_ADAPTER_ID,
-        OPENAI_RESPONSES_CONTINUATION_KIND, UNKNOWN_INTERNAL_CONTEXT_LIMIT,
-        internal_agent_input_fits, internal_agent_input_limit, internal_history_tokens,
-        internal_model_request, invalid_internal_output,
+        OPENAI_RESPONSES_CONTINUATION_KIND, OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND,
+        UNKNOWN_INTERNAL_CONTEXT_LIMIT, internal_agent_input_fits, internal_agent_input_limit,
+        internal_history_tokens, internal_model_request, invalid_internal_output,
     };
     use oven_sdk::{
         ContentValue, FilePart, FileSource, HistoryTurn, InputPart, ToolContent, ToolMessage,
@@ -959,6 +961,119 @@ mod tests {
             true,
             OPENAI_RESPONSES_ADAPTER_ID
         ));
+    }
+
+    #[test]
+    fn message_witness_accepts_only_the_exact_typed_transport_shape() {
+        let digest = "0123456789abcdef".repeat(4);
+        let witness = oven_sdk::CustomPart::new(
+            OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND,
+            serde_json::json!({"item_sha256":digest}),
+        );
+        let parts = vec![
+            oven_sdk::AssistantPart::Text(oven_sdk::TextPart::new(r#"{"decision":"allow"}"#)),
+            oven_sdk::AssistantPart::Custom(witness.clone()),
+        ];
+        let wire = serde_json::to_value(&parts).unwrap();
+        let restored: Vec<oven_sdk::AssistantPart> = serde_json::from_value(wire.clone()).unwrap();
+        assert!(!invalid_internal_output(
+            &restored,
+            true,
+            OPENAI_RESPONSES_ADAPTER_ID
+        ));
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            wire,
+            "validation must not remove replay witnesses"
+        );
+        assert_eq!(
+            super::parse_internal_approval(match &restored[0] {
+                oven_sdk::AssistantPart::Text(text) => &text.text,
+                _ => unreachable!(),
+            }),
+            Some(cookie_agent_protocol::ApprovalInternalDecisionKind::Allow)
+        );
+        // Titles retain their existing non-strict text extraction policy.
+        assert!(!invalid_internal_output(
+            &parts,
+            false,
+            OPENAI_RESPONSES_ADAPTER_ID
+        ));
+        for adapter in [
+            "oven.test",
+            "oven.openai-compatible.chat.custom",
+            "oven.azure.openai.responses",
+            "openai.responses",
+        ] {
+            assert!(invalid_internal_output(&parts, true, adapter));
+        }
+        for metadata in [
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::from([("phase".into(), serde_json::json!("final_answer"))]),
+        ] {
+            let mut invalid = witness.clone();
+            invalid.metadata = Some(metadata);
+            assert!(invalid_internal_output(
+                &[oven_sdk::AssistantPart::Custom(invalid)],
+                true,
+                OPENAI_RESPONSES_ADAPTER_ID
+            ));
+        }
+        for data in [
+            serde_json::json!({}),
+            serde_json::json!({"item_sha256":""}),
+            serde_json::json!({"item_sha256":"a".repeat(63)}),
+            serde_json::json!({"item_sha256":"a".repeat(65)}),
+            serde_json::json!({"item_sha256":"A".repeat(64)}),
+            serde_json::json!({"item_sha256":"g".repeat(64)}),
+            serde_json::json!({"item_sha256":"é".repeat(32)}),
+            serde_json::json!({"item_sha256":null}),
+            serde_json::json!({"item_sha256":42}),
+            serde_json::json!({"item_sha256":digest,"phase":"final_answer"}),
+            serde_json::json!({"encrypted_sha256":digest}),
+            serde_json::json!([{"item_sha256":digest}]),
+            serde_json::json!(digest),
+            serde_json::Value::Null,
+        ] {
+            let invalid =
+                oven_sdk::CustomPart::new(OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND, data);
+            assert!(invalid_internal_output(
+                &[oven_sdk::AssistantPart::Custom(invalid)],
+                true,
+                OPENAI_RESPONSES_ADAPTER_ID
+            ));
+        }
+        for kind in [
+            "unknown.custom",
+            "openai.responses.refusal",
+            "openai.responses.server_tool_call",
+        ] {
+            let invalid = oven_sdk::CustomPart::new(kind, witness.data.clone());
+            assert!(invalid_internal_output(
+                &[oven_sdk::AssistantPart::Custom(invalid)],
+                true,
+                OPENAI_RESPONSES_ADAPTER_ID
+            ));
+        }
+        for executable in [
+            oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                "call",
+                "read",
+                serde_json::json!({"filePath":"x"}),
+            )),
+            oven_sdk::AssistantPart::File(FilePart::image(
+                "image/png",
+                FileSource::Bytes(bytes::Bytes::from_static(b"image")),
+            )),
+        ] {
+            let mut mixed = parts.clone();
+            mixed.push(executable);
+            assert!(invalid_internal_output(
+                &mixed,
+                true,
+                OPENAI_RESPONSES_ADAPTER_ID
+            ));
+        }
     }
 
     #[test]

@@ -140,6 +140,13 @@ compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
 Oversized content ends with a truncated-lines indicator while the complete data
 remains in session state.
 
+OpenAI Responses turns can retain opaque continuation witnesses for provider
+metadata such as message phase, annotations, and logprobs. Keep these parts
+alongside native replay data when preserving or restoring history. Internal
+agents validate the transport parts while using the text for summaries,
+approval decisions, and titles. Older saved turns may lack witnesses that were
+not captured at the time; historical events are not rewritten to invent them.
+
 ## Error details
 
 Run failures show a concise headline followed by available model/provider identity,

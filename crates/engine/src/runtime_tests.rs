@@ -13098,6 +13098,199 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
     fixture.engine.shutdown().await;
 }
 
+fn responses_metadata_sse(events: Vec<serde_json::Value>) -> String {
+    events
+        .into_iter()
+        .map(|event| {
+            format!(
+                "event: {}\ndata: {event}\n\n",
+                event["type"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+fn responses_text_with_transport_fields(text: &str, phase: Option<&str>) -> String {
+    let item = serde_json::json!({"type":"message","id":"message","role":"assistant","phase":phase,"content":[{"type":"output_text","text":text,"annotations":[],"logprobs":null}]});
+    responses_metadata_sse(vec![
+        serde_json::json!({"type":"response.created","response":{"id":"response","model":"group/model"}}),
+        serde_json::json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"message","role":"assistant","phase":phase,"content":[]}}),
+        serde_json::json!({"type":"response.output_text.delta","item_id":"message","output_index":0,"content_index":0,"delta":text}),
+        serde_json::json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        serde_json::json!({"type":"response.completed","response":{"id":"response","status":"completed","output":[item]}}),
+    ])
+}
+
+const RESPONSES_REPLAY_CAPABILITIES: &str = "input = [\"text\"]\noutput = [\"text\"]\ncontext_tokens = 8192\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"optional\"\nmedia = {}";
+
+#[tokio::test]
+async fn responses_message_transport_fields_allow_approval_and_summary_checkpoint() {
+    let arguments = serde_json::json!({"value":"approved"}).to_string();
+    let call = serde_json::json!({"type":"function_call","id":"function","call_id":"write-call","name":"write","arguments":arguments});
+    let tool = responses_metadata_sse(vec![
+        serde_json::json!({"type":"response.created","response":{"id":"tool-response","model":"group/model"}}),
+        serde_json::json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"function","call_id":"write-call","name":"write","arguments":""}}),
+        serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"function","output_index":0,"delta":arguments}),
+        serde_json::json!({"type":"response.output_item.done","output_index":0,"item":call}),
+        serde_json::json!({"type":"response.completed","response":{"id":"tool-response","status":"completed","output":[call]}}),
+    ]);
+    let (endpoint, captured, _, _) = scripted_server_with_delayed_response(
+        vec![
+            tool,
+            responses_text_with_transport_fields(r#"{"decision":"allow"}"#, None),
+            responses_text_with_transport_fields("write completed", Some("final_answer")),
+            responses_text_with_transport_fields("summary with transport fields", None),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (mut fixture, selection) = custom_fixture_with_capabilities(
+        &endpoint,
+        "---\ndescription: Responses internal output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest internal output.\n",
+        Some((
+            "approval.md",
+            "---\ndescription: Responses approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests.\n",
+        )),
+        None,
+        false,
+        None,
+        None,
+        8192,
+        None,
+        "openai-responses",
+        Some(RESPONSES_REPLAY_CAPABILITIES),
+    );
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.context_compaction.keep_recent_tokens = 0;
+    fixture.engine = reopen_engine(&fixture);
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .set_permission_mode(session.session_id, PermissionMode::AutoApprove)
+        .unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("responses-internal-output").unwrap(),
+                selection,
+                input: "write a test value".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "approved Responses tool completion",
+        |session| session.status == SessionStatus::Completed,
+    )
+    .await;
+    assert!(
+        executed.is_set(),
+        "valid approval text must not degrade to ask"
+    );
+    assert!(
+        fixture
+            .engine
+            .compact_session(
+                session.session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
+            .await
+            .unwrap()
+    );
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ContextCheckpointCommitted { commit }
+        if matches!(&commit.checkpoint, cookie_agent_protocol::ContextCheckpoint::InternalSummary { checkpoint } if checkpoint.summary() == "summary with transport fields"))));
+    assert!(!events.iter().any(|event| matches!(
+        &event.payload,
+        EventPayload::InternalAgentFailed { .. } | EventPayload::ApprovalEscalated { .. }
+    )));
+    assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ModelTurnCommitted { turn, .. }
+        if turn.content.iter().any(|part| matches!(part, cookie_agent_protocol::PersistedAssistantPart::Custom { kind, data, metadata }
+            if kind.as_str() == "openai.responses.message_continuation" && metadata.is_none() && data["item_sha256"].as_str().is_some_and(|digest| digest.len() == 64))))),
+        "the real SDK witness must remain in persisted history");
+    let history = fixture
+        .engine
+        .get_history(session.session_id, EngineHistoryView::Full)
+        .await
+        .unwrap();
+    assert!(
+        serde_json::to_string(&history)
+            .unwrap()
+            .contains("openai.responses.message_continuation"),
+        "restoration must retain the witness"
+    );
+    let requests = captured.await.unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.starts_with("POST /v1/responses "))
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn responses_message_transport_fields_allow_generated_titles() {
+    let body = responses_text_with_transport_fields("Transport title", None);
+    let (endpoint, captured, _, _) =
+        scripted_server_with_delayed_response(vec![body.clone(), body], usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_capabilities(
+        &endpoint,
+        "---\ndescription: Responses title output\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest title output.\n",
+        None,
+        None,
+        true,
+        None,
+        None,
+        8192,
+        None,
+        "openai-responses",
+        Some(RESPONSES_REPLAY_CAPABILITIES),
+    );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("responses-title-output").unwrap(),
+                selection,
+                input: "Create a transport title".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    await_projection(&fixture.engine, session.session_id, "Responses generated title", |session| {
+        session.status == SessionStatus::Completed && session.log.events().iter().any(|event| matches!(&event.payload,
+            EventPayload::SessionTitleCommitted { change: cookie_agent_protocol::SessionTitleChange::InternalAgentSet { title, .. }, .. }
+            if title.as_str() == "Transport title"))
+    }).await;
+    assert_eq!(captured.await.unwrap().len(), 2);
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix() {
     let (endpoint, captured) =
