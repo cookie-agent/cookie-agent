@@ -228,6 +228,7 @@ pub(crate) enum MarkdownLineKind {
         continuation_indent: usize,
     },
     Code,
+    Table,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -901,27 +902,59 @@ fn wrap_cell(
     width: usize,
     alignment: Alignment,
 ) -> Vec<Vec<Span<'static>>> {
-    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
-    let mut column = 0usize;
+    let width = width.max(1);
+    let mut words: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut word = Vec::new();
     for span in spans {
         for grapheme in span.content.graphemes(true) {
-            let grapheme_width = UnicodeWidthStr::width(grapheme).max(1);
-            if column > 0 && column + grapheme_width > width {
-                rows.push(Vec::new());
-                column = 0;
-            }
-            if let Some(last) = rows
-                .last_mut()
-                .and_then(|row: &mut Vec<Span<'static>>| row.last_mut())
+            let is_space = grapheme.chars().all(char::is_whitespace);
+            if is_space && !word.is_empty() {
+                word.push(Span::styled(grapheme.to_owned(), span.style));
+                words.push(std::mem::take(&mut word));
+            } else if let Some(last) = word.last_mut()
                 && last.style == span.style
             {
                 last.content.to_mut().push_str(grapheme);
             } else {
-                rows.last_mut()
-                    .expect("one row")
-                    .push(Span::styled(grapheme.to_owned(), span.style));
+                word.push(Span::styled(grapheme.to_owned(), span.style));
             }
-            column += grapheme_width;
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut column = 0usize;
+    for word in words {
+        let word_width = cell_width(&word);
+        if column > 0 && column + word_width > width {
+            rows.push(Vec::new());
+            column = 0;
+        }
+        if word_width <= width {
+            column += word_width;
+            rows.last_mut().expect("one row").extend(word);
+            continue;
+        }
+        for span in word {
+            for grapheme in span.content.graphemes(true) {
+                let grapheme_width = UnicodeWidthStr::width(grapheme).max(1);
+                if column > 0 && column + grapheme_width > width {
+                    rows.push(Vec::new());
+                    column = 0;
+                }
+                if let Some(last) = rows.last_mut().and_then(|row| row.last_mut())
+                    && last.style == span.style
+                {
+                    last.content.to_mut().push_str(grapheme);
+                } else {
+                    rows.last_mut()
+                        .expect("one row")
+                        .push(Span::styled(grapheme.to_owned(), span.style));
+                }
+                column += grapheme_width;
+            }
         }
     }
     // Alignment is applied at line assembly; here rows are raw cell content.
@@ -935,6 +968,28 @@ fn pad_cell(
     alignment: Alignment,
 ) -> Vec<Span<'static>> {
     let used = cell_width(&spans);
+    if used > width {
+        let mut truncated = Vec::new();
+        let mut remaining = width;
+        for span in spans {
+            let mut content = String::new();
+            for grapheme in span.content.graphemes(true) {
+                let grapheme_width = UnicodeWidthStr::width(grapheme).max(1);
+                if grapheme_width > remaining {
+                    break;
+                }
+                content.push_str(grapheme);
+                remaining -= grapheme_width;
+            }
+            if !content.is_empty() {
+                truncated.push(Span::styled(content, span.style));
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+        return truncated;
+    }
     if used >= width {
         return spans;
     }
@@ -1096,20 +1151,40 @@ fn render_table(
                     })
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| format!("column {}", index + 1));
+                let marker = if available >= 2 { "· " } else { "" };
                 let mut spans = vec![
                     Span::styled(quote_prefix.to_owned(), theme.quote()),
-                    Span::styled("· ".to_owned(), theme.code_border()),
+                    Span::styled(marker.to_owned(), theme.code_border()),
                     Span::styled(format!("{header_text}: "), theme.heading()),
                 ];
                 spans.extend(sanitize_cell(cell.clone()));
-                lines.push(Line::from(spans));
+                let wrapped = wrap_cell(
+                    &spans[1..],
+                    available.saturating_sub(UnicodeWidthStr::width(marker)),
+                    Alignment::Left,
+                );
+                for row in wrapped {
+                    let mut line = vec![spans[0].clone()];
+                    line.extend(row);
+                    lines.push(Line::from(line));
+                }
             }
         }
         if lines.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(quote_prefix.to_owned(), theme.quote()),
-                Span::styled("· (empty table)".to_owned(), theme.muted()),
-            ]));
+            let marker = if available >= 2 { "· " } else { "" };
+            let wrapped = wrap_cell(
+                &[Span::styled(
+                    format!("{marker}(empty table)"),
+                    theme.muted(),
+                )],
+                available.saturating_sub(UnicodeWidthStr::width(marker)),
+                Alignment::Left,
+            );
+            for row in wrapped {
+                let mut line = vec![Span::styled(quote_prefix.to_owned(), theme.quote())];
+                line.extend(row);
+                lines.push(Line::from(line));
+            }
         }
         return lines;
     };
@@ -1760,7 +1835,7 @@ impl<'a> MarkdownRenderer<'a> {
         ) {
             self.lines.push(MarkdownLine {
                 line,
-                kind: MarkdownLineKind::Prose,
+                kind: MarkdownLineKind::Table,
             });
         }
     }
@@ -2869,17 +2944,53 @@ bold and italic, `code`, link <https://example.test>.
         // readable stacked representation instead of sliver columns.
         let stacked = table_render(source, 9, &Theme::default());
         let stacked_joined = stacked.join("\n");
-        assert!(stacked_joined.contains("description: "), "stacked fallback");
-        assert!(stacked_joined.contains("status: done"));
+        assert!(stacked_joined.contains("descr"), "stacked fallback");
+        assert!(stacked_joined.contains("status"));
         assert!(
             stacked.iter().all(|line| !line.contains('┌')),
             "no unusable sliver columns at 9 columns"
         );
+        assert!(
+            stacked
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 9)
+        );
+
+        let wide = "| name | details | state |\n|---|---|---|\n| alpha | a long `piledDynamicModel` value → should wrap — cleanly | ready |\n| beta | another long value that has multiple words | waiting |";
+        let wrapped = table_render(wide, 42, &Theme::default());
+        assert!(
+            wrapped
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 42)
+        );
+        let border_columns = wrapped
+            .iter()
+            .filter_map(|line| line.find('│'))
+            .collect::<Vec<_>>();
+        assert!(
+            border_columns
+                .windows(2)
+                .all(|columns| columns[0] == columns[1])
+        );
+        let joined = wrapped.join("\n");
+        assert!(joined.contains("long") && joined.contains("value"));
+        assert!(!joined.contains("amily"));
 
         // Tiny widths never panic and stay readable.
         for width in 1..10 {
             let tiny = table_render(source, width, &Theme::default());
             assert!(!tiny.is_empty(), "width {width}");
+        }
+
+        let empty = "| name | details | state |\n|---|---|---|\n";
+        for width in 1..=14 {
+            let lines = table_render(empty, width, &Theme::default());
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| UnicodeWidthStr::width(line.as_str()) <= usize::from(width)),
+                "empty table exceeds width {width}: {lines:?}"
+            );
         }
     }
 

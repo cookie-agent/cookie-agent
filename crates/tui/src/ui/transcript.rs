@@ -3390,6 +3390,7 @@ fn assistant_markdown_body_line(
             continuation_indent,
         } => repeated_prefixed_hanging_line(prefix, line.line, width, continuation_indent),
         MarkdownLineKind::Code => vec![prefixed_unwrapped_line(prefix, line.line, width)],
+        MarkdownLineKind::Table => vec![prefixed_unwrapped_line(prefix, line.line, width)],
     }
 }
 
@@ -17550,6 +17551,29 @@ mod tests {
         assert!(layout.lines.iter().all(|line| {
             unicode_width::UnicodeWidthStr::width(line.to_string().as_str()) <= 50
         }));
+
+        let table = "| name | details | state |\n|---|---|---|\n| alpha | a long `piledDynamicModel` value → should wrap — cleanly | ready |\n| beta | another long value that has multiple words | waiting |";
+        let state = assistant_state(vec![AssistantChild::Text {
+            id: 1,
+            version: 0,
+            markdown: MarkdownDocument::new(table.to_owned()),
+        }]);
+        for width in [80, 90] {
+            let layout = transcript_layout(&state, None, width);
+            let lines = layout
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            assert!(lines.iter().all(|line| {
+                unicode_width::UnicodeWidthStr::width(line.as_str()) <= usize::from(width)
+            }));
+            let borders = lines
+                .iter()
+                .filter_map(|line| line.find('│'))
+                .collect::<Vec<_>>();
+            assert!(borders.windows(2).all(|columns| columns[0] == columns[1]));
+        }
     }
 
     #[test]
