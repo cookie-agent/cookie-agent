@@ -1303,6 +1303,7 @@ impl Engine {
                 .request(entry.reservation.child_session_id, |reply| {
                     SessionCommand::Start {
                         params: RunStartParams {
+                            reset_fallback: false,
                             session_id: entry.reservation.child_session_id,
                             client_run_id: client_run_id.clone(),
                             selection: child.meta.creation_selection.clone(),

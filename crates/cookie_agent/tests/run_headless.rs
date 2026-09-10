@@ -185,6 +185,7 @@ struct Fixture {
     workspace: PathBuf,
     engine: Engine,
     server: MockModelServer,
+    options: EngineOptions,
 }
 
 struct ProcessFixture {
@@ -279,14 +280,14 @@ impl Fixture {
             )
             .expect("model manager"),
         );
-        let engine = Engine::open(EngineOptions {
+        let options = EngineOptions {
             data_dir: root.path().join("data"),
             cwd: workspace.clone(),
             config: configuration,
             model_manager,
             tools: vec![Arc::new(BuiltinTools::new(&workspace))],
-        })
-        .expect("engine");
+        };
+        let engine = Engine::open(options.clone()).expect("engine");
         engine
             .try_register_tool_provider(Arc::new(DelegateToolProvider::new(engine.clone())))
             .expect("delegate tools");
@@ -298,6 +299,7 @@ impl Fixture {
             workspace,
             engine,
             server,
+            options,
         }
     }
 
@@ -587,6 +589,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("opt-out-cancel").unwrap(),
                     selection,
@@ -1135,6 +1138,7 @@ async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new(uuid::Uuid::now_v7().to_string())
                     .expect("client run ID"),
@@ -1351,6 +1355,270 @@ async fn prospective_chained_skill_listing_preserves_a_grants_after_b_loads() {
         requests
             .iter()
             .any(|request| request.contains("git --version"))
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() {
+    let mut fixture = Fixture::with_workspace(vec![], |workspace| {
+        let config_path = workspace.join(".cookie-agent/config.toml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        let third = config.split("[providers.\"custom.local\".models.alternate]").nth(1).unwrap();
+        fs::write(config_path, format!("{config}\n[providers.\"custom.local\".models.third]\n{third}")).unwrap();
+        let agent_path = workspace.join(".cookie-agent/agents/primary.md");
+        let agent = fs::read_to_string(&agent_path).unwrap().replace(
+            "  - { model: \"custom.local/alternate\", variant: null }",
+            "  - { model: \"custom.local/alternate\", variant: null }\n  - { model: \"custom.local/third\", variant: null }",
+        );
+        fs::write(agent_path, agent).unwrap();
+    }).await;
+    fixture.server.enqueue(MockResponse::Status(400));
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"true"}"#,
+    )));
+    fixture.server.enqueue(MockResponse::Sse(final_response(
+        "B completes after a tool",
+    )));
+    let mut args = run_args("fall back from A to B");
+    args.output = Some(OutputMode::Json);
+    args.permission_mode = PermissionModeArg::Yolo;
+    let first = fixture.run(args, "").await;
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let records = parse_json_lines(&first.stdout);
+    let session: SessionId =
+        serde_json::from_value(records.last().unwrap()["session_id"].clone()).unwrap();
+    let original: RunSelection = serde_json::from_value(
+        records
+            .iter()
+            .find(|record| record["event"]["payload"]["type"] == "run_started")
+            .unwrap()["event"]["payload"]["selection"]
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session)
+            .unwrap()
+            .model
+            .model
+            .as_str(),
+        "custom.local/alternate"
+    );
+
+    // Simulate a connected client submitting its stale A draft. The server must
+    // enforce the remembered suffix without depending on the CLI's draft update.
+    async fn start(engine: &Engine, params: RunStartParams) -> cookie_agent_protocol::RunId {
+        let cursor = engine
+            .get_session(params.session_id)
+            .unwrap()
+            .last_event_seq;
+        let (_, mut receiver) = engine
+            .subscribe(params.session_id, Some(cursor))
+            .await
+            .unwrap();
+        let run = engine
+            .start_run(
+                params,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap()
+            .run_id;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
+                if event.run_id == Some(run)
+                    && matches!(event.payload, EventPayload::RunCompleted { .. })
+                {
+                    return;
+                }
+            }
+            panic!("run did not complete");
+        })
+        .await
+        .unwrap();
+        run
+    }
+    let second_params = RunStartParams {
+        reset_fallback: false,
+        session_id: session,
+        client_run_id: ClientRunId::new("sticky-second").unwrap(),
+        selection: original.clone(),
+        input: "second turn".into(),
+    };
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("B again")));
+    let second = start(&fixture.engine, second_params.clone()).await;
+    let (saved, _) = fixture.engine.subscribe(session, None).await.unwrap();
+    let suffix = saved
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::RunStarted {
+                selection,
+                selected_suffix,
+                ..
+            } if event.run_id == Some(second) => {
+                assert_eq!(selection.model.model.as_str(), "custom.local/alternate");
+                Some(
+                    selected_suffix
+                        .iter()
+                        .map(|binding| binding.selection.model.to_string())
+                        .collect::<Vec<_>>(),
+                )
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(suffix, ["custom.local/alternate", "custom.local/third"]);
+    fixture.server.enqueue(MockResponse::Status(400));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("C succeeds")));
+    start(
+        &fixture.engine,
+        RunStartParams {
+            client_run_id: ClientRunId::new("sticky-third").unwrap(),
+            input: "third turn".into(),
+            ..second_params.clone()
+        },
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .engine
+            .start_run(
+                second_params,
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
+            )
+            .await
+            .unwrap()
+            .run_id,
+        second,
+        "redelivery uses original admission state even after a later fallback"
+    );
+
+    fixture.shutdown().await;
+    fixture.engine = Engine::open(fixture.options.clone()).unwrap();
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session)
+            .unwrap()
+            .model
+            .model
+            .as_str(),
+        "custom.local/third"
+    );
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("C after restart")));
+    let mut resume = run_args("resume at C");
+    resume.resume_session = Some(session);
+    assert_eq!(fixture.run(resume.clone(), "").await.code, 0);
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("new session still A")));
+    assert_eq!(fixture.run(run_args("new session"), "").await.code, 0);
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session)
+            .unwrap()
+            .model
+            .model
+            .as_str(),
+        "custom.local/third"
+    );
+
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("explicit reset to A")));
+    let mut reset = resume.clone();
+    reset.model = Some("custom.local/test".parse().unwrap());
+    assert_eq!(fixture.run(reset, "").await.code, 0);
+    for _ in 0..3 {
+        fixture.server.enqueue(MockResponse::Status(400));
+    }
+    assert_eq!(fixture.run(resume.clone(), "").await.code, 1);
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session)
+            .unwrap()
+            .model
+            .model
+            .as_str(),
+        "custom.local/test",
+        "an entirely failed chain must not advance the durable selection"
+    );
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("A remains available")));
+    assert_eq!(fixture.run(resume.clone(), "").await.code, 0);
+    fixture.server.enqueue(MockResponse::Status(400));
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("B before changing agent")));
+    assert_eq!(fixture.run(resume.clone(), "").await.code, 0);
+    let mut other = resume.clone();
+    other.agent = Some("skill-host".parse().unwrap());
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("new agent starts at A")));
+    assert_eq!(fixture.run(other, "").await.code, 0);
+    let mut preset = resume;
+    preset.agent = Some("primary".parse().unwrap());
+    preset.preset = Some("python".into());
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("new preset starts at A")));
+    assert_eq!(fixture.run(preset, "").await.code, 0);
+    assert_eq!(
+        fixture
+            .engine
+            .session_model_selection(session)
+            .unwrap()
+            .preset
+            .as_deref(),
+        Some("python")
+    );
+    let models = fixture
+        .server
+        .requests()
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<serde_json::Value>(request.split_once("\r\n\r\n").unwrap().1)
+                .unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        models,
+        [
+            "test",
+            "alternate",
+            "alternate",
+            "alternate",
+            "alternate",
+            "third",
+            "third",
+            "test",
+            "test",
+            "test",
+            "alternate",
+            "third",
+            "test",
+            "test",
+            "alternate",
+            "test",
+            "test"
+        ]
     );
     fixture.shutdown().await;
 }
@@ -2031,6 +2299,7 @@ async fn start_run_admission_failures_map_to_one() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("already-running").expect("client run ID"),
                 selection: session.creation_selection,

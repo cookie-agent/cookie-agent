@@ -460,8 +460,19 @@ async fn prepare_run(
         })?),
         None => None,
     };
-    let selection = resolve_selection(&snapshot.agents, &snapshot.models, resumed.as_ref(), args)
-        .map_err(PrepareError::setup)?;
+    let remembered = resumed
+        .as_ref()
+        .map(|session| engine.session_model_selection(session.session_id))
+        .transpose()
+        .map_err(|error| PrepareError::setup(anyhow!(error)))?;
+    let selection = resolve_selection(
+        &snapshot.agents,
+        &snapshot.models,
+        resumed.as_ref(),
+        remembered.as_ref(),
+        args,
+    )
+    .map_err(PrepareError::setup)?;
     let session = match resumed {
         Some(session) => session,
         None => engine.create_session(selection.clone()).map_err(|error| {
@@ -497,6 +508,10 @@ async fn prepare_run(
     let run_id = engine
         .start_run(
             RunStartParams {
+                reset_fallback: args.model.is_some()
+                    || args.variant.is_some()
+                    || args.agent.is_some()
+                    || args.preset.is_some(),
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new(Uuid::now_v7().to_string())
                     .expect("UUID is a valid client run ID"),
@@ -561,8 +576,10 @@ fn resolve_selection(
     agents: &[cookie_agent_protocol::AgentDescriptor],
     models: &[AvailableModelDescriptor],
     resumed: Option<&SessionMeta>,
+    remembered: Option<&RunSelection>,
     args: &RunArgs,
 ) -> anyhow::Result<RunSelection> {
+    let previous = remembered.or_else(|| resumed.map(|session| &session.creation_selection));
     let root_session = resumed.is_none_or(|session| matches!(session.origin, SessionOrigin::Root));
     if !root_session && args.agent.is_some() {
         return Err(anyhow!("--agent cannot override a delegated session"));
@@ -570,7 +587,7 @@ fn resolve_selection(
     let preset = args
         .preset
         .clone()
-        .or_else(|| resumed.and_then(|session| session.creation_selection.preset.clone()));
+        .or_else(|| previous.and_then(|selection| selection.preset.clone()));
     if let Some(name) = preset.as_deref()
         && !agents
             .iter()
@@ -581,7 +598,7 @@ fn resolve_selection(
     let base_agent = args
         .agent
         .as_ref()
-        .or_else(|| resumed.map(|session| &session.creation_selection.agent));
+        .or_else(|| previous.map(|selection| &selection.agent));
     let agent = match base_agent {
         Some(agent_id) => agents.iter().find(|agent| {
             agent.id == *agent_id
@@ -608,7 +625,8 @@ fn resolve_selection(
             variant: descriptor.default_variant.clone(),
         }
     } else if args.agent.is_none()
-        && let Some(selection) = resumed.map(|session| &session.creation_selection.model)
+        && args.preset.is_none()
+        && let Some(selection) = previous.map(|selection| &selection.model)
         && selection_is_live(models, selection)
     {
         selection.clone()

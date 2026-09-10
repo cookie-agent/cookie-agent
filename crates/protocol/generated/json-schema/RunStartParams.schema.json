@@ -13,6 +13,9 @@
     "input": {
       "type": "string"
     },
+    "reset_fallback": {
+      "type": "boolean"
+    },
     "selection": {
       "$ref": "#/$defs/RunSelection"
     },

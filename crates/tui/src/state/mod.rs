@@ -518,6 +518,7 @@ pub struct SessionState {
     /// reconstruction from the agent fallback chain — is what attempts and
     /// delegated pickers use.
     pub run_selected_suffix: Option<Vec<cookie_agent_protocol::FrozenModelBinding>>,
+    pub model_selection: cookie_agent_protocol::SessionModelState,
     pub goal: Option<GoalState>,
     pub transcript: Vec<TranscriptItem>,
     /// The engine's pending-input lane for this session, reduced purely
@@ -1044,6 +1045,7 @@ fn reduce_event(
     // can measure its generation wall time from the exact event that closed
     // its input window — replay-exact, never render-time wall clock.
     state.event_timestamps.insert(sequence, timestamp);
+    state.model_selection.apply(run_id, &payload);
     match payload {
         EventPayload::GoalActivated {
             goal_id,

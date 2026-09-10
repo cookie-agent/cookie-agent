@@ -209,6 +209,7 @@ async fn queued_message_can_be_discarded_after_unregister_by_its_stable_owner() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-queued").unwrap(),
                 selection,
@@ -309,6 +310,7 @@ async fn admitted_message_added_after_request_snapshot_can_still_be_discarded() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-admitted").unwrap(),
                 selection,
@@ -378,6 +380,7 @@ async fn inflight_steer_is_too_late_once_claimed_and_after_commit() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-claimed").unwrap(),
                 selection,
@@ -624,6 +627,7 @@ async fn recovery_releases_stale_claim_before_owner_discard() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("producer-discard-recovery").unwrap(),
                 selection,
@@ -789,6 +793,7 @@ async fn installed_plugin_callback_discards_after_unregister_and_repeats_success
     let run = engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("plugin-discard-callback").unwrap(),
                 selection,

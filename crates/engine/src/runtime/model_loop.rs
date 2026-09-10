@@ -104,54 +104,6 @@ impl Engine {
                 }
             }
         };
-        let from_model = session.log.last_run_started().map(|(_, _, model)| model);
-        if from_model.as_ref() != Some(&params.selection.model) {
-            let context_id = crate::plugin::plugin_context_id();
-            for plugin in self.inner.plugins.interception_plugins(
-                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
-            ) {
-                let result = self
-                    .inner
-                    .plugins
-                    .intercept_named::<_, cookie_agent_protocol::ExtensionAllowBlockResult>(
-                        &plugin,
-                        cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
-                        &cookie_agent_protocol::ExtensionModelBeforeSelectParams {
-                            session_id: params.session_id,
-                            context_id: context_id.clone(),
-                            from: from_model.clone(),
-                            to: params.selection.model.clone(),
-                            source: if from_model.is_some() {
-                                cookie_agent_protocol::ExtensionModelSelectSource::User
-                            } else {
-                                cookie_agent_protocol::ExtensionModelSelectSource::Config
-                            },
-                        },
-                        Some(params.session_id),
-                        Some(&context_id),
-                    )
-                    .await;
-                match result {
-                    Ok(result)
-                        if result.action
-                            == cookie_agent_protocol::ExtensionAllowBlockAction::Block =>
-                    {
-                        let reason = result
-                            .reason
-                            .unwrap_or_else(|| format!("model selection blocked by {plugin}"));
-                        self.record_plugin_diagnostic(
-                            params.session_id,
-                            plugin,
-                            PluginDiagnosticKind::HookBlocked,
-                            reason.clone(),
-                        );
-                        return Err(EngineError::ModelSelectionBlocked(reason));
-                    }
-                    Ok(_) => {}
-                    Err(error) => self.record_interception_error(params.session_id, plugin, error),
-                }
-            }
-        }
         let staged_skill = self.pending_child_skill(params.session_id);
         let direct_skill = (staged_skill.is_none())
             .then(|| cookie_agent_protocol::decode_skill_submission(&params.input))
@@ -173,6 +125,26 @@ impl Engine {
             .values()
             .find(|run| run.client_run_id == params.client_run_id)
         {
+            // Resolve retries against the state before their original admission,
+            // not a fallback committed by this run or a later run.
+            let events = session.log.event_snapshot();
+            let start = events
+                .iter()
+                .position(|event| {
+                    event.run_id == Some(run.id)
+                        && matches!(event.payload, Event::RunStarted { .. })
+                })
+                .unwrap_or(0);
+            let prior = cookie_agent_protocol::SessionModelState::from_events(&events[..start]);
+            params.selection = prior.continuation(
+                &params.selection,
+                &run.agent
+                    .fallback_chain
+                    .iter()
+                    .map(|binding| binding.selection.clone())
+                    .collect::<Vec<_>>(),
+                params.reset_fallback,
+            );
             if run.input != params.input || run.selection != params.selection {
                 return Err(EngineError::RunIdempotencyConflict);
             }
@@ -214,6 +186,81 @@ impl Engine {
                 )?
             }
         };
+        let remembered =
+            cookie_agent_protocol::SessionModelState::from_events(&session.log.event_snapshot());
+        let effective = remembered.continuation(
+            &params.selection,
+            &run_policy
+                .selected_suffix
+                .iter()
+                .map(|binding| binding.selection.clone())
+                .collect::<Vec<_>>(),
+            params.reset_fallback,
+        );
+        if effective != params.selection {
+            let start = run_policy
+                .selected_suffix
+                .iter()
+                .position(|binding| binding.selection == effective.model)
+                .expect("continuation is in the frozen chain");
+            run_policy.selected_suffix.drain(..start);
+            run_policy.cache_strategies.drain(..start);
+            run_policy.agent.selected_suffix_start += start as u32;
+            params.selection = effective;
+        }
+        let from_model = session.log.last_run_started().and_then(|_| {
+            remembered
+                .selection
+                .as_ref()
+                .map(|selection| selection.model.clone())
+        });
+        if from_model.as_ref() != Some(&params.selection.model) {
+            let context_id = crate::plugin::plugin_context_id();
+            for plugin in self.inner.plugins.interception_plugins(
+                cookie_agent_protocol::ExtensionInterceptionHook::ModelBeforeSelect,
+            ) {
+                let result = self
+                    .inner
+                    .plugins
+                    .intercept_named::<_, cookie_agent_protocol::ExtensionAllowBlockResult>(
+                        &plugin,
+                        cookie_agent_protocol::PLUGIN_INTERCEPT_MODEL_BEFORE_SELECT_METHOD,
+                        &cookie_agent_protocol::ExtensionModelBeforeSelectParams {
+                            session_id: params.session_id,
+                            context_id: context_id.clone(),
+                            from: from_model.clone(),
+                            to: params.selection.model.clone(),
+                            source: if session.log.last_run_started().is_some() {
+                                cookie_agent_protocol::ExtensionModelSelectSource::User
+                            } else {
+                                cookie_agent_protocol::ExtensionModelSelectSource::Config
+                            },
+                        },
+                        Some(params.session_id),
+                        Some(&context_id),
+                    )
+                    .await;
+                match result {
+                    Ok(result)
+                        if result.action
+                            == cookie_agent_protocol::ExtensionAllowBlockAction::Block =>
+                    {
+                        let reason = result
+                            .reason
+                            .unwrap_or_else(|| format!("model selection blocked by {plugin}"));
+                        self.record_plugin_diagnostic(
+                            params.session_id,
+                            plugin,
+                            PluginDiagnosticKind::HookBlocked,
+                            reason.clone(),
+                        );
+                        return Err(EngineError::ModelSelectionBlocked(reason));
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.record_interception_error(params.session_id, plugin, error),
+                }
+            }
+        }
         let agent_md = if is_root {
             self.load_agent_md(params.selection.preset.as_deref())?
         } else {

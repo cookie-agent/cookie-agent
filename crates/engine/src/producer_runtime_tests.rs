@@ -853,6 +853,7 @@ async fn active_steer_and_queue_preserve_authority_dedup_and_model_run_boundarie
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("producer-active-run").expect("client run ID"),
                 selection: selection.clone(),
@@ -1596,6 +1597,7 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("active-goal-cancel").expect("cancel run ID"),
                 selection,
@@ -2140,6 +2142,7 @@ async fn accepted_pause_control_survives_cancelled_run_and_wakes_without_registr
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("pause-old-run").expect("old run ID"),
                 selection,
@@ -2270,6 +2273,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("goal-tools-none").expect("no-goal run ID"),
                 selection: selection.clone(),
@@ -2315,6 +2319,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("goal-tools-active").expect("active run ID"),
                 selection: selection.clone(),
@@ -2361,6 +2366,7 @@ async fn goal_tool_visibility_is_frozen_at_run_admission_across_lifecycle_change
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new("goal-tools-paused").expect("paused run ID"),
                 selection,
@@ -2528,6 +2534,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: root_id,
                 client_run_id: ClientRunId::new("paused-goal-fork-boundary")
                     .expect("fork boundary run ID"),
@@ -2725,6 +2732,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("delegated-goal-boundary")
                     .expect("delegation run ID"),

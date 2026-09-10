@@ -104,6 +104,7 @@ async fn start_held_background_delegation() -> (
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("held-background-parent").expect("run ID"),
                 selection,

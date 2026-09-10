@@ -3,6 +3,10 @@
 #[path = "goal.rs"]
 mod goal;
 
+#[cfg(test)]
+#[path = "fallback_tests.rs"]
+mod fallback_tests;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Write as _,
@@ -533,6 +537,9 @@ pub struct App {
     pub(super) catalog_revision: Option<cookie_agent_protocol::CatalogRevision>,
     /// Client-local draft selection; never alters an active run.
     pub(super) draft: Option<RunSelection>,
+    pub(super) draft_reset_fallback: bool,
+    draft_generation: u64,
+    pending_fallback_resets: HashMap<ClientRunId, PendingFallbackReset>,
     pub(super) connect_provider: Option<ProviderDescriptor>,
     pub(super) provider_form: Option<ProviderForm>,
     pub(super) provider_operations: HashMap<cookie_agent_protocol::ProviderId, ProviderOperation>,
@@ -677,6 +684,13 @@ const USER_MENU_ITEMS: &[(&str, &str)] = &[
 pub(super) enum RpcUpdate {
     Status(String),
     Notice(String),
+    RunStartFinished {
+        session_id: SessionId,
+        client_run_id: ClientRunId,
+        draft_generation: u64,
+        reset_fallback: bool,
+        result: Result<(), String>,
+    },
     GoalFinished {
         session_id: SessionId,
         result: Box<Result<Option<cookie_agent_protocol::GoalState>, String>>,
@@ -784,6 +798,13 @@ pub(super) enum RpcUpdate {
         session_id: SessionId,
         generation: u64,
     },
+}
+
+struct PendingFallbackReset {
+    session_id: SessionId,
+    draft_generation: u64,
+    rpc_admitted: bool,
+    replay_generation: Option<u64>,
 }
 
 pub(super) enum SessionOwnershipOutcome {
@@ -975,6 +996,9 @@ impl App {
             skill_refresh_requests: Vec::new(),
             catalog_revision: None,
             draft: None,
+            draft_reset_fallback: false,
+            draft_generation: 0,
+            pending_fallback_resets: HashMap::new(),
             connect_provider: None,
             provider_form: None,
             provider_operations: HashMap::new(),
@@ -1947,6 +1971,7 @@ impl App {
             self.new_session_draft = Some(selection);
         } else {
             self.draft = Some(selection);
+            self.set_draft_reset_intent(true);
             self.status = self.draft_status("Draft run agent");
         }
     }
@@ -1956,6 +1981,7 @@ impl App {
             return;
         };
         if draft.model.model == model {
+            self.set_draft_reset_intent(true);
             self.status = self.draft_status("Draft run model");
             return;
         }
@@ -1977,6 +2003,7 @@ impl App {
             model: selection,
             preset: draft.preset,
         });
+        self.set_draft_reset_intent(true);
         self.status = self.draft_status("Draft run model");
     }
 
@@ -1992,6 +2019,7 @@ impl App {
             },
             preset: draft.preset,
         });
+        self.set_draft_reset_intent(true);
         self.status = self.draft_status("Draft run variant");
     }
 
@@ -2364,6 +2392,35 @@ impl App {
                 self.status = status;
             }
             RpcUpdate::Notice(status) => self.status = status,
+            RpcUpdate::RunStartFinished {
+                session_id,
+                client_run_id,
+                draft_generation,
+                reset_fallback,
+                result,
+            } => {
+                match result {
+                    Ok(()) => self.acknowledge_fallback_reset(
+                        session_id,
+                        &client_run_id,
+                        Some(draft_generation),
+                        false,
+                        None,
+                    ),
+                    Err(error) => {
+                        // A failed response is not admission proof. Keep the intent
+                        // (and correlation for a possibly persisted RunStarted).
+                        if self.selected == Some(session_id)
+                            && self.draft_generation == draft_generation
+                            && (!reset_fallback
+                                || self.pending_fallback_resets.contains_key(&client_run_id))
+                        {
+                            self.session_errors.record(&error);
+                            self.status = error;
+                        }
+                    }
+                }
+            }
             RpcUpdate::GoalFinished { session_id, result } => {
                 self.finish_goal_command(session_id, *result)
             }
@@ -2779,6 +2836,7 @@ impl App {
         }
         self.selected = Some(session_id);
         if changed {
+            self.set_draft_reset_intent(false);
             let root = self.permission_mode_root(session_id);
             self.permission_modes.remove(&root);
             self.refresh_permission_mode_for_session(session_id);
@@ -2796,6 +2854,9 @@ impl App {
     /// is pinned to its frozen child agent with the valid chain model/variant
     /// — a previous root draft is never carried into a child.
     fn rebind_draft_to_selected_session(&mut self) {
+        if self.draft_reset_fallback {
+            return;
+        }
         let Some(meta) = self.selected_session_meta().cloned() else {
             return;
         };
@@ -2827,6 +2888,93 @@ impl App {
                 self.draft = Some(creation);
                 self.revalidate_draft();
             }
+        }
+        self.sync_session_model_draft();
+    }
+
+    fn set_draft_reset_intent(&mut self, armed: bool) {
+        self.draft_generation = self.draft_generation.wrapping_add(1);
+        self.draft_reset_fallback = armed;
+        self.pending_fallback_resets.clear();
+    }
+
+    fn track_fallback_reset(&mut self, session_id: SessionId, client_run_id: &ClientRunId) {
+        if self.draft_reset_fallback {
+            self.pending_fallback_resets.insert(
+                client_run_id.clone(),
+                PendingFallbackReset {
+                    session_id,
+                    draft_generation: self.draft_generation,
+                    rpc_admitted: false,
+                    replay_generation: None,
+                },
+            );
+        }
+    }
+
+    fn acknowledge_fallback_reset(
+        &mut self,
+        session_id: SessionId,
+        client_run_id: &ClientRunId,
+        generation: Option<u64>,
+        started_event: bool,
+        replay_generation: Option<u64>,
+    ) {
+        let Some(pending) = self.pending_fallback_resets.get_mut(client_run_id) else {
+            return;
+        };
+        if self.selected != Some(session_id)
+            || pending.session_id != session_id
+            || pending.draft_generation != self.draft_generation
+            || generation.is_some_and(|generation| generation != pending.draft_generation)
+        {
+            return;
+        }
+        self.draft_reset_fallback = false;
+        if started_event && replay_generation.is_none() {
+            // Any accepted submission of this same intent consumes it once.
+            self.pending_fallback_resets.clear();
+        } else {
+            // Do not sync from the previous run's projection while its successor's
+            // admission event is still in flight or awaiting replay.
+            pending.rpc_admitted = true;
+            if started_event {
+                pending.replay_generation = replay_generation;
+            }
+        }
+    }
+
+    fn finish_fallback_reset_replay(&mut self, session_id: SessionId, generation: u64) {
+        if self.pending_fallback_resets.values().any(|pending| {
+            pending.session_id == session_id
+                && pending.draft_generation == self.draft_generation
+                && pending.replay_generation == Some(generation)
+        }) {
+            self.pending_fallback_resets.clear();
+        }
+    }
+
+    fn sync_session_model_draft(&mut self) {
+        if self.draft_reset_fallback
+            || self.pending_fallback_resets.values().any(|pending| {
+                pending.rpc_admitted
+                    && pending.draft_generation == self.draft_generation
+                    && Some(pending.session_id) == self.selected
+            })
+        {
+            return;
+        }
+        let selection = self
+            .selected
+            .and_then(|session| self.store.sessions.get(&session))
+            .and_then(|state| state.model_selection.selection.clone());
+        if let Some(selection) = selection
+            && (self.selection_is_live(&selection.model)
+                || self
+                    .persisted_chain()
+                    .is_some_and(|chain| chain.contains(&selection.model)))
+        {
+            self.draft = Some(selection);
         }
     }
 
@@ -2885,6 +3033,25 @@ impl App {
                 cookie_agent_protocol::EventSubscriptionMessage::Gap { .. } => None,
             },
             ClientDelivery::ReplayEvent { event, .. } => Some(event.as_ref()),
+            _ => None,
+        };
+        let reset_admission = event.and_then(|event| match &event.payload {
+            EventPayload::RunStarted { client_run_id, .. } => Some((
+                event.session_id,
+                client_run_id.clone(),
+                match &delivery {
+                    ClientDelivery::ReplayEvent { generation, .. } => Some(*generation),
+                    _ => None,
+                },
+            )),
+            _ => None,
+        });
+        let reset_replay_end = match &delivery {
+            ClientDelivery::ReplayEnd {
+                session_id,
+                generation,
+                ..
+            } => Some((*session_id, *generation)),
             _ => None,
         };
         let linked = event
@@ -2976,6 +3143,19 @@ impl App {
             self.selection = None;
         }
         if matches!(outcome, DeliveryOutcome::Applied) {
+            if let Some((session_id, client_run_id, replay_generation)) = reset_admission {
+                self.acknowledge_fallback_reset(
+                    session_id,
+                    &client_run_id,
+                    None,
+                    true,
+                    replay_generation,
+                );
+            }
+            if let Some((session_id, generation)) = reset_replay_end {
+                self.finish_fallback_reset_replay(session_id, generation);
+            }
+            self.sync_session_model_draft();
             if let Some((session_id, goal_id, revision)) = goal_completed {
                 self.notify_goal_completed(session_id, goal_id, revision);
             }
@@ -5981,6 +6161,7 @@ impl App {
                 if let Some(preset) = preset {
                     let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
                     let preferred_model = self.draft.as_ref().map(|draft| draft.model.clone());
+                    self.set_draft_reset_intent(true);
                     self.selected_preset = preset;
                     if self.watching_root_session() {
                         self.draft = self.draft_selection_for_preset(
@@ -6116,9 +6297,15 @@ impl App {
         } else {
             None
         };
+        let reset_fallback = self.draft_reset_fallback;
         if active_run.is_none() && selection.is_none() {
             self.status = "select a draft agent/model before submitting".into();
             return;
+        }
+        let submitted_id = client_run_id();
+        let draft_generation = self.draft_generation;
+        if active_run.is_none() {
+            self.track_fallback_reset(session_id, &submitted_id);
         }
         self.spawn_rpc(async move {
             if let Some(run_id) = active_run {
@@ -6147,16 +6334,25 @@ impl App {
                         });
                     }
                 }
-            } else if let Err(error) = client
-                .start_run(RunStartParams {
+            } else {
+                let result = client
+                    .start_run(RunStartParams {
+                        reset_fallback,
+                        session_id,
+                        client_run_id: submitted_id.clone(),
+                        selection: selection.expect("draft selection checked"),
+                        input,
+                    })
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                let _ = updates.send(RpcUpdate::RunStartFinished {
                     session_id,
-                    client_run_id: client_run_id(),
-                    selection: selection.expect("draft selection checked"),
-                    input,
-                })
-                .await
-            {
-                let _ = updates.send(RpcUpdate::Status(error.to_string()));
+                    client_run_id: submitted_id,
+                    draft_generation,
+                    reset_fallback,
+                    result,
+                });
             }
         });
     }

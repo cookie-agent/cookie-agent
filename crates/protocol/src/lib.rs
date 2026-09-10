@@ -107,6 +107,7 @@ mod provider;
 mod rpc;
 mod runtime;
 mod session;
+mod session_model;
 mod setup_value;
 
 pub use agent::*;
@@ -131,6 +132,7 @@ pub use provider::*;
 pub use rpc::*;
 pub use runtime::*;
 pub use session::*;
+pub use session_model::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.

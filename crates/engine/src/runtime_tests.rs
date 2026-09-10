@@ -3100,6 +3100,7 @@ async fn session_metadata_tracks_log_tail_for_create_get_list_tree_and_append() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: created.session_id,
                 client_run_id: ClientRunId::new("metadata-persist").expect("client run ID"),
                 selection,
@@ -3168,6 +3169,7 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("metadata-cache-persist").expect("client run ID"),
                 selection,
@@ -3267,6 +3269,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("first-persist").expect("client run ID"),
                 selection,
@@ -4048,6 +4051,7 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new(
                     "delegated-cache-inheritance",
@@ -4149,6 +4153,7 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("wildcard-delegation")
                     .unwrap(),
@@ -4284,6 +4289,7 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("tool-prompt-{index}")).unwrap(),
                     selection: selection.clone(),
@@ -4417,6 +4423,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-prompt-order").unwrap(),
                 selection,
@@ -4520,6 +4527,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("tool-prompt-error-{name}")).unwrap(),
                     selection,
@@ -4564,6 +4572,7 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-prompt-composed-limit").unwrap(),
                 selection,
@@ -4988,6 +4997,7 @@ async fn consecutive_root_runs_reload_agent_md() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-first").unwrap(),
                 selection: selection.clone(),
@@ -5004,6 +5014,7 @@ async fn consecutive_root_runs_reload_agent_md() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-second").unwrap(),
                 selection,
@@ -5074,6 +5085,7 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("agent-md-replay").unwrap(),
                 selection,
@@ -5523,6 +5535,7 @@ async fn assert_retry_budget_and_fallback(status: u16, expected_attempts_on_firs
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new(format!("retry-budget-{status}")).unwrap(),
                 selection,
@@ -5613,6 +5626,7 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("infinite-overload-cancel").unwrap(),
                 selection,
@@ -6046,6 +6060,7 @@ async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order()
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("parallel-order").expect("client run ID"),
                 selection,
@@ -6209,6 +6224,7 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("no-capture-page").unwrap(),
                 selection,
@@ -6303,6 +6319,7 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("commit-race").unwrap(),
                 selection: selection.clone(),
@@ -6476,6 +6493,7 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("plugin-named-output").unwrap(),
                 selection,
@@ -6594,6 +6612,7 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("parallel-cancellation").expect("client run ID"),
                 selection: selection.clone(),
@@ -6734,6 +6753,7 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("mutation-{suffix}"))
                         .expect("client run ID"),
@@ -6810,6 +6830,7 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("approval-batch").expect("client run ID"),
                 selection,
@@ -6924,6 +6945,7 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("approval-cancellation").expect("client run ID"),
                 selection,
@@ -6987,6 +7009,7 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("parallel-delegates").expect("client run ID"),
                 selection,
@@ -7095,6 +7118,7 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-foreground-delegates").unwrap(),
                 selection,
@@ -8253,6 +8277,7 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("named-output").unwrap(),
                     selection,
@@ -8425,6 +8450,7 @@ lazy = true
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("plugin-mcp-preemption").expect("run ID"),
                 selection,
@@ -8812,6 +8838,7 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(if fail_native {
                         "native-fallback"
@@ -9135,6 +9162,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("webfetch-result-readback").unwrap(),
                 selection: selection.clone(),
@@ -9302,6 +9330,7 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("tool-result-readback").unwrap(),
                 selection: selection.clone(),
@@ -9701,6 +9730,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("raw-first-{expect_elision}"))
                         .expect("run ID"),
@@ -10074,6 +10104,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(client_run_id).unwrap(),
                     selection: selection.clone(),
@@ -10172,6 +10203,7 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("new-after-checkpoint").unwrap(),
                 selection: selection.clone(),
@@ -10818,6 +10850,7 @@ async fn agent_presets_materialize_effective_registries_and_persist_selection() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: created.session_id,
                 client_run_id: ClientRunId::new("unavailable-preset-agent").expect("run ID"),
                 selection: RunSelection {
@@ -10893,6 +10926,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("shared-before-preset").expect("run ID"),
                 selection: shared_selection.clone(),
@@ -10912,6 +10946,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("preset-delegation-run").expect("run ID"),
                 selection: preset_selection,
@@ -10996,6 +11031,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: child.session_id,
                     client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
                     selection: switched_child,
@@ -11308,6 +11344,7 @@ async fn global_bedrock_connection_executes_cross_workspace_and_disconnect_prese
     let run = engine_two
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("frozen-bedrock-run")
                     .expect("run ID"),
@@ -11832,6 +11869,7 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("immutable-run")
                     .expect("run ID"),
@@ -11905,6 +11943,7 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("ask-transaction")
                     .expect("run ID"),
@@ -12006,6 +12045,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("overlay-epoch").expect("run ID"),
                 selection,
@@ -12109,6 +12149,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("steering-compaction")
                     .expect("run ID"),
@@ -12349,6 +12390,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("prime-predictor").expect("client run ID"),
                 selection: selection.clone(),
@@ -12366,6 +12408,7 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
         start_engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("cancel-prediction").expect("client run ID"),
                     selection: second_selection,
@@ -12482,6 +12525,7 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("interactive-stream-cancel")
                     .expect("client run id"),
@@ -12658,6 +12702,7 @@ async fn start_streaming_bash_test_run(
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new(format!("streaming-{command}"))
                     .expect("client run id"),
@@ -12943,6 +12988,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("prime-start-steer").expect("client run ID"),
                 selection: selection.clone(),
@@ -12959,6 +13005,7 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
         start_engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new("start-steer-race").expect("client run ID"),
                     selection,
@@ -13079,6 +13126,7 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("persistent-approval")
                     .expect("run ID"),
@@ -13139,6 +13187,7 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("ask-mode").expect("run ID"),
                 selection,
@@ -13198,6 +13247,7 @@ async fn yolo_permission_mode_durably_approves_and_executes_without_escalation()
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-mode")
                     .expect("run ID"),
@@ -13281,6 +13331,7 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-n-mode").expect("run ID"),
                 selection,
@@ -13366,6 +13417,7 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-y-mode").expect("run ID"),
                 selection,
@@ -13434,6 +13486,7 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("auto-y-identical-calls").expect("run ID"),
                 selection,
@@ -13531,6 +13584,7 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!(
                         "mode-agent-{mode:?}-{should_execute}"
@@ -13593,6 +13647,7 @@ async fn yolo_permission_mode_does_not_override_hard_deny_rules() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-deny")
                     .expect("run ID"),
@@ -13652,6 +13707,7 @@ async fn yolo_permission_mode_still_triggers_the_doom_loop_guard() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("yolo-doom-loop")
                     .expect("run ID"),
@@ -13716,6 +13772,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("live-mode-change")
                     .expect("run ID"),
@@ -13792,6 +13849,7 @@ async fn malformed_internal_approval_output_falls_back_to_escalation_transaction
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("malformed-approval")
                     .expect("run ID"),
@@ -13849,6 +13907,7 @@ async fn internal_agent_ask_escalates_to_user_approval_then_executes_tool() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("approval-e2e")
                     .expect("run ID"),
@@ -13915,6 +13974,7 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-root")
                     .expect("run ID"),
@@ -14032,6 +14092,7 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("user-transform-{name}")).unwrap(),
                     selection,
@@ -14105,6 +14166,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("setup-failure-{inject_message}"))
                         .unwrap(),
@@ -14170,6 +14232,7 @@ async fn compact_cancellation_reason_reaches_the_engine_result() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("compact-cancel-reason").unwrap(),
                 selection,
@@ -14223,6 +14286,7 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("intercepted-steer").unwrap(),
                 selection,
@@ -14304,6 +14368,7 @@ async fn blocking_steering_uses_the_same_input_interception_and_audit() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("blocking-intercepted-steer").unwrap(),
                 selection,
@@ -14497,6 +14562,7 @@ async fn run_replay_test_turn(
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new(id).unwrap(),
                 selection: selection.clone(),
@@ -14848,6 +14914,7 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("unsigned-compaction-seed").unwrap(),
                 selection: selection.clone(),
@@ -15002,6 +15069,7 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(if capable {
                         "media-capable"
@@ -15133,6 +15201,7 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("anthropic-cache-{index}")).unwrap(),
                     selection: selection.clone(),
@@ -15221,6 +15290,7 @@ async fn openai_adapter_cache_write_usage_reaches_events_and_rollup() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("openai-cache-write-usage").unwrap(),
                 selection,
@@ -15360,6 +15430,7 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("intercepted-cache").unwrap(),
                 selection,
@@ -15452,6 +15523,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-before-checkpoint").unwrap(),
                 selection: selection.clone(),
@@ -15501,6 +15573,7 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
     reopened
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-after-checkpoint").unwrap(),
                 selection,
@@ -15565,6 +15638,7 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("anthropic-cache-disabled").unwrap(),
                 selection,
@@ -15609,6 +15683,7 @@ async fn primary_agent_max_output_tokens_caps_model_requests() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("primary-output-cap").expect("run ID"),
                 selection,
@@ -15678,6 +15753,7 @@ async fn immediate_first_run_waits_for_complete_eager_mcp_listing() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("immediate-mcp-run").expect("run ID"),
                 selection,
@@ -15714,6 +15790,7 @@ async fn immediate_first_run_waits_for_project_mcp_listing_without_separate_appr
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("project-mcp-run").expect("run ID"),
                 selection,
@@ -15757,6 +15834,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-first").expect("client run ID"),
                 selection: selection.clone(),
@@ -15783,6 +15861,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-second").expect("client run ID"),
                 selection: selection.clone(),
@@ -15972,6 +16051,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("revert-branch").expect("client run ID"),
                 selection,
@@ -16116,6 +16196,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: denied_session.session_id,
                 client_run_id: ClientRunId::new("denied-hook").expect("run ID"),
                 selection: denied_selection,
@@ -16160,6 +16241,7 @@ async fn tool_before_hooks_run_only_after_permission_and_approval() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: session.session_id,
                     client_run_id: ClientRunId::new(format!("{marker_name}-hook")).expect("run ID"),
                     selection,
@@ -16230,6 +16312,7 @@ async fn validated_tool_modification_reprepares_before_the_next_hook() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("validated-hook-chain").expect("run ID"),
                 selection,
@@ -16273,6 +16356,7 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("zero-resource-run").expect("run ID"),
                 selection,
@@ -16391,6 +16475,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: root.session_id,
                 client_run_id: ClientRunId::new("tree-usage-root").unwrap(),
                 selection: selection.clone(),
@@ -16412,6 +16497,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: unrelated.session_id,
                 client_run_id: ClientRunId::new("tree-usage-unrelated").unwrap(),
                 selection,
@@ -16488,6 +16574,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new("scripted-delegation")
                     .expect("run ID"),
@@ -16675,6 +16762,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("missing-child-recovery").expect("run ID"),
                 selection,
@@ -16788,6 +16876,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("staged-restart-parent").expect("run ID"),
                 selection,
@@ -16914,6 +17003,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("titled-delegation").expect("run ID"),
                 selection,
@@ -17123,6 +17213,7 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("background-delegation").expect("run ID"),
                 selection: selection.clone(),
@@ -17264,6 +17355,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("automatic-subagent-paging").expect("run ID"),
                 selection,
@@ -17371,6 +17463,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-terminal-first").expect("run ID"),
                 selection: selection.clone(),
@@ -17474,6 +17567,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
                 selection,
@@ -17693,6 +17787,7 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("create-capped-child").expect("run ID"),
                 selection,
@@ -17727,6 +17822,7 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
     engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: child,
                 client_run_id: ClientRunId::new("resume-capped-child").expect("run ID"),
                 selection: child_selection,
@@ -17821,6 +17917,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             .engine
             .start_run(
                 RunStartParams {
+                    reset_fallback: false,
                     session_id: parent.session_id,
                     client_run_id: ClientRunId::new(format!("paging-parent-{index}"))
                         .expect("run ID"),
@@ -18359,6 +18456,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("paging-resume-parent").expect("run ID"),
                 selection,
@@ -18431,6 +18529,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-resume-first").expect("run ID"),
                 selection: selection.clone(),
@@ -18467,6 +18566,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-resume-second").expect("run ID"),
                 selection,
@@ -18611,6 +18711,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-cancel-first").expect("run ID"),
                 selection: selection.clone(),
@@ -18647,6 +18748,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-cancel-second").expect("run ID"),
                 selection,
@@ -18786,6 +18888,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("inherit-context-history").expect("run ID"),
                 selection: selection.clone(),
@@ -18829,6 +18932,7 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("inherit-context-delegate").expect("run ID"),
                 selection,
@@ -18935,6 +19039,7 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("approval-gated-background").expect("run ID"),
                 selection,
@@ -19036,6 +19141,7 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("tree-mode-delegation").expect("run ID"),
                 selection,
@@ -19140,6 +19246,7 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancellable-delegation").expect("run ID"),
                 selection,
@@ -19228,6 +19335,7 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-subagent-steer").expect("run ID"),
                 selection,
@@ -19330,6 +19438,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-resume-first").expect("run ID"),
                 selection: selection.clone(),
@@ -19388,6 +19497,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("running-resume-second").expect("run ID"),
                 selection,
@@ -19618,6 +19728,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-handoff-race-first").expect("run ID"),
                 selection: selection.clone(),
@@ -19660,6 +19771,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-handoff-race-second").expect("run ID"),
                 selection,
@@ -19732,6 +19844,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-resume-admission-first").expect("run ID"),
                 selection: selection.clone(),
@@ -19781,6 +19894,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("cancel-resume-admission-second").expect("run ID"),
                 selection,
@@ -19966,6 +20080,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-monitor-failure-first").expect("run ID"),
                 selection: selection.clone(),
@@ -20012,6 +20127,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-monitor-failure-second").expect("run ID"),
                 selection,
@@ -20079,6 +20195,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-attachment-cancel-first").expect("run ID"),
                 selection: selection.clone(),
@@ -20121,6 +20238,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("resume-attachment-cancel-second").expect("run ID"),
                 selection,
@@ -20203,6 +20321,7 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-subagent-steer").expect("run ID"),
                 selection,
@@ -20346,6 +20465,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("startup-failure-delegation").expect("run ID"),
                 selection,
@@ -20418,6 +20538,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("queued-delegation").expect("run ID"),
                 selection,
@@ -20476,6 +20597,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: parent.session_id,
                 client_run_id: ClientRunId::new("full-delegation-queue").expect("run ID"),
                 selection,
@@ -20697,6 +20819,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("event-reservation-reopen").expect("run ID"),
                 selection,
@@ -20836,6 +20959,7 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: ClientRunId::new("best-effort-delegations").expect("run ID"),
                 selection,

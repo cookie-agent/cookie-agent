@@ -18,6 +18,18 @@ runnable, the engine supplies the built-in `default` coding agent.
 Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
 `/cancel`. [Agent](agents.md) covers authored prompts and permissions.
 
+Model fallback progress is local to the session. For a chain `[A, B, C]`, once B
+commits a successful model turn after fallback, later turns and runs continue
+from `[B, C]`. A later successful fallback to C leaves `[C]`. This survives
+replay and restart, and the TUI updates its next-run model accordingly. A failed
+attempt alone does not advance the durable selection; if every candidate fails,
+the last accepted/successful starting point remains available.
+
+Choose an earlier model in the picker, or use `cookie run --model ...` when
+resuming, to explicitly restore its suffix. Explicit agent/preset choices take
+precedence. New sessions use the configured starting selection; configuration
+files and previous runs' frozen chains are never rewritten.
+
 
 ## Separate server and client
 

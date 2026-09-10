@@ -657,13 +657,8 @@ impl Engine {
             .filter(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused))
             .and(goal.selection);
         let selection = goal_selection.unwrap_or_else(|| {
-            events
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    Event::RunStarted { selection, .. } => Some(selection.clone()),
-                    _ => None,
-                })
+            cookie_agent_protocol::SessionModelState::from_events(&events)
+                .selection
                 .unwrap_or_else(|| projection.meta.creation_selection.clone())
         });
         {
@@ -679,6 +674,7 @@ impl Engine {
         let engine = self.clone();
         tokio::spawn(async move {
             let params = RunStartParams {
+                reset_fallback: false,
                 session_id: session,
                 client_run_id: ClientRunId::new(format!(
                     "producer:{}",

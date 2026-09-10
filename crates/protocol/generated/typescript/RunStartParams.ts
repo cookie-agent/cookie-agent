@@ -3,4 +3,4 @@ import type { ClientRunId } from "./ClientRunId.js";
 import type { RunSelection } from "./RunSelection.js";
 import type { SessionId } from "./SessionId.js";
 
-export type RunStartParams = { session_id: SessionId, client_run_id: ClientRunId, selection: RunSelection, input: string, };
+export type RunStartParams = { session_id: SessionId, client_run_id: ClientRunId, selection: RunSelection, input: string, reset_fallback?: boolean, };

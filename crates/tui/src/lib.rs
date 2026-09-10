@@ -616,6 +616,7 @@ mod tests {
         runner.handshake().await.expect("runner handshake");
         let started = match runner
             .start_run(cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
                 session_id: session.session_id,
                 client_run_id: cookie_agent_protocol::ClientRunId::new(format!(
                     "approval-e2e-{}",

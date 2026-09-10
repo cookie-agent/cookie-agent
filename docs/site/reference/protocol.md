@@ -77,6 +77,14 @@ and the CLI share one implementation of the protocol mechanics.
 
 ## Methods
 
+`run.start` accepts optional `reset_fallback` (default `false`). The server
+normally trims a requested earlier model's suffix to the latest successfully
+committed fallback in this session, matching exact model/variant identity and
+agent/preset scope. Set `reset_fallback: true` for an explicit picker/model reset.
+The accepted effective selection and suffix are recorded in `run_started`;
+existing committed-turn events preserve progress without a new event type.
+Idempotent redelivery resolves against the state preceding the original run.
+
 | Method | Parameters | Result summary |
 |---|---|---|
 | `handshake` | `protocol_version` | Server protocol version |

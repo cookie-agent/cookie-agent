@@ -17,6 +17,15 @@ use super::{
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 
 impl Engine {
+    /// The accepted selection, advanced only by a committed fallback model turn.
+    pub fn session_model_selection(&self, session: SessionId) -> Result<RunSelection, EngineError> {
+        let projection = self.inner.store.get(session)?;
+        Ok(
+            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
+                .selection
+                .unwrap_or(projection.meta.creation_selection),
+        )
+    }
     pub(super) fn rebuild_visible_tree_grants(&self) {
         let invalidated = self.inner.grant_journal.invalidated_ids();
         let mut grants = Vec::new();

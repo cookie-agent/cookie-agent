@@ -702,6 +702,14 @@ pub struct RunStartParams {
     pub client_run_id: ClientRunId,
     pub selection: RunSelection,
     pub input: String,
+    // An explicit model/agent/preset choice may restore a previously skipped prefix.
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub reset_fallback: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]

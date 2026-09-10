@@ -377,6 +377,7 @@ async fn assert_active_run_keeps_selection(change: SelectionChange) {
         .engine
         .start_run(
             RunStartParams {
+                reset_fallback: false,
                 session_id,
                 client_run_id: ClientRunId::new(match change {
                     SelectionChange::Set => "active-during-goal-set",
