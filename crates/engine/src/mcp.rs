@@ -1685,6 +1685,14 @@ impl ServerRuntime {
     }
 
     fn fail(&self, message: String) {
+        let secrets = self
+            .loaded
+            .config
+            .headers
+            .values()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let message = cookie_agent_protocol::diagnostics::sanitize(&message, &secrets, 4096);
         if self.superseded.is_cancelled() {
             return;
         }
@@ -4121,6 +4129,9 @@ for line in sys.stdin:
 
         let status = registry.statuses().remove(0);
         assert_eq!(status.state, McpServerState::Failed);
+        let message = status.message.as_ref().expect("MCP startup diagnostic");
+        assert!(message.contains("fixture"));
+        assert!(message.contains("missing-server"));
         assert!(
             status
                 .message

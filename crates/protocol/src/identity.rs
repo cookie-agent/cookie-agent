@@ -177,6 +177,27 @@ bounded_control_free_type!(
     "Control-free bounded safe error text."
 );
 bounded_control_free_type!(CatalogIdentifier, 1024, "Bounded catalog identity.");
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+#[ts(type = "string")]
+pub struct DiagnosticText(String);
+string_wire_impl!(
+    DiagnosticText,
+    4096,
+    "^(?:[^\\p{Cc}\\p{Cf}]|\\n|\\t)+$",
+    "Bounded diagnostic text permitting newlines and tabs.",
+    |value: &str| {
+        validate_bounded(value, DiagnosticText::MAX_BYTES)?;
+        static CONTROLS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"[\p{Cc}\p{Cf}&&[^\n\t]]").expect("control pattern")
+        });
+        if CONTROLS.is_match(value) {
+            return Err(WireStringError::Invalid(
+                "must not contain terminal controls",
+            ));
+        }
+        Ok(())
+    }
+);
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
 #[ts(type = "string")]

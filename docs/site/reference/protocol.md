@@ -8,6 +8,21 @@ The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
 members of protocol 17.
 
+## Error diagnostics
+
+`ModelErrorSummary.response_body` is an optional, redacted `DiagnosticText`
+(maximum 4,096 UTF-8 bytes; newlines and tabs permitted). It is used for terminal,
+fallback, and internal-agent model failures. `run_failed` keeps its short `error`
+and optionally includes `model_error` and `resolved_model`. Missing fields in old
+events default to null and are omitted when serialized; this is an additive
+event change without a protocol version bump.
+
+Generic engine RPC failures include bounded, sanitized `data.detail`. Clients
+explicitly render selected diagnostic data such as message, reason, cause, path,
+and revision information; `JsonRpcError` Debug formatting continues to redact
+data. No request headers or credential dumps are added. See
+[Error details](../guide/run.md#error-details) for display and upstream limits.
+
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,

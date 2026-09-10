@@ -31,7 +31,9 @@ impl Client {
         WebSocketTransport::connect(url)
             .await
             .map(Self::connect_stream)
-            .map_err(|error| ClientError::WebSocket(error.to_string()))
+            .map_err(|error| {
+                ClientError::WebSocket(cookie_agent_protocol::diagnostics::error_chain(&error))
+            })
     }
 
     /// Connect using an explicit daemon authentication token.
@@ -39,7 +41,13 @@ impl Client {
         WebSocketTransport::connect_with_token(url, token)
             .await
             .map(Self::connect_stream)
-            .map_err(|error| ClientError::WebSocket(error.to_string()))
+            .map_err(|error| {
+                ClientError::WebSocket(cookie_agent_protocol::diagnostics::sanitize(
+                    &cookie_agent_protocol::diagnostics::error_chain(&error),
+                    &[token],
+                    4096,
+                ))
+            })
     }
 }
 

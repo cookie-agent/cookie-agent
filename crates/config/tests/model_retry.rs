@@ -39,5 +39,21 @@ fn model_retry_is_strict_and_workspace_replaces_the_section() {
     assert_eq!(loaded.runtime.model_retry.backoff_ceiling_ms, 60_000);
 
     let zero_ceiling = root("[model_retry]\nbackoff_ceiling_ms = 0\n");
-    assert!(load_from_roots(Some(zero_ceiling.path()), None).is_err());
+    let error = load_from_roots(Some(zero_ceiling.path()), None).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("model_retry.backoff_ceiling_ms must be positive")
+    );
+}
+
+#[test]
+fn malformed_config_reports_location_without_echoing_source_secrets() {
+    let config = root("[model_retry]\nstandard_retries = \"private-secret\n");
+    let error = load_from_roots(Some(config.path()), None)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("config.toml"));
+    assert!(error.contains("line 2"));
+    assert!(!error.contains("private-secret"));
 }

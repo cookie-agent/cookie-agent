@@ -25,10 +25,10 @@ fn agent_md_defaults_enabled_and_is_strictly_bounded() {
     ));
     assert!(matches!(
         load("[agent_md]\nmax_bytes = 0\n"),
-        Err(ConfigError::InvalidRuntime)
+        Err(ConfigError::InvalidRuntime(_))
     ));
     assert!(matches!(
         load("[agent_md]\nmax_bytes = 2097153\n"),
-        Err(ConfigError::InvalidRuntime)
+        Err(ConfigError::InvalidRuntime(_))
     ));
 }

@@ -254,12 +254,14 @@ struct JsonSummary {
     event_recoveries: u32,
     cancellation: Option<CancellationCause>,
     final_text: Option<String>,
+    error: Option<String>,
     usage: UsageRollup,
 }
 
 struct TerminalOutcome {
     status: TerminalStatus,
     final_text: Option<String>,
+    error: Option<String>,
 }
 
 struct TerminalResult {
@@ -270,6 +272,7 @@ struct TerminalResult {
 struct RunDisplay<'a> {
     args: &'a RunArgs,
     mode: OutputMode,
+    session_id: SessionId,
 }
 
 struct DriverState {
@@ -326,7 +329,11 @@ where
     let prompt = match resolve_prompt(&args, stdin) {
         Ok(prompt) => prompt,
         Err(error) => {
-            let _ = writeln!(stderr, "cookie run: {error:#}");
+            let _ = writeln!(
+                stderr,
+                "cookie run: {}",
+                cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+            );
             return EXIT_ENVIRONMENT;
         }
     };
@@ -389,7 +396,11 @@ where
             exit_code
         }
         Err(error) => {
-            let _ = writeln!(stderr, "cookie run: headless driver failed: {error:#}");
+            let _ = writeln!(
+                stderr,
+                "cookie run: headless driver failed: {}",
+                cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+            );
             EXIT_FAILURE
         }
     }
@@ -703,7 +714,11 @@ where
     let timeout = tokio::time::sleep(Duration::from_secs(args.timeout));
     tokio::pin!(timeout);
     tokio::pin!(interrupt);
-    let display = RunDisplay { args, mode };
+    let display = RunDisplay {
+        args,
+        mode,
+        session_id: prepared.session_id,
+    };
 
     loop {
         drain_tool_output(&mut state, mode, args.verbose, output)?;
@@ -803,6 +818,12 @@ async fn recover_events(
     Ok(())
 }
 
+fn event_belongs_to_run(event: &StoredEvent, session_id: SessionId, run_id: RunId) -> bool {
+    let session_diagnostic =
+        event.run_id.is_none() && matches!(&event.payload, EventPayload::PluginDiagnostic { .. });
+    event.session_id == session_id && (event.run_id == Some(run_id) || session_diagnostic)
+}
+
 async fn process_event(
     engine: &Engine,
     display: &RunDisplay<'_>,
@@ -812,7 +833,7 @@ async fn process_event(
     state: &mut DriverState,
     event: StoredEvent,
 ) -> anyhow::Result<Option<TerminalOutcome>> {
-    if event.run_id != Some(active_run_id) {
+    if !event_belongs_to_run(&event, display.session_id, active_run_id) {
         return Ok(None);
     }
     if display.mode == OutputMode::Json {
@@ -854,25 +875,97 @@ async fn process_event(
             return Ok(Some(TerminalOutcome {
                 status: TerminalStatus::Completed,
                 final_text,
+                error: None,
             }));
         }
-        EventPayload::RunFailed { .. } => {
+        EventPayload::RunFailed {
+            error,
+            model_error,
+            resolved_model,
+        } => {
+            let error = cookie_agent_protocol::diagnostics::run_error(
+                &error,
+                model_error.as_ref(),
+                resolved_model.as_ref(),
+            );
+            writeln!(stderr, "cookie run: {error}")?;
             return Ok(Some(TerminalOutcome {
                 status: TerminalStatus::Failed,
                 final_text: None,
+                error: Some(error),
             }));
         }
-        EventPayload::RunCancelled { .. } => {
+        EventPayload::RunCancelled { reason } => {
+            let error = reason.map(|reason| reason.to_string());
+            if let Some(error) = &error {
+                writeln!(stderr, "cookie run cancelled: {error}")?;
+            }
             return Ok(Some(TerminalOutcome {
                 status: TerminalStatus::Cancelled,
                 final_text: None,
+                error,
             }));
         }
-        EventPayload::RunInterrupted { .. } => {
+        EventPayload::RunInterrupted { reason } => {
+            let error = reason.map(|reason| reason.to_string());
+            if let Some(error) = &error {
+                writeln!(stderr, "cookie run interrupted: {error}")?;
+            }
             return Ok(Some(TerminalOutcome {
                 status: TerminalStatus::Interrupted,
                 final_text: None,
+                error,
             }));
+        }
+        EventPayload::ToolCallTerminated { termination }
+            if termination.outcome == cookie_agent_protocol::ToolTerminationOutcome::Failed =>
+        {
+            writeln!(
+                stderr,
+                "cookie tool {}: {}",
+                termination.tool_call_id,
+                cookie_agent_protocol::diagnostics::tool(&termination)
+            )?;
+        }
+        EventPayload::InternalAgentFailed { kind, failure, .. } => {
+            writeln!(
+                stderr,
+                "cookie internal agent {kind:?}: {}",
+                cookie_agent_protocol::diagnostics::internal(&failure)
+            )?;
+        }
+        EventPayload::InternalAgentFallback {
+            kind,
+            from,
+            to,
+            attempts,
+            failure,
+            ..
+        } => {
+            writeln!(
+                stderr,
+                "cookie {}",
+                cookie_agent_protocol::diagnostics::internal_fallback(
+                    kind, &from, &to, attempts, &failure
+                )
+            )?;
+        }
+        EventPayload::ModelFallback { from, error, .. } => {
+            writeln!(
+                stderr,
+                "cookie model {} fallback: {}",
+                from.selection.model,
+                cookie_agent_protocol::diagnostics::model(&error)
+            )?;
+        }
+        EventPayload::PluginDiagnostic {
+            plugin, message, ..
+        } => {
+            writeln!(
+                stderr,
+                "cookie plugin {plugin}: {}",
+                cookie_agent_protocol::diagnostics::detail(&message)
+            )?;
         }
         _ => {}
     }
@@ -1053,6 +1146,7 @@ fn write_terminal(
                 event_recoveries: state.event_recoveries,
                 cancellation: state.cancellation,
                 final_text: terminal.final_text,
+                error: terminal.error,
                 usage,
             },
         )?;
@@ -1077,6 +1171,35 @@ fn write_json_line(writer: &mut dyn IoWrite, value: &impl Serialize) -> anyhow::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_diagnostics_do_not_admit_other_sessions_or_runs() {
+        let session_id = SessionId::new_v7();
+        let run_id = RunId::new_v7();
+        let mut event = StoredEvent {
+            engine_version: None,
+            origin: None,
+            session_id,
+            run_id: None,
+            seq: 1,
+            timestamp: "2026-01-01T00:00:00Z".parse().unwrap(),
+            payload: EventPayload::PluginDiagnostic {
+                plugin: "review".into(),
+                kind: cookie_agent_protocol::PluginDiagnosticKind::HookBlocked,
+                message: "useful diagnostic".into(),
+                count: 1,
+            },
+        };
+        assert!(event_belongs_to_run(&event, session_id, run_id));
+        assert!(!event_belongs_to_run(&event, SessionId::new_v7(), run_id));
+        event.run_id = Some(RunId::new_v7());
+        assert!(!event_belongs_to_run(&event, session_id, run_id));
+        event.run_id = Some(run_id);
+        assert!(event_belongs_to_run(&event, session_id, run_id));
+        event.run_id = None;
+        event.payload = EventPayload::RunCompleted { final_text: None };
+        assert!(!event_belongs_to_run(&event, session_id, run_id));
+    }
 
     #[test]
     fn cursor_suppresses_duplicates_and_accepts_persisted_sequence_gaps() {
@@ -1114,10 +1237,12 @@ mod tests {
         let cancelled = TerminalOutcome {
             status: TerminalStatus::Cancelled,
             final_text: None,
+            error: None,
         };
         let interrupted = TerminalOutcome {
             status: TerminalStatus::Interrupted,
             final_text: None,
+            error: None,
         };
         assert_eq!(
             terminal_exit(&cancelled, Some(CancellationCause::Permission)),

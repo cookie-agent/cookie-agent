@@ -64,6 +64,7 @@ export * from "./DelegateRequestPayload.js";
 export * from "./DelegatedContextRole.js";
 export * from "./DelegatedContextTurn.js";
 export * from "./DelegationReservation.js";
+export * from "./DiagnosticText.js";
 export * from "./DurableConnectionDescriptor.js";
 export * from "./DurableProviderReceipt.js";
 export * from "./DurableProviderReceiptId.js";

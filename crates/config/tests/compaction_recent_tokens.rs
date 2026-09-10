@@ -101,7 +101,7 @@ fn recent_tokens_are_independent_of_trigger_and_summary_limits() {
         ));
         assert!(matches!(
             load_from_roots(Some(directory.path()), None),
-            Err(ConfigError::InvalidRuntime)
+            Err(ConfigError::InvalidRuntime(_))
         ));
     }
 }

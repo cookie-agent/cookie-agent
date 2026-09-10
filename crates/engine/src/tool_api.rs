@@ -469,7 +469,7 @@ impl ToolError {
 
     #[must_use]
     pub fn execution(message: impl Into<String>) -> Self {
-        Self::Failed(message.into())
+        Self::Failed(cookie_agent_protocol::diagnostics::detail(&message.into()).to_string())
     }
 
     #[must_use]

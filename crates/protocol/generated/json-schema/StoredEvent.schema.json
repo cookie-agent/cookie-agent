@@ -1784,6 +1784,26 @@
               "minLength": 1,
               "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
             },
+            "model_error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ModelErrorSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "resolved_model": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ResolvedModelRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "run_failed"
@@ -4335,6 +4355,16 @@
           "maxLength": 1024,
           "minLength": 1,
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "response_body": {
+          "description": "Bounded diagnostic text permitting newlines and tabs.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^(?:[^\\p{Cc}\\p{Cf}]|\\n|\\t)+$"
         },
         "retry_after_ms": {
           "type": [

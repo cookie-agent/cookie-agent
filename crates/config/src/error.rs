@@ -5,8 +5,14 @@ use thiserror::Error;
 
 #[derive(Error)]
 pub enum ConfigError {
-    #[error("configuration I/O failed")]
+    #[error("configuration I/O failed: {0}")]
     Io(#[source] io::Error),
+    #[error("configuration I/O failed at `{path}`: {source}")]
+    FileIo {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("configuration path is unsafe")]
     UnsafePath,
     #[error("configuration changed on disk: {0}")]
@@ -27,8 +33,8 @@ pub enum ConfigError {
     },
     #[error("{0}")]
     HeaderOwnership(#[source] cookie_agent_models::authoring::AuthoringError),
-    #[error("runtime settings are invalid")]
-    InvalidRuntime,
+    #[error("invalid runtime setting: {0}")]
+    InvalidRuntime(&'static str),
     #[error("MCP server `{server}` is invalid: {reason}")]
     McpServer { server: String, reason: String },
     #[error("plugin `{plugin}` is invalid: {reason}")]

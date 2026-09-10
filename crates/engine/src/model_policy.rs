@@ -1,7 +1,7 @@
 //! Engine-owned retry, fallback, and protocol error policy for Oven models.
 
 use cookie_agent_protocol::{
-    ModelErrorKind, ModelErrorStage, ModelErrorSummary, SafeCode, SafeDisplayText, SafeErrorMessage,
+    ModelErrorKind, ModelErrorStage, ModelErrorSummary, SafeCode, SafeDisplayText,
 };
 use oven_sdk::{ErrorStage, ModelError, ModelErrorKind as OvenErrorKind};
 
@@ -47,9 +47,16 @@ pub(crate) fn classify(error: &ModelError) -> ErrorPolicy {
 #[must_use]
 pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
     ModelErrorSummary {
+        response_body: error.diagnostics.sanitized_body.as_ref().map(|body| {
+            let text = if body.truncated() {
+                format!("{}\n[upstream body truncated]", body.text())
+            } else {
+                body.text().to_owned()
+            };
+            cookie_agent_protocol::diagnostics::detail(&text)
+        }),
         kind: error_kind(error.kind),
-        message: SafeErrorMessage::new(sanitize(&error.message, SafeErrorMessage::MAX_BYTES))
-            .expect("sanitized model error"),
+        message: cookie_agent_protocol::diagnostics::headline(&error.message),
         retryable: error.retryable,
         stage: error_stage(error.diagnostics.stage),
         http_status: error.diagnostics.http_status,
@@ -60,7 +67,15 @@ pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
             .as_deref()
             .and_then(|value| SafeCode::new(normalize_code(value)).ok()),
         request_id: error.diagnostics.request_id.as_deref().and_then(|value| {
-            SafeDisplayText::new(sanitize(value, SafeDisplayText::MAX_BYTES)).ok()
+            SafeDisplayText::new(
+                cookie_agent_protocol::diagnostics::sanitize(
+                    value,
+                    &[],
+                    SafeDisplayText::MAX_BYTES,
+                )
+                .replace(['\n', '\t'], " "),
+            )
+            .ok()
         }),
         retry_after_ms: error
             .diagnostics
@@ -69,27 +84,8 @@ pub(crate) fn summary(error: &ModelError) -> ModelErrorSummary {
     }
 }
 
-fn sanitize(value: &str, maximum: usize) -> String {
-    let mut output = String::new();
-    for character in value.chars() {
-        let character = if character.is_control() {
-            ' '
-        } else {
-            character
-        };
-        if output.len() + character.len_utf8() > maximum {
-            break;
-        }
-        output.push(character);
-    }
-    if output.is_empty() {
-        "unavailable".into()
-    } else {
-        output
-    }
-}
-
 fn normalize_code(value: &str) -> String {
+    let value = cookie_agent_protocol::diagnostics::sanitize(value, &[], SafeCode::MAX_BYTES);
     let mut code = value
         .chars()
         .map(|character| {
@@ -159,6 +155,24 @@ mod tests {
     use oven_sdk::{ModelError, ModelErrorKind};
 
     use super::{ErrorPolicy, classify};
+
+    #[test]
+    fn summary_preserves_provider_diagnostics_and_redacts_body() {
+        let error = ModelError::invalid_request("invalid request")
+            .with_http_status(400)
+            .with_vendor_code("bad_parameter")
+            .with_request_id("req-400")
+            .with_sanitized_body(oven_sdk::SanitizedBody::new(
+                r#"{"error":{"message":"unsupported temperature","api_key":"private-value"}}"#,
+            ));
+        let summary = super::summary(&error);
+        let body = summary.response_body.as_ref().unwrap().as_str();
+        assert!(body.contains("unsupported temperature"));
+        assert!(!body.contains("private-value"));
+        assert_eq!(summary.http_status, Some(400));
+        assert_eq!(summary.request_id.unwrap().as_str(), "req-400");
+        assert_eq!(summary.vendor_code.unwrap().as_str(), "bad_parameter");
+    }
 
     #[test]
     fn explicit_terminal_kinds_override_retryability() {

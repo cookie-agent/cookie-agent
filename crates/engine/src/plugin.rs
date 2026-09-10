@@ -1959,6 +1959,8 @@ impl PluginRuntime {
     }
 
     fn set_status(&self, state: PluginState, reason: Option<String>, tools: Vec<String>) {
+        let reason =
+            reason.map(|reason| cookie_agent_protocol::diagnostics::detail(&reason).to_string());
         let mut status = self
             .status
             .lock()
@@ -2118,7 +2120,10 @@ fn parse_initialize(
     let success = match response {
         Response::Success(success) => success,
         Response::Error(error) => {
-            return Err(format!("handshake rejected: {}", error.error.message));
+            return Err(format!(
+                "handshake rejected: {}",
+                cookie_agent_protocol::diagnostics::rpc(&error.error)
+            ));
         }
     };
     let found_version = success
@@ -2151,7 +2156,10 @@ fn parse_ping(response: Response) -> Result<(), String> {
                 .map_err(|error| format!("malformed plugin ping result: {error}"))?;
             Ok(())
         }
-        Response::Error(error) => Err(format!("plugin ping rejected: {}", error.error.message)),
+        Response::Error(error) => Err(format!(
+            "plugin ping rejected: {}",
+            cookie_agent_protocol::diagnostics::rpc(&error.error)
+        )),
     }
 }
 
@@ -2161,7 +2169,7 @@ fn parse_tool_call(response: Response) -> Result<ExtensionToolCallResult, String
             .map_err(|error| format!("malformed plugin tool call result: {error}")),
         Response::Error(error) => Err(format!(
             "plugin tool call rejected: {}",
-            error.error.message
+            cookie_agent_protocol::diagnostics::rpc(&error.error)
         )),
     }
 }
@@ -3067,6 +3075,22 @@ mod tests {
         Control, PluginDeliveryClass, PluginRegistry, PluginState, plugin_context_id,
         plugin_event_origin,
     };
+
+    #[test]
+    fn plugin_rpc_rejections_preserve_selected_diagnostics() {
+        let response = || {
+            serde_json::from_value(serde_json::json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"initialization failed","data":{"reason":"Executable missing","path":"/work/helper","token":"private-token"}}})).unwrap()
+        };
+        for error in [
+            super::parse_initialize(response(), "fixture").unwrap_err(),
+            super::parse_ping(response()).unwrap_err(),
+            super::parse_tool_call(response()).unwrap_err(),
+        ] {
+            assert!(error.contains("Executable missing"));
+            assert!(error.contains("/work/helper"));
+            assert!(!error.contains("private-token"));
+        }
+    }
 
     #[test]
     fn plugin_event_origins_preserve_valid_names_and_hash_legacy_names() {

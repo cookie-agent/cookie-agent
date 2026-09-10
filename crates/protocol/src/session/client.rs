@@ -83,6 +83,9 @@ pub enum ClientDelivery {
         session_id: Option<SessionId>,
         error: String,
     },
+    Disconnected {
+        error: String,
+    },
     RuntimeChanged(Box<crate::RuntimeChangedNotification>),
 }
 
@@ -275,9 +278,11 @@ impl ClientEventSink for mpsc::UnboundedSender<ClientDelivery> {
 pub enum ClientError {
     #[error("transport closed")]
     Closed,
+    #[error("transport failed: {0}")]
+    Transport(String),
     #[error("invalid JSON-RPC frame: {0}")]
     InvalidFrame(#[from] serde_json::Error),
-    #[error("JSON-RPC error: {0:?}")]
+    #[error("{}", crate::diagnostics::rpc(.0))]
     Rpc(JsonRpcError),
     #[error("websocket error: {0}")]
     WebSocket(String),
@@ -1694,6 +1699,7 @@ where
 {
     let mut pending = HashMap::new();
     let mut tool_sessions = HashMap::new();
+    let mut failure = None;
     let mut replay_timeout = tokio::time::interval(Duration::from_millis(25));
     loop {
         tokio::select! {
@@ -1710,7 +1716,12 @@ where
                     match serialize_outbound_frame(request, command.params.sensitive) {
                         Ok(frame) => match send_outbound_frame(&mut stream, frame).await {
                             Ok(()) => { pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response }); }
-                            Err(_) => { let _ = command.response.send(Err(ClientError::Closed)); break; }
+                            Err(error) => {
+                                let message = format!("sending {}: {}", command.method, crate::diagnostics::error_chain(&error));
+                                let _ = command.response.send(Err(ClientError::Transport(message.clone())));
+                                failure = Some(message);
+                                break;
+                            }
                         },
                         Err(error) => { let _ = command.response.send(Err(ClientError::InvalidFrame(error))); }
                     }
@@ -1728,7 +1739,11 @@ where
             incoming = stream.recv() => {
                 let frame = match incoming {
                     Ok(Some(frame)) => frame,
-                    Ok(None) | Err(_) => break,
+                    Ok(None) => break,
+                    Err(error) => {
+                        failure = Some(format!("receiving response: {}", crate::diagnostics::error_chain(&error)));
+                        break;
+                    }
                 };
                 prune_cancelled_commands(&mut pending);
                 if let Err(error) = handle_frame(
@@ -1748,7 +1763,14 @@ where
             .store(pending.len(), Ordering::Relaxed);
     }
     for (_, pending) in pending {
-        let _ = pending.response.send(Err(ClientError::Closed));
+        let error = failure.as_ref().map_or(ClientError::Closed, |message| {
+            ClientError::Transport(message.clone())
+        });
+        let _ = pending.response.send(Err(error));
+    }
+    if let Some(error) = failure {
+        task.deliveries
+            .deliver(ClientDelivery::Disconnected { error });
     }
     task.pending_command_count.store(0, Ordering::Relaxed);
 }
@@ -2340,6 +2362,62 @@ mod tests {
     }
 
     struct ClosingStream;
+
+    struct FailingStream {
+        fail_send: bool,
+        sent: bool,
+    }
+
+    #[async_trait]
+    impl MessageStream for FailingStream {
+        async fn send(&mut self, _: MessageFrame) -> Result<(), TransportError> {
+            self.sent = true;
+            if self.fail_send {
+                Err(TransportError::Other(
+                    "socket write refused; Bearer private-value".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
+            if !self.sent {
+                std::future::pending::<()>().await;
+            }
+            Err(TransportError::Other(
+                "TLS peer reset connection; Bearer private-value".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_failures_reach_pending_calls_and_connected_clients() {
+        for fail_send in [false, true] {
+            let client = Client::connect_stream(FailingStream {
+                fail_send,
+                sent: false,
+            });
+            let mut deliveries = client.subscribe_deliveries().unwrap();
+            let error = tokio::time::timeout(Duration::from_secs(3), client.handshake())
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(if fail_send {
+                "socket write refused"
+            } else {
+                "TLS peer reset"
+            }));
+            assert!(!error.contains("private-value"));
+            let delivery = tokio::time::timeout(Duration::from_secs(3), deliveries.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(delivery, ClientDelivery::Disconnected { error } if error.contains(if fail_send { "socket write refused" } else { "TLS peer reset" }) && !error.contains("private-value"))
+            );
+        }
+    }
 
     #[async_trait]
     impl MessageStream for ClosingStream {

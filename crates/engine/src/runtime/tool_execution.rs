@@ -719,7 +719,6 @@ impl Engine {
                         return match result {
                             Ok(result) => {
                                 let failed = result.failed;
-                                let message = "tool reported failure".to_owned();
                                 let result = match finalize_output(capture.as_ref(), result, failed, result_truncation).await {
                                     Ok(result) => result,
                                     Err(error) => {
@@ -729,6 +728,7 @@ impl Engine {
                                     }
                                 };
                                 if failed {
+                                    let message = cookie_agent_protocol::diagnostics::tool_result(&result);
                                     Err(ToolFailure { code: ToolCallFailureCode::ExecutionFailed, message, partial_output: Some(Box::new(result)) })
                                 } else { Ok(result) }
                             }

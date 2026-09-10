@@ -225,6 +225,18 @@ impl From<ModelError> for EngineError {
     }
 }
 
+impl EngineError {
+    /// Explicit user-facing rendering; Debug is not a diagnostic transport.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Model(error) => {
+                cookie_agent_protocol::diagnostics::model(&crate::model_policy::summary(error))
+            }
+            _ => cookie_agent_protocol::diagnostics::error_chain(self),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ActiveRun {
     session: SessionId,
@@ -779,17 +791,8 @@ impl PluginDiagnosticAccumulator {
 }
 
 fn normalize_plugin_diagnostic_message(message: &str) -> String {
-    message
-        .chars()
-        .take(PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect()
+    cookie_agent_protocol::diagnostics::sanitize(message, &[], PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
+        .replace(['\n', '\t'], " ")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

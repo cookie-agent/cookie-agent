@@ -821,6 +821,16 @@ impl StateStore {
                 DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
+            ClientDelivery::Disconnected { error } => {
+                for state in self.sessions.values_mut() {
+                    push_event(
+                        state,
+                        EventLevel::Error,
+                        format!("connection failed: {error}"),
+                    );
+                }
+                DeliveryOutcome::Applied
+            }
             ClientDelivery::PluginEvent(_) => DeliveryOutcome::Applied,
             ClientDelivery::RuntimeChanged(_) => DeliveryOutcome::Applied,
         }
@@ -1769,6 +1779,11 @@ fn reduce_event(
                 ToolTerminationOutcome::Interrupted => ToolStatus::Interrupted,
             };
             let failed = !matches!(termination.outcome, ToolTerminationOutcome::Completed);
+            let failure_message = matches!(
+                termination.outcome,
+                ToolTerminationOutcome::Failed | ToolTerminationOutcome::Interrupted
+            )
+            .then(|| cookie_agent_protocol::diagnostics::tool(&termination));
             let detail = match (termination.result, termination.error) {
                 (Some(result), _) if result.display.is_some() => result.display.unwrap_or_default(),
                 (Some(result), _) if !failed => render_tool_result(
@@ -1792,6 +1807,13 @@ fn reduce_event(
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
+            }
+            if let Some(message) = failure_message {
+                push_event(
+                    state,
+                    EventLevel::Error,
+                    format!("tool {tool_call_id}: {message}"),
+                );
             }
             bump_tool_item(state, tool_call_id);
         }
@@ -1908,7 +1930,11 @@ fn reduce_event(
             }
             push_event(state, EventLevel::Info, "run completed".into());
         }
-        EventPayload::RunFailed { error } => {
+        EventPayload::RunFailed {
+            error,
+            model_error,
+            resolved_model,
+        } => {
             close_open_assistant(state, timestamp);
             state.open_run_assistant = None;
             state.pending_attempt = None;
@@ -1920,7 +1946,18 @@ fn reduce_event(
             if let Some(run_id) = run_id {
                 state.terminal_runs.insert(run_id);
             }
-            push_event(state, EventLevel::Error, format!("run failed: {error}"));
+            push_event(
+                state,
+                EventLevel::Error,
+                format!(
+                    "run failed: {}",
+                    cookie_agent_protocol::diagnostics::run_error(
+                        &error,
+                        model_error.as_ref(),
+                        resolved_model.as_ref()
+                    )
+                ),
+            );
         }
         EventPayload::RunCancelled { reason } => {
             close_open_assistant(state, timestamp);
@@ -1991,7 +2028,10 @@ fn reduce_event(
         EventPayload::InternalAgentFailed { kind, failure, .. } => push_event(
             state,
             EventLevel::Error,
-            format!("internal agent {kind:?} failed: {}", failure.message).to_lowercase(),
+            format!(
+                "internal agent {kind:?} failed: {}",
+                cookie_agent_protocol::diagnostics::internal(&failure)
+            ),
         ),
         EventPayload::InternalAgentCancelled { kind, reason, .. } => push_event(
             state,
@@ -2019,13 +2059,9 @@ fn reduce_event(
         } => push_event(
             state,
             EventLevel::Warning,
-            format!(
-                "internal agent {kind:?} fallback {} → {} after {attempts} attempt(s): {}",
-                render_internal_backend(&from),
-                render_internal_backend(&to),
-                failure.message
-            )
-            .to_lowercase(),
+            cookie_agent_protocol::diagnostics::internal_fallback(
+                kind, &from, &to, attempts, &failure,
+            ),
         ),
         EventPayload::ContextCheckpointCommitted { commit } => {
             push_item(state, |id| TranscriptItem::Compaction {
@@ -3094,26 +3130,7 @@ impl ReplayContextWarningKey {
 }
 
 fn render_model_error(error: &ModelErrorSummary) -> String {
-    let mut details = vec![
-        wire_enum_label(error.kind),
-        error.message.to_string(),
-        format!("stage {}", wire_enum_label(error.stage)),
-        format!("retryable {}", error.retryable),
-        format!("{} bytes received", error.bytes_received),
-    ];
-    if let Some(status) = error.http_status {
-        details.push(format!("HTTP {status}"));
-    }
-    if let Some(code) = &error.vendor_code {
-        details.push(format!("code {code}"));
-    }
-    if let Some(request_id) = &error.request_id {
-        details.push(format!("request {request_id}"));
-    }
-    if let Some(retry_after_ms) = error.retry_after_ms {
-        details.push(format!("retry after {retry_after_ms}ms"));
-    }
-    details.join(" · ")
+    cookie_agent_protocol::diagnostics::model(error)
 }
 
 fn wire_enum_label(value: impl Serialize) -> String {
@@ -3211,6 +3228,104 @@ fn render_title_commit(change: &SessionTitleChange) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_tool_display_cannot_hide_its_diagnostic_on_replay() {
+        let session = SessionId::new_v7();
+        let event = stored_event(
+            session,
+            None,
+            1,
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id: ToolCallId::new_v7(),
+                    owner: AssistantToolCallRef {
+                        model_turn_seq: 1,
+                        content_index: 0,
+                        model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+                        provider_item_id: None,
+                    },
+                    outcome: ToolTerminationOutcome::Failed,
+                    result: Some(cookie_agent_protocol::PersistedToolResult {
+                        title: cookie_agent_protocol::SafeDisplayText::new("Read").unwrap(),
+                        output: "File missing".into(),
+                        display: Some("Finished".into()),
+                        metadata: serde_json::Value::Null,
+                        retained_output: None,
+                        truncation: None,
+                        attachments: vec![],
+                        additional_messages: vec![],
+                    }),
+                    error: Some(cookie_agent_protocol::SafeToolError {
+                        code: cookie_agent_protocol::SafeCode::new("not_found").unwrap(),
+                        message: cookie_agent_protocol::SafeErrorMessage::new(
+                            "Required file /work/Report.md missing",
+                        )
+                        .unwrap(),
+                    }),
+                },
+            },
+        );
+        let state = reduce_session_events(session, 0, &[event]);
+        assert!(state.transcript.iter().any(|item| matches!(item, TranscriptItem::Event { level: EventLevel::Error, text, .. } if text.contains("Required file /work/Report.md missing"))));
+    }
+
+    #[test]
+    fn terminal_and_internal_diagnostics_survive_replay_without_lowercasing() {
+        let session = SessionId::new_v7();
+        let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"invalid_request","message":"Invalid request","retryable":false,"stage":"response_body","http_status":400,"bytes_received":12,"vendor_code":"bad_parameter","request_id":"Request-ID","retry_after_ms":null,"response_body":r#"Couldn't decode upstream response: {"message":"Temperature unsupported","password":"review\"secret-tail","items":[{"name":"X-Api-Key","value":"opaque-review-credential"}]}"#})).unwrap();
+        let events = vec![
+            stored_event(
+                session,
+                Some(RunId::new_v7()),
+                1,
+                EventPayload::RunFailed {
+                    error: cookie_agent_protocol::SafeErrorMessage::new("model failed").unwrap(),
+                    model_error: Some(model_error.clone()),
+                    resolved_model: Some(resolved_model()),
+                },
+            ),
+            stored_event(
+                session,
+                None,
+                2,
+                EventPayload::InternalAgentFailed {
+                    invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+                    internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+                    kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+                    failure: cookie_agent_protocol::InternalAgentFailure {
+                        code: cookie_agent_protocol::SafeCode::new("model_failure").unwrap(),
+                        message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
+                            .unwrap(),
+                        retryable: false,
+                        model_error: Some(model_error),
+                    },
+                },
+            ),
+        ];
+        let replayed = reduce_session_events(session, 0, &events);
+        let errors = replayed
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Event {
+                    level: EventLevel::Error,
+                    text,
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 2);
+        for text in errors {
+            assert!(text.contains("Temperature unsupported"));
+            assert!(!text.contains("secret-tail"));
+            assert!(!text.contains("opaque-review-credential"));
+            assert!(text.contains("HTTP 400"));
+            assert!(text.contains("Request-ID"));
+            assert!(text.contains('\n'));
+        }
+    }
 
     fn goal_item(description: &str, finished: bool) -> cookie_agent_protocol::GoalItem {
         cookie_agent_protocol::GoalItem {

@@ -94,6 +94,7 @@ impl JsonSchema for RequiredModelSelectionSchema {
 mod agent;
 mod approval;
 mod bindings;
+pub mod diagnostics;
 mod event;
 mod extension;
 mod goal;

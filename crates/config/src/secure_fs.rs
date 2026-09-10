@@ -73,16 +73,24 @@ fn read_file(parent: &Path, name: &str, limit: u64) -> Result<Zeroizing<Vec<u8>>
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(ConfigError::NotFound);
         }
-        Err(error) => return Err(ConfigError::Io(error)),
+        Err(source) => {
+            return Err(ConfigError::FileIo {
+                path: path.clone(),
+                source,
+            });
+        }
     };
-    let metadata = file.metadata().map_err(ConfigError::Io)?;
+    let metadata = file.metadata().map_err(|source| ConfigError::FileIo {
+        path: path.clone(),
+        source,
+    })?;
     if metadata.len() > limit {
         return Err(ConfigError::TooLarge(name.to_owned()));
     }
     let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
     file.take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(ConfigError::Io)?;
+        .map_err(|source| ConfigError::FileIo { path, source })?;
     if bytes.len() as u64 > limit {
         return Err(ConfigError::TooLarge(name.to_owned()));
     }

@@ -1403,6 +1403,9 @@ pub enum ModelErrorKind {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ModelErrorSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub response_body: Option<DiagnosticText>,
     pub kind: ModelErrorKind,
     pub message: SafeErrorMessage,
     pub retryable: bool,
@@ -2001,6 +2004,12 @@ pub enum EventPayload {
     },
     RunFailed {
         error: SafeErrorMessage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        model_error: Option<ModelErrorSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        resolved_model: Option<ResolvedModelRef>,
     },
     RunCancelled {
         #[serde(deserialize_with = "deserialize_required_option")]

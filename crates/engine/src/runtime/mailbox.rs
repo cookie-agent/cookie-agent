@@ -435,6 +435,7 @@ impl Engine {
         message: String,
         count: u64,
     ) {
+        let message = cookie_agent_protocol::diagnostics::detail(&message).to_string();
         self.inner
             .plugin_diagnostics
             .record((session_id, plugin, kind, message), count);

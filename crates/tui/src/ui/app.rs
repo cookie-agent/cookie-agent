@@ -2857,6 +2857,9 @@ impl App {
     }
 
     pub(super) async fn handle_delivery(&mut self, delivery: ClientDelivery) {
+        if let ClientDelivery::Disconnected { error } = &delivery {
+            self.status = format!("connection failed: {error}");
+        }
         if let ClientDelivery::RuntimeChanged(changed) = &delivery {
             self.install_runtime_notification((**changed).clone());
             return;

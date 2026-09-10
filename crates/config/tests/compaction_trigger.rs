@@ -143,7 +143,7 @@ fn compaction_triggers_are_strict_and_legacy_buffer_is_supported() {
         );
         assert!(matches!(
             load_from_roots(None, Some(&invalid)),
-            Err(ConfigError::InvalidRuntime)
+            Err(ConfigError::InvalidRuntime(_))
         ));
     }
 
@@ -386,7 +386,7 @@ fn delegation_runtime_defaults_and_limits_are_strict() {
     write_config(&invalid, "[delegation]\nmax_concurrency = 0\n");
     assert!(matches!(
         load_from_roots(None, Some(&invalid)),
-        Err(ConfigError::InvalidRuntime)
+        Err(ConfigError::InvalidRuntime(_))
     ));
     write_config(&invalid, "[delegation]\nidle_eviction_after = \"later\"\n");
     assert!(load_from_roots(None, Some(&invalid)).is_err());

@@ -52,6 +52,10 @@ enum MockResponse {
         deadline: Instant,
     },
     Status(u16),
+    ErrorBody {
+        status: u16,
+        body: String,
+    },
     Delay(Duration),
 }
 
@@ -110,6 +114,9 @@ impl MockModelServer {
                                 write_sse(&mut stream, &body);
                             }
                             MockResponse::Status(status) => write_status(&mut stream, status),
+                            MockResponse::ErrorBody { status, body } => {
+                                write!(stream, "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\nx-request-id: req-diagnostic\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).expect("write error body");
+                            }
                             MockResponse::Delay(duration) => thread::sleep(duration),
                         }
                     }
@@ -236,6 +243,13 @@ impl Fixture {
     }
 
     async fn with_plugins(plugins: Vec<(String, cookie_agent_config::PluginConfig)>) -> Self {
+        Self::with_workspace(plugins, |_| {}).await
+    }
+
+    async fn with_workspace(
+        plugins: Vec<(String, cookie_agent_config::PluginConfig)>,
+        configure: impl FnOnce(&Path),
+    ) -> Self {
         let root = tempfile::tempdir().expect("fixture root");
         make_private(root.path());
         let workspace = root.path().join("workspace");
@@ -243,6 +257,7 @@ impl Fixture {
         make_private(&workspace);
         let server = MockModelServer::start();
         write_workspace(&workspace, &server.endpoint());
+        configure(&workspace);
 
         let catalog = Arc::new(
             CatalogManager::in_directory(BundledCatalogTransport, root.path(), "catalog")
@@ -1338,6 +1353,402 @@ async fn prospective_chained_skill_listing_preserves_a_grants_after_b_loads() {
             .any(|request| request.contains("git --version"))
     );
     fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_tool_reports_its_actual_output_even_when_run_recovers() {
+    for (command, fills_diagnostic) in [
+        (
+            "printf '%06000d' 0; printf 'Required asset missing' >&2; exit 23",
+            false,
+        ),
+        (
+            "printf '%06000d' 0; printf 'Required asset missing é'; exit 23",
+            true,
+        ),
+    ] {
+        let fixture = Fixture::new().await;
+        fixture.server.enqueue(MockResponse::Sse(tool_response(
+            "bash",
+            &serde_json::json!({"command":command}).to_string(),
+        )));
+        fixture
+            .server
+            .enqueue(MockResponse::Sse(final_response("reported failure")));
+        let mut args = run_args("tool failure fixture");
+        args.output = Some(OutputMode::Json);
+        args.permission_mode = PermissionModeArg::Yolo;
+        let result = fixture.run(args, "").await;
+        assert_eq!(result.code, 0, "{}", result.stderr);
+        assert!(
+            result.stderr.contains("Required asset missing"),
+            "{}",
+            result.stderr
+        );
+        assert!(!result.stderr.contains("tool reported failure"));
+        assert!(result.stderr.contains("status: 23"), "{}", result.stderr);
+        let records = parse_json_lines(&result.stdout);
+        let event: StoredEvent = serde_json::from_value(
+            records
+                .iter()
+                .find(|record| record["event"]["payload"]["type"] == "tool_call_terminated")
+                .unwrap()["event"]
+                .clone(),
+        )
+        .unwrap();
+        let EventPayload::ToolCallTerminated { termination } = &event.payload else {
+            unreachable!()
+        };
+        assert!(termination.result.as_ref().unwrap().output.len() > 4096);
+        let diagnostic = termination.error.as_ref().unwrap().message.as_str();
+        assert!(diagnostic.contains("Required asset missing"));
+        assert!(diagnostic.contains("status: 23"));
+        assert!(diagnostic.len() <= 4096);
+        if fills_diagnostic {
+            assert!(diagnostic.len() >= 4090);
+        }
+        let consumed = cookie_agent_protocol::diagnostics::tool(termination);
+        assert!(consumed.contains("Required asset missing"));
+        assert!(consumed.contains("status: 23"));
+        assert_eq!(consumed.matches("execution_failed:").count(), 1);
+        assert!(consumed.len() <= 4096);
+        if fills_diagnostic {
+            assert!(consumed.ends_with("Required asset missing é"));
+        }
+        #[cfg(feature = "tui")]
+        {
+            let mut store = cookie_agent_tui::state::StateStore::default();
+            let session_id = event.session_id;
+            store.apply_event(event);
+            let state = &store.sessions[&session_id];
+            assert!(state.transcript.iter().any(|item| matches!(item, cookie_agent_tui::state::TranscriptItem::Event { level: cookie_agent_tui::state::EventLevel::Error, text, .. } if text.contains("Required asset missing") && text.contains("status: 23"))));
+        }
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
+    let plugin = serde_json::from_value::<cookie_agent_config::PluginConfig>(serde_json::json!({
+        "command":"/usr/bin/python3", "args":[PLUGIN_FIXTURE],
+        "env": {
+            "FIXTURE_NAME":"review_guard", "FIXTURE_TOOLS":"[]",
+            "FIXTURE_CAPABILITIES": serde_json::json!({"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}).to_string(),
+            "FIXTURE_TOOL_BEFORE_RESULT": serde_json::json!({"action":"block", "reason":"Review hook rejected; password=\"review\\\"secret-tail\""}).to_string()
+        }
+    })).unwrap();
+    let fixture = Fixture::with_plugins(vec![("review_guard".into(), plugin)]).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture
+            .engine
+            .plugin_statuses()
+            .iter()
+            .any(|plugin| plugin.state == cookie_agent_engine::PluginState::Connected)
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let session = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: "primary".parse().unwrap(),
+            model: cookie_agent_protocol::ModelSelection {
+                model: "custom.local/test".parse().unwrap(),
+                variant: None,
+            },
+            preset: None,
+        })
+        .unwrap();
+    let (_, mut events) = fixture
+        .engine
+        .subscribe(session.session_id, None)
+        .await
+        .unwrap();
+    let (release, gate) = std_mpsc::channel();
+    let observed = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(10), async move {
+            while let Some(message) = events.recv().await {
+                if let EventSubscriptionMessage::Event { event } = message
+                    && matches!(&event.payload, EventPayload::PluginDiagnostic { plugin, .. } if plugin == "review_guard") {
+                    assert!(event.run_id.is_none());
+                    assert!(!serde_json::to_string(&event).unwrap().contains("secret-tail"));
+                    release.send(()).unwrap();
+                    return;
+                }
+            }
+            panic!("plugin diagnostic not emitted");
+        }).await.unwrap();
+    });
+    fixture.server.enqueue(MockResponse::Sse(tool_response(
+        "bash",
+        r#"{"command":"true"}"#,
+    )));
+    fixture.server.enqueue(MockResponse::GatedSse {
+        body: final_response("handled rejection"),
+        start: gate,
+        deadline: Instant::now() + Duration::from_secs(10),
+    });
+    let mut args = run_args("plugin diagnostics");
+    args.resume_session = Some(session.session_id);
+    args.permission_mode = PermissionModeArg::Yolo;
+    args.output = Some(OutputMode::None);
+    let result = fixture.run(args, "").await;
+    observed.await.unwrap();
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    assert!(result.stdout.is_empty());
+    assert!(
+        result
+            .stderr
+            .contains("cookie plugin review_guard: Review hook rejected"),
+        "{}",
+        result.stderr
+    );
+    assert!(!result.stderr.contains("secret-tail"), "{}", result.stderr);
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_internal_fallback_still_explains_rejected_backend() {
+    for mode in [OutputMode::Text, OutputMode::None] {
+        let fixture = Fixture::with_workspace(vec![], |workspace| {
+            fs::write(workspace.join(".cookie-agent/agents/approval.md"), "---\ndescription: Review fallback approval\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.local/test\", variant: null }, { model: \"custom.local/alternate\", variant: null }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests.\n").unwrap();
+        }).await;
+        let session = fixture
+            .engine
+            .create_session(RunSelection {
+                agent: "primary".parse().unwrap(),
+                model: cookie_agent_protocol::ModelSelection {
+                    model: "custom.local/test".parse().unwrap(),
+                    variant: None,
+                },
+                preset: None,
+            })
+            .unwrap();
+        fixture.server.enqueue(MockResponse::Sse(tool_response(
+            "bash",
+            r#"{"command":"true"}"#,
+        )));
+        fixture.server.enqueue(MockResponse::ErrorBody { status: 400, body: r#"{"error":{"code":"unsupported_parameter","message":"Approval temperature unsupported","password":"review\"secret-tail"}}"#.into() });
+        fixture
+            .server
+            .enqueue(MockResponse::Sse(final_response(r#"{"decision":"allow"}"#)));
+        fixture
+            .server
+            .enqueue(MockResponse::Sse(final_response("approved by fallback")));
+        let mut args = run_args("internal fallback diagnostics");
+        args.resume_session = Some(session.session_id);
+        args.output = Some(mode);
+        let result = fixture.run(args, "").await;
+        assert_eq!(result.code, 0, "{}", result.stderr);
+        assert!(
+            result.stderr.contains("Approval temperature unsupported"),
+            "{}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("custom.local/test → custom.local/alternate"),
+            "{}",
+            result.stderr
+        );
+        assert!(result.stderr.contains("HTTP 400"));
+        assert!(!result.stderr.contains("secret-tail"));
+        let (saved, _) = fixture
+            .engine
+            .subscribe(session.session_id, None)
+            .await
+            .unwrap();
+        assert!(
+            saved
+                .events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::InternalAgentFallback { .. }))
+        );
+        assert!(
+            saved
+                .events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::InternalAgentCompleted { .. }))
+        );
+        assert!(!saved.events.iter().any(|event| matches!(
+            event.payload,
+            EventPayload::InternalAgentFailed { .. } | EventPayload::RunFailed { .. }
+        )));
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_http_400_diagnostics_reach_all_clients_and_persisted_events() {
+    for mode in [OutputMode::Text, OutputMode::Json, OutputMode::None] {
+        let fixture = Fixture::with_workspace(Vec::new(), |workspace| {
+            let path = workspace.join(".cookie-agent/config.toml");
+            let config = fs::read_to_string(&path).unwrap()
+                .replace("adaptor = \"openai-compatible\"", "adaptor = \"anthropic\"")
+                .replace("auth = { method = \"no-auth-v1\", values = {} }", "auth = { method = \"anthropic-api-key-v1\", values = { api_key = \"fixture-anthropic-key\" } }");
+            fs::write(path, config).unwrap();
+        }).await;
+        for _ in 0..2 {
+            fixture.server.enqueue(MockResponse::ErrorBody {
+                status: 400,
+                body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"Temperature must be omitted for this model","api_key":"hidden-key","echo":"Don't echo Bearer hidden-token","headers":[["X-Api-Key","header-pair-secret"]]}}"#.into(),
+            });
+        }
+        let mut args = run_args("Anthropic body integration fixture");
+        args.output = Some(mode);
+        let result = fixture.run(args, "").await;
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        for expected in [
+            "Temperature must be omitted for this model",
+            "HTTP 400",
+            "invalid_request_error",
+            "req-diagnostic",
+        ] {
+            assert!(
+                result.stderr.contains(expected),
+                "missing {expected}: {}",
+                result.stderr
+            );
+        }
+        for secret in [
+            "hidden-key",
+            "hidden-token",
+            "fixture-anthropic-key",
+            "header-pair-secret",
+        ] {
+            assert!(!result.stderr.contains(secret));
+            assert!(!result.stdout.contains(secret));
+        }
+        let requests = fixture.server.requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "real adaptor must advance once without retry"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.starts_with("POST /v1/messages "))
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.to_ascii_lowercase().contains("anthropic-version:"))
+        );
+        if mode == OutputMode::Json {
+            let records = parse_json_lines(&result.stdout);
+            let terminal = records
+                .iter()
+                .find(|record| record["event"]["payload"]["type"] == "run_failed")
+                .unwrap();
+            let summary = &terminal["event"]["payload"]["model_error"];
+            assert_eq!(summary["kind"], "invalid_request");
+            assert_eq!(summary["http_status"], 400);
+            assert_eq!(summary["retryable"], false);
+            assert_eq!(summary["vendor_code"], "invalid_request_error");
+            assert_eq!(summary["request_id"], "req-diagnostic");
+            assert!(
+                summary["response_body"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Temperature must be omitted for this model")
+            );
+            assert!(
+                records.iter().any(
+                    |record| record["event"]["payload"]["type"] == "model_fallback"
+                        && record["event"]["payload"]["error"]["kind"] == "invalid_request"
+                )
+            );
+            let event: StoredEvent = serde_json::from_value(terminal["event"].clone()).unwrap();
+            let (snapshot, _) = fixture
+                .engine
+                .subscribe(event.session_id, None)
+                .await
+                .unwrap();
+            let saved = snapshot
+                .events
+                .iter()
+                .find(|saved| saved.seq == event.seq)
+                .unwrap();
+            assert_eq!(serde_json::to_value(saved).unwrap(), terminal["event"]);
+        } else {
+            assert!(result.stdout.is_empty());
+        }
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_failure_diagnostics_reach_text_json_and_quiet_clients() {
+    for mode in [OutputMode::Text, OutputMode::Json, OutputMode::None] {
+        let fixture = Fixture::new().await;
+        fixture.server.enqueue(MockResponse::ErrorBody { status: 403, body: r#"{"error":{"code":"workspace_denied","message":"Workspace access denied","api_key":"hidden-key"}}"#.into() });
+        fixture.server.enqueue(MockResponse::ErrorBody { status: 400, body: r#"{"error":{"code":"unsupported_parameter","message":"Temperature must be omitted","echo":"Bearer hidden-token"}}"#.into() });
+        let mut args = run_args("diagnostic fixture");
+        args.output = Some(mode);
+        let result = fixture.run(args, "").await;
+        assert_eq!(result.code, 1, "{}", result.stderr);
+        for expected in [
+            "Workspace access denied",
+            "Temperature must be omitted",
+            "HTTP 403",
+            "HTTP 400",
+            "req-diagnostic",
+            "unsupported_parameter",
+            "custom.local/alternate",
+        ] {
+            assert!(
+                result.stderr.contains(expected),
+                "missing {expected}: {}",
+                result.stderr
+            );
+        }
+        assert!(!result.stderr.contains("hidden-key"));
+        assert!(!result.stderr.contains("hidden-token"));
+        assert!(!result.stdout.contains("hidden-key"));
+        assert!(!result.stdout.contains("hidden-token"));
+        if mode == OutputMode::Json {
+            let records = parse_json_lines(&result.stdout);
+            assert!(
+                records.last().unwrap()["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Temperature must be omitted")
+            );
+            let terminal = records
+                .iter()
+                .find(|record| record["event"]["payload"]["type"] == "run_failed")
+                .expect("terminal event");
+            assert_eq!(
+                terminal["event"]["payload"]["model_error"]["http_status"],
+                400
+            );
+            let event: StoredEvent = serde_json::from_value(terminal["event"].clone()).unwrap();
+            let (snapshot, _) = fixture
+                .engine
+                .subscribe(event.session_id, None)
+                .await
+                .unwrap();
+            let saved = snapshot
+                .events
+                .iter()
+                .find(|saved| saved.seq == event.seq)
+                .unwrap();
+            assert_eq!(serde_json::to_value(saved).unwrap(), terminal["event"]);
+            assert!(
+                records.iter().any(
+                    |record| record["event"]["payload"]["type"] == "model_fallback"
+                        && record["event"]["payload"]["error"]["http_status"] == 403
+                )
+            );
+        } else {
+            assert!(result.stdout.is_empty());
+        }
+        fixture.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -162,8 +162,7 @@ pub(super) fn safe_display(value: &str) -> SafeDisplayText {
 }
 
 pub(super) fn safe_error(value: &str) -> SafeErrorMessage {
-    SafeErrorMessage::new(sanitize_safe_text(value, SafeErrorMessage::MAX_BYTES))
-        .expect("sanitized safe error")
+    cookie_agent_protocol::diagnostics::headline(value)
 }
 
 pub(super) fn sanitize_safe_text(value: &str, maximum: usize) -> String {

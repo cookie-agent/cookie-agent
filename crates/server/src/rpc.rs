@@ -215,14 +215,17 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Goal(reason) => RpcFault {
             code: -32602,
             message: "goal operation rejected",
-            data: Some(json!({"reason": reason})),
+            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
         },
         EngineError::Producer(reason) => RpcFault {
             code: -32602,
             message: "producer operation rejected",
-            data: Some(json!({"reason": reason})),
+            data: Some(json!({"reason": cookie_agent_protocol::diagnostics::detail(&reason)})),
         },
-        _ => RpcFault::engine(),
+        error => RpcFault {
+            data: Some(json!({"detail": error.user_message()})),
+            ..RpcFault::engine()
+        },
     }
 }
 
@@ -230,13 +233,8 @@ pub(crate) fn run_start_fault(error: EngineError) -> RpcFault {
     #[cfg(debug_assertions)]
     {
         let diagnostic = run_start_debug_code(&error);
-        let fault = engine_fault(error);
-        if fault.data.is_none() {
-            return RpcFault {
-                data: Some(json!({ "debug_code": diagnostic })),
-                ..fault
-            };
-        }
+        let mut fault = engine_fault(error);
+        fault.data.get_or_insert_with(|| json!({}))["debug_code"] = json!(diagnostic);
         fault
     }
     #[cfg(not(debug_assertions))]
@@ -334,7 +332,8 @@ fn config_debug_code(error: &cookie_agent_config::ConfigError) -> &'static str {
         ConfigError::TomlLimit => "config_toml_limit",
         ConfigError::Provider { .. } => "config_provider",
         ConfigError::HeaderOwnership(_) => "config_header_ownership",
-        ConfigError::InvalidRuntime => "config_invalid_runtime",
+        ConfigError::InvalidRuntime(_) => "config_invalid_runtime",
+        ConfigError::FileIo { .. } => "config_io",
         ConfigError::McpServer { .. } => "config_mcp_server",
         ConfigError::Plugin { .. } => "config_plugin",
         ConfigError::Interpolation(_) => "config_interpolation",
@@ -375,6 +374,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn generic_rpc_fault_preserves_config_path_and_cause_for_client_display() {
+        let fault: cookie_agent_protocol::ServerFault = engine_fault(EngineError::Config(
+            Box::new(cookie_agent_config::ConfigError::FileIo {
+                path: "/workspace/config.toml".into(),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
+            }),
+        ))
+        .into();
+        let client = cookie_agent_protocol::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+            code: fault.code,
+            message: fault.message.into(),
+            data: fault.data,
+        });
+        let text = client.to_string();
+        assert!(text.contains("/workspace/config.toml"));
+        assert!(text.contains("access denied"));
+    }
+
+    #[test]
     fn session_tree_usage_faults_distinguish_missing_and_corruption() {
         let missing: cookie_agent_protocol::ServerFault = RpcFault::session_tree_usage(
             EngineError::Session(SessionError::Missing(SessionId::new_v7())),
@@ -400,9 +418,12 @@ mod tests {
     fn run_start_debug_codes_are_allowlisted_and_secret_free() {
         let secret = "plugin-secret-value";
         for (error, expected) in [
-            (EngineError::InputHandled(secret.into()), "input_handled"),
             (
-                EngineError::ModelSelectionBlocked(secret.into()),
+                EngineError::InputHandled(format!("Bearer {secret}")),
+                "input_handled",
+            ),
+            (
+                EngineError::ModelSelectionBlocked(format!("Bearer {secret}")),
                 "model_selection_blocked",
             ),
             (

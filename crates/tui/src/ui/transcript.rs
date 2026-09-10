@@ -1177,7 +1177,9 @@ fn transcript_item_layout(
             ItemLayout {
                 lines: role_block(
                     badge_role,
-                    vec![Line::from(text.clone())],
+                    text.lines()
+                        .map(|line| Line::from(line.to_owned()))
+                        .collect(),
                     context.width,
                     context.theme,
                 ),
@@ -11366,6 +11368,8 @@ mod tests {
             (
                 EventPayload::RunFailed {
                     error: SafeErrorMessage::new("failed").expect("error"),
+                    model_error: None,
+                    resolved_model: None,
                 },
                 SessionStatus::Failed,
             ),
@@ -16378,6 +16382,43 @@ mod tests {
     // ------------------------------------------------------------------
     // Markdown, themes, and diagnostics
     // ------------------------------------------------------------------
+
+    #[test]
+    fn multiline_error_details_are_visible_at_default_event_level() {
+        let state = SessionState {
+            transcript: vec![TranscriptItem::Event {
+                id: 1,
+                version: 0,
+                level: crate::state::EventLevel::Error,
+                text: "Request rejected · HTTP 400\nResponse body:\nTemperature must be omitted"
+                    .into(),
+            }],
+            ..SessionState::default()
+        };
+        let rendered = transcript_layout_with_level(
+            &state,
+            None,
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Info,
+        )
+        .lines
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Request rejected"))
+        );
+        assert!(rendered.iter().any(|line| line.contains("Response body:")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Temperature must be omitted"))
+        );
+    }
 
     #[test]
     fn diagnostic_rows_keep_badges_except_headerless_info() {

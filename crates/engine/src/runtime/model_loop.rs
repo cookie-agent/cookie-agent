@@ -550,9 +550,7 @@ impl Engine {
                                                         active.session,
                                                         Some(run_id),
                                                         event_origin("engine:model-loop"),
-                    Event::RunFailed {
-                                                            error: safe_error(&error.to_string()),
-                                                        },
+                    engine.run_failure_event(active.session, run_id, &error),
                                                     )
                                                     .await;
                                             }
@@ -565,9 +563,7 @@ impl Engine {
                             active.session,
                             Some(run_id),
                             event_origin("engine:model-loop"),
-                            Event::RunFailed {
-                                error: safe_error(&error.to_string()),
-                            },
+                            engine.run_failure_event(active.session, run_id, &error),
                         )
                         .await;
                 }
@@ -577,12 +573,32 @@ impl Engine {
                 let _ = engine.reconcile_producers(session_id).await;
                 return;
             }
-            if let Err(error) = engine.run_loop(run_id, active).await {
+            if let Err(error) = engine.run_loop(run_id, active.clone()).await {
                 // A provider-attempt persistence error may also prevent the
                 // terminal append. Retain this active tombstone for reopen
                 // reconciliation rather than clearing a durably Running run.
-                eprintln!("run {run_id} terminalization failed: {error}");
-                return;
+                let terminal = if active.cancellation.is_cancelled() {
+                    Event::RunCancelled {
+                        reason: Some(safe_error(&error.user_message())),
+                    }
+                } else {
+                    engine.run_failure_event(session_id, run_id, &error)
+                };
+                if let Err(terminal_error) = engine
+                    .append(
+                        session_id,
+                        Some(run_id),
+                        event_origin("engine:model-loop"),
+                        terminal,
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "run {run_id} terminalization failed: {}",
+                        terminal_error.user_message()
+                    );
+                    return;
+                }
             }
             if let Ok(mut active_runs) = engine.inner.active.lock() {
                 active_runs.remove(&run_id);
@@ -740,9 +756,7 @@ impl Engine {
                 active.session,
                 Some(run_id),
                 event_origin("engine:model-loop"),
-                Event::RunFailed {
-                    error: safe_error(&setup_error.to_string()),
-                },
+                self.run_failure_event(active.session, run_id, &setup_error),
             )
             .await
         {
@@ -786,6 +800,8 @@ impl Engine {
             event_origin("engine:model-loop"),
             Event::RunFailed {
                 error: safe_error("run setup terminalization retried"),
+                model_error: None,
+                resolved_model: None,
             },
         )
         .await?;
@@ -795,6 +811,39 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&run_id);
         Ok(())
+    }
+
+    fn run_failure_event(&self, session: SessionId, run: RunId, error: &EngineError) -> Event {
+        let model_error = match error {
+            EngineError::Model(error) => Some(model_error_summary(error)),
+            _ => None,
+        };
+        let resolved_model = model_error.as_ref().and_then(|_| {
+            self.inner
+                .store
+                .get(session)
+                .ok()?
+                .log
+                .event_snapshot()
+                .iter()
+                .rev()
+                .find_map(|event| {
+                    if event.run_id != Some(run) {
+                        return None;
+                    }
+                    match &event.payload {
+                        Event::ModelAttemptStarted { resolved_model, .. } => {
+                            Some(resolved_model.clone())
+                        }
+                        _ => None,
+                    }
+                })
+        });
+        Event::RunFailed {
+            error: safe_error(&cookie_agent_protocol::diagnostics::error_chain(error)),
+            model_error,
+            resolved_model,
+        }
     }
 
     pub(super) async fn run_loop(
@@ -860,9 +909,7 @@ impl Engine {
                         active.session,
                         Some(run_id),
                         event_origin("engine:model-loop"),
-                        Event::RunFailed {
-                            error: safe_error(&error.to_string()),
-                        },
+                        self.run_failure_event(active.session, run_id, &error),
                     )
                     .await?;
                     return Ok(());

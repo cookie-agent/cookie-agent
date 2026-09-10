@@ -19,6 +19,7 @@ async-trait.workspace = true
 cookie_agent_identity = { version = "=0.2.0", path = "../identity" }
 jiff.workspace = true
 oven-sdk.workspace = true
+regex = "1"
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

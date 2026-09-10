@@ -670,19 +670,46 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
 
 pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigError> {
     validate_header_ownership(&runtime.headers, "global").map_err(ConfigError::HeaderOwnership)?;
-    validate_header_limits(&runtime.headers).map_err(|_| ConfigError::InvalidRuntime)?;
-    if runtime.server.host.is_empty()
-        || runtime.server.host.len() > 255
-        || runtime.tool_output.max_lines == 0
-        || runtime.tool_output.max_bytes == 0
-        || runtime.agent_md.max_bytes == 0
-        || runtime.agent_md.max_bytes > 2 * 1024 * 1024
-        || runtime.approval.timeout_ms == 0
-        || runtime.model_retry.backoff_ceiling_ms == 0
-        || runtime.delegation.max_depth == 0
-        || runtime.delegation.max_concurrency == Some(0)
-    {
-        return Err(ConfigError::InvalidRuntime);
+    validate_header_limits(&runtime.headers).map_err(|_| {
+        ConfigError::InvalidRuntime("headers exceed the header count or size limits")
+    })?;
+    for (invalid, reason) in [
+        (
+            runtime.server.host.is_empty() || runtime.server.host.len() > 255,
+            "server.host must contain 1..255 bytes",
+        ),
+        (
+            runtime.tool_output.max_lines == 0,
+            "tool_output.max_lines must be positive",
+        ),
+        (
+            runtime.tool_output.max_bytes == 0,
+            "tool_output.max_bytes must be positive",
+        ),
+        (
+            runtime.agent_md.max_bytes == 0 || runtime.agent_md.max_bytes > 2 * 1024 * 1024,
+            "agent_md.max_bytes must be 1..2097152",
+        ),
+        (
+            runtime.approval.timeout_ms == 0,
+            "approval.timeout_ms must be positive",
+        ),
+        (
+            runtime.model_retry.backoff_ceiling_ms == 0,
+            "model_retry.backoff_ceiling_ms must be positive",
+        ),
+        (
+            runtime.delegation.max_depth == 0,
+            "delegation.max_depth must be positive",
+        ),
+        (
+            runtime.delegation.max_concurrency == Some(0),
+            "delegation.max_concurrency must be positive when set",
+        ),
+    ] {
+        if invalid {
+            return Err(ConfigError::InvalidRuntime(reason));
+        }
     }
     let context = &runtime.context_compaction;
     let invalid_trigger = match &context.trigger {
@@ -693,10 +720,14 @@ pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigErro
         || context.max_summary_bytes == 0
         || context.max_summary_bytes > 2 * 1024 * 1024
     {
-        return Err(ConfigError::InvalidRuntime);
+        return Err(ConfigError::InvalidRuntime(
+            "context_compaction.trigger requires percent 1..99 or positive buffer_tokens; max_summary_bytes must be 1..2097152",
+        ));
     }
     if runtime.session_title.max_chars == 0 || runtime.session_title.max_input_messages == 0 {
-        return Err(ConfigError::InvalidRuntime);
+        return Err(ConfigError::InvalidRuntime(
+            "session_title.max_chars and max_input_messages must be positive",
+        ));
     }
     for (id, provider) in &runtime.providers {
         provider

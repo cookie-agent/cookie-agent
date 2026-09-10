@@ -3486,6 +3486,7 @@ mod tests {
 
     fn fallback_error() -> ModelErrorSummary {
         ModelErrorSummary {
+            response_body: None,
             kind: ModelErrorKind::RateLimited,
             message: SafeErrorMessage::new("rate limited").expect("safe error"),
             retryable: true,
@@ -5577,6 +5578,8 @@ mod tests {
             4,
             EventPayload::RunFailed {
                 error: SafeErrorMessage::new("failed").expect("safe error"),
+                model_error: None,
+                resolved_model: None,
             },
         ))
         .expect("broken event");

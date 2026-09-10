@@ -210,7 +210,17 @@ impl ConnectIo for StdioConnectIo {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(error) = main_result().await {
+        eprintln!(
+            "cookie: {}",
+            cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+        );
+        std::process::exit(1);
+    }
+}
+
+async fn main_result() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let Cli { command } = Cli::parse();
     if let Some(Command::Run { args }) = &command
@@ -228,14 +238,20 @@ async fn main() -> anyhow::Result<()> {
             let workspace = match env::current_dir().context("determine current run workspace") {
                 Ok(path) => path,
                 Err(error) => {
-                    eprintln!("cookie run: {error:#}");
+                    eprintln!(
+                        "cookie run: {}",
+                        cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+                    );
                     std::process::exit(run::EXIT_ENVIRONMENT);
                 }
             };
             let data_dir = match args.data_dir.clone().map_or_else(data_dir, Ok) {
                 Ok(path) => path,
                 Err(error) => {
-                    eprintln!("cookie run: {error:#}");
+                    eprintln!(
+                        "cookie run: {}",
+                        cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+                    );
                     std::process::exit(run::EXIT_ENVIRONMENT);
                 }
             };
@@ -250,7 +266,10 @@ async fn main() -> anyhow::Result<()> {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    eprintln!("cookie run: {error:#}");
+                    eprintln!(
+                        "cookie run: {}",
+                        cookie_agent_protocol::diagnostics::detail(&format!("{error:#}"))
+                    );
                     std::process::exit(run::EXIT_ENVIRONMENT);
                 }
             };

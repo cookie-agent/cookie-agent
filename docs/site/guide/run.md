@@ -128,6 +128,56 @@ compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
 Oversized content ends with a truncated-lines indicator while the complete data
 remains in session state.
 
+## Error details
+
+Run failures show a concise headline followed by available model/provider identity,
+HTTP status, provider code, request ID, and response body. The same diagnostics
+are retained in session events and shown on replay. Model fallback and internal
+agent failures also include the available response diagnostics. Error rows show
+multiline text by default; expand the tool row for its display output.
+Failed tools show their failure reason even when they supplied separate display
+text. Their bounded diagnostics prioritize exit status, source context, and
+diagnostic streams such as stderr. Each stream gets space for its beginning and
+end so loud stdout cannot hide a later failure cause. MCP connection failures
+appear in `/mcp`; plugin initialization and RPC
+failures preserve operation context and selected cause fields. Configuration
+errors identify invalid settings and, for file/parse failures, available paths
+and locations without printing configuration source lines.
+Transport failures retain send/receive context for pending calls and appear as
+connection diagnostics in the TUI. Rejected WebSocket handshakes show a bounded,
+redacted response body when supplied, without printing response headers.
+
+`cookie run` writes failure diagnostics to stderr even with `--output none` and
+without `--verbose`. JSON output retains diagnostic event fields and adds an
+`error` field to the final summary (null for success). A failed tool or fallback
+can produce stderr diagnostics even if the overall run subsequently succeeds.
+This includes internal-agent fallback failures and session-scoped plugin notices
+for the selected session. Events from unrelated sessions/runs remain excluded.
+Exit codes retain their existing meanings.
+
+Response bodies are capped at 4,096 UTF-8 bytes with a truncation marker. JSON is
+formatted for reading; plaintext and HTML gateway errors remain plain text.
+Terminal controls and Unicode format controls are removed. Common credential
+fields, bearer/basic credentials, `sk-` keys, URL credentials, and known secret
+values available at the boundary are redacted in both raw and decoded JSON strings
+before truncation. Header records pairing a sensitive `name` with a sibling
+`value` are also redacted, including prefixed and incomplete JSON. Prose
+apostrophes do not prevent inspection of following JSON. Quoted credentials
+respect escapes; unfinished credential
+objects/arrays may cause the remaining diagnostic text to be omitted. Request headers
+and credential stores are not diagnostic output. Pattern matching cannot detect
+every arbitrary secret echoed by a remote service; retained diagnostics have the
+same access and persistence rules as other session events.
+
+The pinned model SDK preserves sanitized HTTP error-body text for OpenAI,
+OpenAI-compatible, Anthropic, Google, Google Vertex, Bedrock, Azure, and Cohere.
+SDK body retention is bounded to 64 KiB; the application further sanitizes and
+bounds displayed and persisted body diagnostics to 4 KiB. Redaction has the
+pattern-based limits described above. A body is available only when the provider
+returned one: validation, connection, or cancellation errors may have no HTTP
+response body. Missing detail is not reconstructed or fetched with another API
+request.
+
 ## Live tool output
 
 Expanded bash rows show sanitized stdout and stderr while the command runs.
@@ -248,7 +298,8 @@ redirects text or JSON output to a file and cannot be combined with
 
 Text mode writes only the terminal `final_text` to standard output. It does not
 stream model deltas. With `--verbose`, ANSI-free progress lines are written to
-standard error; standard error stays empty for a successful non-verbose run.
+standard error. Failures and model fallback diagnostics are written to standard
+error regardless of verbosity, including recovered failures in a successful run.
 
 JSON mode writes JSON Lines. Records use these stable `type` tags:
 
@@ -257,7 +308,7 @@ JSON mode writes JSON Lines. Records use these stable `type` tags:
 - `tool_output_gap`: a tool-output retention or delivery gap, emitted with
   `--verbose`.
 - `summary`: the final record, containing terminal status and exit code, IDs,
-  turn/rejection/recovery counts, cancellation cause, final text, and the
+   turn/rejection/recovery counts, cancellation cause, final text, error detail, and the
   session usage and estimated-cost rollup.
 
 `--output none` suppresses command output. Diagnostics and verbose progress
