@@ -9585,6 +9585,317 @@ mod tests {
         )));
     }
 
+    /// A mid-stream diagnostic row (a failed internal compaction agent), the
+    /// motivating case for splitting later assistant segments below it.
+    fn mid_stream_failure(session: SessionId, seq: u64, run: RunId) -> StoredEvent {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::InternalAgentFailed {
+                invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+                internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+                kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+                failure: cookie_agent_protocol::InternalAgentFailure {
+                    code: cookie_agent_protocol::SafeCode::new("model_failure")
+                        .expect("failure code"),
+                    message: cookie_agent_protocol::SafeErrorMessage::new("Compaction failed")
+                        .expect("failure message"),
+                    retryable: false,
+                    model_error: None,
+                },
+            },
+        )
+    }
+
+    fn assistant_items(state: &crate::state::SessionState) -> Vec<&TranscriptItem> {
+        state
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .collect()
+    }
+
+    fn assistant_texts(item: &TranscriptItem) -> Vec<String> {
+        let TranscriptItem::Assistant { children, .. } = item else {
+            return Vec::new();
+        };
+        children
+            .iter()
+            .filter_map(|child| match child {
+                AssistantChild::Text { markdown, .. } => Some(markdown.as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn event_mid_stream_keeps_current_part_in_existing_block() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            text_delta(session, 2, run, attempt, "hello"),
+            mid_stream_failure(session, 3, run),
+            text_delta(session, 4, run, attempt, " world"),
+            turn_committed(
+                session,
+                5,
+                run,
+                attempt,
+                1,
+                vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                    text: "hello world".into(),
+                    metadata: None,
+                }],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1, "text-only turn stays in one block");
+        assert_eq!(assistant_texts(assistants[0]), ["hello world"]);
+        // The event row lands after the block; the block keeps its place.
+        let kinds = state
+            .transcript
+            .iter()
+            .map(|item| match item {
+                TranscriptItem::Assistant { .. } => "assistant",
+                TranscriptItem::Event { .. } => "event",
+                _ => "other",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["assistant", "event", "event"]);
+    }
+
+    #[test]
+    fn event_mid_stream_splits_new_segment_below_event() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, first, None),
+            text_delta(session, 2, run, first, "one"),
+            turn_committed(
+                session,
+                3,
+                run,
+                first,
+                1,
+                vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                    text: "one".into(),
+                    metadata: None,
+                }],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 4, run, second, None),
+            text_delta(session, 5, run, second, "two"),
+            mid_stream_failure(session, 6, run),
+            reasoning_delta(session, 7, run, second, "think"),
+            turn_committed(
+                session,
+                8,
+                run,
+                second,
+                2,
+                vec![
+                    cookie_agent_protocol::PersistedAssistantPart::Text {
+                        text: "two".into(),
+                        metadata: None,
+                    },
+                    cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+                        text: "think".into(),
+                        metadata: None,
+                    },
+                ],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 2, "new segment splits into a fresh block");
+        // The first block keeps exactly the previously committed turn; the
+        // pre-event streamed text is superseded by the canonical rebuild in
+        // the new block below the event row.
+        assert_eq!(assistant_texts(assistants[0]), ["one"]);
+        assert_eq!(assistant_texts(assistants[1]), ["two"]);
+        let TranscriptItem::Assistant { children, .. } = assistants[1] else {
+            unreachable!()
+        };
+        assert!(children.iter().any(
+            |child| matches!(child, AssistantChild::Thinking { text, .. } if text == "think")
+        ));
+        // Ordering: first block, then the event row, then the new block.
+        let kinds = state
+            .transcript
+            .iter()
+            .map(|item| match item {
+                TranscriptItem::Assistant { .. } => "assistant",
+                TranscriptItem::Event { .. } => "event",
+                _ => "other",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["assistant", "event", "event", "assistant", "event"]);
+    }
+
+    #[test]
+    fn event_mid_stream_tool_turn_moves_below_event() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            text_delta(session, 2, run, attempt, "A"),
+            mid_stream_failure(session, 3, run),
+            turn_committed(
+                session,
+                4,
+                run,
+                attempt,
+                1,
+                vec![
+                    cookie_agent_protocol::PersistedAssistantPart::Text {
+                        text: "A".into(),
+                        metadata: None,
+                    },
+                    cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                        id: ModelCallId::new("call-1").expect("call"),
+                        provider_item_id: None,
+                        name: SafeCode::new("bash").expect("tool"),
+                        input: serde_json::json!({"command": "ls"}),
+                        raw_input: None,
+                        metadata: None,
+                    },
+                ],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1, "turn consolidates below the event");
+        let TranscriptItem::Assistant { children, .. } = assistants[0] else {
+            unreachable!()
+        };
+        assert!(matches!(
+            children.as_slice(),
+            [
+                AssistantChild::Text { .. },
+                AssistantChild::CommittedTool { .. }
+            ]
+        ));
+        // The event row precedes the block holding the tool call.
+        let first = state.transcript.first().expect("event row");
+        assert!(matches!(first, TranscriptItem::Event { .. }));
+    }
+
+    #[test]
+    fn abandonment_after_event_split_prunes_both_blocks() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, first, None),
+            text_delta(session, 2, run, first, "A"),
+            mid_stream_failure(session, 3, run),
+            reasoning_delta(session, 4, run, first, "R"),
+            event(
+                session,
+                5,
+                run,
+                EventPayload::AttemptAbandoned { attempt_id: first },
+            ),
+            attempt_started(session, 6, run, second, None),
+            text_delta(session, 7, run, second, "final"),
+            turn_committed(
+                session,
+                8,
+                run,
+                second,
+                1,
+                vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                    text: "final".into(),
+                    metadata: None,
+                }],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1, "abandoned split blocks are pruned");
+        assert_eq!(assistant_texts(assistants[0]), ["final"]);
+    }
+
+    #[test]
+    fn event_between_turns_does_not_split_block() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, first, None),
+            text_delta(session, 2, run, first, "one"),
+            turn_committed(
+                session,
+                3,
+                run,
+                first,
+                1,
+                vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                    text: "one".into(),
+                    metadata: None,
+                }],
+                vec!["context near limit"],
+                None,
+            ),
+            attempt_started(session, 4, run, second, None),
+            text_delta(session, 5, run, second, "two"),
+            turn_committed(
+                session,
+                6,
+                run,
+                second,
+                2,
+                vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                    text: "two".into(),
+                    metadata: None,
+                }],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(
+            assistants.len(),
+            1,
+            "events between turns keep the run's turns in one block"
+        );
+        assert_eq!(assistant_texts(assistants[0]), ["one", "two"]);
+    }
+
     #[test]
     fn same_model_retry_after_abandonment_prunes_partials_without_marker() {
         let session = SessionId::new_v7();

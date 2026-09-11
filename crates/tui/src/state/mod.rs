@@ -379,7 +379,7 @@ impl TranscriptItem {
 }
 
 /// One live streaming attempt, owning one assistant item.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct AttemptProjection {
     item_id: u64,
     run_id: Option<RunId>,
@@ -387,6 +387,12 @@ pub(crate) struct AttemptProjection {
     /// input boundary cannot make this attempt erase older committed children.
     committed_prefix: usize,
     attribution_marker: Option<usize>,
+    /// Earlier blocks this attempt streamed into before interleaved event
+    /// rows split them off, each with the committed prefix it keeps. The
+    /// attempt's uncommitted output in those blocks is pruned when the
+    /// attempt abandons or its turn commits (the committed turn rebuilds
+    /// canonically in the newest block).
+    split_segments: Vec<(u64, usize)>,
 }
 
 /// The assistant item accumulating attempts until the run's next input boundary.
@@ -396,6 +402,11 @@ pub(crate) struct RunAssistantProjection {
     pub(crate) item_id: u64,
     pub(crate) committed_prefix: usize,
     pub(crate) current_model: ResolvedModelRef,
+    /// An event row interleaved after this block while a turn was in flight.
+    /// The part streaming at that moment finishes in this block, but the
+    /// next new segment (a part of another kind, a tool call, or a new
+    /// attempt) opens a fresh block after the row.
+    pub(crate) split_pending: bool,
 }
 
 /// Generation metrics accumulated across one assistant block's committed
@@ -1447,7 +1458,7 @@ fn reduce_event(
                 if let Some(projection) = state
                     .open_run_assistant
                     .as_ref()
-                    .filter(|projection| projection.run_id == run_id)
+                    .filter(|projection| projection.run_id == run_id && !projection.split_pending)
                 {
                     let item_id = projection.item_id;
                     let changed = projection.current_model != resolved_model;
@@ -1474,6 +1485,7 @@ fn reduce_event(
                         item_id,
                         committed_prefix: 0,
                         current_model: resolved_model,
+                        split_pending: false,
                     });
                     item_id
                 }
@@ -1498,6 +1510,7 @@ fn reduce_event(
                     run_id,
                     committed_prefix,
                     attribution_marker,
+                    split_segments: Vec::new(),
                 },
             );
             state.pending_attempt = Some(attempt_id);
@@ -1506,10 +1519,8 @@ fn reduce_event(
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
-            let Some(item_id) = state
-                .attempts
-                .get(&attempt_id)
-                .map(|attempt| attempt.item_id)
+            let Some(item_id) =
+                assistant_segment_target(state, attempt_id, AssistantPartKind::Text, timestamp)
             else {
                 return;
             };
@@ -1526,10 +1537,8 @@ fn reduce_event(
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
-            let Some(item_id) = state
-                .attempts
-                .get(&attempt_id)
-                .map(|attempt| attempt.item_id)
+            let Some(item_id) =
+                assistant_segment_target(state, attempt_id, AssistantPartKind::Thinking, timestamp)
             else {
                 return;
             };
@@ -1550,6 +1559,7 @@ fn reduce_event(
             if let Some(attempt) = state.attempts.remove(&attempt_id)
                 && attempt.run_id.is_some()
             {
+                prune_split_segments(state, &attempt.split_segments);
                 prune_abandoned_attempt(state, attempt.item_id, attempt.committed_prefix);
             }
             push_event(state, EventLevel::Warning, "model attempt abandoned".into());
@@ -1596,6 +1606,18 @@ fn reduce_event(
             // segments and content indices. Tool parts become committed
             // placeholders linked by `owner.content_index` when their start
             // event arrives.
+            // A turn carrying tool calls or media starts new segments: when
+            // an event row interleaved mid-turn, the whole turn's canonical
+            // rebuild belongs in a fresh block below the row.
+            if turn.content.iter().any(|part| {
+                matches!(
+                    part,
+                    cookie_agent_protocol::PersistedAssistantPart::ToolCall { .. }
+                        | cookie_agent_protocol::PersistedAssistantPart::File { .. }
+                )
+            }) {
+                split_assistant_if_pending(state, attempt_id, timestamp);
+            }
             if let Some(projection) = state.attempts.get(&attempt_id) {
                 let item_id = projection.item_id;
                 let committed_prefix = projection.committed_prefix;
@@ -1625,6 +1647,15 @@ fn reduce_event(
                     committed_prefix,
                     &turn,
                 );
+                // The committed turn rebuilt canonically in the newest block,
+                // so the attempt's pre-split streamed output in earlier
+                // blocks is superseded.
+                let segments = state
+                    .attempts
+                    .get_mut(&attempt_id)
+                    .map(|attempt| std::mem::take(&mut attempt.split_segments))
+                    .unwrap_or_default();
+                prune_split_segments(state, &segments);
             } else {
                 index_turn_tool_content(state, model_turn_seq, &turn);
             }
@@ -2329,7 +2360,7 @@ fn move_input_to_boundary(
 ) {
     close_open_assistant(state, timestamp);
     let pending = state.pending_attempt.and_then(|attempt_id| {
-        let attempt = *state.attempts.get(&attempt_id)?;
+        let attempt = state.attempts.get(&attempt_id)?.clone();
         let projection = state.open_run_assistant.as_ref()?;
         (Some(projection.run_id) == run_id && projection.item_id == attempt.item_id)
             .then(|| (attempt_id, attempt, projection.clone()))
@@ -2380,6 +2411,7 @@ fn rebind_pending_attempt(
         projection.item_id = open_assistant_item(state, new_attribution);
     }
     projection.committed_prefix = 0;
+    projection.split_pending = false;
     state.attempts.insert(
         attempt_id,
         AttemptProjection {
@@ -2387,6 +2419,7 @@ fn rebind_pending_attempt(
             run_id: Some(projection.run_id),
             committed_prefix: 0,
             attribution_marker: None,
+            split_segments: Vec::new(),
         },
     );
     state.open_run_assistant = Some(projection);
@@ -2942,12 +2975,148 @@ fn push_item(state: &mut SessionState, item: impl FnOnce(u64) -> TranscriptItem)
 }
 
 fn push_event(state: &mut SessionState, level: EventLevel, text: String) {
+    // An event row injected while an assistant turn is in flight marks the
+    // run's block as split-pending: the part streaming right now keeps
+    // streaming into the existing block above the row, but the next new
+    // segment (part, tool call, or attempt) opens a fresh block below it.
+    // Events between turns (no open part, no pending attempt) do not split,
+    // so one run's turns keep sharing a block.
+    if (state.open_assistant.is_some() || state.pending_attempt.is_some())
+        && let Some(projection) = state.open_run_assistant.as_mut()
+    {
+        projection.split_pending = true;
+    }
     push_item(state, |id| TranscriptItem::Event {
         id,
         version: 0,
         level,
         text,
     });
+}
+
+/// Rebind the attempt to a fresh assistant block after an interleaved event
+/// row when its run's block is split-pending. Returns the item new segments
+/// belong to. A still-empty, never-committed block simply moves below the
+/// row instead of leaving a ghost block behind. The split-off block is
+/// remembered so abandonment or the turn commit can prune the attempt's
+/// uncommitted output there (the committed turn rebuilds canonically in the
+/// newest block).
+fn split_assistant_if_pending(
+    state: &mut SessionState,
+    attempt_id: AttemptId,
+    timestamp: jiff::Timestamp,
+) -> Option<u64> {
+    let attempt = state.attempts.get(&attempt_id)?.clone();
+    let split = state.open_run_assistant.as_ref().is_some_and(|projection| {
+        projection.split_pending
+            && Some(projection.run_id) == attempt.run_id
+            && projection.item_id == attempt.item_id
+    });
+    if !split {
+        return Some(attempt.item_id);
+    }
+    close_open_assistant(state, timestamp);
+    let Some(index) = state
+        .transcript
+        .iter()
+        .position(|item| item.id() == attempt.item_id)
+    else {
+        return Some(attempt.item_id);
+    };
+    let TranscriptItem::Assistant {
+        attribution,
+        children,
+        committed_turn_seq,
+        ..
+    } = &state.transcript[index]
+    else {
+        return Some(attempt.item_id);
+    };
+    let agent = attribution.agent.clone();
+    let reuse_empty = children.is_empty() && committed_turn_seq.is_none();
+    let mut projection = state
+        .open_run_assistant
+        .take()
+        .expect("split-pending run projection");
+    projection.split_pending = false;
+    if reuse_empty {
+        move_transcript_item_to_end(state, index);
+        projection.committed_prefix = 0;
+        state.open_run_assistant = Some(projection);
+        return Some(attempt.item_id);
+    }
+    let item_id = open_assistant_item(
+        state,
+        FrozenAssistantAttribution {
+            agent,
+            resolved_model: projection.current_model.clone(),
+        },
+    );
+    projection.item_id = item_id;
+    projection.committed_prefix = 0;
+    state.open_run_assistant = Some(projection);
+    let mut split_segments = attempt.split_segments;
+    split_segments.push((attempt.item_id, attempt.committed_prefix));
+    state.attempts.insert(
+        attempt_id,
+        AttemptProjection {
+            item_id,
+            run_id: attempt.run_id,
+            committed_prefix: 0,
+            attribution_marker: None,
+            split_segments,
+        },
+    );
+    Some(item_id)
+}
+
+/// Prune one split-off block back to its committed prefix (keeping
+/// attribution markers), then drop it entirely when nothing committed ever
+/// landed there so no empty block is left behind.
+fn prune_split_segment(state: &mut SessionState, item_id: u64, committed_prefix: usize) {
+    prune_abandoned_attempt(state, item_id, committed_prefix);
+    let empty = state.transcript.iter().any(|item| {
+        matches!(
+            item,
+            TranscriptItem::Assistant {
+                id,
+                children,
+                committed_turn_seq,
+                ..
+            } if *id == item_id && children.is_empty() && committed_turn_seq.is_none()
+        )
+    });
+    if empty {
+        state.transcript.retain(|item| item.id() != item_id);
+        state.assistant_metrics.remove(&item_id);
+    }
+}
+
+/// Prune the attempt's uncommitted output in every block an event row split
+/// off before its current one.
+fn prune_split_segments(state: &mut SessionState, segments: &[(u64, usize)]) {
+    for (item_id, committed_prefix) in segments {
+        prune_split_segment(state, *item_id, *committed_prefix);
+    }
+}
+
+/// The item a delta belongs to: the open part's item while the same kind
+/// keeps streaming (even across an interleaved event row), otherwise the
+/// split-pending rebind target for a new segment.
+fn assistant_segment_target(
+    state: &mut SessionState,
+    attempt_id: AttemptId,
+    kind: AssistantPartKind,
+    timestamp: jiff::Timestamp,
+) -> Option<u64> {
+    let attempt = state.attempts.get(&attempt_id)?;
+    let continues_open_part = state
+        .open_assistant
+        .is_some_and(|open| open.item_id == attempt.item_id && open.kind == kind);
+    if continues_open_part {
+        return Some(attempt.item_id);
+    }
+    split_assistant_if_pending(state, attempt_id, timestamp)
 }
 
 fn bump_tool_item(state: &mut SessionState, tool_call_id: ToolCallId) {
