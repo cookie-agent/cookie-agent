@@ -9,6 +9,8 @@ mod goal_projection;
 pub mod grant_journal;
 mod mcp;
 mod media;
+#[cfg(test)]
+mod messaging_tests;
 mod model_bridge;
 mod model_history;
 mod model_policy;
@@ -33,8 +35,8 @@ pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use media::{AttachmentGate, approved_media_type, attachment_gate_error, gate_attachment};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 pub use runtime::{
-    ApprovalRespondFailure, ArtifactReadPage, Engine, EngineError, EngineHistoryView,
-    EngineOptions, SkillInvocation,
+    AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
+    ArtifactReadPage, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
 };
 pub use runtime_snapshot::PublishedRuntime;
 pub use tool_api::{

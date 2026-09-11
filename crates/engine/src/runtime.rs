@@ -68,6 +68,7 @@ mod get_history;
 mod helpers;
 mod internal_agents;
 mod mailbox;
+pub(crate) mod messaging_api;
 mod model_loop;
 mod output_capture;
 mod producer_claims;
@@ -90,6 +91,7 @@ pub(crate) use blocking_io::gate as block_artifact_io_for_test;
 use delegation::DelegationRecord;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
+pub use messaging_api::{AgentMessageHandle, AgentMessageInvocation, AgentRecipientState};
 pub(crate) use output_capture::OutputCapture;
 pub(crate) use output_capture::finish_page;
 pub use skills::SkillInvocation;
@@ -198,6 +200,8 @@ pub enum EngineError {
     Goal(String),
     #[error("producer operation rejected: {0}")]
     Producer(String),
+    #[error("messaging: {0}")]
+    Messaging(String),
     #[error(transparent)]
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]

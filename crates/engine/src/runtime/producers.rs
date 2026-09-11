@@ -6,7 +6,7 @@ use tokio::sync::oneshot;
 use super::{Engine, EngineError, Event, SessionCommand, event_origin};
 use crate::goal_projection::{GoalProducerProjection, ProducerMessageRecord};
 
-fn producer_description(prefix: &str, detail: &str) -> SafeDisplayText {
+pub(super) fn producer_description(prefix: &str, detail: &str) -> SafeDisplayText {
     let mut text = String::from(prefix);
     for character in detail.trim().chars() {
         let character = if character.is_control() {
@@ -94,6 +94,21 @@ pub(super) enum ProducerCommand {
         mode: ProducerDeliveryMode,
         key: ProducerIdempotencyKey,
         description: SafeDisplayText,
+        body: String,
+        reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
+    },
+    /// Atomic agent-mail accept: the pending-agent-mail cap check and the
+    /// durable `ProducerMessageAccepted` append happen inside one actor
+    /// handler, so concurrent senders cannot interleave count-then-accept and
+    /// the envelope (which embeds the generated message id) renders once.
+    SendAgentMessage {
+        authority: ProducerAuthority,
+        producer_id: ProducerId,
+        mode: ProducerDeliveryMode,
+        key: ProducerIdempotencyKey,
+        description: SafeDisplayText,
+        sender: SessionId,
+        sender_agent_type: String,
         body: String,
         reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
     },
@@ -342,6 +357,29 @@ impl Engine {
                         body,
                     },
                     None,
+                ));
+            }
+            ProducerCommand::SendAgentMessage {
+                authority,
+                producer_id,
+                mode,
+                key,
+                description,
+                sender,
+                sender_agent_type,
+                body,
+                reply,
+            } => {
+                let _ = reply.send(self.accept_agent_message_direct(
+                    session,
+                    &authority,
+                    producer_id,
+                    mode,
+                    key,
+                    description,
+                    sender,
+                    &sender_agent_type,
+                    body,
                 ));
             }
             ProducerCommand::CommitDelegationCompletion {
@@ -1352,6 +1390,79 @@ impl Engine {
                 description,
                 body,
                 reminder,
+            },
+        )?;
+        self.inner.store.persist_buffered_session(session)?;
+        Ok(message_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn accept_agent_message_direct(
+        &self,
+        session: SessionId,
+        authority: &ProducerAuthority,
+        producer_id: ProducerId,
+        mode: ProducerDeliveryMode,
+        key: ProducerIdempotencyKey,
+        description: SafeDisplayText,
+        sender: SessionId,
+        sender_agent_type: &str,
+        body: String,
+    ) -> Result<ProducerMessageId, EngineError> {
+        self.require_registration(session, producer_id, authority)?;
+        let projection = self.goal_producer_projection(session)?;
+        if let Some(existing) = projection.messages.iter().find(|message| {
+            message.producer_owner == authority.owner && message.idempotency_key == key
+        }) {
+            let envelope = super::messaging_api::render_agent_message_envelope(
+                existing.message_id,
+                sender,
+                sender_agent_type,
+                &body,
+            );
+            if existing.mode != mode
+                || existing.description != description
+                || existing.body != envelope
+            {
+                return Err(EngineError::Producer(
+                    "idempotency key already accepted with different payload".into(),
+                ));
+            }
+            self.inner.store.persist_buffered_session(session)?;
+            return Ok(existing.message_id);
+        }
+        let limit = self.inner.config.runtime.messaging.max_pending_per_session;
+        let pending_agent = projection
+            .messages
+            .iter()
+            .filter(|message| {
+                pending(message) && matches!(message.producer_owner, ProducerOwner::Agent { .. })
+            })
+            .count();
+        if pending_agent >= limit {
+            return Err(EngineError::Messaging(
+                super::messaging_api::MESSAGE_INBOX_FULL.to_owned(),
+            ));
+        }
+        let message_id = ProducerMessageId::new_v7();
+        let envelope = super::messaging_api::render_agent_message_envelope(
+            message_id,
+            sender,
+            sender_agent_type,
+            &body,
+        );
+        self.append_direct(
+            session,
+            None,
+            event_origin("engine:producer"),
+            Event::ProducerMessageAccepted {
+                message_id,
+                producer_owner: authority.owner.clone(),
+                mode,
+                idempotency_key: key,
+                description,
+                body: envelope,
+                reminder: None,
             },
         )?;
         self.inner.store.persist_buffered_session(session)?;
