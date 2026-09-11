@@ -403,6 +403,15 @@ impl PreparedToolCall {
                 context.spec.concurrency
             })
     }
+
+    /// Calls sharing a serialization key must execute in model call order:
+    /// chained preparations build on each other's output.
+    fn serialization_key(&self) -> Option<crate::PreparedSerializationKey> {
+        self.prepared
+            .as_ref()
+            .ok()
+            .and_then(|prepared| prepared.serialization_key.clone())
+    }
 }
 
 struct ToolInterceptionContext {

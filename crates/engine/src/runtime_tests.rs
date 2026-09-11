@@ -1441,6 +1441,8 @@ struct ParallelToolState {
     max_active: AtomicUsize,
     started: AtomicUsize,
     started_names: std::sync::Mutex<Vec<String>>,
+    completed_names: std::sync::Mutex<Vec<String>>,
+    prepare_batches: std::sync::Mutex<Vec<Vec<String>>>,
 }
 
 impl ParallelToolState {
@@ -1667,6 +1669,34 @@ impl ToolProvider for TestParallelToolProvider {
         )?
         .with_policy_labels(vec![name])
     }
+
+    async fn prepare_parallel(
+        &self,
+        ctx: ToolPreparationContext,
+        calls: Vec<ToolCall>,
+    ) -> Vec<Result<PreparedTool, ToolError>> {
+        self.state
+            .prepare_batches
+            .lock()
+            .expect("parallel prepare batches lock")
+            .push(
+                calls
+                    .iter()
+                    .map(|call| {
+                        call.arguments
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
+                    })
+                    .collect(),
+            );
+        let mut prepared = Vec::with_capacity(calls.len());
+        for call in calls {
+            prepared.push(self.prepare(ctx.clone(), call).await);
+        }
+        prepared
+    }
 }
 
 #[async_trait]
@@ -1693,6 +1723,11 @@ impl PreparedExecutor for TestParallelToolExecutor {
             if self.fail {
                 return Err(ToolError::execution(format!("{} failed", self.name)));
             }
+            self.state
+                .completed_names
+                .lock()
+                .expect("parallel completed names lock")
+                .push(self.name.clone());
             Ok(cookie_agent_protocol::PersistedToolResult {
                 display: None,
                 retained_output: None,
@@ -6831,6 +6866,87 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
         assert_eq!(captured.await.expect("mutation server").len(), 2);
         fixture.engine.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn same_key_parallel_calls_prepare_as_batch_and_execute_in_call_order() {
+    let (endpoint, responses, captured) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_batch_body(&[
+                (
+                    "first-call",
+                    "parallel_write",
+                    serde_json::json!({"name":"first","delay_ms":60,"serialization_key":"same.txt"}),
+                ),
+                (
+                    "second-call",
+                    "parallel_write",
+                    serde_json::json!({"name":"second","delay_ms":0,"serialization_key":"same.txt"}),
+                ),
+            ]),
+        ))
+        .expect("batch response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("batch complete"),
+        ))
+        .expect("completion response");
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Batch ordering test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nRun ordered batch.\n",
+    );
+    let state = Arc::new(ParallelToolState::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestParallelToolProvider {
+            state: Arc::clone(&state),
+            barrier: None,
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("batch session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("batch-ordering").expect("client run ID"),
+                selection,
+                input: "run ordered batch".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("batch run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+
+    // One batch preparation per provider, in model call order.
+    assert_eq!(
+        state
+            .prepare_batches
+            .lock()
+            .expect("prepare batches lock")
+            .as_slice(),
+        &[vec!["first".to_owned(), "second".to_owned()]]
+    );
+    // Same-key calls execute sequentially in call order: without grouping the
+    // zero-delay second call would finish first.
+    assert_eq!(
+        state
+            .completed_names
+            .lock()
+            .expect("completed names lock")
+            .as_slice(),
+        &["first".to_owned(), "second".to_owned()]
+    );
+    assert_eq!(state.max_active.load(Ordering::SeqCst), 1);
+    assert_eq!(captured.await.expect("batch server").len(), 2);
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

@@ -1057,8 +1057,31 @@ impl Engine {
                 .into());
             }
             let mut prepared = Vec::new();
-            for (id, content_index, model_call_id, provider_item_id, tool, arguments, approval) in
-                &calls
+            let batch_calls = calls
+                .iter()
+                .map(|(id, _, _, _, tool, arguments, _)| {
+                    (
+                        ToolCall {
+                            id: *id,
+                            name: tool.to_string(),
+                            arguments: arguments.clone(),
+                        },
+                        published_tools.tools.get(tool.as_str()),
+                    )
+                })
+                .collect();
+            let batch_prepared = self
+                .prepare_published_tool_calls(
+                    active.session,
+                    run_id,
+                    batch_calls,
+                    &active.policy,
+                    Arc::clone(&attempt.turn_context),
+                )
+                .await;
+            let mut batch_prepared = batch_prepared.into_iter();
+            for (id, content_index, model_call_id, provider_item_id, tool, _arguments, approval) in
+                calls.iter()
             {
                 let output_declaration = published_tools
                     .tools
@@ -1072,21 +1095,7 @@ impl Engine {
                     .entry(*id)
                     .or_insert_with(|| OutputHub::new(*id, 64 * 1024))
                     .declare(&output_declaration);
-                let call = ToolCall {
-                    id: *id,
-                    name: tool.to_string(),
-                    arguments: arguments.clone(),
-                };
-                let prepared_call = self
-                    .prepare_published_tool_call(
-                        active.session,
-                        run_id,
-                        call,
-                        &active.policy,
-                        Arc::clone(&attempt.turn_context),
-                        published_tools.tools.get(tool.as_str()),
-                    )
-                    .await;
+                let prepared_call = batch_prepared.next().expect("batch preparation count");
                 let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(
                     |_| {
                         fallback_operation_fingerprint(
@@ -1229,10 +1238,18 @@ impl Engine {
 
             let mut parallel = tokio::task::JoinSet::new();
             let mut exclusive = Vec::new();
+            // Parallel calls sharing a serialization key (chained same-target
+            // preparations) execute sequentially in model call order inside
+            // one task; distinct keys stay parallel across tasks.
+            let mut keyed: Vec<(crate::PreparedSerializationKey, Vec<_>)> = Vec::new();
             for (call, task) in calls.into_iter().zip(approved_tasks) {
                 let concurrency = match &task {
                     PendingTool::Prepared { prepared, .. } => prepared.concurrency(),
                     PendingTool::ImmediateFailure(_) => ToolConcurrency::Parallel,
+                };
+                let key = match &task {
+                    PendingTool::Prepared { prepared, .. } => prepared.serialization_key(),
+                    PendingTool::ImmediateFailure(_) => None,
                 };
                 let execution = (
                     call.0,
@@ -1241,13 +1258,45 @@ impl Engine {
                     task,
                     Arc::clone(&attempt.turn_context),
                 );
-                if concurrency == ToolConcurrency::Parallel {
-                    let engine = self.clone();
-                    let active = active.clone();
-                    parallel.spawn(async move {
-                        engine
+                match (concurrency, key) {
+                    (ToolConcurrency::Parallel, Some(key)) => {
+                        if let Some((_, group)) =
+                            keyed.iter_mut().find(|(candidate, _)| *candidate == key)
+                        {
+                            group.push(execution);
+                        } else {
+                            keyed.push((key, vec![execution]));
+                        }
+                    }
+                    (ToolConcurrency::Parallel, None) => {
+                        let engine = self.clone();
+                        let active = active.clone();
+                        parallel.spawn(async move {
+                            engine
+                                .execute_and_commit_tool(
+                                    active,
+                                    run_id,
+                                    execution.0,
+                                    execution.1,
+                                    execution.2,
+                                    execution.3,
+                                    execution.4,
+                                )
+                                .await
+                        });
+                    }
+                    (_, _) => exclusive.push(execution),
+                }
+            }
+            for (_, group) in keyed {
+                let engine = self.clone();
+                let active = active.clone();
+                parallel.spawn(async move {
+                    let mut group_error = None;
+                    for execution in group {
+                        let result = engine
                             .execute_and_commit_tool(
-                                active,
+                                active.clone(),
                                 run_id,
                                 execution.0,
                                 execution.1,
@@ -1255,11 +1304,15 @@ impl Engine {
                                 execution.3,
                                 execution.4,
                             )
-                            .await
-                    });
-                } else {
-                    exclusive.push(execution);
-                }
+                            .await;
+                        if let Err(error) = result
+                            && group_error.is_none()
+                        {
+                            group_error = Some(error);
+                        }
+                    }
+                    group_error.map_or(Ok(()), Err)
+                });
             }
 
             let mut dispatch_error = None;

@@ -523,6 +523,12 @@ impl PreparedSerializationKey {
 pub trait PreparedExecutor: Send + Sync {
     async fn revalidate(&self) -> Result<(), ToolError>;
 
+    /// Revalidation performed under the per-target serialization lock immediately before execution.
+    /// The default preserves the ordinary validation behavior.
+    async fn revalidate_for_execution(&self) -> Result<(), ToolError> {
+        self.revalidate().await
+    }
+
     async fn execute(
         self: Box<Self>,
         context: ToolExecutionContext,
@@ -631,6 +637,16 @@ impl PreparedTool {
             .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?;
         executor.execute(context).await?.into_result_for_test()
     }
+
+    #[cfg(feature = "test-support")]
+    pub async fn revalidate_for_execution_for_test(&self) -> Result<(), ToolError> {
+        let executor = self.executor.lock().await;
+        executor
+            .as_ref()
+            .ok_or_else(|| ToolError::execution("prepared executor was already consumed"))?
+            .revalidate_for_execution()
+            .await
+    }
 }
 
 #[async_trait]
@@ -672,6 +688,20 @@ pub trait ToolProvider: Send + Sync {
         ctx: ToolPreparationContext,
         call: ToolCall,
     ) -> Result<PreparedTool, ToolError>;
+
+    /// Prepare one turn's parallel call batch. Providers whose calls may target
+    /// the same mutable resource can chain preparation against successive states.
+    async fn prepare_parallel(
+        &self,
+        ctx: ToolPreparationContext,
+        calls: Vec<ToolCall>,
+    ) -> Vec<Result<PreparedTool, ToolError>> {
+        let mut prepared = Vec::with_capacity(calls.len());
+        for call in calls {
+            prepared.push(self.prepare(ctx.clone(), call).await);
+        }
+        prepared
+    }
 }
 
 #[cfg(test)]

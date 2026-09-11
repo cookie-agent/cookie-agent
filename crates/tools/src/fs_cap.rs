@@ -133,6 +133,78 @@ mod unix {
         _budget: BudgetReservation,
     }
 
+    /// A prepared existing target whose inode may be replaced by an earlier
+    /// call in the same serialized batch.
+    pub struct PreparedChained {
+        pub target: PreparedExisting,
+        pub original_digest: Sha256Digest,
+        pub predecessor_digest: Sha256Digest,
+    }
+
+    /// What an atomic replacement expects to displace at the target.
+    pub(super) enum DisplacedExpectation {
+        /// The originally prepared identity and content.
+        PreparedIdentity,
+        /// The output of the preceding call in a serialized chain: the
+        /// displaced inode legitimately differs, only content must match.
+        PredecessorContent(Sha256Digest),
+    }
+
+    impl PreparedChained {
+        /// Digest the target's current content by name: an earlier call in the
+        /// chain may have atomically replaced the target, which leaves
+        /// `target.file` pinned to the superseded inode.
+        fn current_digest(&self) -> Result<Sha256Digest, ToolError> {
+            let file = File::from(
+                rustix::fs::openat(
+                    &self.target.parent,
+                    &self.target.basename,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| match error {
+                    rustix::io::Errno::NOENT | rustix::io::Errno::LOOP => {
+                        ToolError::operation_changed(
+                            "prepared target changed during chained execution",
+                        )
+                    }
+                    error => super::io_error(error),
+                })?,
+            );
+            Ok(Sha256Digest::of_bytes(&read_all(&file)?))
+        }
+
+        pub fn revalidate(&self) -> Result<(), ToolError> {
+            revalidate_chain(&self.target.chain)?;
+            let digest = self.current_digest()?;
+            if digest != self.original_digest && digest != self.predecessor_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(())
+        }
+
+        pub fn revalidate_for_execution(&self) -> Result<(), ToolError> {
+            revalidate_chain(&self.target.chain)?;
+            let digest = self.current_digest()?;
+            if digest != self.predecessor_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(())
+        }
+
+        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+            self.target.replace_atomically_inner(
+                bytes,
+                || {},
+                &DisplacedExpectation::PredecessorContent(self.predecessor_digest.clone()),
+            )
+        }
+    }
+
     pub struct PreparedAbsent {
         pub parent: File,
         pub basename: OsString,
@@ -360,20 +432,23 @@ mod unix {
         }
 
         pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
-            self.replace_atomically_inner(bytes, || {})
+            self.replace_atomically_inner(bytes, || {}, &DisplacedExpectation::PreparedIdentity)
         }
 
         pub(super) fn replace_atomically_inner(
             &self,
             bytes: &[u8],
             before_exchange: impl FnOnce(),
+            expectation: &DisplacedExpectation,
         ) -> Result<AtomicWriteOutcome, ToolError> {
             if ATOMIC_WRITES_POISONED.load(Ordering::Acquire) {
                 return Err(ToolError::operation_changed(
                     "atomic write subsystem is poisoned after an ambiguous rollback",
                 ));
             }
-            self.revalidate()?;
+            if matches!(expectation, DisplacedExpectation::PreparedIdentity) {
+                self.revalidate()?;
+            }
             let temporary = stage(&self.parent, bytes, self.identity.mode)?;
             before_exchange();
             if let Err(error) = revalidate_chain(&self.chain) {
@@ -404,15 +479,20 @@ mod unix {
                 injected_exchange_failure(ExchangeFailurePoint::ReadDisplaced)?;
                 let displaced_digest = Sha256Digest::of_bytes(&read_all(&displaced)?);
                 injected_exchange_failure(ExchangeFailurePoint::IdentityMismatch)?;
-                if displaced_identity.device != self.identity.device
-                    || displaced_identity.inode != self.identity.inode
+                if matches!(expectation, DisplacedExpectation::PreparedIdentity)
+                    && (displaced_identity.device != self.identity.device
+                        || displaced_identity.inode != self.identity.inode)
                 {
                     return Err(ToolError::operation_changed(
                         "target changed during atomic replacement",
                     ));
                 }
                 injected_exchange_failure(ExchangeFailurePoint::DigestMismatch)?;
-                if displaced_digest != self.content_digest {
+                let expected_digest = match expectation {
+                    DisplacedExpectation::PreparedIdentity => &self.content_digest,
+                    DisplacedExpectation::PredecessorContent(digest) => digest,
+                };
+                if &displaced_digest != expected_digest {
                     return Err(ToolError::operation_changed(
                         "target changed during atomic replacement",
                     ));
@@ -1130,6 +1210,11 @@ mod windows {
         sandbox_root: PathBuf,
         route: Vec<RouteNode>,
     }
+    pub struct PreparedChained {
+        pub target: PreparedExisting,
+        pub original_digest: Sha256Digest,
+        pub predecessor_digest: Sha256Digest,
+    }
     pub struct PreparedAbsent {
         pub display_path: PathBuf,
         execution_path: PathBuf,
@@ -1255,19 +1340,28 @@ mod windows {
             }
             Ok(())
         }
-        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+        fn replace_atomically_impl(
+            &self,
+            bytes: &[u8],
+            validate: bool,
+        ) -> Result<AtomicWriteOutcome, ToolError> {
             if self.directory {
                 return Err(ToolError::unsupported_security(
                     "cannot replace a directory with file content",
                 ));
             }
-            self.revalidate()?;
+            if validate {
+                self.revalidate()?;
+            }
             let temporary = stage_sibling(&self.execution_path, bytes)?;
             if let Err(error) = move_file(&temporary, &self.execution_path, true) {
                 let _ = fs::remove_file(&temporary);
                 return Err(error);
             }
             Ok(AtomicWriteOutcome::default())
+        }
+        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+            self.replace_atomically_impl(bytes, true)
         }
         pub fn proc_fd_path(&self) -> PathBuf {
             self.execution_path.clone()
@@ -1336,6 +1430,61 @@ mod windows {
                 return Err(error);
             }
             Ok(AtomicWriteOutcome::default())
+        }
+    }
+    impl PreparedChained {
+        /// Ancestor route validation for chained targets: the leaf identity
+        /// legitimately changes when a predecessor replaces it, so only the
+        /// ancestors are pinned; the leaf itself is checked below.
+        fn revalidate_ancestors(&self) -> Result<(), ToolError> {
+            let (_, ancestors) =
+                self.target.route.split_last().ok_or_else(|| {
+                    ToolError::operation_changed("prepared target route is empty")
+                })?;
+            revalidate_route(ancestors)?;
+            let leaf = open_for_identity(&self.target.execution_path).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target changed: {error}"))
+            })?;
+            if opened_file_is_reparse(&leaf).map_err(|error| {
+                ToolError::operation_changed(format!("prepared target changed: {error}"))
+            })? {
+                return Err(ToolError::operation_changed(
+                    "prepared target became a link during chained execution",
+                ));
+            }
+            validate_contained_path(&self.target.sandbox_root, &self.target.execution_path).map_err(
+                |error| {
+                    ToolError::operation_changed(format!(
+                        "prepared target containment changed: {error}"
+                    ))
+                },
+            )
+        }
+
+        pub fn revalidate(&self) -> Result<(), ToolError> {
+            self.revalidate_ancestors()?;
+            let digest = content_digest(&self.target.execution_path, self.target.directory)
+                .map_err(super::io_error)?;
+            if digest != self.original_digest && digest != self.predecessor_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(())
+        }
+        pub fn revalidate_for_execution(&self) -> Result<(), ToolError> {
+            self.revalidate_ancestors()?;
+            let digest = content_digest(&self.target.execution_path, self.target.directory)
+                .map_err(super::io_error)?;
+            if digest != self.predecessor_digest {
+                return Err(ToolError::operation_changed(
+                    "prepared target content changed",
+                ));
+            }
+            Ok(())
+        }
+        pub fn replace_atomically(&self, bytes: &[u8]) -> Result<AtomicWriteOutcome, ToolError> {
+            self.target.replace_atomically_impl(bytes, false)
         }
     }
     pub fn cwd_context_bytes(cwd: &Path) -> Result<Vec<u8>, ToolError> {
@@ -2243,9 +2392,11 @@ mod tests {
                 symlink("other", &alias).unwrap();
             };
             let result = match target {
-                PreparedTarget::Existing(target) => {
-                    target.replace_atomically_inner(b"new", retarget)
-                }
+                PreparedTarget::Existing(target) => target.replace_atomically_inner(
+                    b"new",
+                    retarget,
+                    &super::unix::DisplacedExpectation::PreparedIdentity,
+                ),
                 PreparedTarget::Absent(target) => target.create_atomically_inner(b"new", retarget),
             };
             assert!(matches!(result, Err(ToolError::OperationChanged(_))));
@@ -2505,10 +2656,14 @@ mod tests {
         };
         let target = root.path().join("target");
         let saved = root.path().join("saved");
-        let result = existing.replace_atomically_inner(b"new", || {
-            fs::rename(&target, &saved).expect("move target");
-            symlink("attacker", &target).expect("racing symlink");
-        });
+        let result = existing.replace_atomically_inner(
+            b"new",
+            || {
+                fs::rename(&target, &saved).expect("move target");
+                symlink("attacker", &target).expect("racing symlink");
+            },
+            &super::unix::DisplacedExpectation::PreparedIdentity,
+        );
         assert!(matches!(result, Err(ToolError::OperationChanged(_))));
         assert_eq!(
             fs::read_link(&target).expect("symlink retained"),

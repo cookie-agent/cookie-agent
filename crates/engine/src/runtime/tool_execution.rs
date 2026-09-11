@@ -222,30 +222,89 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
     ) -> PreparedToolCall {
-        self.prepare_tool_call_with_publication(session_id, run, call, policy, turn_context, None)
-            .await
-    }
-
-    pub(super) async fn prepare_published_tool_call(
-        &self,
-        session_id: SessionId,
-        run: RunId,
-        call: ToolCall,
-        policy: &FrozenRunPolicy,
-        turn_context: Arc<crate::TurnAgentContext>,
-        published: Option<&PublishedTool>,
-    ) -> PreparedToolCall {
         self.prepare_tool_call_with_publication(
             session_id,
             run,
             call,
             policy,
             turn_context,
-            Some(published),
+            None,
+            None,
         )
         .await
     }
 
+    pub(super) async fn prepare_published_tool_calls(
+        &self,
+        session_id: SessionId,
+        run: RunId,
+        calls: Vec<(ToolCall, Option<&PublishedTool>)>,
+        policy: &FrozenRunPolicy,
+        turn_context: Arc<crate::TurnAgentContext>,
+    ) -> Vec<PreparedToolCall> {
+        let providers = self
+            .inner
+            .tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let mut groups: Vec<(Arc<dyn ToolProvider>, Vec<usize>)> = Vec::new();
+        for (index, (call, _)) in calls.iter().enumerate() {
+            if let Some(provider) = providers.iter().find(|provider| {
+                provider
+                    .tools_for_session(&SessionToolContext::new(session_id))
+                    .ok()
+                    .is_some_and(|tools| tools.iter().any(|tool| tool.name == call.name))
+            }) {
+                if let Some((_, indexes)) = groups
+                    .iter_mut()
+                    .find(|(candidate, _)| Arc::ptr_eq(candidate, provider))
+                {
+                    indexes.push(index);
+                } else {
+                    groups.push((provider.clone(), vec![index]));
+                }
+            }
+        }
+        let mut prepared = (0..calls.len()).map(|_| None).collect::<Vec<_>>();
+        let context = ToolPreparationContext {
+            session: session_id,
+            run,
+            cwd: self.inner.store.cwd().to_owned(),
+            workspace_root: self.inner.store.cwd().to_owned(),
+            turn_context,
+        };
+        for (provider, indexes) in groups {
+            let provider_calls = indexes
+                .iter()
+                .map(|index| calls[*index].0.clone())
+                .collect();
+            let results = provider
+                .prepare_parallel(context.clone(), provider_calls)
+                .await;
+            for (index, result) in indexes.into_iter().zip(results) {
+                prepared[index] = Some(result);
+            }
+        }
+        let mut output = Vec::with_capacity(calls.len());
+        for (index, (call, published)) in calls.into_iter().enumerate() {
+            output.push(
+                self.prepare_tool_call_with_publication(
+                    session_id,
+                    run,
+                    call,
+                    policy,
+                    context.turn_context.clone(),
+                    Some(published),
+                    prepared[index].take(),
+                )
+                .await,
+            );
+        }
+        output
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_tool_call_with_publication(
         &self,
         session_id: SessionId,
@@ -254,6 +313,7 @@ impl Engine {
         policy: &FrozenRunPolicy,
         turn_context: Arc<crate::TurnAgentContext>,
         published: Option<Option<&PublishedTool>>,
+        prepared_override: Option<Result<PreparedTool, ToolError>>,
     ) -> PreparedToolCall {
         let fallback_presentation = tool_title_only(&call.name);
         let session = match self.inner.store.get(session_id) {
@@ -410,7 +470,10 @@ impl Engine {
             workspace_root: self.inner.store.cwd().to_owned(),
             turn_context,
         };
-        let prepared = match provider.prepare(context.clone(), call.clone()).await {
+        let prepared = match match prepared_override {
+            Some(prepared) => prepared,
+            None => provider.prepare(context.clone(), call.clone()).await,
+        } {
             Ok(prepared) => {
                 apply_permission_resource(provider.as_ref(), &call.name, &permission_name, prepared)
                     .map_err(Into::into)
@@ -621,6 +684,10 @@ impl Engine {
                     code: ToolCallFailureCode::PreparedCapabilityLost,
                     message: "prepared executor capability was already consumed or lost".into(),
                 })?;
+            executor
+                .revalidate_for_execution()
+                .await
+                .map_err(ToolFailure::from)?;
             let (progress_tx, mut progress_rx) = mpsc::channel(64);
             let hub = engine
                 .inner
