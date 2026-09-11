@@ -556,6 +556,9 @@ pub struct SessionState {
     /// turns, for the subordinate footer row at the end of the block.
     pub(crate) assistant_metrics: HashMap<u64, AssistantTurnMetrics>,
     pub(crate) open_run_assistant: Option<RunAssistantProjection>,
+    /// Assistant blocks whose run ended in `RunInterrupted`; their footer
+    /// reads `… · interrupted`.
+    pub(crate) interrupted_assistant_items: HashSet<u64>,
     pub(crate) attempts: HashMap<AttemptId, AttemptProjection>,
     /// The latest attempt until its first delta, commit, or abandonment.
     pub(crate) pending_attempt: Option<AttemptId>,
@@ -1516,6 +1519,12 @@ fn reduce_event(
             state.pending_attempt = Some(attempt_id);
         }
         EventPayload::TextDelta { attempt_id, text } => {
+            // Empty deltas (some providers emit an initial empty content
+            // chunk) carry no content: they neither open a part nor count
+            // as the attempt's first output.
+            if text.is_empty() {
+                return;
+            }
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
@@ -1534,6 +1543,12 @@ fn reduce_event(
             );
         }
         EventPayload::ReasoningDelta { attempt_id, text } => {
+            // Empty deltas (some providers emit an initial empty content
+            // chunk) carry no content: they neither open a part nor count
+            // as the attempt's first output.
+            if text.is_empty() {
+                return;
+            }
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
@@ -2056,7 +2071,10 @@ fn reduce_event(
         }
         EventPayload::RunInterrupted { reason } => {
             close_open_assistant(state, timestamp);
-            state.open_run_assistant = None;
+            // The run's open block keeps an `interrupted` footer marker.
+            if let Some(projection) = state.open_run_assistant.take() {
+                state.interrupted_assistant_items.insert(projection.item_id);
+            }
             state.pending_attempt = None;
             state.active_run = None;
             state.attempts.clear();
@@ -2694,6 +2712,21 @@ fn rebuild_committed_children(
         .find(|item| item.id() == item_id)
     {
         let committed_prefix = committed_prefix.min(existing.len());
+        // Whitespace-only parts leading a block with no committed content
+        // render as blank lines directly under the header; once the block
+        // holds committed content the same parts are meaningful spacing
+        // between sections and turns.
+        if committed_prefix == 0 {
+            let leading = children
+                .iter()
+                .take_while(|child| match child {
+                    AssistantChild::Text { markdown, .. } => markdown.as_str().trim().is_empty(),
+                    AssistantChild::Thinking { text, .. } => text.trim().is_empty(),
+                    _ => false,
+                })
+                .count();
+            children.drain(..leading);
+        }
         // Streamed thinking parts are superseded by their committed
         // counterparts; their sealed durations transfer to the committed
         // thinking children in order so "thought for Ns" survives the swap.
@@ -2975,13 +3008,15 @@ fn push_item(state: &mut SessionState, item: impl FnOnce(u64) -> TranscriptItem)
 }
 
 fn push_event(state: &mut SessionState, level: EventLevel, text: String) {
-    // An event row injected while an assistant turn is in flight marks the
-    // run's block as split-pending: the part streaming right now keeps
-    // streaming into the existing block above the row, but the next new
-    // segment (part, tool call, or attempt) opens a fresh block below it.
-    // Events between turns (no open part, no pending attempt) do not split,
-    // so one run's turns keep sharing a block.
-    if (state.open_assistant.is_some() || state.pending_attempt.is_some())
+    // A warning-or-worse row injected while an assistant turn is in flight
+    // marks the run's block as split-pending: the part streaming right now
+    // keeps streaming into the existing block above the row, but the next
+    // new segment (part, tool call, or attempt) opens a fresh block below
+    // it. Debug/Info rows (replay decisions, commit notices, lifecycle
+    // chatter) never split, and neither do rows between turns, so one run's
+    // turns keep sharing a block.
+    if level >= EventLevel::Warning
+        && (state.open_assistant.is_some() || state.pending_attempt.is_some())
         && let Some(projection) = state.open_run_assistant.as_mut()
     {
         projection.split_pending = true;

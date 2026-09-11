@@ -3336,7 +3336,8 @@ fn attribution_line(
 /// The assistant block's closing footer:
 /// `╰─ ⚡ 42.1 tps · 12.5K ctx · $0.0040` in
 /// muted styling — visually subordinate to the body, closing the block's
-/// gutter tree. The rate is committed output tokens over generation wall
+/// gutter tree. A block whose run was interrupted gains a trailing
+/// `· interrupted`. The rate is committed output tokens over generation wall
 /// time measured between durable event timestamps, so a replayed log yields
 /// the identical row; the ctx is the total context the turn left behind
 /// (`input_tokens + output_tokens`). `None` unless every input is present:
@@ -3358,12 +3359,17 @@ fn assistant_footer_line(
         .estimated_cost_pico_usd
         .map(|cost| super::app::format_cost_usd(cost as f64 / 1_000_000_000_000.0));
     let cost = cost.map_or_else(String::new, |cost| format!(" · {cost}"));
+    let interrupted = if state.interrupted_assistant_items.contains(&item_id) {
+        " · interrupted"
+    } else {
+        ""
+    };
     let prefix = (width >= 4).then(|| vec![Span::styled("╰─ ", theme.muted())]);
     Some(repeated_prefixed_wrapped_line(
         prefix.unwrap_or_default(),
         Line::from(Span::styled(
             format!(
-                "⚡ {tps:.1} tps · {} ctx{cost}",
+                "⚡ {tps:.1} tps · {} ctx{cost}{interrupted}",
                 super::app::format_token_count(context_tokens),
             ),
             theme.muted(),
@@ -8875,6 +8881,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupted_run_footer_marks_interrupted_block() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut events = footer_event_log(session, run, attempt, Some((12_400, 84)), 2);
+        events.push(event(
+            session,
+            5,
+            run,
+            EventPayload::RunInterrupted { reason: None },
+        ));
+        let mut app = app_with_footer_log(events, session).await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(
+            rendered.contains("42.0 tps · 12.5K ctx · interrupted"),
+            "interrupted footer: {rendered}"
+        );
+
+        // A normally completed run's footer carries no marker.
+        let attempt = AttemptId::new_v7();
+        let mut app = app_with_footer_log(
+            footer_event_log(session, run, attempt, Some((12_400, 84)), 2),
+            session,
+        )
+        .await;
+        let rendered = frame_rows(&mut app, 100, 30).join("\n");
+        assert!(!rendered.contains("interrupted"), "clean: {rendered}");
+    }
+
+    #[tokio::test]
     async fn assistant_footer_is_replay_stable_for_the_same_event_log() {
         let session = SessionId::new_v7();
         let run = run_id();
@@ -9627,6 +9663,193 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// A mid-stream low-signal row (internal agent completion, Info level).
+    fn mid_stream_info(session: SessionId, seq: u64, run: RunId) -> StoredEvent {
+        event(
+            session,
+            seq,
+            run,
+            EventPayload::InternalAgentCompleted {
+                invocation_id: cookie_agent_protocol::InternalAgentInvocationId::new_v7(),
+                internal_run_id: cookie_agent_protocol::InternalAgentRunId::new_v7(),
+                kind: cookie_agent_protocol::InternalAgentKind::ContextCompaction,
+                result: cookie_agent_protocol::SafeInternalAgentResult {
+                    output_summary: cookie_agent_protocol::SafeDisplayText::new("compacted")
+                        .expect("summary"),
+                    output_digest: Sha256Digest::of_bytes(b"summary"),
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn empty_deltas_do_not_open_parts() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            text_delta(session, 2, run, attempt, ""),
+            reasoning_delta(session, 3, run, attempt, ""),
+            text_delta(session, 4, run, attempt, "hi"),
+            turn_committed(
+                session,
+                5,
+                run,
+                attempt,
+                1,
+                vec![text_part("hi")],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1);
+        let TranscriptItem::Assistant { children, .. } = assistants[0] else {
+            unreachable!()
+        };
+        assert_eq!(children.len(), 1, "empty deltas must not leave blank parts");
+        assert_eq!(assistant_texts(assistants[0]), ["hi"]);
+    }
+
+    #[test]
+    fn whitespace_only_committed_parts_are_dropped() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            text_delta(session, 2, run, attempt, ""),
+            reasoning_delta(session, 3, run, attempt, "thinking hard"),
+            text_delta(session, 4, run, attempt, "\n\n"),
+            turn_committed(
+                session,
+                5,
+                run,
+                attempt,
+                1,
+                vec![
+                    text_part("\n\n"),
+                    cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+                        text: "thinking hard".into(),
+                        metadata: None,
+                    },
+                    cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                        id: ModelCallId::new("call-1").expect("call"),
+                        provider_item_id: None,
+                        name: SafeCode::new("bash").expect("tool"),
+                        input: serde_json::json!({"command": "ls"}),
+                        raw_input: None,
+                        metadata: None,
+                    },
+                ],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1);
+        let TranscriptItem::Assistant { children, .. } = assistants[0] else {
+            unreachable!()
+        };
+        assert!(
+            matches!(
+                children.as_slice(),
+                [
+                    AssistantChild::Thinking { .. },
+                    AssistantChild::CommittedTool { .. }
+                ]
+            ),
+            "whitespace-only text part must not render a blank line: {children:?}"
+        );
+
+        // Once the block holds committed content, the same whitespace-only
+        // part is meaningful spacing between turns and stays.
+        let second = AttemptId::new_v7();
+        for event in [
+            attempt_started(session, 6, run, second, None),
+            turn_committed(
+                session,
+                7,
+                run,
+                second,
+                2,
+                vec![text_part("\n\n"), text_part("the answer")],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(assistants.len(), 1);
+        let TranscriptItem::Assistant { children, .. } = assistants[0] else {
+            unreachable!()
+        };
+        assert!(
+            matches!(
+                children.as_slice(),
+                [
+                    AssistantChild::Thinking { .. },
+                    AssistantChild::CommittedTool { .. },
+                    AssistantChild::Text { .. },
+                    AssistantChild::Text { .. }
+                ]
+            ),
+            "mid-block whitespace spacing is preserved: {children:?}"
+        );
+    }
+
+    #[test]
+    fn low_level_events_do_not_split_in_flight_block() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let attempt = AttemptId::new_v7();
+        let mut store = StateStore::default();
+        for event in [
+            attempt_started(session, 1, run, attempt, None),
+            text_delta(session, 2, run, attempt, "a"),
+            mid_stream_info(session, 3, run),
+            text_delta(session, 4, run, attempt, "b"),
+            reasoning_delta(session, 5, run, attempt, "still one block"),
+            turn_committed(
+                session,
+                6,
+                run,
+                attempt,
+                1,
+                vec![
+                    text_part("ab"),
+                    cookie_agent_protocol::PersistedAssistantPart::Reasoning {
+                        text: "still one block".into(),
+                        metadata: None,
+                    },
+                ],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let assistants = assistant_items(state);
+        assert_eq!(
+            assistants.len(),
+            1,
+            "Info rows never split an in-flight block"
+        );
+        assert_eq!(assistant_texts(assistants[0]), ["ab"]);
     }
 
     #[test]
