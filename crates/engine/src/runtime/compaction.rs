@@ -565,6 +565,10 @@ impl Engine {
                 InternalAgentHistoryInput {
                     history,
                     summary_source: instruction,
+                    // First trial keeps the session tool definitions so the
+                    // request stays a cache-friendly extension of the latest
+                    // conversation turn; a tool-call answer is rejected by
+                    // reject_non_text and counted as a compaction failure.
                     tools: input.tools.to_vec(),
                     reject_non_text: true,
                 },
@@ -598,7 +602,10 @@ impl Engine {
                     InternalAgentHistoryInput {
                         history,
                         summary_source: instruction,
-                        tools: input.tools.to_vec(),
+                        // The pruned retry already rewrites tool outputs, so it
+                        // drops the tool definitions too: cache affinity is
+                        // lost either way, and fewer tools means less to send.
+                        tools: Vec::new(),
                         reject_non_text: true,
                     },
                     InternalAgentExecution {
@@ -1213,15 +1220,16 @@ fn compaction_history(
     focus: Option<&str>,
     system_prompt: &str,
 ) -> (Vec<oven_sdk::HistoryTurn>, String) {
-    let system = oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
-        oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(system_prompt)),
-    ]));
-    if matches!(history.first(), Some(oven_sdk::HistoryTurn::System(_))) {
-        history[0] = system;
+    // Keep the history (including its system prompt) intact so the summarizer
+    // request is a cache-friendly extension of the latest conversation turn;
+    // the compaction agent's own prompt rides along in the trailing
+    // instruction instead of replacing the session system prompt.
+    let base = compaction_instruction(focus);
+    let instruction = if system_prompt.trim().is_empty() {
+        base
     } else {
-        history.insert(0, system);
-    }
-    let instruction = compaction_instruction(focus);
+        format!("{}\n\n{base}", system_prompt.trim())
+    };
     history.push(oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
         vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
             instruction.clone(),

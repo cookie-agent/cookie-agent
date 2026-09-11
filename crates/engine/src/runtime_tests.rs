@@ -9733,7 +9733,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
         let (mut fixture, selection) =
             custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
                 &endpoint,
-                "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest raw-first compaction.\n",
+                "---\ndescription: Raw-first compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nTest raw-first compaction.\n",
                 Some((
                     "compaction.md",
                     "---\ndescription: Test compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize faithfully.\n",
@@ -9749,6 +9749,15 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
         fixture.config.runtime.context_compaction.keep_recent_tokens =
             if provider_retry { 1_000 } else { 0 };
         fixture.engine = reopen_engine(&fixture);
+        // Publish at least one tool so the summarizer tool-carrying behavior
+        // (first trial keeps definitions, pruned retry drops them) is
+        // observable in the captured requests.
+        fixture
+            .engine
+            .register_tool_provider(Arc::new(TestParallelToolProvider {
+                state: Arc::new(ParallelToolState::default()),
+                barrier: None,
+            }));
         let session = fixture
             .engine
             .create_session(selection.clone())
@@ -9932,6 +9941,24 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             assert!(!requests[1].contains("[tool output elided; retained at "));
         }
         let summary_request = requests.last().expect("summarizer request");
+        // The first summarizer trial extends the conversation as-is, tools
+        // included, for prefix-cache affinity; only the pruned retry drops
+        // the tool definitions.
+        let first_trial = if provider_retry {
+            &requests[1]
+        } else {
+            summary_request
+        };
+        assert!(
+            first_trial.contains("\"tools\":[{"),
+            "first summarizer trial must keep session tool definitions"
+        );
+        if provider_retry {
+            assert!(
+                !summary_request.contains("\"tools\":[{"),
+                "pruned summarizer retry must drop session tool definitions"
+            );
+        }
         for marker in [
             RAW_MARKER,
             SMALL_MARKER,
@@ -10072,8 +10099,13 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             &owner_policy.agent.composed_prompt,
         )
         .expect("selected compaction context");
+        let tools = fixture
+            .engine
+            .tool_definitions(session.session_id, &owner_policy)
+            .expect("session tool definitions");
+        assert!(!tools.is_empty(), "fixture must publish tools");
         let serialized_bytes =
-            crate::runtime::compaction::serialized_fit_request_bytes(&context.history, &[])
+            crate::runtime::compaction::serialized_fit_request_bytes(&context.history, &tools)
                 .expect("measure canonical owner request");
         assert_eq!(
             commit.budgets.input_tokens_before,

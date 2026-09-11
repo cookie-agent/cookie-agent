@@ -83,13 +83,19 @@ The threshold is compared against two signals:
    summary-output headroom.
 2. **Full-history trial.** Internal summarization first uses the entire active,
    unpruned history, including the recent messages selected for retention.
+   The request keeps the session's own system prompt and tool definitions, so
+   it stays a cache-friendly extension of the latest conversation turn; the
+   compaction agent's prompt rides along in the trailing instruction message
+   instead of replacing the session system prompt. A tool-call answer is
+   rejected as non-text output and counts as a compaction failure.
     The provider is authoritative for internal-agent input size; there is no
     byte-based pre-flight admission gate. The session's calibrated estimator still
     controls compaction triggers and post-checkpoint budgeting.
 3. **Context-fit retry.** A provider context-length failure permits one pruned
-    retry. Other failures do not trigger pruning. Internal model bindings are
-    tried in order, advancing after provider failures. The retry uses an in-memory
-    copy of the summarizer input:
+   retry. Other failures do not trigger pruning. Internal model bindings are
+   tried in order, advancing after provider failures. The retry uses an in-memory
+   copy of the summarizer input and drops the session tool definitions (cache
+   affinity is already lost once tool outputs are rewritten):
    tool results are retained with `ArtifactStore::retain` and replaced by reference
    markers with a structured `read` hint using `filePath="artifact://<digest>"`.
    Saved `ArtifactReference` URIs remain unchanged. Possession of an
