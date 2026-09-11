@@ -1222,7 +1222,6 @@ impl McpRegistry {
                 "bash".into(),
                 "delegate_subagent".into(),
                 "get_subagent_result".into(),
-                "steer_subagent".into(),
                 "cancel_subagent".into(),
                 "skill".into(),
             ])),

@@ -1062,9 +1062,7 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
         "read" => Some("read"),
         "write" | "edit" => Some("write"),
         "bash" => Some("bash"),
-        "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
-            Some("delegate")
-        }
+        "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Some("delegate"),
         "skill" => Some("skill"),
         "webfetch" => Some("webfetch"),
         _ => None,

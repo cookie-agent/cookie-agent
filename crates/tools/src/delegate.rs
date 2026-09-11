@@ -58,6 +58,7 @@ struct CancelArgs {
     reason: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SteerArgs {
@@ -78,10 +79,6 @@ enum DelegateExecutor {
     Cancel {
         engine: Engine,
         args: CancelArgs,
-    },
-    Steer {
-        engine: Engine,
-        args: SteerArgs,
     },
 }
 
@@ -208,23 +205,6 @@ impl ToolProvider for DelegateToolProvider {
                 ToolSpec {
                     output: Default::default(),
                     concurrency: Default::default(),
-                    result_truncation: result_truncation_policy("steer_subagent"),
-                    name: "steer_subagent".into(),
-                    permission_name: Self::get_permission_name("steer_subagent")?.into(),
-                    description:
-                        "Send a user message to an owned running or queued subagent session.".into(),
-                    parameters: serde_json::json!({
-                        "type":"object","additionalProperties":false,
-                        "properties":{
-                            "session_id":{"type":"string"},
-                            "message":{"type":"string","minLength":1}
-                        },
-                        "required":["session_id","message"]
-                    }),
-                },
-                ToolSpec {
-                    output: Default::default(),
-                    concurrency: Default::default(),
                     result_truncation: result_truncation_policy("cancel_subagent"),
                     name: "cancel_subagent".into(),
                     permission_name: Self::get_permission_name("cancel_subagent")?.into(),
@@ -244,9 +224,7 @@ impl ToolProvider for DelegateToolProvider {
 
     fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
         match tool_name {
-            "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => {
-                Ok("delegate")
-            }
+            "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => Ok("delegate"),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
             )),
@@ -271,7 +249,6 @@ impl ToolProvider for DelegateToolProvider {
         match name {
             "delegate_subagent" => Ok(parse_delegate(arguments)?.description),
             "get_subagent_result" => Ok(parse_result(arguments)?.session_id.to_string()),
-            "steer_subagent" => Ok(parse_steer(arguments)?.session_id.to_string()),
             "cancel_subagent" => Ok(parse_cancel(arguments)?.session_id.to_string()),
             _ => Err(ToolError::execution(
                 "delegate provider received another tool",
@@ -347,24 +324,6 @@ impl ToolProvider for DelegateToolProvider {
                 };
                 (parts, normalized, executor)
             }
-            "steer_subagent" => {
-                let args = parse_steer(&call.arguments)?;
-                if args.message.trim().is_empty() {
-                    return Err(ToolError::execution("message must not be empty"));
-                }
-                let agent_type = self
-                    .engine
-                    .subagent_agent_type(ctx.session, args.session_id)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                let parts = Self::operation(&ctx, "steer_subagent", &args, "steer", &agent_type)?;
-                let normalized = serde_json::to_value(&args)
-                    .map_err(|error| ToolError::execution(error.to_string()))?;
-                let executor = DelegateExecutor::Steer {
-                    engine: self.engine.clone(),
-                    args,
-                };
-                (parts, normalized, executor)
-            }
             _ => {
                 return Err(ToolError::execution(
                     "delegate provider received another tool",
@@ -382,7 +341,7 @@ fn delegate_permission_resource(
 ) -> Result<Option<String>, ToolError> {
     match name {
         "delegate_subagent" => Ok(Some(parse_delegate(arguments)?.agent_type.to_string())),
-        "get_subagent_result" | "steer_subagent" | "cancel_subagent" => Ok(None),
+        "get_subagent_result" | "cancel_subagent" => Ok(None),
         _ => Err(ToolError::execution(
             "delegate provider received another tool",
         )),
@@ -463,10 +422,6 @@ impl PreparedExecutor for DelegateExecutor {
                     .cancel_subagent(context.session, args.session_id, args.reason)
                     .await
                     .map_err(|error| ToolError::execution(error.to_string())),
-                Self::Steer { engine, args } => engine
-                    .steer_subagent(context.session, args.session_id, args.message)
-                    .await
-                    .map_err(|error| ToolError::execution(error.to_string())),
             }
         }
         .await;
@@ -500,6 +455,7 @@ fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> 
         .map_err(|error| ToolError::execution(error.to_string()))
 }
 
+#[cfg(test)]
 fn parse_steer(arguments: &serde_json::Value) -> Result<SteerArgs, ToolError> {
     serde_json::from_value(arguments.clone())
         .map_err(|error| ToolError::execution(error.to_string()))
