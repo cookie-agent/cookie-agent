@@ -285,6 +285,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Permission(_) => "permission",
         EngineError::Goal(_) => "goal",
         EngineError::Producer(_) => "producer",
+        EngineError::Messaging(_) => "messaging",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",
         EngineError::SnapshotRehydration(_) => "snapshot_rehydration",
