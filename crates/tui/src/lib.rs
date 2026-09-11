@@ -575,10 +575,11 @@ mod tests {
         let run_id = loaded
             .expect("fresh skill command timed out")
             .expect("skill run ID");
-        observer
+        // Cleanup only: under load the fast skill run may already be
+        // finished, in which case the engine rejects the cancellation.
+        let _ = observer
             .cancel_run(cookie_agent_protocol::RunCancelParams { run_id })
-            .await
-            .expect("cancel test run");
+            .await;
     }
 
     #[tokio::test]
