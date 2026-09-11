@@ -1891,13 +1891,17 @@ fn reduce_event(
                 // The renderer bounds output lines; keep the failure reason ahead of them.
                 detail = format!("{message}\n{detail}");
             }
-            let inline_output = has_output && state.tools.contains_key(&tool_call_id);
             if let Some(tool) = state.tools.get_mut(&tool_call_id) {
                 tool.status = status;
                 tool.detail = detail;
                 tool.has_output_chunks = false;
             }
-            if let Some(message) = failure_message.filter(|_| !inline_output) {
+            // A failed call is fed back to the model as its tool result and
+            // carries the failure inline on its tool item; only surface an
+            // event row when no tool item exists to hold it.
+            if let Some(message) =
+                failure_message.filter(|_| !state.tools.contains_key(&tool_call_id))
+            {
                 push_event(
                     state,
                     EventLevel::Error,
@@ -3570,6 +3574,8 @@ mod tests {
             }
             events.push(event);
             let state = reduce_session_events(session, 0, &events);
+            // Failures render inline on the tool item, like a bash non-zero
+            // exit, never as a transcript event row.
             let has_error_event = state.transcript.iter().any(|item| {
                 matches!(
                     item,
@@ -3579,7 +3585,7 @@ mod tests {
                     }
                 )
             });
-            assert_eq!(has_error_event, case == 0, "case {case}");
+            assert!(!has_error_event, "case {case}");
             let tool = &state.tools[&call];
             assert_eq!(
                 tool.status,
@@ -3601,6 +3607,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tool_failure_without_tool_item_surfaces_an_event_row() {
+        let session = SessionId::new_v7();
+        // A terminated call whose start never reached the transcript has no
+        // tool item to carry the failure; keep the event row as a fallback.
+        let termination = stored_event(
+            session,
+            None,
+            1,
+            EventPayload::ToolCallTerminated {
+                termination: cookie_agent_protocol::ToolCallTermination {
+                    tool_call_id: ToolCallId::new_v7(),
+                    owner: AssistantToolCallRef {
+                        model_turn_seq: 1,
+                        content_index: 0,
+                        model_call_id: cookie_agent_protocol::ModelCallId::new("call").unwrap(),
+                        provider_item_id: None,
+                    },
+                    outcome: ToolTerminationOutcome::Failed,
+                    result: None,
+                    error: Some(cookie_agent_protocol::SafeToolError {
+                        code: cookie_agent_protocol::SafeCode::new("execution_failed").unwrap(),
+                        message: cookie_agent_protocol::SafeErrorMessage::new(
+                            "oldString was not found",
+                        )
+                        .unwrap(),
+                    }),
+                },
+            },
+        );
+        let state = reduce_session_events(session, 0, &[termination]);
+        let error_rows = state
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    TranscriptItem::Event {
+                        level: EventLevel::Error,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(error_rows, 1);
     }
 
     #[test]
