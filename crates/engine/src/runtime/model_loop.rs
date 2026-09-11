@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -434,6 +434,8 @@ impl Engine {
             cancelled_committed: Mutex::new(false),
             stdin: Mutex::new(HashMap::new()),
             fallback_index: AtomicU64::new(0),
+            auto_compaction_failures: AtomicU8::new(0),
+            auto_compaction_diagnostic_emitted: AtomicBool::new(false),
         });
         self.inner
             .active
@@ -705,7 +707,8 @@ impl Engine {
                 internal_policy: &internal_policy,
                 tools: &tools,
                 events,
-                force: true,
+                force: false,
+                skip_usage_trigger: true,
                 overflow_recovery: false,
                 focus: None,
                 actor_direct: input.actor_direct,
@@ -1488,6 +1491,7 @@ impl Engine {
                         tools: &tools,
                         events: request_events,
                         force: false,
+                        skip_usage_trigger: false,
                         overflow_recovery: false,
                         focus: None,
                         actor_direct: false,
@@ -1950,6 +1954,7 @@ impl Engine {
                                 tools: &tools,
                                 events: Arc::clone(&recovery_claim.events),
                                 force: true,
+                                skip_usage_trigger: false,
                                 overflow_recovery: true,
                                 focus: None,
                                 actor_direct: false,

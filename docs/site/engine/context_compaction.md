@@ -21,9 +21,11 @@ Controls the automatic context-limit behavior documented in
 The internal summarizer first receives the entire active, unpruned history,
 including recent messages that will be retained unchanged after the summary.
 This is the currently assembled history, not a reload of events replaced by
-earlier checkpoints. A local fit rejection of the exact assembled summarizer input
-or a provider context-length failure permits at most one pruned retry; other
-failures do not trigger pruning. The retry changes only an in-memory copy of the
+earlier checkpoints. Internal agents have no local byte-based admission gate.
+A provider context-length failure permits at most one pruned retry; other failures
+do not trigger pruning. Bindings are tried in order. Automatic compaction stops
+after three consecutive failures in a run and emits one diagnostic; a successful
+checkpoint resets the counter. The retry changes only an in-memory copy of the
 summarizer input, using `ArtifactStore::retain` and artifact-ID reference markers
 for tool results and replacing output from artifact `read` calls with
 `[artifact read output omitted for compaction]`, detected by

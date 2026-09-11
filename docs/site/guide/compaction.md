@@ -83,16 +83,13 @@ The threshold is compared against two signals:
    summary-output headroom.
 2. **Full-history trial.** Internal summarization first uses the entire active,
    unpruned history, including the recent messages selected for retention.
-   The local fit check evaluates the exact assembled summarizer input, including
-   its instructions, against the resolved compaction model's context limit minus
-   its effective output reserve. Summarizer admission uses a fixed byte-based
-   estimate (serialized fit-projection bytes ÷ 4, rounded up), not the session's
-   calibrated estimator used for compaction triggers and post-checkpoint budgeting.
-   An unknown context limit uses 16,384 tokens. Agent documents do not cap this
-   input budget.
-3. **Context-fit retry.** A local fit rejection of that exact input or a provider
-   context-length failure permits at most one pruned retry. Other failures do not
-   trigger pruning. The retry uses an in-memory copy of the summarizer input:
+    The provider is authoritative for internal-agent input size; there is no
+    byte-based pre-flight admission gate. The session's calibrated estimator still
+    controls compaction triggers and post-checkpoint budgeting.
+3. **Context-fit retry.** A provider context-length failure permits one pruned
+    retry. Other failures do not trigger pruning. Internal model bindings are
+    tried in order, advancing after provider failures. The retry uses an in-memory
+    copy of the summarizer input:
    tool results are retained with `ArtifactStore::retain` and replaced by reference
    markers with a structured `read` hint using `filePath="artifact://<digest>"`.
    Saved `ArtifactReference` URIs remain unchanged. Possession of an

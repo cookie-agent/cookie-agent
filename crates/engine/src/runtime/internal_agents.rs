@@ -13,7 +13,7 @@ use super::{
     ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
     InternalAgentHistoryInput, InternalAgentLimits, InternalAgentTextResult,
     UNAVAILABLE_BUILTIN_REVISION,
-    helpers::{safe_code, safe_display, safe_error, truncate_utf8},
+    helpers::{safe_code, safe_display, safe_error},
 };
 use crate::{
     model_bridge::AbortBridge,
@@ -22,8 +22,8 @@ use crate::{
     policy::{self, FrozenRunPolicy},
 };
 
-const UNKNOWN_INTERNAL_CONTEXT_LIMIT: u64 = 16_384;
 const DEFAULT_INTERNAL_TIMEOUT_MS: u64 = 30_000;
+const COMPACTION_TIMEOUT_CAP_MS: u64 = 300_000;
 
 impl Engine {
     pub(super) async fn run_internal_text_agent(
@@ -35,10 +35,6 @@ impl Engine {
         input: String,
         execution: InternalAgentExecution<'_>,
     ) -> Result<InternalAgentTextResult, EngineError> {
-        let max_input_bytes = usize::try_from(internal_agent_max_input_limit(policy))
-            .unwrap_or(usize::MAX)
-            .saturating_mul(4);
-        let input = truncate_utf8(&input, max_input_bytes);
         let history = vec![
             oven_sdk::HistoryTurn::system(oven_sdk::SystemMessage::new(vec![
                 oven_sdk::SystemPart::Text(oven_sdk::TextPart::new(
@@ -83,7 +79,13 @@ impl Engine {
         if kind == InternalAgentKind::ContextCompaction {
             project_internal_history(&mut input.history);
         }
-        let input_tokens = internal_history_tokens(&input.history, &input.tools)?;
+        let timeout_ms = internal_agent_timeout_ms(
+            kind,
+            policy.limits.timeout_ms,
+            &input.history,
+            &input.tools,
+            input.summary_source.len(),
+        );
         let mut only_context_failures = !policy.models.is_empty();
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
@@ -137,19 +139,6 @@ impl Engine {
                 )
                 .await?;
             }
-            let max_input_tokens = internal_agent_input_limit(binding, &policy);
-            if !internal_agent_input_fits(input_tokens, binding, &policy) {
-                last_failure = InternalAgentFailure {
-                    code: safe_code("input_too_large"),
-                    message: safe_error(&format!(
-                        "internal agent input is {input_tokens} estimated tokens, exceeding this model's frozen {max_input_tokens}-token limit"
-                    )),
-                    retryable: false,
-                    model_error: None,
-                };
-                previous_backend = Some(backend);
-                continue;
-            }
             let runtime = policy
                 .runtime
                 .as_ref()
@@ -169,16 +158,16 @@ impl Engine {
             let call_future = model.model().complete(request, abort.signal());
             let result = tokio::select! {
                 result = tokio::time::timeout(
-                    std::time::Duration::from_millis(match policy.limits.timeout_ms {
-                        0 => DEFAULT_INTERNAL_TIMEOUT_MS,
-                        configured => configured,
-                    }),
+                    std::time::Duration::from_millis(timeout_ms),
                     call_future,
                 ) => match result {
                     Ok(result) => result,
                     Err(_) => {
                         abort.abort();
-                        Err(ModelError::timeout("internal agent timed out"))
+                        Err(ModelError::timeout(format!(
+                            "internal agent client-side timeout after {}s",
+                            timeout_ms.div_ceil(1000)
+                        )))
                     },
                 },
                 _ = execution.cancellation.cancelled() => {
@@ -675,35 +664,30 @@ fn internal_cache_strategies(
         .collect()
 }
 
-fn internal_agent_max_input_limit(policy: &FrozenInternalAgentPolicy) -> u64 {
-    policy
-        .models
-        .iter()
-        .map(|binding| internal_agent_input_limit(binding, policy))
-        .max()
-        .unwrap_or(UNKNOWN_INTERNAL_CONTEXT_LIMIT)
+fn internal_timeout_ms(kind: InternalAgentKind, configured: u64, input_bytes: usize) -> u64 {
+    if kind != InternalAgentKind::ContextCompaction {
+        return if configured == 0 {
+            DEFAULT_INTERNAL_TIMEOUT_MS
+        } else {
+            configured
+        };
+    }
+    configured
+        .max(DEFAULT_INTERNAL_TIMEOUT_MS)
+        .saturating_add((input_bytes as u64).div_ceil(5_000) * 1_000)
+        .min(COMPACTION_TIMEOUT_CAP_MS)
 }
 
-pub(super) fn internal_agent_input_limit(
-    binding: &cookie_agent_protocol::FrozenModelBinding,
-    policy: &FrozenInternalAgentPolicy,
+fn internal_agent_timeout_ms(
+    kind: InternalAgentKind,
+    configured: u64,
+    history: &[oven_sdk::HistoryTurn],
+    tools: &[ToolDefinition],
+    fallback_bytes: usize,
 ) -> u64 {
-    binding.descriptor.capabilities.limits.context.map_or(
-        UNKNOWN_INTERNAL_CONTEXT_LIMIT,
-        |context| {
-            context
-                .saturating_sub(internal_agent_output_limit(binding, policy).unwrap_or(0))
-                .max(1)
-        },
-    )
-}
-
-pub(super) fn internal_agent_input_fits(
-    input_tokens: u64,
-    binding: &cookie_agent_protocol::FrozenModelBinding,
-    policy: &FrozenInternalAgentPolicy,
-) -> bool {
-    input_tokens <= internal_agent_input_limit(binding, policy)
+    let request_bytes =
+        super::compaction::serialized_fit_request_bytes(history, tools).unwrap_or(fallback_bytes);
+    internal_timeout_ms(kind, configured, request_bytes)
 }
 
 pub(super) fn internal_agent_output_limit(
@@ -786,13 +770,6 @@ fn attachment_placeholder(media_type: &str) -> String {
     format!("\u{27e6}elided media attachment: {media_type}\u{27e7}")
 }
 
-pub(super) fn internal_history_tokens(
-    history: &[oven_sdk::HistoryTurn],
-    tools: &[ToolDefinition],
-) -> Result<u64, EngineError> {
-    super::compaction::estimated_request_tokens(history, tools)
-}
-
 const OPENAI_RESPONSES_ADAPTER_ID: &str = "oven.openai.responses";
 const OPENAI_RESPONSES_CONTINUATION_KIND: &str = "openai.responses.reasoning_continuation";
 const OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND: &str = "openai.responses.message_continuation";
@@ -860,10 +837,9 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 #[cfg(test)]
 mod tests {
     use super::{
-        FrozenInternalAgentPolicy, InternalAgentLimits, OPENAI_RESPONSES_ADAPTER_ID,
-        OPENAI_RESPONSES_CONTINUATION_KIND, OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND,
-        UNKNOWN_INTERNAL_CONTEXT_LIMIT, internal_agent_input_fits, internal_agent_input_limit,
-        internal_history_tokens, internal_model_request, invalid_internal_output,
+        InternalAgentKind, OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_CONTINUATION_KIND,
+        OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND, internal_agent_timeout_ms,
+        internal_model_request, internal_timeout_ms, invalid_internal_output,
     };
     use oven_sdk::{
         ContentValue, FilePart, FileSource, HistoryTurn, InputPart, ToolContent, ToolMessage,
@@ -875,6 +851,42 @@ mod tests {
         let request = internal_model_request(Vec::new(), Vec::new(), Some(128));
         assert!(request.tools.is_empty());
         assert_eq!(request.inference.max_output_tokens, Some(128));
+    }
+
+    #[test]
+    fn compaction_timeout_scales_with_input_and_is_capped() {
+        assert_eq!(
+            internal_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, 180_000),
+            66_000
+        );
+        assert_eq!(
+            internal_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, 2_000_000),
+            300_000
+        );
+        assert_eq!(
+            internal_timeout_ms(InternalAgentKind::Approval, 0, 2_000_000),
+            30_000
+        );
+    }
+
+    #[test]
+    fn compaction_timeout_wiring_uses_serialized_history_size() {
+        let small = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+            oven_sdk::TextPart::new("small"),
+        )]))];
+        let large = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
+            oven_sdk::TextPart::new("x".repeat(100_000)),
+        )]))];
+        assert!(
+            internal_agent_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, &large, &[], 0)
+                > internal_agent_timeout_ms(
+                    InternalAgentKind::ContextCompaction,
+                    30_000,
+                    &small,
+                    &[],
+                    0
+                )
+        );
     }
 
     #[test]
@@ -1077,32 +1089,6 @@ mod tests {
     }
 
     #[test]
-    fn history_input_estimate_counts_the_full_history_and_tools() {
-        let history = vec![oven_sdk::HistoryTurn::user(oven_sdk::UserMessage::new(
-            vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
-                "x".repeat(4_000),
-            ))],
-        ))];
-        assert!(internal_history_tokens(&history, &[]).unwrap() >= 1_000);
-    }
-
-    #[test]
-    fn history_input_estimate_matches_shared_fit_projection_with_media() {
-        let history = vec![HistoryTurn::user(UserMessage::new(vec![
-            InputPart::Text(oven_sdk::TextPart::new("describe attachment")),
-            InputPart::File(FilePart::image(
-                "image/png",
-                FileSource::Bytes(bytes::Bytes::from(vec![7_u8; 1024 * 1024])),
-            )),
-        ]))];
-
-        assert_eq!(
-            internal_history_tokens(&history, &[]).unwrap(),
-            super::super::compaction::estimated_request_tokens(&history, &[]).unwrap()
-        );
-    }
-
-    #[test]
     fn internal_request_wire_history_replaces_all_files_with_placeholders() {
         let file = || {
             FilePart::image(
@@ -1138,82 +1124,5 @@ mod tests {
             })
         );
         assert!(!wire.to_string().contains("raw-media-bytes"));
-    }
-
-    #[test]
-    fn internal_input_limit_uses_model_context_minus_output_reserve() {
-        let mut binding = crate::test_support::model_binding();
-        binding.descriptor.capabilities.limits.context = Some(200_000);
-        let mut policy = FrozenInternalAgentPolicy {
-            agent: crate::test_support::agent_snapshot(
-                "compaction",
-                cookie_agent_protocol::AgentMode::Internal,
-            ),
-            models: vec![binding],
-            runtime: None,
-            limits: InternalAgentLimits {
-                max_output_tokens: 2_048,
-                timeout_ms: 30_000,
-            },
-            cache_strategies: vec![None],
-        };
-        assert_eq!(
-            internal_agent_input_limit(&policy.models[0], &policy),
-            197_952
-        );
-
-        policy.models[0].descriptor.capabilities.limits.context = None;
-        assert_eq!(
-            internal_agent_input_limit(&policy.models[0], &policy),
-            UNKNOWN_INTERNAL_CONTEXT_LIMIT
-        );
-    }
-
-    #[test]
-    fn mixed_context_fallbacks_fit_per_binding_in_either_order() {
-        let mut small = crate::test_support::model_binding_named("fallback-zero");
-        small.descriptor.capabilities.limits.context = Some(4_096);
-        let mut large = crate::test_support::model_binding_named("fallback-one");
-        large.descriptor.capabilities.limits.context = Some(200_000);
-        let policy = |models: Vec<_>| {
-            let cache_strategies = vec![None; models.len()];
-            FrozenInternalAgentPolicy {
-                agent: crate::test_support::agent_snapshot(
-                    "compaction",
-                    cookie_agent_protocol::AgentMode::Internal,
-                ),
-                models,
-                runtime: None,
-                limits: InternalAgentLimits {
-                    max_output_tokens: 2_048,
-                    timeout_ms: 30_000,
-                },
-                cache_strategies,
-            }
-        };
-
-        let small_first = policy(vec![small.clone(), large.clone()]);
-        assert!(!internal_agent_input_fits(
-            10_000,
-            &small_first.models[0],
-            &small_first
-        ));
-        assert!(internal_agent_input_fits(
-            10_000,
-            &small_first.models[1],
-            &small_first
-        ));
-
-        let large_first = policy(vec![large, small]);
-        assert!(internal_agent_input_fits(
-            10_000,
-            &large_first.models[0],
-            &large_first
-        ));
-        assert!(!internal_agent_input_fits(
-            10_000,
-            &large_first.models[1],
-            &large_first
-        ));
     }
 }

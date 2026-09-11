@@ -3618,6 +3618,12 @@ __MODEL_VARIANTS__
 
 [providers."custom.test".models."group/model".capabilities]
 __MODEL_CAPABILITIES__
+
+[providers."custom.test".models."group/fallback"]
+display_name = "Fallback model"
+
+[providers."custom.test".models."group/fallback".capabilities]
+__MODEL_CAPABILITIES__
 "#
     .replace("http://127.0.0.1:9/v1", endpoint)
     .replace(
@@ -9679,7 +9685,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
 
     for (context_tokens, responses, expect_elision, expect_checkpoint) in [
         (100_000, vec![success.clone()], false, true),
-        (4_096, vec![success.clone()], true, true),
+        (4_096, vec![success.clone()], false, true),
         (100_000, vec![context_error.clone(), success], true, true),
         (100_000, vec![other_error.clone()], false, false),
         (100_000, vec![empty], false, false),
@@ -10055,6 +10061,168 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
 
         fixture.engine.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() {
+    let root = scripted_text_usage_body("root", 8_192, Some(1), 0);
+    let failure = (400, r#"{"error":{"message":"invalid request","type":"invalid_request_error","code":"invalid_request"}}"#.to_owned());
+    let summary = scripted_text_usage_body("checkpoint", 1, Some(1), 0);
+    let mut bodies = vec![(200, root.clone())];
+    for _ in 0..3 {
+        bodies.push(failure.clone());
+        bodies.push((200, root.clone()));
+    }
+    bodies.push((200, root.clone()));
+    bodies.push((200, summary));
+    bodies.push(failure);
+    bodies.push((200, root));
+    let (endpoint, captured, ..) = scripted_server_with_status_and_delay(bodies, usize::MAX).await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: auto compaction\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest auto compaction.\n",
+            Some((
+                "compaction.md",
+                "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
+            )),
+            Some(0),
+            false,
+            None,
+            None,
+            8_192,
+            None,
+        );
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for index in 0..7 {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("auto-{index}")).unwrap(),
+                    selection: selection.clone(),
+                    input: "trigger".into(),
+                },
+                cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    }
+    let requests = captured.await.unwrap();
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert_eq!(events.iter().filter(|event| matches!(event.payload,
+        EventPayload::PluginDiagnostic { ref message, .. } if message.contains("disabled after 3 consecutive failures")
+    )).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                event.payload,
+                EventPayload::ContextCheckpointCommitted { .. }
+            ))
+            .count(),
+        1
+    );
+    let summary_requests = requests
+        .iter()
+        .filter(|request| request.contains("Summarize."))
+        .count();
+    assert_eq!(summary_requests, 5);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn mixed_binding_fallback_preserves_configured_provider_order() {
+    let root = scripted_text_usage_body("root", 8_192, Some(1), 0);
+    let context_error = (400, r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}"#.to_owned());
+    let summary = scripted_text_usage_body("fallback checkpoint", 1, Some(1), 0);
+    let (endpoint, captured, ..) = scripted_server_with_status_and_delay(
+        vec![(200, root), context_error, (200, summary)],
+        usize::MAX,
+    )
+    .await;
+    let (mut fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: ordered fallback\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nTest fallback.\n",
+            Some((
+                "compaction.md",
+                "---\ndescription: compaction\nmode: internal\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }, { model: \"custom.test/group/fallback\", variant: null }]\nlimits: { timeout_ms: 30000, max_output_tokens: 256 }\npermissions: {}\n---\nSummarize.\n",
+            )),
+            Some(0),
+            false,
+            None,
+            None,
+            100_000,
+            None,
+        );
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("fallback").unwrap(),
+                selection: selection.clone(),
+                input: "prime".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    fixture
+        .engine
+        .compact_session(
+            session.session_id,
+            None,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    let requests = captured.await.unwrap();
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ContextCheckpointCommitted { .. }
+    )));
+    let summary_requests = requests
+        .iter()
+        .filter(|request| request.contains("Summarize."))
+        .collect::<Vec<_>>();
+    assert_eq!(summary_requests.len(), 2);
+    let model = |request: &str| {
+        let body = request.split_once("\r\n\r\n").unwrap().1;
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["model"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(model(summary_requests[0]), "group/model");
+    assert_eq!(model(summary_requests[1]), "group/fallback");
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]

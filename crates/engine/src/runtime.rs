@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -245,6 +245,8 @@ struct ActiveRun {
     cancelled_committed: Mutex<bool>,
     stdin: Mutex<HashMap<ToolCallId, mpsc::Sender<StdinWrite>>>,
     fallback_index: AtomicU64,
+    auto_compaction_failures: AtomicU8,
+    auto_compaction_diagnostic_emitted: AtomicBool,
 }
 
 struct AttemptTurn {

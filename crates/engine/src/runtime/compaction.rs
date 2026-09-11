@@ -17,13 +17,13 @@ use oven_sdk::{
 };
 use oven_sdk_azure::{AzureOpenAiCompactionOptions, AzureOpenAiCompactionRequestExt as _};
 use oven_sdk_openai::{OpenAiResponsesCompactionOptions, OpenAiResponsesCompactionRequestExt as _};
+use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
 use super::titles::active_fallback_index;
 use super::{
     Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, SessionCommand,
-    internal_agents::{internal_agent_input_fits, internal_agent_output_limit},
+    InternalAgentHistoryInput, SessionCommand, internal_agents::internal_agent_output_limit,
 };
 use crate::{
     model_bridge::AbortBridge,
@@ -36,6 +36,7 @@ pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
 // Frozen policies normally provide this value. Keep substantial headroom when replaying an
 // unavailable or legacy policy whose output limit is zero.
 pub(super) const DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS: u64 = 20_000;
+const MAX_AUTO_COMPACTION_FAILURES: u8 = 3;
 // Video is frame-sampled and can cost tens of thousands of tokens independent of file bytes.
 const VIDEO_FILE_FIT_SURROGATE_BYTES: usize = 40_000 * 4;
 
@@ -49,6 +50,8 @@ pub(super) struct CompactionInput<'a> {
     pub(super) tools: &'a [ToolDefinition],
     pub(super) events: Arc<[StoredEvent]>,
     pub(super) force: bool,
+    /// Predictive compaction has already made its own trigger decision.
+    pub(super) skip_usage_trigger: bool,
     pub(super) overflow_recovery: bool,
     pub(super) focus: Option<&'a str>,
     pub(super) actor_direct: bool,
@@ -118,6 +121,7 @@ impl Engine {
                 tools: &tools,
                 events,
                 force: true,
+                skip_usage_trigger: false,
                 overflow_recovery: false,
                 focus,
                 actor_direct: false,
@@ -152,8 +156,21 @@ impl Engine {
         if !compaction_gate(input.force, config.auto_compaction, trigger_tokens) {
             return Ok(input.events);
         }
+        let active_run = self
+            .inner
+            .active
+            .lock()
+            .ok()
+            .and_then(|runs| runs.get(&input.run).cloned());
+        if !input.force
+            && active_run.as_ref().is_some_and(|run| {
+                run.auto_compaction_failures.load(Ordering::Relaxed) >= MAX_AUTO_COMPACTION_FAILURES
+            })
+        {
+            return Ok(input.events);
+        }
         let projection = self.inner.store.get(input.session)?;
-        if !input.force {
+        if !input.force && !input.skip_usage_trigger {
             let log = &projection.log;
             let Some((usage_seq, observed_tokens)) = log.latest_real_usage() else {
                 return Ok(input.events);
@@ -592,6 +609,22 @@ impl Engine {
                 .await;
         }
         let Ok(summary) = summary else {
+            if !input.force
+                && let Some(run) = &active_run
+                && run.auto_compaction_failures.fetch_add(1, Ordering::Relaxed) + 1
+                    == MAX_AUTO_COMPACTION_FAILURES
+                && !run
+                    .auto_compaction_diagnostic_emitted
+                    .swap(true, Ordering::Relaxed)
+            {
+                self.record_plugin_diagnostic(
+                    input.session,
+                    "engine:auto-compact".into(),
+                    PluginDiagnosticKind::UnsupportedCapability,
+                    "automatic context compaction disabled after 3 consecutive failures for this run"
+                        .to_string(),
+                );
+            }
             return Ok(Arc::from(events));
         };
         if summary.text.trim().is_empty() {
@@ -664,6 +697,9 @@ impl Engine {
             input.origin.clone(),
         )
         .await?;
+        if let Some(run) = active_run {
+            run.auto_compaction_failures.store(0, Ordering::Relaxed);
+        }
         self.finalize_context_checkpoint(input.session, input_tokens_after)
     }
 
@@ -1050,10 +1086,10 @@ fn compaction_input_fits(
     input_tokens: u64,
 ) -> bool {
     if binding.descriptor.capabilities.compaction != CompactionCapability::Native {
-        return internal_policy
-            .models
-            .iter()
-            .any(|candidate| internal_agent_input_fits(input_tokens, candidate, internal_policy));
+        // Provider admission is authoritative for internal agents. The estimate remains
+        // useful for native compaction budgeting, but must not reject a prompt locally.
+        let _ = (internal_policy, input_tokens);
+        return true;
     }
     input_tokens <= native_compaction_input_budget(binding, internal_policy)
 }
@@ -1457,7 +1493,7 @@ mod tests {
             cache_strategies: vec![None],
         };
         assert!(compaction_input_fits(&harness_binding, &policy, 97_952));
-        assert!(!compaction_input_fits(&harness_binding, &policy, 97_953));
+        assert!(compaction_input_fits(&harness_binding, &policy, 97_953));
 
         let mut native_binding = harness_binding;
         native_binding.descriptor.capabilities.compaction = CompactionCapability::Native;
@@ -1507,7 +1543,7 @@ mod tests {
         assert!(compaction_input_fits(&owner, &policy, 10_000));
         policy.models.truncate(1);
         policy.models[0].descriptor.capabilities.limits.context = Some(4_096);
-        assert!(!compaction_input_fits(&owner, &policy, 10_000));
+        assert!(compaction_input_fits(&owner, &policy, 10_000));
     }
 
     #[test]
