@@ -7311,6 +7311,27 @@ fn scripted_text_cache_write_usage_body(
     )
 }
 
+fn scripted_qwen_usage_body(text: &str, cache_read: Option<u64>) -> String {
+    let prompt_tokens_details = cache_read.map_or(
+        serde_json::Value::Null,
+        |cached_tokens| serde_json::json!({"cached_tokens": cached_tokens}),
+    );
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]}),
+        serde_json::json!({
+            "choices":[{"delta":{},"finish_reason":"stop"}],
+            "usage": {
+                "prompt_tokens": 1264,
+                "total_tokens": 1294,
+                "completion_tokens": 30,
+                "prompt_tokens_details": prompt_tokens_details,
+                "reasoning_tokens": 29,
+            }
+        }),
+    )
+}
+
 fn scripted_tool_usage_body(
     id: &str,
     arguments: serde_json::Value,
@@ -15607,7 +15628,7 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
     let usage = events
         .iter()
         .filter_map(|event| match &event.payload {
-            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage),
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -15679,6 +15700,110 @@ async fn openai_adapter_cache_write_usage_reaches_events_and_rollup() {
     assert_eq!(usage.input_tokens_cache_read, Some(20));
     assert_eq!(usage.input_tokens_cache_write, Some(30));
     assert_eq!(projection.usage_rollup.cache_write_tokens, 30);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn openai_chat_qwen_usage_reaches_events_and_rollup() {
+    let bodies = vec![
+        scripted_qwen_usage_body("cached", Some(1216)),
+        scripted_qwen_usage_body("uncached", None),
+    ];
+    let (endpoint, _captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let primary = "---\ndescription: Qwen usage\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nStable system prompt.\n";
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_context_and_adaptor(
+            &endpoint,
+            primary,
+            None,
+            None,
+            false,
+            None,
+            None,
+            4_096,
+            None,
+            "openai-chat",
+        );
+
+    let cached_session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: cached_session.session_id,
+                client_run_id: ClientRunId::new("qwen-cached-usage").unwrap(),
+                selection: selection.clone(),
+                input: "cached usage".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, cached_session.session_id).await;
+    let cached_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(cached_session.session_id)
+        .unwrap();
+    let cached_usage = cached_projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage.clone()),
+            _ => None,
+        })
+        .expect("Qwen cached usage event");
+    assert_eq!(cached_usage.input_tokens, Some(1264));
+    assert_eq!(cached_usage.input_tokens_cache_read, Some(1216));
+    assert_eq!(cached_usage.input_tokens_no_cache, Some(48));
+    assert_eq!(cached_usage.output_tokens, Some(30));
+    assert_eq!(cached_usage.output_tokens_reasoning, Some(29));
+    assert_eq!(cached_usage.output_tokens_text, Some(1));
+    assert_eq!(cached_projection.usage_rollup.input_tokens, 1264);
+    assert_eq!(cached_projection.usage_rollup.cache_read_tokens, 1216);
+    assert_eq!(cached_projection.usage_rollup.reasoning_tokens, 29);
+
+    let uncached_session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: uncached_session.session_id,
+                client_run_id: ClientRunId::new("qwen-uncached-usage").unwrap(),
+                selection,
+                input: "uncached usage".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, uncached_session.session_id).await;
+    let uncached_projection = fixture
+        .engine
+        .inner
+        .store
+        .get(uncached_session.session_id)
+        .unwrap();
+    let uncached_usage = uncached_projection
+        .log
+        .events()
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelUsageRecorded { usage, .. } => Some(usage.clone()),
+            _ => None,
+        })
+        .expect("Qwen uncached usage event");
+    assert_eq!(uncached_usage.input_tokens, Some(1264));
+    assert_eq!(uncached_usage.input_tokens_cache_read, None);
+    assert_eq!(uncached_usage.input_tokens_no_cache, None);
+    assert_eq!(uncached_usage.output_tokens, Some(30));
+    assert_eq!(uncached_usage.output_tokens_reasoning, Some(29));
+    assert_eq!(uncached_usage.output_tokens_text, Some(1));
     fixture.engine.shutdown().await;
 }
 
