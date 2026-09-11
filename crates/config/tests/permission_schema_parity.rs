@@ -162,6 +162,35 @@ fn frontmatter_uses_action_keyed_ordered_permissions() {
 }
 
 #[test]
+fn message_relationship_rules_parse_from_agent_frontmatter() {
+    let frontmatter: AgentFrontmatter = serde_yaml::from_str(
+        "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  message:\n    \"child\": allow\n    \"parent\": allow\n    \"sibling\": ask\n    \"*\": deny\n",
+    )
+    .expect("message permission frontmatter");
+    let PermissionValue::Resources(resources) = frontmatter
+        .permissions
+        .get(&PermissionAction::Message)
+        .expect("message rules")
+    else {
+        panic!("message permissions should use resource map form");
+    };
+    let expected = [
+        ("child", PermissionEffect::Allow),
+        ("parent", PermissionEffect::Allow),
+        ("sibling", PermissionEffect::Ask),
+        ("*", PermissionEffect::Deny),
+    ];
+    let parsed = resources
+        .iter()
+        .map(|(resource, effect)| (resource.as_str(), *effect))
+        .collect::<Vec<_>>();
+    assert_eq!(parsed, expected);
+
+    let duplicate_action = "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  message: allow\n  message: deny\n";
+    assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_action).is_err());
+}
+
+#[test]
 fn duplicate_action_and_resource_keys_are_rejected() {
     let duplicate_action = "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  read: allow\n  read: deny\n";
     assert!(serde_yaml::from_str::<AgentFrontmatter>(duplicate_action).is_err());

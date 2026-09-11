@@ -439,7 +439,10 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{ResolvedAgent, built_in_internal_documents, delegation_targets, fingerprint};
+    use super::{
+        ResolvedAgent, built_in_default_permissions, built_in_internal_documents,
+        delegation_targets, fingerprint,
+    };
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
         AgentModelFallback, AgentModelRef, BUILT_IN_COMPACTION_AGENT_ID,
@@ -465,6 +468,32 @@ mod tests {
             delegation_targets(&permissions, &known),
             [cookie_agent_protocol::AgentId::new("reviewer").unwrap()]
         );
+    }
+
+    #[test]
+    fn built_in_agents_ship_without_message_rules() {
+        let default_permissions =
+            built_in_default_permissions().expect("built-in default permissions");
+        assert!(
+            default_permissions
+                .get(&PermissionAction::Message)
+                .is_none(),
+            "built-in default agent must not grant message authority"
+        );
+        for document in built_in_internal_documents()
+            .expect("built-in internal documents")
+            .values()
+        {
+            assert!(
+                document
+                    .frontmatter
+                    .permissions
+                    .get(&PermissionAction::Message)
+                    .is_none(),
+                "internal agent `{}` must not grant message authority",
+                document.id
+            );
+        }
     }
 
     #[test]

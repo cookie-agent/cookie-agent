@@ -140,6 +140,7 @@ impl PermissionPipeline {
             "write" => Ok(PermissionAction::Write),
             "bash" => Ok(PermissionAction::Bash),
             "delegate" => Ok(PermissionAction::Delegate),
+            "message" => Ok(PermissionAction::Message),
             "mcp" => Ok(PermissionAction::Mcp),
             "plugin" => Ok(PermissionAction::Plugin),
             "skill" => Ok(PermissionAction::Skill),
@@ -918,7 +919,7 @@ mod tests {
         Sha256Digest, WildcardPattern,
     };
 
-    use super::{PermissionPipeline, select_governing_agent};
+    use super::{PermissionPipeline, select_governing_agent, tool_visible};
 
     fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
         AgentSnapshot {
@@ -951,6 +952,120 @@ mod tests {
         assert_eq!(message.effect, PermissionEffect::Deny);
         assert_eq!(message.source, PermissionRuleSource::Default);
         assert!(message.patterns.is_empty());
+    }
+
+    #[test]
+    fn message_permission_name_maps_and_unknown_names_still_fail() {
+        assert_eq!(
+            PermissionPipeline::action_for_permission_name("message").expect("message action"),
+            PermissionAction::Message
+        );
+        assert!(PermissionPipeline::action_for_permission_name("messaging").is_err());
+        assert!(PermissionPipeline::action_for_permission_name("send_message").is_err());
+    }
+
+    #[test]
+    fn message_tool_visibility_requires_an_allow_or_ask_rule() {
+        assert!(!tool_visible(&[], None, PermissionAction::Message));
+        let only_deny = [rule(
+            "deny-all",
+            PermissionAction::Message,
+            "*",
+            PermissionEffect::Deny,
+        )];
+        assert!(!tool_visible(&only_deny, None, PermissionAction::Message));
+        let allows = [rule(
+            "allow-child",
+            PermissionAction::Message,
+            "child",
+            PermissionEffect::Allow,
+        )];
+        assert!(tool_visible(&allows, None, PermissionAction::Message));
+        let asks = [rule(
+            "ask-sibling",
+            PermissionAction::Message,
+            "sibling",
+            PermissionEffect::Ask,
+        )];
+        assert!(tool_visible(&asks, None, PermissionAction::Message));
+        // Delegate rules never make the message tool visible: the actions are
+        // independent by decision.
+        let delegate_only = [rule(
+            "allow-delegate",
+            PermissionAction::Delegate,
+            "*",
+            PermissionEffect::Allow,
+        )];
+        assert!(!tool_visible(
+            &delegate_only,
+            None,
+            PermissionAction::Message
+        ));
+    }
+
+    #[test]
+    fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all() {
+        let rules = policy(vec![
+            rule(
+                "allow-child",
+                PermissionAction::Message,
+                "child",
+                PermissionEffect::Allow,
+            ),
+            rule(
+                "ask-sibling",
+                PermissionAction::Message,
+                "sibling",
+                PermissionEffect::Ask,
+            ),
+            rule(
+                "deny-rest",
+                PermissionAction::Message,
+                "*",
+                PermissionEffect::Deny,
+            ),
+        ]);
+        assert_eq!(
+            decide(
+                &rules,
+                resource(PermissionAction::Message, "child", b"child")
+            )
+            .effect,
+            PermissionEffect::Allow
+        );
+        assert_eq!(
+            decide(
+                &rules,
+                resource(PermissionAction::Message, "parent", b"parent")
+            )
+            .effect,
+            PermissionEffect::Deny
+        );
+        assert_eq!(
+            decide(
+                &rules,
+                resource(PermissionAction::Message, "sibling", b"sibling")
+            )
+            .effect,
+            PermissionEffect::Ask
+        );
+        assert_eq!(
+            decide(
+                &rules,
+                resource(PermissionAction::Message, "grandparent", b"grandparent")
+            )
+            .effect,
+            PermissionEffect::Deny
+        );
+        // Without any rule the default deny applies to every label.
+        assert_eq!(
+            decide(
+                &policy(Vec::new()),
+                resource(PermissionAction::Message, "child", b"child")
+            )
+            .effect,
+            PermissionEffect::Deny
+        );
     }
 
     #[test]
