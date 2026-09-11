@@ -417,6 +417,52 @@ impl ToolProvider for BuiltinTools {
             _ => Err(tool_error(format!("unknown built-in tool `{}`", call.name))),
         }
     }
+
+    async fn prepare_parallel(
+        &self,
+        ctx: ToolPreparationContext,
+        calls: Vec<ToolCall>,
+    ) -> Vec<Result<PreparedTool, ToolError>> {
+        // Route each same-tool group to the inner provider's batch
+        // preparation so same-target edits and writes chain; every other
+        // tool keeps per-call preparation.
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        for (index, call) in calls.iter().enumerate() {
+            if let Some((_, indexes)) = groups.iter_mut().find(|(name, _)| *name == call.name) {
+                indexes.push(index);
+            } else {
+                groups.push((call.name.clone(), vec![index]));
+            }
+        }
+        let mut results: Vec<Option<Result<PreparedTool, ToolError>>> =
+            (0..calls.len()).map(|_| None).collect();
+        for (name, indexes) in groups {
+            let group_calls = indexes
+                .iter()
+                .map(|index| calls[*index].clone())
+                .collect::<Vec<_>>();
+            let prepared = match name.as_str() {
+                "read" => self.read.prepare_parallel(ctx.clone(), group_calls).await,
+                "write" => self.write.prepare_parallel(ctx.clone(), group_calls).await,
+                "edit" => self.edit.prepare_parallel(ctx.clone(), group_calls).await,
+                "bash" => self.bash.prepare_parallel(ctx.clone(), group_calls).await,
+                _ => {
+                    let mut prepared = Vec::with_capacity(group_calls.len());
+                    for call in group_calls {
+                        prepared.push(self.prepare(ctx.clone(), call).await);
+                    }
+                    prepared
+                }
+            };
+            for (index, result) in indexes.into_iter().zip(prepared) {
+                results[index] = Some(result);
+            }
+        }
+        results
+            .into_iter()
+            .map(|result| result.expect("every built-in call is prepared"))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -608,6 +654,54 @@ mod tests {
                 .expect_err("cwd route swap must fail");
             assert!(matches!(error, ToolError::OperationChanged(_)));
         }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn builtin_parallel_edits_to_the_same_file_chain() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("value.txt"), "alpha beta").expect("fixture");
+        let context = ToolPreparationContext {
+            session: SessionId::new_v7(),
+            run: RunId::new_v7(),
+            cwd: root.path().to_owned(),
+            workspace_root: root.path().to_owned(),
+            turn_context: crate::test_turn_context(),
+        };
+        let tools = BuiltinTools::new(root.path());
+        let call = |old: &str, new: &str| ToolCall {
+            id: ToolCallId::new_v7(),
+            name: "edit".into(),
+            arguments: serde_json::json!({"filePath":"value.txt","oldString":old,"newString":new}),
+        };
+        // The production wiring registers BuiltinTools as one provider, so
+        // batch preparation must route through it to reach the edit chain.
+        let prepared = tools
+            .prepare_parallel(context, vec![call("alpha", "ALPHA"), call("beta", "BETA")])
+            .await;
+        let mut prepared = prepared.into_iter();
+        let first = prepared.next().expect("first").expect("first edit");
+        let second = prepared.next().expect("second").expect("second edit");
+        assert!(prepared.next().is_none());
+        let execution = || {
+            cookie_agent_engine::ToolExecutionContext::for_test(
+                root.path().join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .expect("execution context")
+        };
+        first
+            .execute_for_test(execution())
+            .await
+            .expect("first edit");
+        second
+            .execute_for_test(execution())
+            .await
+            .expect("chained edit");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("value.txt")).unwrap(),
+            "ALPHA BETA"
+        );
     }
 
     #[test]
