@@ -198,7 +198,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Built-in context compaction agent",
             "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
             AgentLimits {
-                timeout_ms: 30_000,
+                timeout_ms: 180_000,
                 max_output_tokens: 4_096,
             },
         ),

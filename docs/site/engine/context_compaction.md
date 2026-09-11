@@ -18,6 +18,11 @@ and uses defaults for omitted fields. Unknown fields fail; see
 Controls the automatic context-limit behavior documented in
 [Compaction](../guide/compaction.md).
 
+The built-in compaction agent has a flat 3-minute timeout. An authored
+`compaction.md` can override `limits.timeout_ms`, which is honored exactly;
+zero or omission uses the 30-second internal-agent default. The timeout does
+not scale with serialized history size.
+
 The internal summarizer first receives the entire active, unpruned history,
 including recent messages that will be retained unchanged after the summary.
 This is the currently assembled history, not a reload of events replaced by

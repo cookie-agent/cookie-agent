@@ -63,8 +63,9 @@ to no document cap for the non-internal `primary`, `subagent`, and `all` modes.
 Authored internal agents retain a 2,048-token default; setting it explicitly to zero
 removes that document cap.
 `timeout_ms` applies only to internal agents. For other modes, a nonzero value is
-a hard error. Internal agents use the 30-second invocation timeout when
-`timeout_ms` is zero or omitted.
+a hard error. Internal agents use the configured timeout exactly; zero or an
+omitted value uses the 30-second default. The built-in `compaction` agent has a
+3-minute default, and an authored `compaction.md` can set its own exact timeout.
 
 Tool visibility is derived only from `permissions`: with no `permissions`
 field, no tools are visible. An action's tools become visible when the agent or
@@ -289,7 +290,7 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
 | `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
-| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 30 s timeout; model-derived input budget; 4,096 max output tokens |
+| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; 4,096 max output tokens |
 | `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; 128 max output tokens |
 
 All three default to `${parent_model}`, so they run on the model the parent run

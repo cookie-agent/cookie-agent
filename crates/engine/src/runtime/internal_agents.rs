@@ -23,7 +23,6 @@ use crate::{
 };
 
 const DEFAULT_INTERNAL_TIMEOUT_MS: u64 = 30_000;
-const COMPACTION_TIMEOUT_CAP_MS: u64 = 300_000;
 
 impl Engine {
     pub(super) async fn run_internal_text_agent(
@@ -79,13 +78,7 @@ impl Engine {
         if kind == InternalAgentKind::ContextCompaction {
             project_internal_history(&mut input.history);
         }
-        let timeout_ms = internal_agent_timeout_ms(
-            kind,
-            policy.limits.timeout_ms,
-            &input.history,
-            &input.tools,
-            input.summary_source.len(),
-        );
+        let timeout_ms = internal_timeout_ms(policy.limits.timeout_ms);
         let mut only_context_failures = !policy.models.is_empty();
         let invocation_id = InternalAgentInvocationId::new_v7();
         let internal_run_id = InternalAgentRunId::new_v7();
@@ -164,10 +157,7 @@ impl Engine {
                     Ok(result) => result,
                     Err(_) => {
                         abort.abort();
-                        Err(ModelError::timeout(format!(
-                            "internal agent client-side timeout after {}s",
-                            timeout_ms.div_ceil(1000)
-                        )))
+                        Err(ModelError::timeout(internal_timeout_message(timeout_ms)))
                     },
                 },
                 _ = execution.cancellation.cancelled() => {
@@ -664,30 +654,19 @@ fn internal_cache_strategies(
         .collect()
 }
 
-fn internal_timeout_ms(kind: InternalAgentKind, configured: u64, input_bytes: usize) -> u64 {
-    if kind != InternalAgentKind::ContextCompaction {
-        return if configured == 0 {
-            DEFAULT_INTERNAL_TIMEOUT_MS
-        } else {
-            configured
-        };
+fn internal_timeout_ms(configured: u64) -> u64 {
+    if configured == 0 {
+        DEFAULT_INTERNAL_TIMEOUT_MS
+    } else {
+        configured
     }
-    configured
-        .max(DEFAULT_INTERNAL_TIMEOUT_MS)
-        .saturating_add((input_bytes as u64).div_ceil(5_000) * 1_000)
-        .min(COMPACTION_TIMEOUT_CAP_MS)
 }
 
-fn internal_agent_timeout_ms(
-    kind: InternalAgentKind,
-    configured: u64,
-    history: &[oven_sdk::HistoryTurn],
-    tools: &[ToolDefinition],
-    fallback_bytes: usize,
-) -> u64 {
-    let request_bytes =
-        super::compaction::serialized_fit_request_bytes(history, tools).unwrap_or(fallback_bytes);
-    internal_timeout_ms(kind, configured, request_bytes)
+fn internal_timeout_message(timeout_ms: u64) -> String {
+    format!(
+        "internal agent client-side timeout after {}s",
+        timeout_ms.div_ceil(1000)
+    )
 }
 
 pub(super) fn internal_agent_output_limit(
@@ -837,9 +816,9 @@ pub(super) fn parse_internal_approval(value: &str) -> Option<ApprovalInternalDec
 #[cfg(test)]
 mod tests {
     use super::{
-        InternalAgentKind, OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_CONTINUATION_KIND,
-        OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND, internal_agent_timeout_ms,
-        internal_model_request, internal_timeout_ms, invalid_internal_output,
+        OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_CONTINUATION_KIND,
+        OPENAI_RESPONSES_MESSAGE_CONTINUATION_KIND, internal_model_request,
+        internal_timeout_message, internal_timeout_ms, invalid_internal_output,
     };
     use oven_sdk::{
         ContentValue, FilePart, FileSource, HistoryTurn, InputPart, ToolContent, ToolMessage,
@@ -854,38 +833,20 @@ mod tests {
     }
 
     #[test]
-    fn compaction_timeout_scales_with_input_and_is_capped() {
-        assert_eq!(
-            internal_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, 180_000),
-            66_000
-        );
-        assert_eq!(
-            internal_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, 2_000_000),
-            300_000
-        );
-        assert_eq!(
-            internal_timeout_ms(InternalAgentKind::Approval, 0, 2_000_000),
-            30_000
-        );
+    fn configured_internal_timeout_is_honored_exactly() {
+        assert_eq!(internal_timeout_ms(180_000), 180_000);
     }
 
     #[test]
-    fn compaction_timeout_wiring_uses_serialized_history_size() {
-        let small = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
-            oven_sdk::TextPart::new("small"),
-        )]))];
-        let large = vec![HistoryTurn::user(UserMessage::new(vec![InputPart::Text(
-            oven_sdk::TextPart::new("x".repeat(100_000)),
-        )]))];
-        assert!(
-            internal_agent_timeout_ms(InternalAgentKind::ContextCompaction, 30_000, &large, &[], 0)
-                > internal_agent_timeout_ms(
-                    InternalAgentKind::ContextCompaction,
-                    30_000,
-                    &small,
-                    &[],
-                    0
-                )
+    fn zero_internal_timeout_uses_default() {
+        assert_eq!(internal_timeout_ms(0), 30_000);
+    }
+
+    #[test]
+    fn internal_timeout_error_includes_duration() {
+        assert_eq!(
+            internal_timeout_message(180_000),
+            "internal agent client-side timeout after 180s"
         );
     }
 

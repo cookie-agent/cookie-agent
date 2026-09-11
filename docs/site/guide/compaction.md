@@ -121,6 +121,10 @@ The threshold is compared against two signals:
    `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
    built-in compaction agent allows 4,096 output tokens. Authored internal-agent
    documents that omit this limit retain the generic 2,048-token default.
+   The built-in compaction document uses a flat 3-minute timeout. An authored
+   `compaction.md` can override `limits.timeout_ms`; the configured value is
+   honored exactly, while zero or omission uses the 30-second internal-agent
+   default.
 6. **Checkpoint commit.** A `context_checkpoint_committed` event records the
    text summary or opaque native window, source and recent-suffix boundaries,
    and the budget math, including the effective recent-history token budget.
