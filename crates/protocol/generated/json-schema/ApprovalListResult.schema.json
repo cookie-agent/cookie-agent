@@ -506,6 +506,7 @@
         "write",
         "bash",
         "delegate",
+        "message",
         "mcp",
         "plugin",
         "skill",

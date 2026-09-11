@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 17 is current-only. A client must call `handshake` with
-`{ "protocol_version": 17 }` before any other method.
+Protocol 18 is current-only. A client must call `handshake` with
+`{ "protocol_version": 18 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 17.
+members of protocol 18.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 17 alongside independent display and output references. The
+preserved in protocol 18 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -133,7 +133,7 @@ on the governing run policy and session overlay.
 
 The engine implements these methods through its per-session actor. Goal mutations
 are root-only; producer inspection is available for any owned session.
-Goal/producer request shapes remain unchanged. Session protocol 17 adds declared
+Goal/producer request shapes remain unchanged. Session protocol 18 adds declared
 tool-output channels, generic named raw-output subscriptions, terminal output
 references, and independent UI display. Plugin extension `0.0.6` uses typed
 terminal single/named output and final display; package versions are unchanged.

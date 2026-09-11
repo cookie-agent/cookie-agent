@@ -4574,6 +4574,7 @@
         "write",
         "bash",
         "delegate",
+        "message",
         "mcp",
         "plugin",
         "skill",
@@ -5390,7 +5391,7 @@
       ]
     },
     "ProducerOwner": {
-      "description": "Stable identity used with session + idempotency key for durable deduplication.\nPlugin connection authorization is runtime-only; the engine derives `plugin`\nfrom the authenticated configured plugin name, never from send parameters.\nThe transport supplies name + connection epoch for live authority separately;\nthe epoch is never part of this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.",
+      "description": "Stable identity used with session + idempotency key for durable deduplication.\nPlugin connection authorization is runtime-only; the engine derives `plugin`\nfrom the authenticated configured plugin name, never from send parameters.\nThe transport supplies name + connection epoch for live authority separately;\nthe epoch is never part of this durable owner or the deduplication key.\nGoalControl identifies engine-authored lifecycle steering, not a continuation\nreminder; its accepted messages survive goal-controller teardown.\nAgent identifies an in-tree agent mail sender; the session identity is\nengine-derived from the executing tool context, never from model arguments.\nThe owner is durable and participates in `(session, owner, key)` dedup.",
       "oneOf": [
         {
           "type": "object",
@@ -5461,6 +5462,24 @@
           "required": [
             "type",
             "goal_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "session_id"
           ]
         }
       ]

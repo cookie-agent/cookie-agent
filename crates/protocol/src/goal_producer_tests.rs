@@ -557,6 +557,9 @@ fn producer_identity_and_send_contracts_are_strict() {
         ProducerOwner::GoalControl {
             goal_id: GoalId::new_v7(),
         },
+        ProducerOwner::Agent {
+            session_id: SessionId::new_v7(),
+        },
     ] {
         strict::<ProducerOwner>(serde_json::to_value(&owner).unwrap());
         round_trip(ProducerRegistration {
@@ -565,6 +568,20 @@ fn producer_identity_and_send_contracts_are_strict() {
             session_id,
             age_ms: 0,
         });
+    }
+    assert_eq!(
+        serde_json::to_value(ProducerOwner::Agent {
+            session_id: SessionId::new_v7(),
+        })
+        .unwrap()["type"],
+        "agent"
+    );
+    for malformed in [
+        serde_json::json!({"type": "agent"}),
+        serde_json::json!({"type": "agent", "session_id": "not-a-uuid"}),
+        serde_json::json!({"type": "agent", "session_id": session_id, "extra": true}),
+    ] {
+        assert!(serde_json::from_value::<ProducerOwner>(malformed).is_err());
     }
     for value in ["", "bad\nkey"] {
         assert!(ProducerIdempotencyKey::new(value).is_err());

@@ -1391,6 +1391,7 @@ fn producer_owner_label(owner: &ProducerOwner) -> String {
         ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
         ProducerOwner::Goal { .. } => "goal controller".to_owned(),
         ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
+        ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
     }
 }
 
@@ -1468,6 +1469,7 @@ fn discarded_producer_message_layout(
         ProducerOwner::Delegation { invocation_id } => format!("delegation {invocation_id}"),
         ProducerOwner::Goal { .. } => "goal controller".to_owned(),
         ProducerOwner::GoalControl { .. } => "goal control".to_owned(),
+        ProducerOwner::Agent { session_id } => format!("agent {session_id}"),
     };
     ItemLayout {
         lines: role_block(

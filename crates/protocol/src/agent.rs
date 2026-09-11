@@ -112,6 +112,7 @@ pub enum PermissionAction {
     Write,
     Bash,
     Delegate,
+    Message,
     Mcp,
     Plugin,
     Skill,

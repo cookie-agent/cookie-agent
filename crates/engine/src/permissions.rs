@@ -839,6 +839,7 @@ fn effective_permission_view(
         PermissionAction::Write,
         PermissionAction::Bash,
         PermissionAction::Delegate,
+        PermissionAction::Message,
         PermissionAction::Mcp,
         PermissionAction::Plugin,
         PermissionAction::Skill,
@@ -911,10 +912,10 @@ mod tests {
     use cookie_agent_protocol::{
         AgentDocumentSource, AgentId, AgentMode, AgentSchemaVersion, AgentSnapshot,
         ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
-        PermissionEffect, PermissionRule, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, SafeCode, SessionPermissionOverlay, Sha256Digest,
-        WildcardPattern,
+        PermissionEffect, PermissionRule, PermissionRuleSource, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, SafeCode, SessionPermissionOverlay,
+        Sha256Digest, WildcardPattern,
     };
 
     use super::{PermissionPipeline, select_governing_agent};
@@ -935,6 +936,21 @@ mod tests {
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
         }
+    }
+
+    #[test]
+    fn effective_permission_view_reports_message_with_default_deny() {
+        let view = super::effective_permission_view(
+            &policy(Vec::new()),
+            &SessionPermissionOverlay::empty(),
+        );
+        let message = view
+            .iter()
+            .find(|entry| entry.action == PermissionAction::Message)
+            .expect("message action is reported");
+        assert_eq!(message.effect, PermissionEffect::Deny);
+        assert_eq!(message.source, PermissionRuleSource::Default);
+        assert!(message.patterns.is_empty());
     }
 
     #[test]

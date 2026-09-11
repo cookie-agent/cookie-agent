@@ -452,6 +452,10 @@ impl Engine {
                                 .producer_connection_is_current(plugin, &epoch)
                         })
                     }
+                    // Agent registrations are runtime-only sender slots for tree
+                    // peer mail; they must survive reconcile sweeps so pending
+                    // idempotency retried sends keep resolving. Retaining them
+                    // is required for the messaging retry contract.
                     _ => true,
                 });
         }

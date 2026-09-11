@@ -11,6 +11,9 @@ use crate::{GoalId, InvocationId, ProducerId, SessionId};
 /// the epoch is never part of this durable owner or the deduplication key.
 /// GoalControl identifies engine-authored lifecycle steering, not a continuation
 /// reminder; its accepted messages survive goal-controller teardown.
+/// Agent identifies an in-tree agent mail sender; the session identity is
+/// engine-derived from the executing tool context, never from model arguments.
+/// The owner is durable and participates in `(session, owner, key)` dedup.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProducerOwner {
@@ -18,6 +21,7 @@ pub enum ProducerOwner {
     Delegation { invocation_id: InvocationId },
     Goal { goal_id: GoalId },
     GoalControl { goal_id: GoalId },
+    Agent { session_id: SessionId },
 }
 
 /// Per-send mode. Queue remains accepted-but-deferred during an active run;
