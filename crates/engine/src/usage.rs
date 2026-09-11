@@ -258,13 +258,18 @@ pub(crate) fn estimated_cost_pico_usd(
 }
 
 fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
+    // Only turns whose provider reported cache usage participate: a single
+    // cache-unaware (or cache-miss) turn must not poison the whole rollup.
     let mut input = 0_u64;
     let mut cache_read = 0_u64;
     let mut observed = false;
     for usage in observations {
+        let Some(turn_cache_read) = usage.input_tokens_cache_read else {
+            continue;
+        };
         observed = true;
         input = input.checked_add(usage.input_tokens?)?;
-        cache_read = cache_read.checked_add(usage.input_tokens_cache_read?)?;
+        cache_read = cache_read.checked_add(turn_cache_read)?;
     }
     if !observed {
         None
@@ -482,6 +487,25 @@ mod tests {
         let observed_zero = super::with_pricing(observed_zero, &pricing, &BTreeMap::new());
         assert_eq!(observed_zero.cache_hit_rate, Some(0.0));
         assert_eq!(observed_zero.estimated_cost_usd, Some(0.00012));
+
+        // A cache-unaware turn (cold miss: provider omits cache details) must
+        // not poison the hit rate for turns that do report cache reads.
+        let mut mixed = UsageRollup::default();
+        for usage in [
+            reported(Some(1_000), Some(10), None),
+            reported(Some(1_000), Some(10), Some(800)),
+        ] {
+            let cost = super::estimated_cost_pico_usd(
+                &model("fallback-zero"),
+                &usage,
+                &pricing,
+                &BTreeMap::new(),
+            );
+            super::record_stamped(&mut mixed, &model("fallback-zero"), &usage, cost);
+        }
+        let mixed = super::with_pricing(mixed, &pricing, &BTreeMap::new());
+        assert_eq!(mixed.cache_read_tokens, 800);
+        assert_eq!(mixed.cache_hit_rate, Some(0.8));
     }
 
     #[test]
