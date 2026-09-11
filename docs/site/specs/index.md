@@ -6,6 +6,7 @@ configuration reference.
 
 | Specification | Status |
 |---|---|
+| [Agent messaging](agent-messaging.md) | Draft proposal; under refinement, not approved for implementation |
 | [Tool output streams and artifact reads](tool-output-streams.md) | Implemented; correctness and performance/code-quality reviews passed |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |
 | [Documentation overhaul](documentation-overhaul.md) | Preserved draft; this documentation reorganization was separately authorized |
