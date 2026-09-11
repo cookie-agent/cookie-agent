@@ -299,6 +299,8 @@ pub struct RuntimeConfig {
     pub session_title: SessionTitleConfig,
     #[serde(default)]
     pub delegation: DelegationConfig,
+    #[serde(default)]
+    pub messaging: MessagingConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     #[serde(default, deserialize_with = "deserialize_headers")]
@@ -318,6 +320,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) context_compaction: Option<ContextCompactionConfig>,
     pub(crate) session_title: Option<SessionTitleConfig>,
     pub(crate) delegation: Option<DelegationConfig>,
+    pub(crate) messaging: Option<MessagingConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -491,6 +494,44 @@ const fn default_idle_eviction_after() -> Duration {
     Duration::from_secs(60 * 60)
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessagingConfig {
+    #[serde(default = "default_messaging_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub max_hops: i32,
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
+    #[serde(default = "default_max_pending_per_session")]
+    pub max_pending_per_session: usize,
+    #[serde(default = "default_max_inflight_per_pair")]
+    pub max_inflight_per_pair: u32,
+}
+impl Default for MessagingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_messaging_enabled(),
+            max_hops: 0,
+            max_body_bytes: default_max_body_bytes(),
+            max_pending_per_session: default_max_pending_per_session(),
+            max_inflight_per_pair: default_max_inflight_per_pair(),
+        }
+    }
+}
+const fn default_messaging_enabled() -> bool {
+    true
+}
+const fn default_max_body_bytes() -> usize {
+    32_768
+}
+const fn default_max_pending_per_session() -> usize {
+    32
+}
+const fn default_max_inflight_per_pair() -> u32 {
+    4
+}
+
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -656,6 +697,9 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     }
     if let Some(value) = &layer.delegation {
         runtime.delegation = value.clone();
+    }
+    if let Some(value) = &layer.messaging {
+        runtime.messaging = value.clone();
     }
     if let Some(values) = &layer.headers {
         for (name, value) in values {

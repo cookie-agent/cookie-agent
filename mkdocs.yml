@@ -73,6 +73,7 @@ nav:
       - 'Context Compaction [context_compaction]': engine/context_compaction.md
       - 'Session Title [session_title]': engine/session_title.md
       - 'Delegation [delegation]': engine/delegation.md
+      - 'Agent Messaging [messaging]': engine/messaging.md
       - 'Request Header [headers]': engine/headers.md
       - 'Providers [providers]': guide/providers.md
       - 'MCP [mcp]': guide/mcp.md

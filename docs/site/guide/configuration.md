@@ -43,6 +43,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `context_compaction` | [Context Compaction](../engine/context_compaction.md) |
 | `session_title` | [Session Title](../engine/session_title.md) |
 | `delegation` | [Delegation](../engine/delegation.md) |
+| `messaging` | [Agent Messaging](../engine/messaging.md) |
 | `headers` | [Request Header](../engine/headers.md) |
 | `providers` | [Providers](providers.md) |
 | `mcp` | [MCP](mcp.md) |
