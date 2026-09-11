@@ -6016,6 +6016,62 @@ fn scripted_tool_batch_body(calls: &[(&str, &str, serde_json::Value)]) -> String
 }
 
 #[tokio::test]
+async fn empty_stream_deltas_are_not_logged() {
+    let (endpoint, responses, _captured) = scripted_channel_server(1).await;
+    // Some providers emit empty content/reasoning chunks ahead of the real
+    // stream; they must not reach the durable event log. (The fixture
+    // provider's reasoning field is `none`, so the reasoning chunks are
+    // ignored by the adaptor and only document the real-world shape.)
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    );
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            body.to_owned(),
+        ))
+        .unwrap();
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("empty-deltas").unwrap(),
+                selection: selection.clone(),
+                input: "say hi".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let text = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::TextDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(text, ["hi"]);
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order() {
     let (endpoint, responses, captured) = scripted_channel_server(2).await;
     responses

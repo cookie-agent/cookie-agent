@@ -1753,7 +1753,12 @@ impl Engine {
                                 Ok(part) => match accumulator.push(part) {
                                     Ok(effect) => {
                                         meaningful_output |= effect.meaningful;
-                                        if let Some(text) = effect.text_delta {
+                                        // Some providers emit empty content
+                                        // chunks; they carry no content and
+                                        // must not reach the durable log.
+                                        if let Some(text) =
+                                            effect.text_delta.filter(|text| !text.is_empty())
+                                        {
                                             self.append(
                                                 session,
                                                 Some(run),
@@ -1762,7 +1767,9 @@ impl Engine {
                                             )
                                             .await?;
                                         }
-                                        if let Some(text) = effect.reasoning_delta {
+                                        if let Some(text) =
+                                            effect.reasoning_delta.filter(|text| !text.is_empty())
+                                        {
                                             self.append(
                                                 session,
                                                 Some(run),
