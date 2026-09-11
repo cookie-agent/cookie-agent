@@ -9,8 +9,6 @@ mod goal_projection;
 pub mod grant_journal;
 mod mcp;
 mod media;
-#[cfg(test)]
-mod messaging_tests;
 mod model_bridge;
 mod model_history;
 mod model_policy;

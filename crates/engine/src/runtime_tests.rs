@@ -70,6 +70,9 @@ mod delegation_revert_tests;
 #[path = "goal_selection_tests.rs"]
 mod goal_selection_tests;
 
+#[path = "messaging_tests.rs"]
+mod messaging_tests;
+
 fn private_tempdir() -> PanicResistantTempDir {
     let directory = TempDir::new().expect("temp directory");
     #[cfg(unix)]
