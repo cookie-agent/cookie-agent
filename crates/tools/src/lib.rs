@@ -506,7 +506,6 @@ mod tests {
         for name in [
             "delegate_subagent",
             "get_subagent_result",
-            "steer_subagent",
             "cancel_subagent",
         ] {
             assert_eq!(

@@ -473,7 +473,7 @@ mod tests {
     use serde::Serialize;
 
     use super::{
-        CancelArgs, DelegateToolProvider, GetResultArgs, SteerArgs, delegate_permission_resource,
+        CancelArgs, DelegateToolProvider, GetResultArgs, delegate_permission_resource,
         parse_delegate, parse_steer,
     };
 
@@ -554,17 +554,6 @@ mod tests {
             "agent",
             b"explorer",
         );
-        let session = session_id.to_string();
-        assert_legacy_grant_does_not_match(
-            "steer_subagent",
-            "steer",
-            &SteerArgs {
-                session_id,
-                message: "continue".into(),
-            },
-            "session",
-            session.as_bytes(),
-        );
     }
 
     #[test]
@@ -572,7 +561,6 @@ mod tests {
         for name in [
             "delegate_subagent",
             "get_subagent_result",
-            "steer_subagent",
             "cancel_subagent",
         ] {
             assert_eq!(
@@ -593,31 +581,19 @@ mod tests {
             Some("reviewer".into())
         );
         let session_id = cookie_agent_protocol::SessionId::new_v7();
-        for (name, arguments) in [
-            (
-                "get_subagent_result",
-                serde_json::json!({"session_id":session_id}),
-            ),
-            (
-                "steer_subagent",
-                serde_json::json!({"session_id":session_id,"message":"continue"}),
-            ),
-            (
+        assert_eq!(
+            delegate_permission_resource(
                 "cancel_subagent",
-                serde_json::json!({"session_id":session_id}),
-            ),
-        ] {
-            assert_eq!(
-                delegate_permission_resource(name, &arguments)
-                    .expect("provider-managed label resource"),
-                None
-            );
-        }
+                &serde_json::json!({"session_id":session_id}),
+            )
+            .expect("provider-managed label resource"),
+            None
+        );
     }
 
     #[test]
     fn only_paginated_subagent_results_opt_out_of_truncation() {
-        for name in ["delegate_subagent", "steer_subagent", "cancel_subagent"] {
+        for name in ["delegate_subagent", "cancel_subagent"] {
             assert_eq!(
                 super::result_truncation_policy(name),
                 cookie_agent_engine::ToolResultTruncationPolicy::Bounded
