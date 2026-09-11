@@ -1171,7 +1171,6 @@ mod tests {
             ("bash", "bash"),
             ("delegate_subagent", "delegate"),
             ("get_subagent_result", "delegate"),
-            ("steer_subagent", "delegate"),
             ("cancel_subagent", "delegate"),
         ] {
             let call = ToolCall {
