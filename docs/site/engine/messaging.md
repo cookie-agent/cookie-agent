@@ -4,7 +4,7 @@ Bound agent-to-agent mail (`send_message`) inside a delegation tree. Complete
 `config.toml`:
 
 ```toml
-[messaging]
+[runtime.messaging]
 enabled = true
 max_hops = 0
 max_body_bytes = 32768
