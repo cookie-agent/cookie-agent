@@ -837,7 +837,9 @@ const fn default_connect() -> u64 {
     10
 }
 const fn default_headers() -> u64 {
-    30
+    // Headers bound time-to-first-byte, which is also where slow providers spend
+    // their thinking time on large contexts; keep it well above long TTFTs.
+    300
 }
 const fn default_credentials() -> u64 {
     30
