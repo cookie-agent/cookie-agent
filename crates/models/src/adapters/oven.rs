@@ -845,7 +845,7 @@ const fn default_credentials() -> u64 {
     30
 }
 const fn default_stream_idle() -> u64 {
-    60
+    120
 }
 
 impl TimeoutsConfig {
