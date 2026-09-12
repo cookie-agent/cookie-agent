@@ -1992,7 +1992,10 @@ impl Engine {
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
                         )
                         .await?;
                         context_recovery_attempted = true;
@@ -2037,7 +2040,10 @@ impl Engine {
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
                         )
                         .await?;
                         return Err(EngineError::Model(error));
@@ -2053,7 +2059,10 @@ impl Engine {
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
                         )
                         .await?;
                         tokio::select! {
@@ -2081,7 +2090,10 @@ impl Engine {
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
                         )
                         .await?;
                         tokio::select! {
@@ -2101,7 +2113,10 @@ impl Engine {
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
-                            Event::AttemptAbandoned { attempt_id },
+                            Event::AttemptAbandoned {
+                                attempt_id,
+                                model_error: Some(model_error_summary(&error)),
+                            },
                         )
                         .await?;
                         last_error = *error;

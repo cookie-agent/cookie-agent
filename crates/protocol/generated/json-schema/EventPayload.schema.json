@@ -1002,6 +1002,17 @@
           "type": "string",
           "format": "uuid"
         },
+        "model_error": {
+          "description": "The model error that ended the attempt (retry, fallback, or\nrecovery trigger).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelErrorSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "type": {
           "type": "string",
           "const": "attempt_abandoned"

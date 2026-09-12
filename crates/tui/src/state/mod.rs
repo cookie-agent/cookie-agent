@@ -1566,7 +1566,10 @@ fn reduce_event(
                 timestamp,
             );
         }
-        EventPayload::AttemptAbandoned { attempt_id } => {
+        EventPayload::AttemptAbandoned {
+            attempt_id,
+            model_error,
+        } => {
             close_open_assistant(state, timestamp);
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
@@ -1577,7 +1580,11 @@ fn reduce_event(
                 prune_split_segments(state, &attempt.split_segments);
                 prune_abandoned_attempt(state, attempt.item_id, attempt.committed_prefix);
             }
-            push_event(state, EventLevel::Warning, "model attempt abandoned".into());
+            let message = match &model_error {
+                Some(error) => format!("model attempt abandoned: {}", render_model_error(error)),
+                None => "model attempt abandoned".into(),
+            };
+            push_event(state, EventLevel::Warning, message);
         }
         EventPayload::ModelTurnCommitted {
             attempt_id,
@@ -3654,6 +3661,37 @@ mod tests {
             })
             .count();
         assert_eq!(error_rows, 1);
+    }
+
+    #[test]
+    fn abandoned_attempt_renders_its_model_error() {
+        let session = SessionId::new_v7();
+        let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"timeout","message":"model request timed out","retryable":true,"stage":"stream_read","http_status":null,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
+        let events = vec![stored_event(
+            session,
+            None,
+            1,
+            EventPayload::AttemptAbandoned {
+                attempt_id: AttemptId::new_v7(),
+                model_error: Some(model_error),
+            },
+        )];
+        let state = reduce_session_events(session, 0, &events);
+        let row = state
+            .transcript
+            .iter()
+            .find_map(|item| match item {
+                TranscriptItem::Event {
+                    level: EventLevel::Warning,
+                    text,
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .expect("abandon warning row");
+        assert!(row.contains("model attempt abandoned"));
+        assert!(row.contains("model request timed out"));
+        assert!(row.contains("retryable true"));
     }
 
     #[test]

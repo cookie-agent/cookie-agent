@@ -10045,7 +10045,10 @@ mod tests {
                 session,
                 5,
                 run,
-                EventPayload::AttemptAbandoned { attempt_id: first },
+                EventPayload::AttemptAbandoned {
+                    attempt_id: first,
+                    model_error: None,
+                },
             ),
             attempt_started(session, 6, run, second, None),
             text_delta(session, 7, run, second, "final"),
@@ -10136,7 +10139,10 @@ mod tests {
                 session,
                 3,
                 run,
-                EventPayload::AttemptAbandoned { attempt_id: first },
+                EventPayload::AttemptAbandoned {
+                    attempt_id: first,
+                    model_error: None,
+                },
             ),
             attempt_started(session, 4, run, second, None),
             text_delta(session, 5, run, second, "final"),
@@ -10353,7 +10359,10 @@ mod tests {
                     session,
                     10,
                     run,
-                    EventPayload::AttemptAbandoned { attempt_id: failed },
+                    EventPayload::AttemptAbandoned {
+                        attempt_id: failed,
+                        model_error: None,
+                    },
                 ),
                 producer_accepted(
                     session,

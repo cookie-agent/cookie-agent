@@ -5624,6 +5624,15 @@ async fn assert_retry_budget_and_fallback(status: u16, expected_attempts_on_firs
             .count(),
         expected_attempts_on_first
     );
+    for model_error in events.iter().filter_map(|event| match &event.payload {
+        EventPayload::AttemptAbandoned { model_error, .. } => Some(model_error),
+        _ => None,
+    }) {
+        let error = model_error
+            .as_ref()
+            .expect("abandoned attempt records its cause");
+        assert_eq!(error.http_status, Some(status));
+    }
     assert_eq!(
         events
             .iter()
@@ -15326,7 +15335,7 @@ fn rejected_unsigned_replay_recovery_count(events: &[cookie_agent_protocol::Stor
         .filter(|event| {
             matches!(
                 event.payload,
-                EventPayload::AttemptAbandoned { attempt_id }
+                EventPayload::AttemptAbandoned { attempt_id, .. }
                     if marked_attempts.contains(&attempt_id)
             )
         })

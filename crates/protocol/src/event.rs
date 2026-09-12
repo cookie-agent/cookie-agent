@@ -2044,6 +2044,11 @@ pub enum EventPayload {
     },
     AttemptAbandoned {
         attempt_id: AttemptId,
+        /// The model error that ended the attempt (retry, fallback, or
+        /// recovery trigger).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        model_error: Option<ModelErrorSummary>,
     },
     ModelReplayEvaluated {
         attempt_id: AttemptId,

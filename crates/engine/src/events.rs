@@ -1860,7 +1860,7 @@ fn validate_record_incremental(
             EventPayload::TextDelta { attempt_id, .. }
             | EventPayload::ReasoningDelta { attempt_id, .. }
             | EventPayload::ModelRequestPrepared { attempt_id, .. }
-            | EventPayload::AttemptAbandoned { attempt_id }
+            | EventPayload::AttemptAbandoned { attempt_id, .. }
             | EventPayload::ModelReplayEvaluated { attempt_id, .. }
             | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
                 (!attempts.contains_key(attempt_id)
@@ -2219,7 +2219,7 @@ fn validate_record_incremental(
         | EventPayload::ReasoningDelta { attempt_id, .. } => {
             validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
         }
-        EventPayload::AttemptAbandoned { attempt_id } => {
+        EventPayload::AttemptAbandoned { attempt_id, .. } => {
             let run_id = validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
             let run = runs.get_mut(&run_id).expect("started run is indexed");
             run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
@@ -3566,7 +3566,10 @@ mod tests {
             records,
             session_id,
             run_id,
-            EventPayload::AttemptAbandoned { attempt_id },
+            EventPayload::AttemptAbandoned {
+                attempt_id,
+                model_error: None,
+            },
         );
     }
 
@@ -3789,7 +3792,7 @@ mod tests {
                     EventPayload::TextDelta { attempt_id, .. }
                     | EventPayload::ReasoningDelta { attempt_id, .. }
                     | EventPayload::ModelRequestPrepared { attempt_id, .. }
-                    | EventPayload::AttemptAbandoned { attempt_id }
+                    | EventPayload::AttemptAbandoned { attempt_id, .. }
                     | EventPayload::ModelReplayEvaluated { attempt_id, .. }
                     | EventPayload::ModelTurnCommitted { attempt_id, .. } => {
                         (!attempts.contains_key(attempt_id)
@@ -4167,7 +4170,7 @@ mod tests {
                 | EventPayload::ReasoningDelta { attempt_id, .. } => {
                     validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
                 }
-                EventPayload::AttemptAbandoned { attempt_id } => {
+                EventPayload::AttemptAbandoned { attempt_id, .. } => {
                     let run_id =
                         validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
                     let run = runs.get_mut(&run_id).expect("started run is indexed");
@@ -5371,7 +5374,10 @@ mod tests {
                 log.append(
                     Some(run_id),
                     cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-                    EventPayload::AttemptAbandoned { attempt_id },
+                    EventPayload::AttemptAbandoned {
+                        attempt_id,
+                        model_error: None,
+                    },
                 )
             })
         };
@@ -5401,7 +5407,7 @@ mod tests {
         ));
         assert!(matches!(
             durable.last().map(|event| &event.payload),
-            Some(EventPayload::AttemptAbandoned { attempt_id: durable_attempt })
+            Some(EventPayload::AttemptAbandoned { attempt_id: durable_attempt, .. })
                 if *durable_attempt == attempt_id
         ));
     }
