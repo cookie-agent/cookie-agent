@@ -1876,7 +1876,8 @@ fn assistant_item_layout(
                 });
             }
             AssistantChild::Tool { call_id } => {
-                let child_layout = tool_child_layout(state, Some(*call_id), *call_id, context);
+                let child_layout =
+                    tool_child_layout(state, Some(*call_id), *call_id, None, context);
                 let start_line = layout.lines.len();
                 layout.lines.extend(child_layout.lines);
                 layout
@@ -1898,6 +1899,7 @@ fn assistant_item_layout(
             AssistantChild::CommittedTool {
                 turn_seq,
                 content_index,
+                name,
             } => {
                 let child_layout = tool_child_layout(
                     state,
@@ -1906,6 +1908,7 @@ fn assistant_item_layout(
                         turn_seq: *turn_seq,
                         content_index: *content_index,
                     },
+                    Some(name.as_str()),
                     context,
                 );
                 let start_line = layout.lines.len();
@@ -2234,10 +2237,13 @@ fn tool_header_title(tool: &crate::state::ToolCallState, width: u16) -> String {
 
 /// A compact or expanded tool row inside its owning assistant item. Running
 /// pulses a suffix; terminal failures retain their exact concise markers.
+/// `pending_name` identifies a committed placeholder whose execution has not
+/// started yet: it renders a neutral pending row, never an error.
 fn tool_child_layout(
     state: &SessionState,
     call_id: Option<cookie_agent_protocol::ToolCallId>,
     block_key: impl Into<BlockKey>,
+    pending_name: Option<&str>,
     context: &mut TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     let block_id = match block_key.into() {
@@ -2255,12 +2261,16 @@ fn tool_child_layout(
         .is_some_and(|blocks| blocks.contains(&block_id));
     let tool = call_id.and_then(|call_id| state.tools.get(&call_id));
     let Some(tool) = tool else {
-        let lines = role_block(
-            Role::Error,
-            vec![Line::from("tool: unavailable payload".to_owned())],
-            context.width,
-            context.theme,
-        );
+        let (role, text) = match pending_name {
+            // The turn committed this call but execution has not published
+            // its start yet; the placeholder links by content index shortly.
+            Some(name) => (
+                Role::ToolRunning,
+                format!("{} ▸ {} · pending", tool_icon(name), name),
+            ),
+            None => (Role::Error, "tool: unavailable payload".to_owned()),
+        };
+        let lines = role_block(role, vec![Line::from(text)], context.width, context.theme);
         return ItemLayout {
             regions: vec![BlockRegion {
                 id: block_id,
@@ -6302,6 +6312,7 @@ mod tests {
                             AssistantChild::CommittedTool {
                                 turn_seq,
                                 content_index,
+                                ..
                             } => format!("placeholder:{turn_seq}:{content_index}"),
                             AssistantChild::MediaFile {
                                 turn_seq,
@@ -9253,15 +9264,31 @@ mod tests {
     }
 
     #[test]
+    fn unstarted_committed_tool_placeholder_renders_pending_row_not_error() {
+        let state = assistant_state(vec![AssistantChild::CommittedTool {
+            turn_seq: 10,
+            content_index: 0,
+            name: SafeCode::new("bash").expect("tool"),
+        }]);
+        let layout = transcript_layout(&state, None, 60);
+        let text = snapshot_lines(&layout.lines);
+        assert!(text.contains("bash"), "{text}");
+        assert!(text.contains("pending"), "{text}");
+        assert!(!text.contains("unavailable payload"), "{text}");
+    }
+
+    #[test]
     fn committed_tool_blocks_from_two_turns_have_distinct_ids() {
         let state = assistant_state(vec![
             AssistantChild::CommittedTool {
                 turn_seq: 10,
                 content_index: 0,
+                name: SafeCode::new("bash").expect("tool"),
             },
             AssistantChild::CommittedTool {
                 turn_seq: 11,
                 content_index: 0,
+                name: SafeCode::new("bash").expect("tool"),
             },
         ]);
         let layout = transcript_layout(&state, None, 60);

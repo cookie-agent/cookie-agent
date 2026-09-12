@@ -276,6 +276,9 @@ pub enum AssistantChild {
     CommittedTool {
         turn_seq: u64,
         content_index: u32,
+        /// The committed call's tool name, so the placeholder can render a
+        /// pending row instead of an error while execution has not started.
+        name: SafeCode,
     },
     /// A durable assistant media part at its exact committed content index.
     MediaFile {
@@ -2700,10 +2703,11 @@ fn rebuild_committed_children(
                     text: text.clone(),
                 });
             }
-            cookie_agent_protocol::PersistedAssistantPart::ToolCall { .. } => {
+            cookie_agent_protocol::PersistedAssistantPart::ToolCall { name, .. } => {
                 children.push(AssistantChild::CommittedTool {
                     turn_seq: model_turn_seq,
                     content_index: index,
+                    name: name.clone(),
                 });
             }
             cookie_agent_protocol::PersistedAssistantPart::File { file } => {
@@ -2975,6 +2979,7 @@ fn link_tool_child(
         if let AssistantChild::CommittedTool {
             turn_seq: placeholder_turn,
             content_index: placeholder,
+            ..
         } = child
             && *placeholder_turn == turn_seq
             && *placeholder == content_index
