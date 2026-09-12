@@ -138,6 +138,7 @@ fn append_accepted_message(
                     .unwrap(),
                 body: body.into(),
                 reminder: None,
+                agent_hop: None,
             },
         )
         .expect("append trusted producer acceptance");

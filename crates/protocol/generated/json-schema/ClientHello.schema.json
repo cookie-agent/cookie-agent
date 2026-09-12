@@ -5,7 +5,7 @@
   "properties": {
     "protocol_version": {
       "type": "integer",
-      "const": 18
+      "const": 19
     }
   },
   "additionalProperties": false,

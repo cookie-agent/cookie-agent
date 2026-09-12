@@ -16,8 +16,9 @@ declaration.
 | `read`, `bash`, `webfetch` | Parallel | Each call owns its execution and streaming state. |
 | `write`, `edit` | Parallel | Matching prepared serialization keys serialize mutations to the same target. |
 | `delegate_subagent` | Parallel | Delegate admission serializes durable child reservation and session creation internally. |
+| `send_message` | Parallel | Message acceptance serializes guard checks and the durable append inside the recipient actor. |
 | MCP tools | Parallel | Each MCP server's service mutex serializes calls to that server; different servers can overlap. |
-| `skill`, `get_subagent_result`, `steer_subagent`, `cancel_subagent` | Exclusive | These calls interact with session-scoped state. |
+| `skill`, `get_subagent_result`, `cancel_subagent` | Exclusive | These calls interact with session-scoped state. |
 | Plugin and otherwise undeclared tools | Exclusive | External declarations cannot currently opt in. |
 
 All parallel-eligible calls in the turn are dispatched together without a
@@ -281,8 +282,8 @@ Ordinary permission matching, deny/ask rules, and the unmatched default still ap
 
 ## Delegation and skills
 
-Delegation tools start, inspect, steer, and cancel owned subagent sessions.
-Skill tools load configured skill instructions for the current turn. Their
+Delegation tools start, inspect, and cancel owned subagent sessions. Skill
+tools load configured skill instructions for the current turn. Their
 availability and targets are derived from the frozen agent policy.
 
 When delegation is available, its provider also freezes the currently eligible
@@ -290,3 +291,56 @@ target IDs and agent descriptions into the run's system prompt under
 `<tool_instructions provider="builtin.delegate">`. The list uses the same depth
 ceiling and enabled-target filtering as `delegate_subagent`; no section is added
 when no target is available.
+
+## Agent messaging
+
+`send_message` delivers a durable message to another session in the same
+delegation tree. It replaces the removed `steer_subagent` tool; see the
+[migration notes](../specs/agent-messaging.md#migration-notes). Its argument
+object is strict: `to` is the recipient session ID, `body` is the markdown
+message text, and optional `mode` is `steer` (default) or `queue`. The
+recipient argument is named `to`; the earlier `recipient_session_id` spelling
+is not an alias and fails with `send_message:invalid_arguments`.
+
+Calls use the `message` permission action. The resource label is the
+recipient's relationship to the sender — `parent`, `child`, `sibling`, or `*`
+for any other same-tree peer — derived from stored session-origin metadata.
+Messaging is deny-by-default and the tool is hidden until an agent document or
+session overlay declares a `message` `allow` or `ask` rule. Denied calls use
+the standard policy-denial path and `ask` rules use the normal approval flow;
+there is no messaging-specific permission error.
+
+A successful result means **durably accepted**: the message is persisted in
+the recipient's event log and survives a daemon restart. It does not mean the
+recipient has seen or consumed the message. The result carries `message_id`,
+the effective `mode`, and `recipient_state` (`running`, `queued`, or
+`waking_finished`). A `steer` send joins a running recipient's next safe
+model-request boundary; a `queue` send is claimed into the recipient's prompt
+at the next safe boundary. Idle and finished recipients are woken through the
+producer reconcile path, resuming the session with the message as input.
+There is no inbox tool.
+
+Failures are explicit tool errors with stable codes:
+
+| Code | Meaning |
+|---|---|
+| `send_message:disabled` | `[runtime.messaging] enabled = false` |
+| `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling |
+| `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
+| `send_message:unknown_session` | Malformed or nonexistent recipient session ID |
+| `send_message:not_tree_peer` | Recipient exists but belongs to a different delegation tree |
+| `send_message:self_send` | Sender targeted its own session |
+| `send_message:inbox_full` | Recipient has `max_pending_per_session` pending agent messages; nothing was admitted |
+| `send_message:max_hops_exceeded` | The message chain exceeded `max_hops` |
+| `send_message:inflight_full` | The directed pair already has `max_inflight_per_pair` unacknowledged messages |
+| `send_message:engine_shutdown` | The send raced daemon shutdown |
+
+Retries are safe: the idempotency key derives from the sender session, run,
+and tool call, so a retried call returns the original `message_id` and
+delivers once. Two loop-safety guards reject sends, and each can be disabled:
+`max_hops <= 0` turns off hop counting (hop metadata is internal and never
+appears in the delivered envelope), and `max_inflight_per_pair = 0` turns off
+the per-pair window. A pair message counts as unacknowledged while accepted,
+admitted, claimed, or released, and is acknowledged once consumed or
+discarded. See [Agent Messaging](../engine/messaging.md) for the settings and
+the [agent messaging spec](../specs/agent-messaging.md) for the full contract.

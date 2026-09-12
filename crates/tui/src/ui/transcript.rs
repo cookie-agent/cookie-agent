@@ -627,15 +627,13 @@ fn item_layout_key_matches(
 }
 
 impl App {
-    /// The transient notice rows rendered after the transcript (notices and
-    /// aggregated descendant warnings), exactly as [`Self::render_conversation`]
-    /// appends them. Selection extraction consumes the same chain so copied
-    /// text matches what is on screen.
-    pub(super) fn notice_lines(
-        &self,
-        width: u16,
-        descendant_warnings: &[String],
-    ) -> Vec<Line<'static>> {
+    /// The transient notice rows rendered after the transcript (transient
+    /// notices and goal notices), exactly as [`Self::render_conversation`]
+    /// appends them. Descendant warnings are spliced into the transcript
+    /// body instead; see [`Self::spliced_conversation_lines`]. Selection
+    /// extraction consumes the same chain so copied text matches what is
+    /// on screen.
+    pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
         let goal_notices = self
             .selected
@@ -660,22 +658,155 @@ impl App {
                 .collect::<Vec<_>>();
             notice_lines.extend(role_block(Role::Internal, lines, width, &self.theme));
         }
-        // Descendant warnings aggregate into the viewed session's pane with
-        // their owning session's attribution. The viewed session's own
-        // warnings already render locally inside the transcript; only strict
-        // descendants are appended here, so a warning never appears twice in
-        // one view.
-        if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
-            for warning in descendant_warnings {
-                notice_lines.extend(role_block(
-                    Role::Warning,
-                    vec![Line::from(warning.clone())],
-                    width,
-                    &self.theme,
-                ));
-            }
-        }
         notice_lines
+    }
+
+    /// The viewed session's rendered transcript lines with aggregated
+    /// descendant warnings spliced in at their chronological position.
+    ///
+    /// Each warning anchors after the last transcript item whose durable
+    /// insertion time is at or before the warning's time; the warning's
+    /// rendered block takes the next item's separator slot, so pre-warning
+    /// content finishes above the break and later content resumes below it.
+    /// Warnings older than every timed item land just after the system
+    /// prompt (before the first item). Returns the untouched layout when
+    /// there is nothing to splice.
+    fn spliced_conversation_lines(
+        &self,
+        width: u16,
+        layout_lines: &[Line<'static>],
+        warnings: &[(jiff::Timestamp, String)],
+    ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+        let Some(state) = self
+            .selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
+            .filter(|_| !warnings.is_empty())
+        else {
+            return (layout_lines.to_vec(), Vec::new());
+        };
+        Self::splice_descendant_warnings(
+            layout_lines.to_vec(),
+            &self.layout_cache.item_offsets,
+            state,
+            warnings,
+            width,
+            &self.theme,
+        )
+    }
+
+    /// Shift a block region's line coordinates by the splice insertions at or
+    /// before each coordinate.
+    fn shift_region_lines(
+        mut region: BlockRegion,
+        splice_shifts: &[(usize, usize)],
+    ) -> BlockRegion {
+        let shift = |line: usize| {
+            splice_shifts
+                .iter()
+                .filter(|(position, _)| *position <= line)
+                .map(|(_, inserted)| *inserted)
+                .sum::<usize>()
+                .saturating_add(line)
+        };
+        region.start_line = shift(region.start_line);
+        region.end_line = shift(region.end_line);
+        region
+    }
+
+    /// Shift a user region's line coordinates by the splice insertions at or
+    /// before each coordinate.
+    fn shift_user_region_lines(
+        mut region: UserRegion,
+        splice_shifts: &[(usize, usize)],
+    ) -> UserRegion {
+        let shift = |line: usize| {
+            splice_shifts
+                .iter()
+                .filter(|(position, _)| *position <= line)
+                .map(|(_, inserted)| *inserted)
+                .sum::<usize>()
+                .saturating_add(line)
+        };
+        region.start_line = shift(region.start_line);
+        region.end_line = shift(region.end_line);
+        region
+    }
+
+    /// Splice aggregated descendant warning blocks into a rendered transcript at
+    /// their chronological position.
+    ///
+    /// `item_offsets` holds one [`ItemAssemblyOffset`] per transcript item: item
+    /// i's separator and rendered lines span `[offsets[i].lines,
+    /// offsets[i+1].lines or lines.len())`, and rows before `offsets[0].lines`
+    /// belong to the system prompt. Each warning anchors after the last item
+    /// whose durable insertion time is at or before the warning time, taking the
+    /// next item's separator slot; warnings older than every timed item land
+    /// after the system prompt, before the first item. When no item is timed at
+    /// all (or the transcript is empty), warnings keep their historical
+    /// bottom-of-transcript position.
+    ///
+    /// Returns the spliced lines plus, for each splice point, the original-line
+    /// position and the number of lines inserted there, so callers can shift
+    /// scroll anchors and hit regions that address the unspliced layout.
+    fn splice_descendant_warnings(
+        lines: Vec<Line<'static>>,
+        item_offsets: &[ItemAssemblyOffset],
+        state: &crate::state::SessionState,
+        warnings: &[(jiff::Timestamp, String)],
+        width: u16,
+        theme: &Theme,
+    ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+        if warnings.is_empty() {
+            return (lines, Vec::new());
+        }
+        let timed_anchor = |time: jiff::Timestamp| -> Option<usize> {
+            (0..state.transcript.len()).rev().find(|&index| {
+                state
+                    .item_time(state.transcript[index].id())
+                    .is_some_and(|item_time| item_time <= time)
+            })
+        };
+        let mut placements: Vec<(usize, String)> = warnings
+            .iter()
+            .map(|(time, text)| {
+                let position = match timed_anchor(*time) {
+                    Some(index) => item_offsets
+                        .get(index + 1)
+                        .map_or(lines.len(), |offset| offset.lines),
+                    None if !item_offsets.is_empty() => item_offsets[0].lines,
+                    None => lines.len(),
+                };
+                (position, text.clone())
+            })
+            .collect();
+        placements.sort_by_key(|(position, _)| *position);
+        let mut out = Vec::with_capacity(lines.len() + warnings.len() * 3);
+        // Splice points and inserted counts, in original-line coordinates.
+        let mut splice_shifts: Vec<(usize, usize)> = Vec::new();
+        let mut cursor = 0usize;
+        for (position, text) in placements {
+            while cursor < position.min(lines.len()) {
+                out.push(lines[cursor].clone());
+                cursor += 1;
+            }
+            let needs_separator = out.last().is_some_and(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| !span.content.trim().is_empty())
+            });
+            let mut block = role_block(Role::Warning, vec![Line::from(text)], width, theme);
+            let mut inserted = block.len();
+            if needs_separator {
+                block.insert(0, Line::default());
+                inserted += 1;
+            }
+            if inserted > 0 {
+                splice_shifts.push((position, inserted));
+            }
+            out.extend(block);
+        }
+        out.extend(lines[cursor..].iter().cloned());
+        (out, splice_shifts)
     }
 
     /// The full rendered conversation chain — transcript lines plus the
@@ -698,14 +829,25 @@ impl App {
             } else {
                 Vec::new()
             };
-        let mut notices = self.notice_lines(width, &descendant_warnings);
-        if session_present && !transcript_empty && notices.is_empty() {
+        let mut notices = self.notice_lines(width);
+        if session_present
+            && !transcript_empty
+            && descendant_warnings.is_empty()
+            && notices.is_empty()
+        {
             return Cow::Borrowed(&self.layout_cache.layout.lines);
         }
         let mut lines = if session_present && !transcript_empty {
-            self.layout_cache.layout.lines.clone()
+            self.spliced_conversation_lines(
+                width,
+                &self.layout_cache.layout.lines,
+                &descendant_warnings,
+            )
+            .0
         } else {
-            empty_conversation_lines(session_present, width, &self.theme)
+            let empty = empty_conversation_lines(session_present, width, &self.theme);
+            self.spliced_conversation_lines(width, &empty, &descendant_warnings)
+                .0
         };
         if !lines.is_empty() && !notices.is_empty() {
             notices.insert(0, Line::default());
@@ -815,12 +957,19 @@ impl App {
         } else {
             &empty_layout
         };
-        let mut notice_lines = self.notice_lines(width, &descendant_warnings);
+        let mut notice_lines = self.notice_lines(width);
         // Notices follow the same rhythm as transcript items: one blank row
         // between real content and the first notice block.
         if !layout.lines.is_empty() && !notice_lines.is_empty() {
             notice_lines.insert(0, Line::default());
         }
+        let (spliced_lines, splice_shifts) =
+            self.spliced_conversation_lines(width, &layout.lines, &descendant_warnings);
+        let layout_lines: &[Line<'static>] = if splice_shifts.is_empty() {
+            &layout.lines
+        } else {
+            &spliced_lines
+        };
         let viewport = Rect::new(
             area.x.saturating_add(1),
             area.y.saturating_add(1),
@@ -840,29 +989,58 @@ impl App {
                 viewport.height,
             )
         });
-        let content_height = layout.lines.len() + notice_lines.len();
+        let content_height = layout_lines.len() + notice_lines.len();
         if layout_changed
             && anchor_key == self.layout_cache.key
             && let Some((point, row_offset)) = anchor
             && let Some(line) = self.layout_cache.anchor_line(point)
         {
-            self.conversation_scroll.offset = line.saturating_add(row_offset);
+            // `line` addresses the unspliced layout; rows inserted by the
+            // warning splice above it shift the anchor down by their count.
+            let splice_shift = splice_shifts
+                .iter()
+                .filter(|(position, _)| *position <= line)
+                .map(|(_, inserted)| *inserted)
+                .sum::<usize>();
+            self.conversation_scroll.offset =
+                line.saturating_add(splice_shift).saturating_add(row_offset);
         }
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
         self.hit_map.scrollbar = scrollbar_track.filter(|track| track.width > 0);
         self.hit_map.blocks.clear();
-        self.hit_map.blocks.extend(
-            layout
+        let shifted_block_regions: Vec<BlockRegion>;
+        let block_regions: &[BlockRegion] = if splice_shifts.is_empty() {
+            &layout.regions
+        } else {
+            shifted_block_regions = layout
                 .regions
+                .iter()
+                .map(|region| Self::shift_region_lines(*region, &splice_shifts))
+                .collect();
+            &shifted_block_regions
+        };
+        self.hit_map.blocks.extend(
+            block_regions
                 .iter()
                 .filter_map(|region| block_hit(*region, viewport, self.conversation_scroll.offset)),
         );
         self.hit_map.user_messages.clear();
+        let shifted_user_regions: Vec<UserRegion>;
+        let user_regions: &[UserRegion] = if splice_shifts.is_empty() {
+            &layout.user_regions
+        } else {
+            shifted_user_regions = layout
+                .user_regions
+                .iter()
+                .map(|region| Self::shift_user_region_lines(*region, &splice_shifts))
+                .collect();
+            &shifted_user_regions
+        };
         self.hit_map
             .user_messages
-            .extend(layout.user_regions.iter().filter_map(|region| {
+            .extend(user_regions.iter().filter_map(|region| {
                 user_message_hit(*region, viewport, self.conversation_scroll.offset)
             }));
         let filter = self.tui_config.minimum_event_level.name();
@@ -916,8 +1094,7 @@ impl App {
         // Rendering borrowed Lines avoids viewport clones. Line::style paints
         // the full row, so future background or REVERSED line styles must be
         // reviewed as row-wide rather than span-local styling.
-        for (row, line) in layout
-            .lines
+        for (row, line) in layout_lines
             .iter()
             .chain(notice_lines.iter())
             .skip(self.conversation_scroll.offset)
@@ -5381,6 +5558,7 @@ mod tests {
                         .unwrap(),
                     body: body.into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             };
             assert!(store.apply_event(accepted.clone()));
@@ -10831,6 +11009,7 @@ mod tests {
                         revision: 1,
                         kind: cookie_agent_protocol::GoalReminderKind::Started,
                     }),
+                    agent_hop: None,
                 },
             ));
             if !existing_run {
@@ -11009,6 +11188,7 @@ mod tests {
             idempotency_key: cookie_agent_protocol::ProducerIdempotencyKey::new(body).unwrap(),
             body: body.into(),
             reminder: None,
+            agent_hop: None,
         };
         let commit = |seq, attempt, input, content, variant| {
             let mut stored = turn_committed(
@@ -15445,6 +15625,7 @@ mod tests {
                 .expect("idempotency key"),
                 body: body.to_owned(),
                 reminder,
+                agent_hop: None,
             },
         )
     }
@@ -21021,9 +21202,293 @@ mod tests {
         push_model_warning(&mut app.store, child, "child warning");
         let warnings = app.descendant_warnings(root);
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("child warning"));
-        assert!(warnings[0].contains("child session"));
-        assert!(warnings[0].contains(&crate::ui::pickers::short_id(child)));
+        assert!(warnings[0].1.contains("child warning"));
+        assert!(warnings[0].1.contains("child session"));
+        assert!(warnings[0].1.contains(&crate::ui::pickers::short_id(child)));
+        // The warning carries the durable time of the child's event row.
+        let child_state = app.store.sessions.get(&child).expect("child session");
+        let event_time = child_state
+            .transcript
+            .iter()
+            .find_map(|item| match item {
+                TranscriptItem::Event { .. } => child_state.item_time(item.id()),
+                _ => None,
+            })
+            .expect("warning row time");
+        assert_eq!(warnings[0].0, event_time);
+    }
+
+    #[test]
+    fn item_times_are_durable_and_replay_deterministic() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let events = || {
+            vec![
+                attempt_started(session, 1, run, first, None),
+                text_delta(session, 2, run, first, "one"),
+                turn_committed(
+                    session,
+                    3,
+                    run,
+                    first,
+                    1,
+                    vec![text_part("one")],
+                    Vec::new(),
+                    None,
+                ),
+                attempt_started(session, 4, run, second, None),
+                turn_committed(
+                    session,
+                    5,
+                    run,
+                    second,
+                    2,
+                    vec![text_part("two")],
+                    Vec::new(),
+                    None,
+                ),
+            ]
+        };
+        let mut timed = events();
+        for stored in &mut timed {
+            stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+        }
+        let mut store = StateStore::default();
+        for event in timed {
+            assert!(store.apply_event(event));
+        }
+        let state = store.sessions.get(&session).expect("session");
+        let ids = || {
+            state
+                .transcript
+                .iter()
+                .map(|item| item.id())
+                .collect::<Vec<_>>()
+        };
+        let times = || {
+            ids()
+                .into_iter()
+                .map(|id| state.item_time(id))
+                .collect::<Vec<_>>()
+        };
+        // Three rows: the assistant block opened eagerly at attempt start,
+        // then one info event row per committed turn.
+        assert_eq!(times().len(), 3);
+        // The recorded times are exactly the event timestamps of their
+        // creating events, in push order.
+        let expected = [
+            Timestamp::new(1, 0).unwrap(),
+            Timestamp::new(3, 0).unwrap(),
+            Timestamp::new(5, 0).unwrap(),
+        ]
+        .map(Some);
+        assert_eq!(times(), expected);
+        // Re-reducing the identical event log reproduces identical times.
+        let mut replay = events();
+        for stored in &mut replay {
+            stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+        }
+        let mut replay_store = StateStore::default();
+        for event in replay {
+            assert!(replay_store.apply_event(event));
+        }
+        let replay_state = replay_store.sessions.get(&session).expect("session");
+        let replay_times = replay_state
+            .transcript
+            .iter()
+            .map(|item| replay_state.item_time(item.id()))
+            .collect::<Vec<_>>();
+        assert_eq!(replay_times, times());
+    }
+
+    #[test]
+    fn descendant_warnings_splice_at_chronological_position() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let second = AttemptId::new_v7();
+        let mut events = vec![
+            attempt_started(session, 1, run, first, None),
+            turn_committed(
+                session,
+                2,
+                run,
+                first,
+                1,
+                vec![text_part("first answer")],
+                Vec::new(),
+                None,
+            ),
+            attempt_started(session, 3, run, second, None),
+            turn_committed(
+                session,
+                4,
+                run,
+                second,
+                2,
+                vec![text_part("second answer")],
+                Vec::new(),
+                None,
+            ),
+        ];
+        for stored in &mut events {
+            stored.timestamp = Timestamp::new(stored.seq as i64, 0).unwrap();
+        }
+        let mut store = StateStore::default();
+        for event in events {
+            assert!(store.apply_event(event));
+        }
+        let state = store.sessions.get(&session).expect("session");
+        // Synthetic layout matching the three-item transcript (times
+        // [1, 3, 5]): a system row, then one separator + content row per
+        // item.
+        let item_count = state.transcript.len();
+        assert_eq!(item_count, 3);
+        let mut lines = vec![Line::from("system")];
+        let mut offsets = Vec::new();
+        for index in 0..item_count {
+            offsets.push(ItemAssemblyOffset {
+                lines: lines.len(),
+                regions: 0,
+                user_regions: 0,
+            });
+            lines.push(Line::default());
+            lines.push(Line::from(format!("item {index}")));
+        }
+        let warnings = vec![
+            (Timestamp::new(0, 0).unwrap(), "early warning".to_owned()),
+            (Timestamp::new(3, 0).unwrap(), "mid warning".to_owned()),
+            (Timestamp::new(9, 0).unwrap(), "late warning".to_owned()),
+        ];
+        let (spliced, shifts) = App::splice_descendant_warnings(
+            lines.clone(),
+            &offsets,
+            state,
+            &warnings,
+            80,
+            &Theme::default(),
+        );
+        let text_of = |line: &Line<'_>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let position = |needle: &str| {
+            spliced
+                .iter()
+                .position(|line| text_of(line).contains(needle))
+                .unwrap_or_else(|| panic!("{needle} rendered"))
+        };
+        // Early warning: after the system prompt, before the first item.
+        assert!(position("system") < position("early warning"));
+        assert!(position("early warning") < position("item 0"));
+        // Mid warning: anchored at item 1 (time 3), before item 2 (time 5).
+        assert!(position("item 1") < position("mid warning"));
+        assert!(position("mid warning") < position("item 2"));
+        // Late warning: after the last item.
+        assert!(position("item 2") < position("late warning"));
+        // The early warning block is preceded by the one-blank-row rhythm
+        // (the block's badge row leads its text row).
+        let system = position("system");
+        let early = position("early warning");
+        assert!(
+            spliced[system..early]
+                .iter()
+                .any(|line| text_of(line).trim().is_empty())
+        );
+        // Splice shift map: original position → inserted line count.
+        assert_eq!(
+            shifts
+                .iter()
+                .map(|(position, _)| *position)
+                .collect::<Vec<_>>(),
+            [1, 5, 7]
+        );
+        assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
+        // Empty warnings leave the layout untouched.
+        let (untouched, empty_shifts) =
+            App::splice_descendant_warnings(lines, &offsets, state, &[], 80, &Theme::default());
+        assert_eq!(untouched.len(), 7);
+        assert!(empty_shifts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn descendant_warning_mid_stream_splits_viewed_open_block() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        app.tree = Some(SessionTree {
+            session: titled_meta(root, "root session", 1),
+            children: vec![SessionTree {
+                session: titled_meta(child, "child session", 1),
+                children: Vec::new(),
+            }],
+        });
+        app.tree_root = Some(root);
+        app.selected = Some(root);
+        // The viewed session streams an open, uncommitted block.
+        let root_run = run_id();
+        let first = AttemptId::new_v7();
+        for event in [
+            attempt_started(root, 1, root_run, first, None),
+            text_delta(root, 2, root_run, first, "one"),
+        ] {
+            app.handle_delivery(live_event(event)).await;
+        }
+        // A descendant warning lands while the viewed session is mid-block.
+        let child_run = run_id();
+        let child_attempt = AttemptId::new_v7();
+        for event in [
+            attempt_started(child, 1, child_run, child_attempt, None),
+            turn_committed(
+                child,
+                2,
+                child_run,
+                child_attempt,
+                1,
+                Vec::new(),
+                vec!["child warning"],
+                None,
+            ),
+        ] {
+            app.handle_delivery(live_event(event)).await;
+        }
+        // The viewed session continues; the pre-warning content finishes in
+        // place and the continuation opens a fresh block below the break.
+        let second = AttemptId::new_v7();
+        for event in [
+            attempt_started(root, 3, root_run, second, None),
+            text_delta(root, 4, root_run, second, "two"),
+            turn_committed(
+                root,
+                5,
+                root_run,
+                second,
+                2,
+                vec![text_part("two")],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            app.handle_delivery(live_event(event)).await;
+        }
+        let state = app.store.sessions.get(&root).expect("root session");
+        let assistants = assistant_items(state);
+        assert_eq!(
+            assistants.len(),
+            2,
+            "descendant warning splits the viewed session's open block"
+        );
+        assert_eq!(assistant_texts(assistants[0]), ["one"]);
+        assert_eq!(assistant_texts(assistants[1]), ["two"]);
+        // The descendant warning row remains visible to the viewer, spliced
+        // between the two blocks rather than pinned at the bottom.
+        let warnings = app.descendant_warnings(root);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].1.contains("child warning"));
     }
 
     // ------------------------------------------------------------------

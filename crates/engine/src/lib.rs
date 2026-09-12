@@ -32,6 +32,14 @@ pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation};
 pub use mcp::{McpRegistry, McpServerState, McpServerStatus};
 pub use media::{AttachmentGate, approved_media_type, attachment_gate_error, gate_attachment};
 pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
+/// Stable `send_message:<code>` error strings carried by
+/// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
+/// models can react predictably (retry, back off, or give up).
+pub use runtime::messaging_api::{
+    MESSAGE_DISABLED, MESSAGE_ENGINE_SHUTDOWN, MESSAGE_INBOX_FULL, MESSAGE_INFLIGHT_FULL,
+    MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,
+    MESSAGE_NOT_TREE_PEER, MESSAGE_SELF_SEND, MESSAGE_UNKNOWN_SESSION,
+};
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
     ArtifactReadPage, Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,

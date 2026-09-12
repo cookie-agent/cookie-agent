@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{
-    AgentMessageInvocation, Engine, PreparedExecutor, PreparedTool, SessionToolContext, ToolCall,
-    ToolCompletion, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
-    ToolSpec,
+    AgentMessageInvocation, Engine, MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY,
+    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolError,
+    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use cookie_agent_protocol::{
     PermissionAction, PersistedToolResult as ToolResult, ProducerDeliveryMode, SessionId,
@@ -18,7 +18,7 @@ fn default_mode() -> ProducerDeliveryMode {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
-    recipient_session_id: SessionId,
+    to: SessionId,
     body: String,
     #[serde(default = "default_mode")]
     mode: ProducerDeliveryMode,
@@ -34,11 +34,36 @@ impl MessageToolProvider {
         Self { engine }
     }
 
+    /// The frozen `send_message` surface. The recipient argument is `to`; there
+    /// is deliberately no compatibility alias for the earlier
+    /// `recipient_session_id` name, which would otherwise be frozen into every
+    /// normalized-arguments record this call produces.
+    fn spec() -> ToolSpec {
+        ToolSpec {
+            output: Default::default(),
+            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
+            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::Bounded,
+            name: "send_message".into(),
+            permission_name: "message".into(),
+            description: "Send a message to an agent in the current delegation tree.".into(),
+            parameters: serde_json::json!({
+                "type":"object","additionalProperties":false,
+                "properties":{
+                    "to":{"type":"string"},
+                    "body":{"type":"string","minLength":1},
+                    "mode":{"type":"string","enum":["steer","queue"],"default":"steer"}
+                },"required":["to","body"]
+            }),
+        }
+    }
+
+    /// Parses one call, mapping every malformed shape onto a stable code so the
+    /// text a sending model sees never depends on serde's message formatting.
     fn parse(args: &serde_json::Value) -> Result<MessageArgs, ToolError> {
         let value: MessageArgs = serde_json::from_value(args.clone())
-            .map_err(|error| ToolError::execution(error.to_string()))?;
+            .map_err(|_| ToolError::execution(MESSAGE_INVALID_ARGUMENTS))?;
         if value.body.trim().is_empty() {
-            return Err(ToolError::execution("body must not be empty"));
+            return Err(ToolError::execution(MESSAGE_INVALID_BODY));
         }
         Ok(value)
     }
@@ -51,22 +76,7 @@ impl ToolProvider for MessageToolProvider {
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
-        Ok(vec![ToolSpec {
-            output: Default::default(),
-            concurrency: cookie_agent_engine::ToolConcurrency::Parallel,
-            result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::Bounded,
-            name: "send_message".into(),
-            permission_name: "message".into(),
-            description: "Send a message to an agent in the current delegation tree.".into(),
-            parameters: serde_json::json!({
-                "type":"object","additionalProperties":false,
-                "properties":{
-                    "recipient_session_id":{"type":"string"},
-                    "body":{"type":"string","minLength":1},
-                    "mode":{"type":"string","enum":["steer","queue"],"default":"steer"}
-                },"required":["recipient_session_id","body"]
-            }),
-        }])
+        Ok(vec![Self::spec()])
     }
 
     fn get_permission_name(_name: &str) -> Result<&'static str, ToolError> {
@@ -87,7 +97,7 @@ impl ToolProvider for MessageToolProvider {
         _name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, ToolError> {
-        Ok(Self::parse(arguments)?.recipient_session_id.to_string())
+        Ok(Self::parse(arguments)?.to.to_string())
     }
 
     async fn prepare(
@@ -103,7 +113,7 @@ impl ToolProvider for MessageToolProvider {
         let args = Self::parse(&call.arguments)?;
         let relationship = self
             .engine
-            .message_relationship(ctx.session, args.recipient_session_id)
+            .message_relationship(ctx.session, args.to)
             .map_err(|error| ToolError::execution(error.to_string()))?;
         let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -157,7 +167,7 @@ impl PreparedExecutor for MessageExecutor {
                 sender_session_id: context.session,
                 sender_run_id: context.run,
                 sender_tool_call_id: self.call_id,
-                recipient_session_id: self.args.recipient_session_id,
+                recipient_session_id: self.args.to,
                 body: self.args.body,
                 mode: self.args.mode,
             })
@@ -174,5 +184,126 @@ impl PreparedExecutor for MessageExecutor {
             attachments: Vec::new(),
             additional_messages: Vec::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cookie_agent_protocol::SessionId;
+
+    use super::{MessageArgs, MessageToolProvider};
+
+    fn arguments(body: &str) -> serde_json::Value {
+        serde_json::json!({"to": SessionId::new_v7().to_string(), "body": body})
+    }
+
+    /// The execution-message wrapper keeps the stable code verbatim.
+    fn rejection(arguments: &serde_json::Value) -> String {
+        let rendered = MessageToolProvider::parse(arguments)
+            .expect_err("arguments must be rejected")
+            .to_string();
+        rendered
+            .strip_prefix("tool failed: ")
+            .unwrap_or(&rendered)
+            .to_owned()
+    }
+
+    #[test]
+    fn surface_addresses_the_recipient_with_to() {
+        let spec = MessageToolProvider::spec().parameters;
+        assert_eq!(spec["properties"]["to"]["type"], "string");
+        assert_eq!(spec["required"], serde_json::json!(["to", "body"]));
+        assert_eq!(spec["additionalProperties"], false);
+        assert!(spec["properties"].get("recipient_session_id").is_none());
+    }
+
+    #[test]
+    fn parse_accepts_the_documented_shape_and_defaults_the_mode() {
+        let recipient = SessionId::new_v7();
+        let parsed = MessageToolProvider::parse(&serde_json::json!({
+            "to": recipient.to_string(),
+            "body":"chain start"
+        }))
+        .expect("valid arguments");
+        assert_eq!(parsed.to, recipient);
+        assert_eq!(parsed.body, "chain start");
+        assert_eq!(
+            parsed.mode,
+            cookie_agent_protocol::ProducerDeliveryMode::Steer
+        );
+        let queued = MessageToolProvider::parse(&serde_json::json!({
+            "to": recipient.to_string(),
+            "body":"chain start",
+            "mode":"queue"
+        }))
+        .expect("queued arguments");
+        assert_eq!(
+            queued.mode,
+            cookie_agent_protocol::ProducerDeliveryMode::Queue
+        );
+    }
+
+    #[test]
+    fn normalized_arguments_record_the_to_field_only() {
+        let recipient = SessionId::new_v7();
+        let parsed = MessageToolProvider::parse(&serde_json::json!({
+            "to": recipient.to_string(),
+            "body":"chain start"
+        }))
+        .expect("valid arguments");
+        let normalized = serde_json::to_value(&parsed).expect("normalized arguments");
+        assert_eq!(normalized["to"], recipient.to_string());
+        assert!(normalized.get("recipient_session_id").is_none());
+    }
+
+    #[test]
+    fn every_malformed_shape_reports_one_stable_code() {
+        let recipient = SessionId::new_v7();
+        for arguments in [
+            // The pre-rename argument name is unknown, not an alias.
+            &serde_json::json!({"recipient_session_id": recipient.to_string(), "body":"mail"}),
+            &serde_json::json!({"body":"missing recipient"}),
+            &serde_json::json!({"to":"not-a-session-id","body":"mail"}),
+            &serde_json::json!({"to":recipient.to_string(),"body":"mail","extra":true}),
+            &serde_json::json!({"to":recipient.to_string(),"body":42}),
+            &serde_json::json!({"to":recipient.to_string(),"body":"mail","mode":"later"}),
+            &serde_json::json!([]),
+        ] {
+            assert_eq!(
+                rejection(arguments),
+                cookie_agent_engine::MESSAGE_INVALID_ARGUMENTS,
+                "unstable parse error for {arguments}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_bodies_keep_their_own_stable_code() {
+        for body in ["", "   ", "\n\t"] {
+            assert_eq!(
+                rejection(&arguments(body)),
+                cookie_agent_engine::MESSAGE_INVALID_BODY
+            );
+        }
+    }
+
+    #[test]
+    fn argument_shape_stays_private_to_the_tool() {
+        // The executor forwards `to` as the engine's recipient field; the model
+        // never sees that name.
+        let normalized = serde_json::to_value(MessageArgs {
+            to: SessionId::new_v7(),
+            body: "mail".into(),
+            mode: cookie_agent_protocol::ProducerDeliveryMode::Queue,
+        })
+        .expect("serializable");
+        let mut keys = normalized
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, vec!["body", "mode", "to"]);
     }
 }

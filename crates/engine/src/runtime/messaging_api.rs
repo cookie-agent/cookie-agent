@@ -1,5 +1,6 @@
-//! Agent-to-agent messaging: tree-peer authorization and durable
-//! producer-backed delivery for the `send_message` tool surface.
+//! Agent-to-agent messaging: tree-peer authorization, chain and congestion
+//! guards, and durable producer-backed delivery for the `send_message` tool
+//! surface.
 //!
 //! Delivery always goes through the producer mailbox path: the message is
 //! durably accepted as a `ProducerMessageAccepted` event on the recipient
@@ -8,6 +9,11 @@
 //! (`queue`), or wakes an idle/finished session through post-send reconcile.
 //! `SessionCommand::Steer` is intentionally not used for agent mail; using
 //! both paths would double-deliver the same message.
+//!
+//! Both guards are enforced at acceptance: `max_hops` bounds inherited chain
+//! depth (computed from the sender's log) and `max_inflight_per_pair` bounds
+//! one directed sender→recipient window of unacknowledged mail. A limit of `0`
+//! disables its guard.
 
 use cookie_agent_protocol::{
     ProducerDeliveryMode, ProducerId, ProducerIdempotencyKey, ProducerMessageId, ProducerOwner,
@@ -22,10 +28,13 @@ use super::{Engine, EngineError, SessionCommand};
 /// so sending models can react predictably (retry, give up, or report).
 pub const MESSAGE_DISABLED: &str = "send_message:disabled";
 pub const MESSAGE_INVALID_BODY: &str = "send_message:invalid_body";
+pub const MESSAGE_INVALID_ARGUMENTS: &str = "send_message:invalid_arguments";
 pub const MESSAGE_UNKNOWN_SESSION: &str = "send_message:unknown_session";
 pub const MESSAGE_NOT_TREE_PEER: &str = "send_message:not_tree_peer";
 pub const MESSAGE_SELF_SEND: &str = "send_message:self_send";
 pub const MESSAGE_INBOX_FULL: &str = "send_message:inbox_full";
+pub const MESSAGE_MAX_HOPS_EXCEEDED: &str = "send_message:max_hops_exceeded";
+pub const MESSAGE_INFLIGHT_FULL: &str = "send_message:inflight_full";
 pub const MESSAGE_ENGINE_SHUTDOWN: &str = "send_message:engine_shutdown";
 
 /// Immutable arguments for one `send_message` tool invocation. The sender
@@ -245,15 +254,23 @@ impl Engine {
     /// contract, so re-registration after a process restart is expected and
     /// cheap. The idempotency key derives from `(sender session, run, tool
     /// call)`: a retried call returns the original `message_id` and delivers
-    /// once. The inbox-cap check and the acceptance run atomically inside the
-    /// recipient's actor (`ProducerCommand::SendAgentMessage`).
+    /// once. The inbox-cap check, the pair-window check, the hop guard, and the
+    /// acceptance run atomically inside the recipient's actor
+    /// (`ProducerCommand::SendAgentMessage`).
+    ///
+    /// Chain depth is computed here, from the *sender's* log, because the hop
+    /// basis is the sender run's own durable observation of agent mail — a
+    /// different actor's state that the recipient must not reach into. Depth is
+    /// monotonic within a run, so two concurrent sends from one run resolve to
+    /// the same value, which is the correct answer for both.
     ///
     /// # Errors
     ///
     /// Returns [`EngineError::Messaging`] stable codes for disabled messaging,
     /// invalid bodies, unknown recipients, non-tree-peer recipients, self
-    /// sends, full inboxes, and shutdown races; [`EngineError::Producer`] for
-    /// idempotency payload conflicts.
+    /// sends, full inboxes, exhausted pair windows, chains past `max_hops`,
+    /// and shutdown races; [`EngineError::Producer`] for idempotency payload
+    /// conflicts.
     pub async fn send_agent_message(
         &self,
         invocation: AgentMessageInvocation,
@@ -272,6 +289,9 @@ impl Engine {
         let recipient_state = self.agent_recipient_state(invocation.recipient_session_id)?;
         let sender = self.messaging_projection(invocation.sender_session_id)?;
         let sender_agent_type = sender.creation_agent.agent.to_string();
+        let hop = self
+            .goal_producer_projection(invocation.sender_session_id)?
+            .inherited_agent_hop(invocation.sender_run_id);
         let authority = ProducerAuthority {
             owner: ProducerOwner::Agent {
                 session_id: invocation.sender_session_id,
@@ -299,6 +319,7 @@ impl Engine {
                     sender: invocation.sender_session_id,
                     sender_agent_type,
                     body: invocation.body,
+                    hop,
                     reply,
                 })
             })

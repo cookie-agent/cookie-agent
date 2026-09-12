@@ -1728,19 +1728,19 @@ mod tests {
     }
 
     #[test]
-    fn steer_subagent_matches_owned_child_agent_type_in_delegate_map() {
+    fn subagent_operation_matches_owned_child_agent_type_in_delegate_map() {
         let resource = resource(PermissionAction::Delegate, "reviewer", b"reviewer");
         let operation = PreparedOperationIdentity::new(
-            Sha256Digest::of_bytes(b"steer args"),
+            Sha256Digest::of_bytes(b"delegate args"),
             vec![ApprovalCapability {
                 action: PermissionAction::Delegate,
-                operation: PreparedCapabilityOperation::new("steer_subagent:steer")
-                    .expect("steer operation"),
+                operation: PreparedCapabilityOperation::new("delegate_subagent:spawn")
+                    .expect("delegate operation"),
             }],
             vec![resource],
             Sha256Digest::of_bytes(b"context"),
         )
-        .expect("prepared steer operation");
+        .expect("prepared subagent operation");
         let allowed = PermissionPipeline::default().decide_operation(
             &policy(vec![rule(
                 "allow-reviewer",

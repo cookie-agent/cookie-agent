@@ -2180,7 +2180,10 @@ impl App {
     /// Warning rows from strict descendants of the viewed session, attributed
     /// to their owning session. Ownership stays durable in the child's own
     /// projection; this is a read-only aggregate for the current view.
-    pub(super) fn descendant_warnings(&self, viewed: SessionId) -> Vec<String> {
+    /// Warning rows from descendant sessions paired with the durable time of
+    /// the event so the transcript can splice them at their chronological
+    /// position in the viewed conversation.
+    pub(super) fn descendant_warnings(&self, viewed: SessionId) -> Vec<(jiff::Timestamp, String)> {
         let Some(tree) = &self.tree else {
             return Vec::new();
         };
@@ -2206,13 +2209,18 @@ impl App {
                     ..
                 } = item
                 {
-                    warnings.push(format!(
-                        "from {source} ({}): {text}",
-                        short_id(meta.session_id)
+                    // Pre-date rows (from before insertion times were tracked)
+                    // keep their historical bottom-of-transcript position by
+                    // sorting after every anchored item.
+                    let time = state.item_time(item.id()).unwrap_or(jiff::Timestamp::MAX);
+                    warnings.push((
+                        time,
+                        format!("from {source} ({}): {text}", short_id(meta.session_id)),
                     ));
                 }
             }
         }
+        warnings.sort_by_key(|(time, _)| *time);
         warnings
     }
 
@@ -3123,7 +3131,37 @@ impl App {
             Some(event.session_id) == self.selected
                 && matches!(&event.payload, EventPayload::SessionReverted { .. })
         });
+        let event_session_id = event.map(|event| event.session_id);
+        let event_session_len_before = event_session_id.and_then(|session_id| {
+            self.store
+                .sessions
+                .get(&session_id)
+                .map(|state| state.transcript.len())
+        });
         let outcome = self.store.apply_delivery(delivery);
+        // A warning-or-worse row appended to a session other than the viewed
+        // one interleaves into the viewed conversation; if the viewed session
+        // is mid-block, its pre-warning content must finish above the break.
+        if matches!(outcome, DeliveryOutcome::Applied)
+            && let Some(event_session_id) = event_session_id
+            && Some(event_session_id) != self.selected
+            && let Some(selected) = self.selected
+            && self
+                .store
+                .sessions
+                .get(&event_session_id)
+                .is_some_and(|state| {
+                    Some(state.transcript.len()) > event_session_len_before
+                        && matches!(
+                            state.transcript.last(),
+                            Some(TranscriptItem::Event { level, .. })
+                                if *level >= crate::state::EventLevel::Warning
+                        )
+                })
+            && let Some(state) = self.store.sessions.get_mut(&selected)
+        {
+            state.mark_event_split_pending();
+        }
         if let Some(session_id) = replay_ended_session
             && self.pending_live_subscriptions.contains(&session_id)
         {

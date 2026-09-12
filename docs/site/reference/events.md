@@ -103,14 +103,17 @@ implementation verification. No specific compatibility decoder or migration is
 promised here; the versionless best-effort session-history contract still applies.
 
 `ProducerOwner` is tagged by `type`: `plugin { plugin }`,
-`delegation { invocation_id }`, `goal { goal_id }`, or
-`goal_control { goal_id }`. It identifies a specific
+`delegation { invocation_id }`, `goal { goal_id }`,
+`goal_control { goal_id }`, or `agent { session_id }`. It identifies a specific
 stable owner, not a volatile registration or merely an owner kind. Accepted events
 are the sole authoritative message body/mode storage, including deferred queue
 sends while a run is active. Registration records are never session events.
 `GoalControl { goal_id }` owns engine-authored pause/cancel steering, not goal
 continuation reminders. These accepted messages survive goal-controller teardown
-and reminder invalidation.
+and reminder invalidation. Accepted agent-owned messages may carry optional
+`agent_hop` metadata for the messaging loop guard. It is absent on non-agent
+producers and legacy agent mail, is not rendered in the agent-visible envelope,
+and does not participate in idempotency comparison.
 
 The optional accepted-event
 `reminder: GoalReminderIdentity { goal_id, revision, kind }` identifies a goal

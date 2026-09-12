@@ -97,10 +97,12 @@ pub(super) enum ProducerCommand {
         body: String,
         reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
     },
-    /// Atomic agent-mail accept: the pending-agent-mail cap check and the
-    /// durable `ProducerMessageAccepted` append happen inside one actor
-    /// handler, so concurrent senders cannot interleave count-then-accept and
-    /// the envelope (which embeds the generated message id) renders once.
+    /// Atomic agent-mail accept: the hop guard, pending-agent-mail cap check,
+    /// pair-window guard, and durable `ProducerMessageAccepted` append happen
+    /// inside one actor handler, so concurrent senders cannot interleave
+    /// count-then-accept and the envelope (which embeds the generated message
+    /// id) renders once. Guards run strictly after the idempotency replay
+    /// check, so a retried acceptance never re-judges a stored message.
     SendAgentMessage {
         authority: ProducerAuthority,
         producer_id: ProducerId,
@@ -110,6 +112,9 @@ pub(super) enum ProducerCommand {
         sender: SessionId,
         sender_agent_type: String,
         body: String,
+        /// Chain depth computed from the sender's own log before this command
+        /// is issued; stamped onto the accepted event as guard metadata.
+        hop: u32,
         reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
     },
     CommitDelegationCompletion {
@@ -368,6 +373,7 @@ impl Engine {
                 sender,
                 sender_agent_type,
                 body,
+                hop,
                 reply,
             } => {
                 let _ = reply.send(self.accept_agent_message_direct(
@@ -380,6 +386,7 @@ impl Engine {
                     sender,
                     &sender_agent_type,
                     body,
+                    hop,
                 ));
             }
             ProducerCommand::CommitDelegationCompletion {
@@ -1390,10 +1397,40 @@ impl Engine {
                 description,
                 body,
                 reminder,
+                agent_hop: None,
             },
         )?;
         self.inner.store.persist_buffered_session(session)?;
         Ok(message_id)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn accept_agent_message_direct_for_test(
+        &self,
+        session: SessionId,
+        authority: &ProducerAuthority,
+        producer_id: ProducerId,
+        mode: ProducerDeliveryMode,
+        key: ProducerIdempotencyKey,
+        description: SafeDisplayText,
+        sender: SessionId,
+        sender_agent_type: &str,
+        body: String,
+        hop: u32,
+    ) -> Result<ProducerMessageId, EngineError> {
+        self.accept_agent_message_direct(
+            session,
+            authority,
+            producer_id,
+            mode,
+            key,
+            description,
+            sender,
+            sender_agent_type,
+            body,
+            hop,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1408,6 +1445,7 @@ impl Engine {
         sender: SessionId,
         sender_agent_type: &str,
         body: String,
+        hop: u32,
     ) -> Result<ProducerMessageId, EngineError> {
         self.require_registration(session, producer_id, authority)?;
         let projection = self.goal_producer_projection(session)?;
@@ -1431,19 +1469,16 @@ impl Engine {
             self.inner.store.persist_buffered_session(session)?;
             return Ok(existing.message_id);
         }
-        let limit = self.inner.config.runtime.messaging.max_pending_per_session;
-        let pending_agent = projection
-            .messages
-            .iter()
-            .filter(|message| {
-                pending(message) && matches!(message.producer_owner, ProducerOwner::Agent { .. })
-            })
-            .count();
-        if pending_agent >= limit {
-            return Err(EngineError::Messaging(
-                super::messaging_api::MESSAGE_INBOX_FULL.to_owned(),
-            ));
-        }
+        // Guards follow the replay check: a retried send keeps its original
+        // receipt no matter how much chain depth or inbox pressure appeared
+        // since the first acceptance.
+        agent_message_guard(
+            &projection,
+            &authority.owner,
+            hop,
+            &self.inner.config.runtime.messaging,
+        )
+        .map_err(|code| EngineError::Messaging(code.to_owned()))?;
         let message_id = ProducerMessageId::new_v7();
         let envelope = super::messaging_api::render_agent_message_envelope(
             message_id,
@@ -1463,6 +1498,7 @@ impl Engine {
                 description,
                 body: envelope,
                 reminder: None,
+                agent_hop: Some(hop),
             },
         )?;
         self.inner.store.persist_buffered_session(session)?;
@@ -1896,6 +1932,50 @@ fn next_revision(revision: u64) -> Result<u64, EngineError> {
 
 fn pending(message: &ProducerMessageRecord) -> bool {
     !message.consumed && !message.discarded
+}
+
+/// Acceptance guards for one agent-mail send, evaluated against the recipient's
+/// projected inbox *after* the idempotency replay check.
+///
+/// Pure (projection plus configuration only) so the chain-depth and window
+/// arithmetic is testable without an actor, a log, or a model server. Order and
+/// the `0` disable rules are the production contract: depth first, then the
+/// recipient-wide inbox cap, then the directed sender window.
+pub(crate) fn agent_message_guard(
+    projection: &GoalProducerProjection,
+    owner: &ProducerOwner,
+    hop: u32,
+    messaging: &cookie_agent_config::MessagingConfig,
+) -> Result<(), &'static str> {
+    let max_hops = messaging.max_hops;
+    if max_hops > 0 && i64::from(hop) > i64::from(max_hops) {
+        return Err(super::messaging_api::MESSAGE_MAX_HOPS_EXCEEDED);
+    }
+    let limit = messaging.max_pending_per_session;
+    let pending_agent = projection
+        .messages
+        .iter()
+        .filter(|message| {
+            pending(message) && matches!(message.producer_owner, ProducerOwner::Agent { .. })
+        })
+        .count();
+    if pending_agent >= limit {
+        return Err(super::messaging_api::MESSAGE_INBOX_FULL);
+    }
+    // The pair window counts this sender's unacknowledged mail only: a
+    // busy third party must not be able to starve one conversation.
+    let pair_limit = messaging.max_inflight_per_pair;
+    if pair_limit > 0 {
+        let inflight = projection
+            .messages
+            .iter()
+            .filter(|message| pending(message) && message.producer_owner == *owner)
+            .count();
+        if inflight >= usize::try_from(pair_limit).unwrap_or(usize::MAX) {
+            return Err(super::messaging_api::MESSAGE_INFLIGHT_FULL);
+        }
+    }
+    Ok(())
 }
 
 fn producer_fault(error: EngineError) -> JsonRpcError {

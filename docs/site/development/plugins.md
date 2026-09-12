@@ -136,7 +136,7 @@ other value is refused and its status contains the reported mismatch.
 
 The host advertises `producer_messaging: true` on a connection only when its
 configuration opts in and the runtime producer handler is installed. The session
-protocol is 17, and the crate/package version is unchanged. Event history
+protocol is 19, and the crate/package version is unchanged. Event history
 remains additive and versionless.
 
 The engine sends `plugin/initialize` with the protocol version, engine version, and engine

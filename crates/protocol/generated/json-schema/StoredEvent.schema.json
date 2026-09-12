@@ -1331,6 +1331,15 @@
           "description": "Sole durable message body and per-send delivery mode. Acceptance is valid\nduring an active run without creating a runless UserInputAdmitted.",
           "type": "object",
           "properties": {
+            "agent_hop": {
+              "description": "Internal `send_message` guard metadata: position of this message in\nits agent-mail chain (`0` for mail sent by a run that has seen no\nagent mail). Never rendered into the agent-visible envelope and\nnever compared for idempotency. Absent on non-Agent producers and on\nmail accepted before hop counting existed.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
             "body": {
               "type": "string"
             },

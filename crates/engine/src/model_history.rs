@@ -2443,6 +2443,7 @@ mod tests {
                     .unwrap(),
                 body: body.into(),
                 reminder: None,
+                agent_hop: None,
             },
         );
         event.run_id = None;

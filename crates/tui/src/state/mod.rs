@@ -542,6 +542,11 @@ pub struct SessionState {
     pub model_selection: cookie_agent_protocol::SessionModelState,
     pub goal: Option<GoalState>,
     pub transcript: Vec<TranscriptItem>,
+    /// Durable insertion time per transcript item id. Cross-session rows such
+    /// as aggregated descendant warnings merge into a viewed transcript by
+    /// this time, so mid-conversation breaks render at their chronological
+    /// position instead of the bottom.
+    pub(crate) item_times: HashMap<u64, jiff::Timestamp>,
     /// The engine's pending-input lane for this session, reduced purely
     /// from admission/promotion/recall events: steered messages the model
     /// has not seen yet. Source of the queue strip between the conversation
@@ -640,6 +645,23 @@ impl SessionState {
     /// The sealed elapsed thinking duration for one part, when known.
     pub fn thinking_duration(&self, item_id: u64, part_id: u64) -> Option<Duration> {
         self.thinking_durations.get(&(item_id, part_id)).copied()
+    }
+
+    /// Durable insertion time of one transcript item, when tracked.
+    pub(crate) fn item_time(&self, item_id: u64) -> Option<jiff::Timestamp> {
+        self.item_times.get(&item_id).copied()
+    }
+
+    /// Mark the open run block split-pending so the next new segment opens a
+    /// fresh block below an interleaved event row. Shared by in-session
+    /// warning rows and aggregated descendant warnings arriving from another
+    /// session while this one streams.
+    pub(crate) fn mark_event_split_pending(&mut self) {
+        if (self.open_assistant.is_some() || self.pending_attempt.is_some())
+            && let Some(projection) = self.open_run_assistant.as_mut()
+        {
+            projection.split_pending = true;
+        }
     }
 }
 
@@ -851,11 +873,15 @@ impl StateStore {
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
             ClientDelivery::Disconnected { error } => {
+                // A live transport notification, not a durable log event: wall
+                // clock is the only available ordering signal.
+                let timestamp = jiff::Timestamp::now();
                 for state in self.sessions.values_mut() {
                     push_event(
                         state,
                         EventLevel::Error,
                         format!("connection failed: {error}"),
+                        timestamp,
                     );
                 }
                 DeliveryOutcome::Applied
@@ -1103,7 +1129,7 @@ fn reduce_event(
             };
             state.goal_revisions.insert(goal_id, revision);
             state.goal = Some(goal.clone());
-            push_item(state, |id| TranscriptItem::Goal {
+            push_item(state, timestamp, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
                 activation: true,
@@ -1130,7 +1156,7 @@ fn reduce_event(
             goal.revision = revision;
             state.goal_revisions.insert(goal_id, revision);
             let snapshot = goal.clone();
-            push_item(state, |id| TranscriptItem::Goal {
+            push_item(state, timestamp, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
                 activation: false,
@@ -1157,7 +1183,7 @@ fn reduce_event(
             goal.revision = revision;
             state.goal_revisions.insert(goal_id, revision);
             let snapshot = goal.clone();
-            push_item(state, |id| TranscriptItem::Goal {
+            push_item(state, timestamp, |id| TranscriptItem::Goal {
                 id,
                 seq: sequence,
                 activation: false,
@@ -1172,6 +1198,9 @@ fn reduce_event(
             body,
             description,
             reminder,
+            // Internal guard metadata: never transcript-visible, so replay
+            // ignores it rather than carrying a second projection.
+            agent_hop: _,
         } => {
             if !valid_producer_reminder_owner(&producer_owner, reminder.as_ref())
                 || state.producer_messages.contains_key(&message_id)
@@ -1207,7 +1236,7 @@ fn reduce_event(
                     Some(format!("{label}: {}", goal.objective))
                 });
             let transcript_index = state.transcript.len();
-            push_item(state, |id| TranscriptItem::ProducerMessage {
+            push_item(state, timestamp, |id| TranscriptItem::ProducerMessage {
                 id,
                 seq: sequence,
                 accepted_at: timestamp,
@@ -1433,7 +1462,7 @@ fn reduce_event(
                 // exactly like the engine's own replay.
                 state.pending_inputs.pop_front();
             }
-            push_item(state, |id| TranscriptItem::User {
+            push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,
                 text: input,
@@ -1496,6 +1525,7 @@ fn reduce_event(
                             agent,
                             resolved_model: resolved_model.clone(),
                         },
+                        timestamp,
                     );
                     state.open_run_assistant = Some(RunAssistantProjection {
                         run_id,
@@ -1513,6 +1543,7 @@ fn reduce_event(
                         agent,
                         resolved_model,
                     },
+                    timestamp,
                 )
             };
             let committed_prefix = state
@@ -1598,7 +1629,7 @@ fn reduce_event(
                 Some(error) => format!("model attempt abandoned: {}", render_model_error(error)),
                 None => "model attempt abandoned".into(),
             };
-            push_event(state, EventLevel::Warning, message);
+            push_event(state, EventLevel::Warning, message, timestamp);
         }
         EventPayload::ModelTurnCommitted {
             attempt_id,
@@ -1705,6 +1736,7 @@ fn reduce_event(
                     turn.finish_reason,
                     render_usage(&turn.usage)
                 ),
+                timestamp,
             );
             for warning in warnings {
                 if let Some(run_id) = run_id
@@ -1721,6 +1753,7 @@ fn reduce_event(
                         "model warning from {}: {warning}",
                         render_model(&resolved_model)
                     ),
+                    timestamp,
                 );
             }
         }
@@ -1741,6 +1774,7 @@ fn reduce_event(
                         "model {} replay · no history entries",
                         render_model(&resolved_model)
                     ),
+                    timestamp,
                 );
             }
             for source in &ordered_decisions {
@@ -1759,6 +1793,7 @@ fn reduce_event(
                         "model {} replay · {decision}",
                         render_model(&resolved_model)
                     ),
+                    timestamp,
                 );
             }
         }
@@ -1779,6 +1814,7 @@ fn reduce_event(
                     render_model(&to),
                     render_model_error(&error)
                 ),
+                timestamp,
             );
         }
         EventPayload::ToolCallStarted { start } => {
@@ -1934,6 +1970,7 @@ fn reduce_event(
                     state,
                     EventLevel::Error,
                     format!("tool {tool_call_id}: {message}"),
+                    timestamp,
                 );
             }
             bump_tool_item(state, tool_call_id);
@@ -1958,6 +1995,7 @@ fn reduce_event(
                 decision.decision, decision.reason_code
             )
             .to_lowercase(),
+            timestamp,
         ),
         EventPayload::ApprovalEscalated {
             approval_id,
@@ -1974,6 +2012,7 @@ fn reduce_event(
                 state,
                 EventLevel::Info,
                 format!("approval {approval_id} escalated: {reason_code:?}").to_lowercase(),
+                timestamp,
             );
         }
         EventPayload::ApprovalUserDecisionRecorded {
@@ -1984,6 +2023,7 @@ fn reduce_event(
             state,
             EventLevel::Info,
             format!("approval {approval_id} response recorded: {decision:?}").to_lowercase(),
+            timestamp,
         ),
         EventPayload::ApprovalFinalized {
             approval_id,
@@ -2001,6 +2041,7 @@ fn reduce_event(
                     decision.reason_code
                 )
                 .to_lowercase(),
+                timestamp,
             );
         }
         EventPayload::ApprovalCancelled {
@@ -2014,6 +2055,7 @@ fn reduce_event(
                 state,
                 EventLevel::Info,
                 format!("approval {approval_id} cancelled: {reason_code:?}").to_lowercase(),
+                timestamp,
             );
         }
         EventPayload::ApprovalDoomLoopDetected {
@@ -2027,6 +2069,7 @@ fn reduce_event(
                 "approval {approval_id} doom loop: {} repeated {repetitions} times",
                 operation_fingerprint.digest()
             ),
+            timestamp,
         ),
         EventPayload::TreeApprovalGrantCommitted { grant } => push_event(
             state,
@@ -2036,6 +2079,7 @@ fn reduce_event(
                 grant.grant_id,
                 grant.operation_fingerprint.digest()
             ),
+            timestamp,
         ),
         EventPayload::RunCompleted { .. } => {
             close_open_assistant(state, timestamp);
@@ -2049,7 +2093,7 @@ fn reduce_event(
             if let Some(run_id) = run_id {
                 state.terminal_runs.insert(run_id);
             }
-            push_event(state, EventLevel::Info, "run completed".into());
+            push_event(state, EventLevel::Info, "run completed".into(), timestamp);
         }
         EventPayload::RunFailed {
             error,
@@ -2078,6 +2122,7 @@ fn reduce_event(
                         resolved_model.as_ref()
                     )
                 ),
+                timestamp,
             );
         }
         EventPayload::RunCancelled { reason } => {
@@ -2099,6 +2144,7 @@ fn reduce_event(
                     || "run cancelled".into(),
                     |reason| format!("run cancelled: {reason}"),
                 ),
+                timestamp,
             );
         }
         EventPayload::RunInterrupted { reason } => {
@@ -2123,6 +2169,7 @@ fn reduce_event(
                     || "run interrupted".into(),
                     |reason| format!("run interrupted: {reason}"),
                 ),
+                timestamp,
             );
         }
         EventPayload::InternalAgentStarted {
@@ -2139,6 +2186,7 @@ fn reduce_event(
                 call.input_summary
             )
             .to_lowercase(),
+            timestamp,
         ),
         EventPayload::InternalAgentCompleted { kind, result, .. } => push_event(
             state,
@@ -2148,6 +2196,7 @@ fn reduce_event(
                 result.output_summary
             )
             .to_lowercase(),
+            timestamp,
         ),
         EventPayload::InternalAgentFailed { kind, failure, .. } => push_event(
             state,
@@ -2156,6 +2205,7 @@ fn reduce_event(
                 "internal agent {kind:?} failed: {}",
                 cookie_agent_protocol::diagnostics::internal(&failure)
             ),
+            timestamp,
         ),
         EventPayload::InternalAgentCancelled { kind, reason, .. } => push_event(
             state,
@@ -2164,6 +2214,7 @@ fn reduce_event(
                 || format!("internal agent {kind:?} cancelled").to_lowercase(),
                 |reason| format!("internal agent {kind:?} cancelled: {reason}").to_lowercase(),
             ),
+            timestamp,
         ),
         EventPayload::InternalAgentInterrupted { kind, reason, .. } => push_event(
             state,
@@ -2172,6 +2223,7 @@ fn reduce_event(
                 || format!("internal agent {kind:?} interrupted").to_lowercase(),
                 |reason| format!("internal agent {kind:?} interrupted: {reason}").to_lowercase(),
             ),
+            timestamp,
         ),
         EventPayload::InternalAgentFallback {
             kind,
@@ -2186,9 +2238,10 @@ fn reduce_event(
             cookie_agent_protocol::diagnostics::internal_fallback(
                 kind, &from, &to, attempts, &failure,
             ),
+            timestamp,
         ),
         EventPayload::ContextCheckpointCommitted { commit } => {
-            push_item(state, |id| TranscriptItem::Compaction {
+            push_item(state, timestamp, |id| TranscriptItem::Compaction {
                 id,
                 version: 0,
                 seq: sequence,
@@ -2206,11 +2259,13 @@ fn reduce_event(
                 "tool output {tool_call_id} elided ({original_bytes} bytes retained at {})",
                 retained.uri
             ),
+            timestamp,
         ),
         EventPayload::ContextRehydrated { files } => push_event(
             state,
             EventLevel::Info,
             format!("rehydrated {} recently read file(s)", files.len()),
+            timestamp,
         ),
         EventPayload::DelegateQueued {
             session_id,
@@ -2222,6 +2277,7 @@ fn reduce_event(
                 || format!("subagent {session_id} queued"),
                 |position| format!("subagent {session_id} queued at position {position}"),
             ),
+            timestamp,
         ),
         EventPayload::DelegateFinished {
             session_id,
@@ -2243,6 +2299,7 @@ fn reduce_event(
             },
             format!("subagent {session_id} finished: {status:?} ({total_lines} lines)")
                 .to_lowercase(),
+            timestamp,
         ),
         EventPayload::DelegateChildTerminated { status, reason } => push_event(
             state,
@@ -2255,10 +2312,14 @@ fn reduce_event(
                 || format!("subagent {status:?}").to_lowercase(),
                 |reason| format!("subagent {status:?}: {reason}").to_lowercase(),
             ),
+            timestamp,
         ),
-        EventPayload::PluginEventAdded { plugin, name, .. } => {
-            push_event(state, EventLevel::Info, format!("plugin {plugin}: {name}"))
-        }
+        EventPayload::PluginEventAdded { plugin, name, .. } => push_event(
+            state,
+            EventLevel::Info,
+            format!("plugin {plugin}: {name}"),
+            timestamp,
+        ),
         EventPayload::PluginDiagnostic {
             plugin,
             message,
@@ -2272,9 +2333,15 @@ fn reduce_event(
             } else {
                 format!("plugin {plugin}: {message}")
             },
+            timestamp,
         ),
         EventPayload::SessionTitleCommitted { change, .. } => {
-            push_event(state, EventLevel::Info, render_title_commit(&change));
+            push_event(
+                state,
+                EventLevel::Info,
+                render_title_commit(&change),
+                timestamp,
+            );
         }
         EventPayload::SessionReverted { .. } => {
             close_open_assistant(state, timestamp);
@@ -2322,7 +2389,7 @@ fn reduce_event(
             }
         }
         EventPayload::MessageInjected { role, input } => {
-            push_item(state, |id| TranscriptItem::PluginMessage {
+            push_item(state, timestamp, |id| TranscriptItem::PluginMessage {
                 id,
                 version: 0,
                 seq: sequence,
@@ -2418,7 +2485,7 @@ fn move_input_to_boundary(
     state.open_run_assistant = None;
     move_transcript_item_to_end(state, index);
     if let Some((attempt_id, attempt, projection)) = pending {
-        rebind_pending_attempt(state, attempt_id, attempt, projection);
+        rebind_pending_attempt(state, attempt_id, attempt, projection, timestamp);
     }
 }
 
@@ -2427,6 +2494,7 @@ fn rebind_pending_attempt(
     attempt_id: AttemptId,
     attempt: AttemptProjection,
     mut projection: RunAssistantProjection,
+    timestamp: jiff::Timestamp,
 ) {
     let index = state
         .transcript
@@ -2458,7 +2526,7 @@ fn rebind_pending_attempt(
         *version = version.wrapping_add(1);
         move_transcript_item_to_end(state, index);
     } else {
-        projection.item_id = open_assistant_item(state, new_attribution);
+        projection.item_id = open_assistant_item(state, new_attribution, timestamp);
     }
     projection.committed_prefix = 0;
     projection.split_pending = false;
@@ -2558,9 +2626,13 @@ fn consume_producer_messages_through(
 }
 
 /// Open a fresh assistant item for a run segment or run-less streaming attempt.
-fn open_assistant_item(state: &mut SessionState, attribution: FrozenAssistantAttribution) -> u64 {
+fn open_assistant_item(
+    state: &mut SessionState,
+    attribution: FrozenAssistantAttribution,
+    timestamp: jiff::Timestamp,
+) -> u64 {
     state.open_assistant = None;
-    push_item(state, |id| TranscriptItem::Assistant {
+    push_item(state, timestamp, |id| TranscriptItem::Assistant {
         id,
         version: 0,
         attribution,
@@ -3036,12 +3108,23 @@ fn seal_open_thinking(
     thinking_durations.insert((open.item_id, open.part_id), duration);
 }
 
-fn push_item(state: &mut SessionState, item: impl FnOnce(u64) -> TranscriptItem) {
+fn push_item(
+    state: &mut SessionState,
+    timestamp: jiff::Timestamp,
+    item: impl FnOnce(u64) -> TranscriptItem,
+) {
     state.next_transcript_id = state.next_transcript_id.wrapping_add(1).max(1);
-    state.transcript.push(item(state.next_transcript_id));
+    let id = state.next_transcript_id;
+    state.item_times.insert(id, timestamp);
+    state.transcript.push(item(id));
 }
 
-fn push_event(state: &mut SessionState, level: EventLevel, text: String) {
+fn push_event(
+    state: &mut SessionState,
+    level: EventLevel,
+    text: String,
+    timestamp: jiff::Timestamp,
+) {
     // A warning-or-worse row injected while an assistant turn is in flight
     // marks the run's block as split-pending: the part streaming right now
     // keeps streaming into the existing block above the row, but the next
@@ -3049,13 +3132,10 @@ fn push_event(state: &mut SessionState, level: EventLevel, text: String) {
     // it. Debug/Info rows (replay decisions, commit notices, lifecycle
     // chatter) never split, and neither do rows between turns, so one run's
     // turns keep sharing a block.
-    if level >= EventLevel::Warning
-        && (state.open_assistant.is_some() || state.pending_attempt.is_some())
-        && let Some(projection) = state.open_run_assistant.as_mut()
-    {
-        projection.split_pending = true;
+    if level >= EventLevel::Warning {
+        state.mark_event_split_pending();
     }
-    push_item(state, |id| TranscriptItem::Event {
+    push_item(state, timestamp, |id| TranscriptItem::Event {
         id,
         version: 0,
         level,
@@ -3120,6 +3200,7 @@ fn split_assistant_if_pending(
             agent,
             resolved_model: projection.current_model.clone(),
         },
+        timestamp,
     );
     projection.item_id = item_id;
     projection.committed_prefix = 0;
@@ -4003,6 +4084,7 @@ mod tests {
             idempotency_key: ProducerIdempotencyKey::new(key).expect("key"),
             body: key.into(),
             reminder,
+            agent_hop: None,
         }
     }
 
@@ -4298,6 +4380,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("build-1").expect("key"),
                     body: "build finished".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -4312,6 +4395,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("build-1").expect("key"),
                     body: "build finished".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -4716,6 +4800,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("pause-control").unwrap(),
                     body: body.into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -4776,6 +4861,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("goal-reminder-7").expect("key"),
                     body: "full internal reminder body".into(),
                     reminder: Some(reminder),
+                    agent_hop: None,
                 },
             ),
             (
@@ -4845,6 +4931,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("reminder-attempt").expect("key"),
                     body: "internal reminder".into(),
                     reminder: Some(reminder),
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -5484,6 +5571,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("retry").expect("key"),
                     body: "result".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -5574,6 +5662,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("unique-row").expect("key"),
                     body: "message".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
         ] {
@@ -5618,6 +5707,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("first").expect("key"),
                     body: "first".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(
@@ -5634,6 +5724,7 @@ mod tests {
                     idempotency_key: ProducerIdempotencyKey::new("second").expect("key"),
                     body: "second".into(),
                     reminder: None,
+                    agent_hop: None,
                 },
             ),
             stored_event(

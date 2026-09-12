@@ -1394,6 +1394,7 @@ mod tests {
                     revision: 1,
                     kind: cookie_agent_protocol::GoalReminderKind::Continuation,
                 }),
+                agent_hop: None,
             },
             EventPayload::UserInputAdmitted {
                 input: "user pending text".into(),

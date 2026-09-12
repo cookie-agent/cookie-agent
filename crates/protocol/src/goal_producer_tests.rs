@@ -294,6 +294,7 @@ fn durable_goal_and_message_events_round_trip_with_correct_run_scope() {
             description: SafeDisplayText::new("Goal reminder: Ship the change").unwrap(),
             body: "Ship the change\n[ ] Verify the root's test results\nrevision: 2".into(),
             reminder: Some(reminder),
+            agent_hop: None,
         },
         EventPayload::ProducerMessageDiscarded {
             message_id,
@@ -603,6 +604,7 @@ fn goal_control_messages_are_real_steers_not_reminders() {
         description: SafeDisplayText::new("Goal paused: Verify tests").unwrap(),
         body: "The goal was paused by the user.".into(),
         reminder: None,
+        agent_hop: None,
     };
     let event = stored(payload.clone(), None);
     assert!(event.validate().is_ok());
@@ -640,6 +642,7 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
                 revision: 0,
                 kind,
             }),
+            agent_hop: None,
         };
         assert!(stored(payload.clone(), None).validate().is_ok());
         round_trip(payload.clone());
@@ -680,6 +683,7 @@ fn producer_description_round_trips_and_legacy_events_default_to_empty() {
         description: SafeDisplayText::new("External work completed").unwrap(),
         body: "Full model-facing result\nwith details".into(),
         reminder: None,
+        agent_hop: None,
     };
     round_trip(payload.clone());
     let mut wire = serde_json::to_value(payload).unwrap();
@@ -715,6 +719,7 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
         description: SafeDisplayText::new("Goal reminder: Establish checklist").unwrap(),
         body: "Establish checklist".into(),
         reminder: Some(reminder),
+        agent_hop: None,
     };
     let first = make(ProducerMessageId::new_v7(), "continuation-1");
     let second = make(ProducerMessageId::new_v7(), "continuation-2");

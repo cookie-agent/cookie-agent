@@ -58,14 +58,6 @@ struct CancelArgs {
     reason: Option<String>,
 }
 
-#[cfg(test)]
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SteerArgs {
-    session_id: SessionId,
-    message: String,
-}
-
 enum DelegateExecutor {
     Invoke {
         engine: Engine,
@@ -456,12 +448,6 @@ fn parse_cancel(arguments: &serde_json::Value) -> Result<CancelArgs, ToolError> 
 }
 
 #[cfg(test)]
-fn parse_steer(arguments: &serde_json::Value) -> Result<SteerArgs, ToolError> {
-    serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))
-}
-
-#[cfg(test)]
 mod tests {
     use cookie_agent_engine::{
         ToolError, ToolPreparationContext, ToolProvider, permissions::ApprovalStore,
@@ -474,7 +460,7 @@ mod tests {
 
     use super::{
         CancelArgs, DelegateToolProvider, GetResultArgs, delegate_permission_resource,
-        parse_delegate, parse_steer,
+        parse_delegate,
     };
 
     fn assert_legacy_grant_does_not_match(
@@ -657,25 +643,5 @@ mod tests {
         }))
         .expect_err("reserved staged-skill prompt");
         assert!(error.to_string().contains("reserved staged-skill prefix"));
-    }
-
-    #[test]
-    fn steer_arguments_are_strict_and_session_addressed() {
-        let session_id = cookie_agent_protocol::SessionId::new_v7();
-        let args = parse_steer(&serde_json::json!({
-            "session_id":session_id,
-            "message":"revise the report"
-        }))
-        .expect("steer arguments");
-        assert_eq!(args.session_id, session_id);
-        assert_eq!(args.message, "revise the report");
-        assert!(
-            parse_steer(&serde_json::json!({
-                "session_id":session_id,
-                "message":"revise",
-                "unknown":true
-            }))
-            .is_err()
-        );
     }
 }

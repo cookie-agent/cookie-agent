@@ -499,12 +499,17 @@ const fn default_idle_eviction_after() -> Duration {
 pub struct MessagingConfig {
     #[serde(default = "default_messaging_enabled")]
     pub enabled: bool,
+    /// Deepest accepted agent-mail chain depth. `0` (or any negative value)
+    /// disables the guard; there is no load-time validation beyond the type.
     #[serde(default)]
     pub max_hops: i32,
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// Pending agent mail one recipient may hold at once, from any sender.
     #[serde(default = "default_max_pending_per_session")]
     pub max_pending_per_session: usize,
+    /// Unacknowledged mail one directed sender→recipient pair may hold at
+    /// once. `0` disables the guard.
     #[serde(default = "default_max_inflight_per_pair")]
     pub max_inflight_per_pair: u32,
 }

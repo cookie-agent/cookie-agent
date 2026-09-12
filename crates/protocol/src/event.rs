@@ -1909,6 +1909,14 @@ pub enum EventPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional = nullable)]
         reminder: Option<GoalReminderIdentity>,
+        /// Internal `send_message` guard metadata: position of this message in
+        /// its agent-mail chain (`0` for mail sent by a run that has seen no
+        /// agent mail). Never rendered into the agent-visible envelope and
+        /// never compared for idempotency. Absent on non-Agent producers and on
+        /// mail accepted before hop counting existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        agent_hop: Option<u32>,
     },
     /// Run-scoped reference, not a second body or consumption marker. Its event
     /// sequence participates in ModelTurnCommitted.input_through_seq coverage.

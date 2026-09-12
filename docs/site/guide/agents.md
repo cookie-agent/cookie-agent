@@ -160,8 +160,8 @@ titles; invalid title text rejects the delegation.
 created by this same parent session. Top-level, unknown, foreign, self, and
 ancestor sessions are rejected. A terminal child starts a new run with the new
 prompt; an active child receives the prompt through its pending-input FIFO. The
-current delegation link is refreshed, so result, steer, cancel, queue, slot, and
-completion-notification behavior applies to the resumed work. The existing
+current delegation link is refreshed, so result, messaging, cancel, queue, slot,
+and completion-notification behavior applies to the resumed work. The existing
 session title is never replaced by the new description; the description remains
 only the delegation call's display argument. A child that already has a queued
 or starting delegation cannot be resumed again until that invocation starts or
@@ -180,14 +180,15 @@ Background sessions move through `queued`, `running`, and a terminal
 parent event containing the session ID, status, first 20 result lines (at most 2
 KiB), and total line count. Use `get_subagent_result` with `session_id`, optional
 `wait`, and zero-based `offset`/`limit` to retrieve the full result in pages. Use
-`steer_subagent` with the owned `session_id` and a non-empty `message` to add a
-user turn to a running or queued child. Running children promote steer messages
-FIFO after the current tool batch or at the next completion boundary. A queued
-child persists the message before it has a run and promotes it after its initial
-model response when the queue starts it. Use `cancel_subagent` with the owned
-`session_id` and optional `reason` to cancel it. Result, steer, and cancellation
-operations reject sessions that are not direct children of the caller, and
-steering rejects terminal children.
+`cancel_subagent` with the owned `session_id` and optional `reason` to cancel
+it. Result and cancellation operations reject sessions that are not direct
+children of the caller.
+
+The former `steer_subagent` tool is removed. Agents reach children and other
+same-tree peers with `send_message`, which is governed by the dedicated
+`message` permission action (deny by default) and can also wake finished
+sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
+the [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
 Terminal delegated sessions are paged out of memory when resident child count
 exceeds `delegation.max_resident_subagents` and their last run has been idle for
@@ -199,8 +200,8 @@ never evicted. Eligible children are selected oldest-idle first.
 Paging happens only after event appends have been synced and, for background
 work, after the parent completion teaser is durable. Session listings retain
 lightweight metadata for paged children. Opening one in the TUI, reading its
-result, steering it, or using `resume_session_id` transparently reopens its event
-log and rebuilds the in-memory projection and actor.
+result, sending it a message, or using `resume_session_id` transparently
+reopens its event log and rebuilds the in-memory projection and actor.
 
 ## Layering and replacement
 
@@ -340,7 +341,7 @@ built-in `default` agent is used.
 ## Permissions
 
 Agent documents define an ordered permission map for `read`, `write`, `bash`,
-`delegate`, `mcp`, `plugin`, `skill`, and `webfetch`. Each action is either one bare effect or a resource-pattern map:
+`delegate`, `message`, `mcp`, `plugin`, `skill`, and `webfetch`. Each action is either one bare effect or a resource-pattern map:
 
 ```yaml
 permissions:
@@ -375,7 +376,8 @@ Tool providers publish a static permission name and an optional resource label:
 | `write`, `edit` | `write` | Workspace-relative path inside the workspace; absolute path outside it |
 | `bash` | `bash` | Complete command string |
 | `delegate_subagent` | `delegate` | Target `agent_type` |
-| `get_subagent_result`, `steer_subagent`, `cancel_subagent` | `delegate` | Owned subagent's `agent_type` |
+| `get_subagent_result`, `cancel_subagent` | `delegate` | Owned subagent's `agent_type` |
+| `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, or `*` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | `skill` | Skill name |
 | `goal_get`, `goal_update` | `read`, `write` respectively | `goal:current` |
@@ -485,17 +487,17 @@ that permits it. Review them and work only in repositories you trust.
 
 Delegation targets come from the keys in the `delegate` permission map and must
 resolve to enabled `subagent` or `all` agents. This action controls
-`delegate_subagent`, `get_subagent_result`, `steer_subagent`, and
-`cancel_subagent`. All four tools use the target subagent's agent type as their
+`delegate_subagent`, `get_subagent_result`, and
+`cancel_subagent`. All three tools use the target subagent's agent type as their
 permission resource.
-Result, steer, and cancel retain their existing ownership and argument
+Result and cancel retain their existing ownership and argument
 validation, and permission evaluation uses that agent type. Their approval
 display still shows the owned `session_id`; display text is independent of the
 permission resource.
 
 This changes existing mapped delegation policies. For example,
 `delegate: {reviewer: allow, "*": deny}` allows `delegate_subagent` targeting
-`reviewer`, but denies `get_subagent_result`, `steer_subagent`, and
+`reviewer`, but denies `get_subagent_result` and
 `cancel_subagent` for other agent types. Existing tree grants issued for their
 former identities do not carry over.
 Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4.
@@ -503,6 +505,17 @@ Runtime `delegation.max_depth` defaults to 3 and `max_concurrency` defaults to 4
 `delegate_subagent` replaces the former `delegate` tool name without an alias.
 Old tool calls and prepared-operation grants therefore fail closed. The
 `delegate` spelling above remains the permission action, not a tool alias.
+
+Agent-to-agent messaging is separate from delegation. The removed
+`steer_subagent` tool is replaced by `send_message`, which uses the `message`
+action with relationship labels (`parent`, `child`, `sibling`, `*`) rather than
+agent types, so a `delegate` grant no longer authorizes steering. The tool is
+hidden until a `message` rule allows or asks; agents that previously steered
+children need an explicit rule such as `message: { "child": allow }`. The
+recipient argument is `to`; the earlier `recipient_session_id` spelling has no
+alias, and prepared-operation grants issued under the old argument identity
+fail closed. See the
+[messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
 ### Web fetching
 
