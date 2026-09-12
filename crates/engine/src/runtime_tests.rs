@@ -5519,6 +5519,8 @@ async fn write_scripted_sse(socket: &mut tokio::net::TcpStream, body: &str) {
 #[derive(Clone, Copy)]
 enum RetryModelResponse {
     Status(u16),
+    /// Stream partial content, then fail with a retryable in-band error.
+    PartialError,
     Success,
 }
 
@@ -5550,6 +5552,9 @@ async fn retry_model_server(
                         .write_all(response.as_bytes())
                         .await
                         .expect("retry error response");
+                }
+                RetryModelResponse::PartialError => {
+                    write_scripted_sse(&mut socket, &scripted_partial_error_body()).await;
                 }
                 RetryModelResponse::Success => {
                     write_scripted_sse(&mut socket, &scripted_text_body("fallback success")).await;
@@ -5660,6 +5665,92 @@ async fn assert_retry_budget_and_fallback(status: u16, expected_attempts_on_firs
 async fn retry_loop_uses_exact_standard_and_overload_budgets_then_falls_back() {
     assert_retry_budget_and_fallback(500, 4).await;
     assert_retry_budget_and_fallback(503, 6).await;
+}
+
+#[tokio::test]
+async fn mid_stream_failure_still_consumes_standard_retries_before_fallback() {
+    let retry = ModelRetryConfig {
+        backoff_ceiling_ms: 1,
+        ..ModelRetryConfig::default()
+    };
+    let attempts_on_first = (ModelRetryConfig::default().standard_retries.max(0) as usize) + 1;
+    let mut responses = vec![RetryModelResponse::PartialError; attempts_on_first];
+    responses.push(RetryModelResponse::Success);
+    let (endpoint, captured) = retry_model_server(responses).await;
+    let (fixture, selection) = retry_fixture_with_endpoint(&endpoint, retry).await;
+    fixture
+        .engine
+        .inner
+        .model_retry_sleep_hook
+        .set_mode(ModelRetrySleepMode::Immediate);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("mid-stream-retry-budget").unwrap(),
+                selection,
+                input: "exercise mid-stream retry budget".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "mid-stream retry fallback completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    let requests = captured.await.expect("mid-stream retry requests");
+    assert_eq!(requests.len(), attempts_on_first + 1);
+    assert!(
+        requests[..attempts_on_first]
+            .iter()
+            .all(|request| request_body(request)["model"] == "group/model")
+    );
+    assert_eq!(
+        request_body(requests.last().unwrap())["model"],
+        "group/fallback"
+    );
+
+    let events = projection.log.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+            .count(),
+        attempts_on_first
+    );
+    for model_error in events.iter().filter_map(|event| match &event.payload {
+        EventPayload::AttemptAbandoned { model_error, .. } => Some(model_error),
+        _ => None,
+    }) {
+        let error = model_error
+            .as_ref()
+            .expect("abandoned attempt records its cause");
+        assert_eq!(
+            error.stage,
+            cookie_agent_protocol::ModelErrorStage::StreamEvent
+        );
+        assert!(error.retryable, "mid-stream failure stays retryable");
+    }
+    assert!(events.iter().any(|event| matches!(
+        event.payload,
+        EventPayload::ModelFallback {
+            attempts_on_from,
+            ..
+        } if attempts_on_from as usize == attempts_on_first
+    )));
+    let committed = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::ModelTurnCommitted { .. }))
+        .count();
+    assert_eq!(committed, 1, "partial streams never commit a turn");
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
@@ -6028,6 +6119,16 @@ fn scripted_text_body(text: &str) -> String {
     format!(
         "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n",
         serde_json::json!({"choices":[{"delta":{"content":text},"finish_reason":null}]})
+    )
+}
+
+/// A stream that emits meaningful content and then fails with a retryable
+/// in-band provider error, reproducing a mid-stream stall.
+fn scripted_partial_error_body() -> String {
+    format!(
+        "data: {}\n\ndata: {}\n\n",
+        serde_json::json!({"choices":[{"delta":{"content":"partial "},"finish_reason":null}]}),
+        serde_json::json!({"error":{"code":500,"message":"mid-stream provider failure"}})
     )
 }
 

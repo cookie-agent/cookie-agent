@@ -28,3 +28,10 @@ Retries use exponential backoff from one second with 25% jitter, clamped to
 `backoff_ceiling_ms` and a positive minimum of one millisecond. A provider
 `Retry-After` is authoritative when longer and may exceed that local ceiling
 without a cap. Cancellation still interrupts the wait.
+
+The retry budget applies no matter how far an attempt got: an ordinary
+retryable failure that arrives mid-stream, after partial output was already
+produced, still consumes `standard_retries` on the same model before the loop
+falls back. The abandoned attempt's partial deltas are discarded (the request
+is rebuilt from committed history), so provider prompt caches remain warm for
+the retry.

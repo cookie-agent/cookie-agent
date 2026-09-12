@@ -2083,8 +2083,7 @@ impl Engine {
                             && retry_budget_allows(
                                 policy.model_retry.standard_retries,
                                 attempts - 1,
-                            )
-                            && !meaningful_output =>
+                            ) =>
                     {
                         self.append(
                             session,
