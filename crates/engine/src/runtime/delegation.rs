@@ -35,7 +35,7 @@ impl Engine {
         preset: Option<&str>,
     ) -> Result<session::SessionProjection, EngineError> {
         if resume_session_id == parent_session_id {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "resume_session_id cannot reference the delegating session itself".into(),
             ));
         }
@@ -50,14 +50,14 @@ impl Engine {
                 break;
             };
             if parent_session_id == resume_session_id {
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "resume_session_id cannot reference an ancestor session".into(),
                 ));
             }
             cursor = parent_session_id;
         }
         let resumed = self.inner.store.get(resume_session_id).map_err(|_| {
-            EngineError::MissingTool(format!("resume session {resume_session_id} was not found"))
+            EngineError::ToolFailed(format!("resume session {resume_session_id} was not found"))
         })?;
         let direct_child = matches!(
             resumed.meta.origin,
@@ -70,17 +70,17 @@ impl Engine {
                 && entry.reservation.child_session_id == resume_session_id
         });
         if !direct_child {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "resume session is not a prior direct child of the delegating parent".into(),
             ));
         }
         if &resumed.meta.creation_selection.agent != agent_type {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "resume session agent does not match agent_type".into(),
             ));
         }
         if resumed.meta.creation_selection.preset.as_deref() != preset {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "resume target belongs to a different agent preset".into(),
             ));
         }
@@ -96,7 +96,7 @@ impl Engine {
                 DelegationState::Queued | DelegationState::Starting
             )
         {
-            return Err(EngineError::MissingTool(format!(
+            return Err(EngineError::ToolFailed(format!(
                 "resume session already has in-flight delegation {} in {} state",
                 record.invocation_id,
                 if record.state == DelegationState::Queued {
@@ -270,7 +270,7 @@ impl Engine {
             .prompt
             .starts_with(super::skills::RESERVED_STAGED_SKILL_PREFIX)
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate prompt uses a reserved staged-skill prefix".into(),
             ));
         }
@@ -282,7 +282,7 @@ impl Engine {
             .get(&invocation.parent_tool_call_id)
             .map(super::skills::PreparedSkillInvocation::staged_payload);
         if invocation.resume_session_id.is_some() && invocation.inherit_context {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "resume_session_id and inherit_context cannot both be set".into(),
             ));
         }
@@ -301,7 +301,7 @@ impl Engine {
                 && existing.request.inherit_context == invocation.inherit_context
                 && existing.request.staged_skill == staged_skill;
             if !request_matches {
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "delegate redelivery does not match its durable reservation".into(),
                 ));
             }
@@ -361,7 +361,7 @@ impl Engine {
             .is_some_and(|run| run.status == SessionStatus::Interrupted)
             && self.delegation_event_get(invocation_id).await?.is_none()
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate parent run is interrupted; use recovery".into(),
             ));
         }
@@ -372,17 +372,17 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&invocation.parent_run_id)
             .cloned()
-            .ok_or_else(|| EngineError::MissingTool("delegate parent run is not active".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate parent run is not active".into()))?;
         let parent_policy = Arc::clone(&active_parent.policy);
         let parent_delegation = parent_policy
             .agent
             .delegation
             .as_ref()
-            .ok_or_else(|| EngineError::MissingTool("delegation is disabled".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegation is disabled".into()))?;
         if !parent_delegation.targets.contains(&invocation.agent_type)
             || session_depth(&parent.meta.origin) >= parent_delegation.effective_depth_ceiling
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate target or depth is not allowed".into(),
             ));
         }
@@ -435,7 +435,7 @@ impl Engine {
                     None
                 }
             })
-            .ok_or_else(|| EngineError::MissingTool("delegate child has no model suffix".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate child has no model suffix".into()))?;
         let child_policy = freeze_delegated_child_policy(
             child_agent,
             &parent_policy,
@@ -504,12 +504,12 @@ impl Engine {
                 )
                 .copied()
                 .ok_or_else(|| {
-                    EngineError::MissingTool(
+                    EngineError::ToolFailed(
                         "running resume session has no active delegation record".into(),
                     )
                 })?;
             let run_id = record.child_run_id.ok_or_else(|| {
-                EngineError::MissingTool("running resume session has no active run".into())
+                EngineError::ToolFailed("running resume session has no active run".into())
             })?;
             Some((run_id, record))
         } else {
@@ -524,7 +524,7 @@ impl Engine {
             && fresh_counts_slot
             && self.background_slot_unavailable(root_session_id)?;
         if queued && self.background_queue_full(root_session_id)? {
-            return Err(EngineError::MissingTool(format!(
+            return Err(EngineError::ToolFailed(format!(
                 "delegate admission denied: background queue is full for concurrency limit {}",
                 self.inner
                     .config
@@ -580,7 +580,7 @@ impl Engine {
         let entry = self
             .delegation_event_get(invocation_id)
             .await?
-            .ok_or_else(|| EngineError::MissingTool("delegate reservation disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate reservation disappeared".into()))?;
         if let Some(guard) = producer_guard.as_mut() {
             let mut records = self
                 .inner
@@ -719,7 +719,7 @@ impl Engine {
                     delegation_events.mark_finished(invocation_id, SessionStatus::Cancelled)
                 })
                 .await?;
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "resume session stopped before its prompt was admitted".into(),
                 ));
             }
@@ -733,7 +733,7 @@ impl Engine {
                     child_run_id,
                     Some("resume admission sequence was not published".into()),
                 );
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "resume admission sequence is missing".into(),
                 ));
             };
@@ -766,7 +766,7 @@ impl Engine {
                     SessionStatus::Cancelled,
                 )
                 .await?;
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "delegate admission was abandoned".into(),
                 ));
             }
@@ -832,7 +832,7 @@ impl Engine {
                     SessionStatus::Cancelled,
                 )
                 .await?;
-                return Err(EngineError::MissingTool(
+                return Err(EngineError::ToolFailed(
                     "delegate admission was abandoned".into(),
                 ));
             }
@@ -1239,7 +1239,7 @@ impl Engine {
         admission: Option<(InvocationId, u64)>,
     ) -> Result<RunId, EngineError> {
         if entry.terminal_status.is_some() {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate invocation was cancelled before startup".into(),
             ));
         }
@@ -1253,14 +1253,14 @@ impl Engine {
             .is_ok()
         {
             self.inner.delegate_start_failure_observed.notify_one();
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "injected delegate startup failure".into(),
             ));
         }
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate cancelled before child start".into(),
             ));
         }
@@ -1284,7 +1284,7 @@ impl Engine {
                 if !self.admission_generation_live(invocation_id, generation) {
                     self.sweep_abandoned_admission(invocation_id, generation)
                         .await?;
-                    return Err(EngineError::MissingTool(
+                    return Err(EngineError::ToolFailed(
                         "delegate cancelled before child start".into(),
                     ));
                 }
@@ -1377,7 +1377,7 @@ impl Engine {
                 self.sweep_abandoned_admission(invocation_id, generation)
                     .await?;
             }
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate cancelled during child start".into(),
             ));
         }
@@ -1677,7 +1677,7 @@ impl Engine {
             return Ok(());
         };
         if entry.reservation.child_session_id != child_session_id {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate reservation child does not match completion monitor".into(),
             ));
         }
@@ -1696,7 +1696,7 @@ impl Engine {
                 .runs
                 .get(&child_run_id)
                 .map(|run| run.status)
-                .ok_or_else(|| EngineError::MissingTool("delegate child run is missing".into()))?
+                .ok_or_else(|| EngineError::ToolFailed("delegate child run is missing".into()))?
         } else {
             child.status
         };
@@ -1707,7 +1707,7 @@ impl Engine {
                 | SessionStatus::Interrupted
                 | SessionStatus::Cancelled
         ) {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate child run is not terminal".into(),
             ));
         }
@@ -1924,7 +1924,7 @@ impl Engine {
             })
             .is_ok()
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "injected delegate terminal append failure".into(),
             ));
         }
@@ -2022,13 +2022,13 @@ impl Engine {
             .get(&child_session_id)
             .map(|record| record.invocation_id)
             .ok_or_else(|| {
-                EngineError::MissingTool("queued subagent registry entry is missing".into())
+                EngineError::ToolFailed("queued subagent registry entry is missing".into())
             })?;
         let entry = self
             .delegation_event_get(invocation_id)
             .await?
             .ok_or_else(|| {
-                EngineError::MissingTool("queued subagent reservation is missing".into())
+                EngineError::ToolFailed("queued subagent reservation is missing".into())
             })?;
         let child_run_id = self.ensure_delegate_run(&entry, None).await?;
         let removed = {
@@ -2038,7 +2038,7 @@ impl Engine {
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let record = records.get_mut(&child_session_id).ok_or_else(|| {
-                EngineError::MissingTool("queued subagent registry entry is missing".into())
+                EngineError::ToolFailed("queued subagent registry entry is missing".into())
             })?;
             record.child_run_id = Some(child_run_id);
             record.state = DelegationState::Running;
@@ -2055,7 +2055,7 @@ impl Engine {
         };
         if !removed {
             let error =
-                EngineError::MissingTool("queued subagent disappeared during startup".into());
+                EngineError::ToolFailed("queued subagent disappeared during startup".into());
             let _ = self.cancel_run_durably(
                 child_run_id,
                 Some("queued subagent disappeared during startup".into()),
@@ -2094,7 +2094,7 @@ impl Engine {
             } if parent_session_id == caller_session_id => {
                 Ok(child.meta.creation_selection.agent.clone())
             }
-            _ => Err(EngineError::MissingTool(
+            _ => Err(EngineError::ToolFailed(
                 "subagent session is not owned by the caller".into(),
             )),
         }
@@ -2124,7 +2124,7 @@ impl Engine {
             .get(&child_session_id)
             .copied();
         if registry_record.is_some_and(|record| record.parent_session_id != caller_session_id) {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "subagent registry ownership does not match its parent link".into(),
             ));
         }
@@ -2212,7 +2212,7 @@ impl Engine {
             }
             tokio::select! {
                 () = cancellation.cancelled() => {
-                    return Err(EngineError::MissingTool("subagent result wait cancelled".into()));
+                    return Err(EngineError::ToolFailed("subagent result wait cancelled".into()));
                 }
                 () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
             }
@@ -2226,7 +2226,7 @@ impl Engine {
         message: String,
     ) -> Result<ToolResult, EngineError> {
         if message.trim().is_empty() {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "subagent steer message must not be empty".into(),
             ));
         }
@@ -2241,7 +2241,7 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
             .copied()
-            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
         let child = self.inner.store.get(child_session_id)?;
         match record.state {
             DelegationState::Queued => {
@@ -2263,14 +2263,14 @@ impl Engine {
                         | SessionStatus::Interrupted
                         | SessionStatus::Cancelled
                 ) {
-                    return Err(EngineError::MissingTool(format!(
+                    return Err(EngineError::ToolFailed(format!(
                         "subagent is terminal ({}) and cannot be steered",
                         session_status_name(child.status)
                     )));
                 }
                 let child_run_id =
                     record.child_run_id.or(handle.child_run_id).ok_or_else(|| {
-                        EngineError::MissingTool("subagent has not started a run".into())
+                        EngineError::ToolFailed("subagent has not started a run".into())
                     })?;
                 drop(admission_guard);
                 let result = self
@@ -2283,13 +2283,13 @@ impl Engine {
                     })
                     .await?;
                 if !result.accepted {
-                    return Err(EngineError::MissingTool(
+                    return Err(EngineError::ToolFailed(
                         "subagent is no longer running".into(),
                     ));
                 }
                 Ok(steered_delegate_result(child_session_id, "running"))
             }
-            DelegationState::Finished(status) => Err(EngineError::MissingTool(format!(
+            DelegationState::Finished(status) => Err(EngineError::ToolFailed(format!(
                 "subagent is terminal ({}) and cannot be steered",
                 session_status_name(status)
             ))),
@@ -2313,7 +2313,7 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
             .copied()
-            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
         if record.state == DelegationState::Queued {
             self.inner
                 .delegations_by_session
@@ -2323,7 +2323,7 @@ impl Engine {
                 .filter(|record| record.state == DelegationState::Queued)
                 .map(|_| ())
                 .ok_or_else(|| {
-                    EngineError::MissingTool("subagent is not queued for cancellation".into())
+                    EngineError::ToolFailed("subagent is not queued for cancellation".into())
                 })?;
             let cancellation_reason = reason
                 .as_deref()
@@ -2368,7 +2368,7 @@ impl Engine {
                     .get(handle.invocation_id)
                     .and_then(|entry| entry.child_run_id)
             })
-            .ok_or_else(|| EngineError::MissingTool("subagent has not started a run".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("subagent has not started a run".into()))?;
         drop(admission_guard);
         let child = self.inner.store.get(child_session_id)?;
         if matches!(child.status, SessionStatus::Running | SessionStatus::Idle) {
@@ -2434,7 +2434,7 @@ impl Engine {
                     record.counts_slot,
                 )
             })
-            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))
+            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))
     }
 
     #[cfg(test)]
@@ -2553,7 +2553,7 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?;
         let record = records
             .get_mut(&child_session_id)
-            .ok_or_else(|| EngineError::MissingTool("subagent registry entry is missing".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
         record.background = background;
         record.counts_slot = counts_slot;
         Ok(())
@@ -2899,7 +2899,7 @@ impl Engine {
                         })?
                         .ok_or_else(|| {
                             self.release_recovered_monitor(child_session_id, record.invocation_id);
-                            EngineError::MissingTool(
+                            EngineError::ToolFailed(
                                 "recovered subagent reservation is missing".into(),
                             )
                         })?;
@@ -3380,7 +3380,7 @@ fn validate_redelivery_mode(
         } else {
             "foreground"
         };
-        return Err(EngineError::MissingTool(format!(
+        return Err(EngineError::ToolFailed(format!(
             "delegate redelivery execution mode conflict: durable invocation is {durable}, redelivery requested {redelivery}"
         )));
     }

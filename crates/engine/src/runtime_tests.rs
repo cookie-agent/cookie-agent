@@ -4247,7 +4247,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
         Ok(_) => panic!("duplicate startup provider ID must fail"),
         Err(error) => error,
     };
-    assert!(matches!(startup_error, EngineError::MissingTool(_)));
+    assert!(matches!(startup_error, EngineError::ToolFailed(_)));
     assert!(
         startup_error
             .to_string()
@@ -4264,7 +4264,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
         .engine
         .try_register_tool_provider(provider)
         .expect_err("duplicate runtime provider ID must fail");
-    assert!(matches!(duplicate_error, EngineError::MissingTool(_)));
+    assert!(matches!(duplicate_error, EngineError::ToolFailed(_)));
     assert!(
         duplicate_error
             .to_string()
@@ -4276,7 +4276,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
             .engine
             .try_register_tool_provider(Arc::new(TestPromptProvider::new(reserved_id, Vec::new())))
             .expect_err("startup provider ID must remain reserved");
-        assert!(matches!(error, EngineError::MissingTool(_)));
+        assert!(matches!(error, EngineError::ToolFailed(_)));
         assert!(
             error.to_string().contains(&format!(
                 "tool provider ID `{reserved_id}` is already registered"

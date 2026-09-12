@@ -170,8 +170,10 @@ pub enum EngineError {
     Model(Box<ModelError>),
     #[error("model history failure: {0}")]
     ModelHistory(#[from] model_history::HistoryError),
-    #[error("tool `{0}` is unavailable")]
-    MissingTool(String),
+    /// A tool, skill, or delegation operation was rejected; the message is
+    /// self-contained and safe to surface to the model and the client.
+    #[error("{0}")]
+    ToolFailed(String),
     #[error("tool prompt composition failed: {0}")]
     ToolPrompt(String),
     #[error("session actor for {0} is unavailable")]
@@ -1300,12 +1302,12 @@ impl Engine {
                 options.config.mcp_servers.clone(),
                 options.data_dir.join("mcp-oauth.json"),
             )
-            .map_err(|error| EngineError::MissingTool(error.to_string()))?,
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
         );
         reserve_provider_id(&mut provider_ids, mcp.as_ref())?;
         for provider in &options.tools {
             mcp.reserve_provider(provider.as_ref())
-                .map_err(|error| EngineError::MissingTool(error.to_string()))?;
+                .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         }
         let plugins = Arc::new(crate::PluginRegistry::new(
             options.config.plugins.clone(),
@@ -1901,7 +1903,7 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, provider.as_ref())?;
         if let Err(error) = self.inner.mcp.reserve_provider(provider.as_ref()) {
             provider_ids.remove(provider.provider_id());
-            return Err(EngineError::MissingTool(error.to_string()));
+            return Err(EngineError::ToolFailed(error.to_string()));
         }
         self.inner
             .tools
@@ -2056,7 +2058,7 @@ fn reserve_provider_id(
 ) -> Result<(), EngineError> {
     let provider_id = provider.provider_id();
     if !provider_ids.insert(provider_id) {
-        return Err(EngineError::MissingTool(format!(
+        return Err(EngineError::ToolFailed(format!(
             "tool provider ID `{provider_id}` is already registered"
         )));
     }

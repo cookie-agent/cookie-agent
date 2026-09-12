@@ -111,7 +111,7 @@ impl Engine {
             && !pending_skill_fork
             && !direct_skill_fork
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate call is not pending".into(),
             ));
         }
@@ -119,7 +119,7 @@ impl Engine {
             .terminal_parent_delegate(parent_session_id, parent_run_id, parent_tool_call_id)
             .await?
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate parent run is terminal".into(),
             ));
         }
@@ -130,15 +130,15 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&parent_run_id)
             .map(|active| active.policy.clone())
-            .ok_or_else(|| EngineError::MissingTool("delegate parent run is not active".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate parent run is not active".into()))?;
         let Some(parent_delegation) = &parent_policy.agent.delegation else {
-            return Err(EngineError::MissingTool("delegate admission denied".into()));
+            return Err(EngineError::ToolFailed("delegate admission denied".into()));
         };
         let depth = session_depth(&parent.meta.origin);
         if depth >= parent_delegation.effective_depth_ceiling
             || !parent_delegation.targets.contains(agent)
         {
-            return Err(EngineError::MissingTool("delegate admission denied".into()));
+            return Err(EngineError::ToolFailed("delegate admission denied".into()));
         }
         let invocation_id = invocation_id(parent_session_id, parent_run_id, parent_tool_call_id);
         let delegation_events = self.inner.delegation_events.clone();
@@ -196,7 +196,7 @@ impl Engine {
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate admission was abandoned".into(),
             ));
         }
@@ -206,7 +206,7 @@ impl Engine {
             .terminal_parent_delegate(parent_session_id, parent_run_id, parent_tool_call_id)
             .await?
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate parent run is terminal".into(),
             ));
         }
@@ -300,7 +300,7 @@ impl Engine {
         if admission.is_some_and(|(invocation_id, generation)| {
             !self.admission_generation_live(invocation_id, generation)
         }) {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate admission was abandoned".into(),
             ));
         }
@@ -338,7 +338,7 @@ impl Engine {
                 && *existing_invocation == invocation_id
             {
                 if existing_turns != &turns {
-                    return Err(EngineError::MissingTool(
+                    return Err(EngineError::ToolFailed(
                         "delegated child has conflicting inherited context".into(),
                     ));
                 }
@@ -379,7 +379,7 @@ impl Engine {
                 && *existing_invocation == invocation_id
             {
                 if existing_turns != &turns {
-                    return Err(EngineError::MissingTool(
+                    return Err(EngineError::ToolFailed(
                         "delegated child has conflicting inherited context".into(),
                     ));
                 }
@@ -416,7 +416,7 @@ impl Engine {
                         invocation_id: existing_invocation,
                     } if *existing_invocation == invocation_id => {
                         if existing != &title {
-                            return Err(EngineError::MissingTool(
+                            return Err(EngineError::ToolFailed(
                                 "delegated child has a conflicting origin title".into(),
                             ));
                         }
@@ -426,7 +426,7 @@ impl Engine {
                     | SessionTitleChange::UserClear { .. }
                     | SessionTitleChange::UserReset { .. } => {}
                     _ => {
-                        return Err(EngineError::MissingTool(
+                        return Err(EngineError::ToolFailed(
                             "delegated child has a conflicting session title".into(),
                         ));
                     }
@@ -467,7 +467,7 @@ impl Engine {
                         invocation_id: existing_invocation,
                     } if *existing_invocation == invocation_id => {
                         if existing != &title {
-                            return Err(EngineError::MissingTool(
+                            return Err(EngineError::ToolFailed(
                                 "delegated child has a conflicting origin title".into(),
                             ));
                         }
@@ -477,7 +477,7 @@ impl Engine {
                     | SessionTitleChange::UserClear { .. }
                     | SessionTitleChange::UserReset { .. } => {}
                     _ => {
-                        return Err(EngineError::MissingTool(
+                        return Err(EngineError::ToolFailed(
                             "delegated child has a conflicting session title".into(),
                         ));
                     }
@@ -530,9 +530,9 @@ impl Engine {
             .inflight_delegations
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
-        let entries = admissions.get_mut(&invocation_id).ok_or_else(|| {
-            EngineError::MissingTool("delegate admission is not in flight".into())
-        })?;
+        let entries = admissions
+            .get_mut(&invocation_id)
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission is not in flight".into()))?;
         for admission in entries.values_mut() {
             admission.cancelled = true;
         }
@@ -553,7 +553,7 @@ impl Engine {
         let admission = admissions
             .get_mut(&invocation_id)
             .and_then(|entries| entries.get_mut(&generation))
-            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission disappeared".into()))?;
         admission.child_session_id = Some(child_session_id);
         Ok(())
     }
@@ -573,7 +573,7 @@ impl Engine {
         let admission = admissions
             .get_mut(&invocation_id)
             .and_then(|entries| entries.get_mut(&generation))
-            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission disappeared".into()))?;
         admission.child_session_id = Some(child_session_id);
         admission.child_run_id = Some(child_run_id);
         admission.starting = false;
@@ -597,7 +597,7 @@ impl Engine {
             .get_mut(&invocation_id)
             .and_then(|entries| entries.get_mut(&generation))
             .filter(|admission| !admission.cancelled)
-            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission disappeared".into()))?;
         admission.child_session_id = Some(child_session_id);
         admission.child_run_id = Some(child_run_id);
         admission.resume_attach = true;
@@ -620,7 +620,7 @@ impl Engine {
         let admission = admissions
             .get_mut(&invocation_id)
             .and_then(|entries| entries.get_mut(&generation))
-            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission disappeared".into()))?;
         admission.resume_admission_seq = Some(admission_seq);
         Ok(())
     }
@@ -639,7 +639,7 @@ impl Engine {
             .get_mut(&invocation_id)
             .and_then(|entries| entries.get_mut(&generation))
             .filter(|admission| !admission.cancelled)
-            .ok_or_else(|| EngineError::MissingTool("delegate admission disappeared".into()))?;
+            .ok_or_else(|| EngineError::ToolFailed("delegate admission disappeared".into()))?;
         admission.starting = true;
         Ok(())
     }
@@ -808,15 +808,15 @@ impl Engine {
                 invocation_id,
                 target
                     .child_session_id
-                    .ok_or_else(|| EngineError::MissingTool("resume child is missing".into()))?,
+                    .ok_or_else(|| EngineError::ToolFailed("resume child is missing".into()))?,
                 target
                     .child_run_id
-                    .ok_or_else(|| EngineError::MissingTool("resume run is missing".into()))?,
+                    .ok_or_else(|| EngineError::ToolFailed("resume run is missing".into()))?,
                 target.resume_admission_seq.ok_or_else(|| {
-                    EngineError::MissingTool("resume admission sequence is missing".into())
+                    EngineError::ToolFailed("resume admission sequence is missing".into())
                 })?,
                 target.previous_record.ok_or_else(|| {
-                    EngineError::MissingTool("previous delegation owner is missing".into())
+                    EngineError::ToolFailed("previous delegation owner is missing".into())
                 })?,
                 SessionStatus::Cancelled,
             )

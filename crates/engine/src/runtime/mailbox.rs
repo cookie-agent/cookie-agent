@@ -193,9 +193,9 @@ impl Engine {
         self.submit_tool_result_status(session, run, tool_call_id, result, false)
             .await
             .and_then(|committed| {
-                committed.then_some(()).ok_or_else(|| {
-                    EngineError::MissingTool("tool call is no longer pending".into())
-                })
+                committed
+                    .then_some(())
+                    .ok_or_else(|| EngineError::ToolFailed("tool call is no longer pending".into()))
             })
     }
 

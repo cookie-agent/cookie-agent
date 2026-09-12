@@ -46,7 +46,7 @@ impl Engine {
                 }
                 _ => None,
             })
-            .ok_or_else(|| EngineError::MissingTool("tool ownership is missing".into()))
+            .ok_or_else(|| EngineError::ToolFailed("tool ownership is missing".into()))
     }
 
     pub(super) fn terminate_tool_direct(

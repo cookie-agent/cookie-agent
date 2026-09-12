@@ -270,7 +270,7 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Base64(_) => "base64",
         EngineError::Model(_) => "model",
         EngineError::ModelHistory(_) => "model_history",
-        EngineError::MissingTool(_) => "missing_tool",
+        EngineError::ToolFailed(_) => "tool_failed",
         EngineError::ToolPrompt(_) => "tool_prompt",
         EngineError::MissingActor(_) => "missing_actor",
         EngineError::SessionOwnedByAnotherProcess(_) => "session_owned_by_another_process",

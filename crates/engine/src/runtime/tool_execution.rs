@@ -927,9 +927,9 @@ impl Engine {
         for provider in &providers {
             for tool in provider
                 .tools_for_session(&SessionToolContext::new(session))
-                .map_err(|error| EngineError::MissingTool(error.to_string()))?
+                .map_err(|error| EngineError::ToolFailed(error.to_string()))?
             {
-                tool.output.validate().map_err(EngineError::MissingTool)?;
+                tool.output.validate().map_err(EngineError::ToolFailed)?;
                 let delegation_tool = tool.permission_name == "delegate";
                 let goal_tool = matches!(tool.name.as_str(), "goal_get" | "goal_update");
                 let enabled = (!delegation_tool || delegate_enabled)
@@ -942,13 +942,13 @@ impl Engine {
                     )
                 {
                     if !names.insert(tool.name.clone()) {
-                        return Err(EngineError::MissingTool(format!(
+                        return Err(EngineError::ToolFailed(format!(
                             "tool name `{}` is published by more than one provider",
                             tool.name
                         )));
                     }
                     let schema = JsonSchema::new(tool.parameters.clone()).map_err(|error| {
-                        EngineError::MissingTool(format!(
+                        EngineError::ToolFailed(format!(
                             "tool `{}` has invalid JSON Schema: {error}",
                             tool.name
                         ))

@@ -80,7 +80,7 @@ impl Engine {
         if let Some((invocation_id, generation)) = admission
             && !self.admission_generation_live(invocation_id, generation)
         {
-            return Err(EngineError::MissingTool(
+            return Err(EngineError::ToolFailed(
                 "delegate admission was abandoned or superseded".into(),
             ));
         }

@@ -305,13 +305,13 @@ pub(super) fn delegated_title(
     max_chars: usize,
 ) -> Result<SessionTitle, EngineError> {
     if description.chars().any(char::is_control) {
-        return Err(EngineError::MissingTool(
+        return Err(EngineError::ToolFailed(
             "delegate description must be a nonblank control-free session title".into(),
         ));
     }
     let bounded = description.chars().take(max_chars).collect::<String>();
     SessionTitle::new(bounded).map_err(|_| {
-        EngineError::MissingTool(
+        EngineError::ToolFailed(
             "delegate description must be a nonblank control-free session title".into(),
         )
     })

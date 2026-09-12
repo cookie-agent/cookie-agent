@@ -213,7 +213,7 @@ impl Engine {
                 .map(|(skill_name, _)| skill_name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(EngineError::MissingTool(format!(
+            return Err(EngineError::ToolFailed(format!(
                 "unknown or unavailable model skill `{name}`; valid skills: {hints}"
             )));
         };
@@ -417,9 +417,7 @@ impl Engine {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                EngineError::MissingTool(
-                    "fork skill requires an available delegation target".into(),
-                )
+                EngineError::ToolFailed("fork skill requires an available delegation target".into())
             })?;
         self.inner
             .pending_skill_forks
@@ -493,7 +491,7 @@ impl Engine {
             .await;
         self.execute_tool(active, run, prepared, turn_context)
             .await
-            .map_err(|failure| EngineError::MissingTool(failure.message))
+            .map_err(|failure| EngineError::ToolFailed(failure.message))
     }
 
     fn prepare_skill_invocation(
@@ -599,7 +597,7 @@ impl Engine {
                 .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            EngineError::MissingTool(format!("unknown skill `{name}`; valid skills: {names}"))
+            EngineError::ToolFailed(format!("unknown skill `{name}`; valid skills: {names}"))
         })
     }
 
