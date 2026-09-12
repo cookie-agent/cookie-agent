@@ -473,6 +473,13 @@ pub(crate) enum ReplayContextTransition {
         found: Option<VariantId>,
         expected: Option<VariantId>,
     },
+    /// A persisted artifact failed validation for the current target (for
+    /// example cross-adapter history after a fallback). Keyed by reason so
+    /// one logical incompatiblity warns once per run even though every later
+    /// attempt re-evaluates the same history entries.
+    InvalidPayload {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -575,6 +582,10 @@ pub struct SessionState {
     /// run. Durable replay/reconnect and later tool-loop attempts may repeat
     /// request diagnostics without creating another logical transition.
     pub(crate) replay_context_warnings: HashSet<(RunId, Sha256Digest, ReplayContextTransition)>,
+    /// Adapter warnings already surfaced for a run. After a model fallback the
+    /// same reconstruction warnings regenerate on every committed turn; each
+    /// distinct warning text is shown only once per run.
+    pub(crate) model_turn_warnings: HashSet<(RunId, String)>,
     pub(crate) goal_revisions: HashMap<GoalId, u64>,
     pub(crate) producer_messages: HashMap<ProducerMessageId, ProducerMessageProjection>,
     pub(crate) producer_dedup: HashMap<(ProducerOwner, ProducerIdempotencyKey), ProducerMessageId>,
@@ -1693,6 +1704,13 @@ fn reduce_event(
                 ),
             );
             for warning in warnings {
+                if let Some(run_id) = run_id
+                    && !state
+                        .model_turn_warnings
+                        .insert((run_id, warning.to_string()))
+                {
+                    continue;
+                }
                 push_event(
                     state,
                     EventLevel::Warning,
@@ -3368,6 +3386,11 @@ fn replay_context_warning_key(
                 expected: expected.clone(),
             }
         }
+        ReplayDisposition::DiscardedInvalidPayload { reason } => {
+            ReplayContextTransition::InvalidPayload {
+                reason: reason.to_string(),
+            }
+        }
         _ => return None,
     };
     Some(ReplayContextWarningKey {
@@ -3661,6 +3684,154 @@ mod tests {
             })
             .count();
         assert_eq!(error_rows, 1);
+    }
+
+    #[test]
+    fn invalid_payload_replay_warnings_dedupe_per_run_and_reason() {
+        let session = SessionId::new_v7();
+        let run = RunId::new_v7();
+        let decision = |history_index: u64, reason: &str| cookie_agent_protocol::ReplayDecision {
+            history_index,
+            disposition: cookie_agent_protocol::ReplayDisposition::DiscardedInvalidPayload {
+                reason: cookie_agent_protocol::SafeErrorMessage::new(reason).unwrap(),
+            },
+        };
+        let evaluated =
+            |seq: u64, ordered_decisions: Vec<cookie_agent_protocol::ReplayDecision>| {
+                stored_event(
+                    session,
+                    Some(run),
+                    seq,
+                    EventPayload::ModelReplayEvaluated {
+                        attempt_id: AttemptId::new_v7(),
+                        resolved_model: resolved_model(),
+                        ordered_decisions,
+                    },
+                )
+            };
+        // Every attempt re-evaluates the whole history after a fallback: the
+        // same incompatible entries discard again and again. One logical
+        // reason warns once per run; a genuinely different reason warns anew.
+        let state = reduce_session_events(
+            session,
+            0,
+            &[
+                evaluated(
+                    1,
+                    vec![
+                        decision(2, "unsupported replay format"),
+                        decision(4, "unsupported replay format"),
+                    ],
+                ),
+                evaluated(
+                    2,
+                    vec![
+                        decision(2, "unsupported replay format"),
+                        decision(4, "unsupported replay format"),
+                    ],
+                ),
+                evaluated(
+                    3,
+                    vec![
+                        decision(2, "unsupported replay format"),
+                        decision(6, "payload digest mismatch"),
+                    ],
+                ),
+            ],
+        );
+        let warnings: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Event {
+                    level: EventLevel::Warning,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|text| text.contains("unsupported replay format"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|text| text.contains("payload digest mismatch"))
+                .count(),
+            1
+        );
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn repeated_adapter_turn_warnings_dedupe_per_run() {
+        let session = SessionId::new_v7();
+        let run = RunId::new_v7();
+        let committed = |seq: u64, model_turn_seq: u64, warning: &str| {
+            stored_event(
+                session,
+                Some(run),
+                seq,
+                EventPayload::ModelTurnCommitted {
+                    attempt_id: AttemptId::new_v7(),
+                    model_turn_seq,
+                    resolved_model: resolved_model(),
+                    input_through_seq: seq,
+                    turn: PersistedModelTurn {
+                        content: Vec::new(),
+                        provider_options: BTreeMap::new(),
+                        finish_reason: cookie_agent_protocol::ModelFinishReason::Stop,
+                        usage: Usage::default(),
+                        response_metadata: BTreeMap::new(),
+                        provider_metadata: BTreeMap::new(),
+                        native_replay: None,
+                    },
+                    warnings: vec![cookie_agent_protocol::SafeErrorMessage::new(warning).unwrap()],
+                },
+            )
+        };
+        let state = reduce_session_events(
+            session,
+            0,
+            &[
+                committed(1, 1, "Responses normalized fallback omitted reasoning"),
+                committed(2, 2, "Responses normalized fallback omitted reasoning"),
+                committed(3, 3, "Responses normalized fallback omitted reasoning"),
+                committed(4, 4, "a different adapter warning"),
+            ],
+        );
+        let warnings: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Event {
+                    level: EventLevel::Warning,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|text| text.contains("omitted reasoning"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|text| text.contains("a different adapter warning"))
+                .count(),
+            1
+        );
+        assert_eq!(warnings.len(), 2);
     }
 
     #[test]
