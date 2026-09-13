@@ -354,6 +354,22 @@ impl TurnAccumulator {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| invalid("stream ended with an unfilled content slot"))?;
+        // Providers sometimes close a turn with a whitespace-only text block
+        // (leading newlines before a tool call). It renders as blank rows in
+        // every surface, so drop it — but only when the turn retains other
+        // parts, never leaving the committed turn empty.
+        let filtered: Vec<_> = content
+            .iter()
+            .filter(|part| match part {
+                AssistantPart::Text(text) => !text.text.trim().is_empty(),
+                _ => true,
+            })
+            .collect();
+        let content = if filtered.is_empty() {
+            content
+        } else {
+            filtered.into_iter().cloned().collect()
+        };
         let mut turn = CompletedTurn::new(AssistantMessage::new(content), finish);
         turn.warnings = self.warnings;
         Ok(turn)
@@ -472,5 +488,95 @@ mod tests {
             accumulator.push(part).expect("part");
         }
         assert!(accumulator.finish().is_err());
+    }
+
+    #[test]
+    fn whitespace_only_text_is_dropped_when_other_parts_remain() {
+        use oven_sdk::AssistantPart;
+
+        let mut accumulator = TurnAccumulator::default();
+        for part in [
+            StreamPart::StreamStart { warnings: vec![] },
+            StreamPart::ReasoningStart {
+                id: "reasoning".into(),
+                metadata: None,
+            },
+            StreamPart::ReasoningDelta {
+                id: "reasoning".into(),
+                delta: "thinking".into(),
+                metadata: None,
+            },
+            StreamPart::ReasoningEnd {
+                id: "reasoning".into(),
+                metadata: None,
+            },
+            StreamPart::TextStart {
+                id: "text".into(),
+                metadata: None,
+            },
+            StreamPart::TextDelta {
+                id: "text".into(),
+                delta: "\n\n\n".into(),
+                metadata: None,
+            },
+            StreamPart::TextEnd {
+                id: "text".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCall {
+                tool_call: ToolCallPart::new("call", "read", serde_json::json!({})),
+            },
+            StreamPart::Finish {
+                finish: Finish::new(Usage::default(), FinishReason::ToolCalls),
+            },
+        ] {
+            accumulator.push(part).expect("part");
+        }
+        let turn = accumulator.finish().expect("finish");
+        let kinds: Vec<_> = turn
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                AssistantPart::Text(_) => "text",
+                AssistantPart::Reasoning(_) => "reasoning",
+                AssistantPart::ToolCall(_) => "tool_call",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["reasoning", "tool_call"]);
+    }
+
+    #[test]
+    fn whitespace_only_turn_is_kept_when_it_is_the_only_content() {
+        use oven_sdk::AssistantPart;
+
+        let mut accumulator = TurnAccumulator::default();
+        for part in [
+            StreamPart::StreamStart { warnings: vec![] },
+            StreamPart::TextStart {
+                id: "text".into(),
+                metadata: None,
+            },
+            StreamPart::TextDelta {
+                id: "text".into(),
+                delta: "  \n ".into(),
+                metadata: None,
+            },
+            StreamPart::TextEnd {
+                id: "text".into(),
+                metadata: None,
+            },
+            StreamPart::Finish {
+                finish: Finish::new(Usage::default(), FinishReason::Stop),
+            },
+        ] {
+            accumulator.push(part).expect("part");
+        }
+        let turn = accumulator.finish().expect("finish");
+        assert!(
+            matches!(turn.message.content.first(), Some(AssistantPart::Text(_))),
+            "a whitespace-only turn must not be emptied"
+        );
     }
 }
