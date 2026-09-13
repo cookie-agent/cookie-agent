@@ -10483,6 +10483,126 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
 }
 
 #[tokio::test]
+async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
+    // Attempt 1 calls the write tool reporting 7000 prompt tokens against an
+    // 8192 context — over the default 70% trigger (5734). Attempt 2 must
+    // compact first. The checkpoint has to precede that attempt's start and
+    // request: consumers anchor a turn's transcript item to
+    // `ModelAttemptStarted`, so emitting the attempt before compaction renders
+    // post-compaction output above the compaction marker.
+    let tool_turn = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7000,\"completion_tokens\":10,\"total_tokens\":7010}}\n\n".to_owned();
+    let summary = "data: {\"choices\":[{\"delta\":{\"content\":\"checkpoint summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let after = "data: {\"choices\":[{\"delta\":{\"content\":\"after compaction\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":5,\"total_tokens\":905}}\n\n".to_owned();
+    let (endpoint, _captured, ..) = scripted_server_with_status_and_delay(
+        vec![(200, tool_turn), (200, summary), (200, after)],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: compaction ordering\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest compaction ordering.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            8_192,
+            None,
+        );
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("compaction-ordering").unwrap(),
+                selection: selection.clone(),
+                input: format!(
+                    "trigger compaction ordering {}",
+                    "context padding ".repeat(1500)
+                ),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert!(executed.is_set(), "write tool executed");
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let checkpoint_seq = events
+        .iter()
+        .find_map(|event| match event.payload {
+            EventPayload::ContextCheckpointCommitted { .. } => Some(event.seq),
+            _ => None,
+        })
+        .expect("auto-compaction checkpoint");
+    let attempt_starts = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::ModelAttemptStarted { .. }))
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    assert_eq!(attempt_starts.len(), 2, "tool turn then compacted turn");
+    assert!(
+        attempt_starts[0] < checkpoint_seq,
+        "pre-compaction attempt starts before the checkpoint"
+    );
+    assert!(
+        attempt_starts[1] > checkpoint_seq,
+        "post-compaction attempt starts after the checkpoint"
+    );
+    let second_attempt = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelAttemptStarted { attempt_id, .. } => Some((*attempt_id, event.seq)),
+            _ => None,
+        })
+        .nth(1)
+        .map(|(attempt_id, _)| attempt_id)
+        .expect("second attempt");
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ModelRequestPrepared { attempt_id, .. }
+                    if *attempt_id == second_attempt && event.seq > checkpoint_seq
+            )
+        }),
+        "post-compaction request prepared after the checkpoint"
+    );
+    let committed = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                input_through_seq,
+                ..
+            } if *attempt_id == second_attempt => Some(*input_through_seq),
+            _ => None,
+        })
+        .expect("post-compaction turn committed");
+    assert!(
+        committed >= checkpoint_seq,
+        "post-compaction turn consumes the checkpoint"
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn mixed_binding_fallback_preserves_configured_provider_order() {
     let root = scripted_text_usage_body("root", 8_192, Some(1), 0);
     let context_error = (400, r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}"#.to_owned());

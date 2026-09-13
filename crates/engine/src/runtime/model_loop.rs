@@ -1494,33 +1494,6 @@ impl Engine {
             loop {
                 attempts += 1;
                 let attempt_id = cookie_agent_protocol::AttemptId::new_v7();
-                let attempt_ordinal = self
-                    .inner
-                    .store
-                    .get(session)?
-                    .log
-                    .event_snapshot()
-                    .iter()
-                    .filter(|event| {
-                        event.run_id == Some(run)
-                            && matches!(event.payload, Event::ModelAttemptStarted { .. })
-                    })
-                    .count() as u32
-                    + 1;
-                self.append(
-                    session,
-                    Some(run),
-                    event_origin("engine:model-loop"),
-                    Event::ModelAttemptStarted {
-                        attempt_id,
-                        attempt_ordinal,
-                        fallback_index: entry as u32,
-                        retry_ordinal: attempts - 1,
-                        resolved_model: wire_model(binding),
-                        prompt_fingerprint: prompt_fingerprint.clone(),
-                    },
-                )
-                .await?;
                 let mut request_claim = if let Some(snapshot) = first_request.take() {
                     snapshot
                 } else {
@@ -1556,6 +1529,38 @@ impl Engine {
                     Err(EngineError::CompactionCancelled(_)) => uncompacted_events,
                     Err(error) => return Err(error),
                 };
+                // The checkpoint must precede the attempt that consumes the
+                // compacted context: consumers anchor a turn's transcript item
+                // to `ModelAttemptStarted`, so emitting it before compaction
+                // would render post-compaction output above the compaction
+                // marker. Compaction itself does not depend on the attempt.
+                let attempt_ordinal = self
+                    .inner
+                    .store
+                    .get(session)?
+                    .log
+                    .event_snapshot()
+                    .iter()
+                    .filter(|event| {
+                        event.run_id == Some(run)
+                            && matches!(event.payload, Event::ModelAttemptStarted { .. })
+                    })
+                    .count() as u32
+                    + 1;
+                self.append(
+                    session,
+                    Some(run),
+                    event_origin("engine:model-loop"),
+                    Event::ModelAttemptStarted {
+                        attempt_id,
+                        attempt_ordinal,
+                        fallback_index: entry as u32,
+                        retry_ordinal: attempts - 1,
+                        resolved_model: wire_model(binding),
+                        prompt_fingerprint: prompt_fingerprint.clone(),
+                    },
+                )
+                .await?;
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
                 let context = assemble_model_context(
                     &request_events,
