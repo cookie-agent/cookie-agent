@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use oven_sdk::{
     AbortRegistration, AbortSignal, AssistantMessage, AssistantPart, CompletedTurn, Finish,
-    FinishReason, ModelError, ReasoningPart, StreamPart, TextPart,
+    FinishReason, ModelError, ReasoningPart, StreamPart, TextPart, is_semantic_text,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -357,11 +357,13 @@ impl TurnAccumulator {
         // Providers sometimes close a turn with a whitespace-only text block
         // (leading newlines before a tool call). It renders as blank rows in
         // every surface, so drop it — but only when the turn retains other
-        // parts, never leaving the committed turn empty.
+        // parts, never leaving the committed turn empty. The rule itself is
+        // oven-sdk's single definition of semantic text (`is_semantic_text`),
+        // so canonical turns and native replay validation stay consistent.
         let filtered: Vec<_> = content
             .iter()
             .filter(|part| match part {
-                AssistantPart::Text(text) => !text.text.trim().is_empty(),
+                AssistantPart::Text(text) => is_semantic_text(&text.text),
                 _ => true,
             })
             .collect();
