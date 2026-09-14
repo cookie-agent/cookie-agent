@@ -13,6 +13,13 @@ pub use app::{App, run_with_client, run_with_new_session};
 
 use ratatui::layout::Rect;
 
+/// The most Agents rows the panel ever shows at once; a longer tree scrolls
+/// within this viewport instead of growing the panel.
+pub(crate) const MAX_AGENT_PANEL_ROWS: usize = 4;
+/// Absolute ceiling for the whole Agents panel, borders included: it exists to
+/// keep a pathological layout from starving the conversation. The panel is
+/// already bounded by [`MAX_AGENT_PANEL_ROWS`] text rows plus two borders, so
+/// this stays deliberately looser than that (4 + 2 = 6 ≤ 10).
 const MAX_AGENT_HEIGHT: u16 = 10;
 /// Composer ceiling in total rows: five text rows plus top/bottom borders.
 const MAX_INPUT_HEIGHT: u16 = 7;
@@ -35,15 +42,16 @@ pub(crate) struct UiLayout {
 /// Resolve the single top-to-bottom pane geometry for a known visible tree
 /// row count, queue-strip row demand, goal visibility, and composer text-row
 /// demand. The Agents panel is hidden when `visible_tree_row_count` is zero or
-/// one; otherwise it is exactly `clamp(visible_tree_row_count, 1, 8)` text rows
-/// with its borders outside that count, so the conversation starts immediately
-/// below it. The composer takes one text row by default and grows with its
-/// content up to five; every added composer row is reclaimed from the
-/// conversation pane. The goal bar takes exactly one row when it is visible
-/// and space remains above the composer, with the ephemeral status line
-/// yielding first on short terminals. The queue strip reclaims conversation
-/// rows the same way and leaves the conversation at least one row whenever
-/// content space remains after fixed bars.
+/// one; otherwise it is exactly `clamp(visible_tree_row_count, 1,
+/// MAX_AGENT_PANEL_ROWS)` text rows — a longer tree scrolls inside that
+/// viewport instead of growing the panel — with its borders outside that count,
+/// so the conversation starts immediately below it. The composer takes one text
+/// row by default and grows with its content up to five; every added composer
+/// row is reclaimed from the conversation pane. The goal bar takes exactly one
+/// row when it is visible and space remains above the composer, with the
+/// ephemeral status line yielding first on short terminals. The queue strip
+/// reclaims conversation rows the same way and leaves the conversation at least
+/// one row whenever content space remains after fixed bars.
 pub(crate) fn terminal_layout_with_tree_rows(
     area: Rect,
     visible_tree_rows: usize,
@@ -54,7 +62,7 @@ pub(crate) fn terminal_layout_with_tree_rows(
     let agent_height = if visible_tree_rows <= 1 {
         0
     } else {
-        (visible_tree_rows.clamp(1, 8) as u16)
+        (visible_tree_rows.clamp(1, MAX_AGENT_PANEL_ROWS) as u16)
             .saturating_add(2)
             .min(MAX_AGENT_HEIGHT)
     };

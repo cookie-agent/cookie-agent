@@ -7811,7 +7811,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_panel_text_rows_are_clamped_1_to_8_with_borders_outside() {
+    async fn agent_panel_text_rows_are_clamped_1_to_4_with_borders_outside() {
         let mut app = test_app().await;
         for sessions in [0usize, 1] {
             let layout =
@@ -7819,7 +7819,7 @@ mod tests {
             assert_eq!(layout.agent.height, 0);
             assert_eq!(layout.conversation.y, 0);
         }
-        for (sessions, expected_rows) in [(2usize, 4u16), (3, 5), (8, 10), (9, 10)] {
+        for (sessions, expected_rows) in [(2usize, 4u16), (3, 5), (4, 6), (5, 6), (9, 6)] {
             let layout =
                 terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 24), sessions, 0, false, 1);
             app.tree = Some(SessionTree {
@@ -7849,9 +7849,123 @@ mod tests {
         // The single-row composer is three rows tall, so the eight-row
         // terminal leaves four rows above the bar: one for the status line,
         // one guaranteed conversation row, and the rest for the agent panel
-        // (borders only at this extreme).
+        // (borders only at this extreme). The four-row viewport cap never
+        // lifts the panel above the remaining content space.
         assert_eq!(tiny.agent.height, 2);
         assert_eq!(tiny.conversation.height, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_panel_caps_at_four_rows_and_scrolls_a_longer_tree() {
+        // One frame render, read back as the scroll offset, the hit-tested
+        // rows, and the text actually painted inside the viewport.
+        fn panel_state(app: &mut App) -> (usize, Vec<SessionId>, Vec<String>) {
+            let rows = frame_rows(app, 80, 30);
+            let inner = app.hit_map.tree.expect("agents viewport");
+            let visible = app
+                .hit_map
+                .tree_rows
+                .iter()
+                .map(|hit| hit.session_id)
+                .collect::<Vec<_>>();
+            let text = (usize::from(inner.y)..usize::from(inner.bottom()))
+                .map(|row| rows[row].clone())
+                .collect::<Vec<_>>();
+            (app.tree_offset, visible, text)
+        }
+
+        let max_rows = crate::ui::MAX_AGENT_PANEL_ROWS;
+        // Pinned literally: the viewport is four rows, not the eight rows the
+        // panel used to allow. Everything below derives from that cap.
+        assert_eq!(max_rows, 4);
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        app.selected = Some(root);
+        app.tree_root = Some(root);
+        app.tree = Some(SessionTree {
+            session: titled_meta(root, "root", 1),
+            children: (0..(max_rows * 2 - 1))
+                .map(|index| SessionTree {
+                    session: titled_meta(
+                        SessionId::new_v7(),
+                        &format!("row {index}"),
+                        u64::try_from(index).expect("index") + 1,
+                    ),
+                    children: Vec::new(),
+                })
+                .collect(),
+        });
+        // Panel order is the flattened tree, whose children sort by activity
+        // and session id, so every expectation reads back from `entries`.
+        let entries = app.tree_entries();
+        assert_eq!(entries.len(), max_rows * 2);
+        let labels = entries
+            .iter()
+            .map(|(_, meta, _)| format!("primary:{}", meta.title.as_ref().expect("title")))
+            .collect::<Vec<_>>();
+
+        // Seven live entries still earn only the capped viewport: MAX rows plus
+        // two borders, with the conversation starting right below it.
+        let layout =
+            terminal_layout_with_tree_rows(Rect::new(0, 0, 80, 30), entries.len(), 0, false, 1);
+        assert_eq!(
+            layout.agent.height,
+            u16::try_from(max_rows + 2).expect("rows")
+        );
+        assert_eq!(layout.conversation.y, layout.agent.height);
+
+        let (offset, visible, text) = panel_state(&mut app);
+        assert_eq!(app.tree_viewport_height, max_rows);
+        assert_eq!(offset, 0);
+        assert_eq!(
+            visible,
+            entries[..max_rows]
+                .iter()
+                .map(|(session_id, _, _)| *session_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(text.len(), max_rows);
+        assert!(text.iter().any(|row| row.contains(&labels[max_rows - 1])));
+        assert!(!text.iter().any(|row| row.contains(&labels[max_rows])));
+
+        // Walking the cursor down scrolls the window one row at a time only
+        // once the cursor leaves the viewport, and never past the last page.
+        let max_offset = entries.len() - max_rows;
+        for step in 1..entries.len() {
+            app.move_tree_selection(false);
+            let expected_offset = step
+                .saturating_add(1)
+                .saturating_sub(max_rows)
+                .min(max_offset);
+            let (offset, visible, text) = panel_state(&mut app);
+            assert_eq!(offset, expected_offset, "cursor on {}", labels[step]);
+            assert_eq!(
+                visible,
+                entries[expected_offset..expected_offset + max_rows]
+                    .iter()
+                    .map(|(session_id, _, _)| *session_id)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                text.iter().any(|row| row.contains(&labels[step])),
+                "cursor row {} must stay visible: {text:?}",
+                labels[step]
+            );
+        }
+        let (_, _, tail) = panel_state(&mut app);
+        assert!(
+            tail.iter()
+                .any(|row| row.contains(labels.last().expect("row")))
+        );
+        assert!(!tail.iter().any(|row| row.contains(&labels[0])));
+
+        // Walking back up scrolls symmetrically and lands on the first page.
+        for _ in 1..entries.len() {
+            app.move_tree_selection(true);
+        }
+        let (offset, visible, _) = panel_state(&mut app);
+        assert_eq!(offset, 0);
+        assert_eq!(visible.len(), max_rows);
     }
 
     #[tokio::test]
@@ -12896,6 +13010,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_picker_lists_only_root_sessions() {
+        let mut app = test_app().await;
+        let root = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        // Watching a delegated child keeps its metadata in the general session
+        // cache (titles, statuses, permission-mode rooting all read it), but
+        // the picker selects a session tree so the child must not resurface.
+        let mut delegated = delegated_meta(child, root, "worker");
+        delegated.title =
+            Some(cookie_agent_protocol::SessionTitle::new("delegated leaf").expect("title"));
+        app.sessions = vec![session_meta(root), delegated];
+
+        let ids = app
+            .current_session_search_rows()
+            .iter()
+            .filter_map(|row| row.session_id())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![root]);
+        assert_eq!(app.picker_sessions().count(), 1);
+
+        app.modal = Modal::Sessions;
+        let frame = rendered_frame(&mut app, 80, 24);
+        assert!(frame.contains("Sessions (1/1)"), "picker header: {frame}");
+        assert!(
+            frame.contains("untitled"),
+            "the root row is missing: {frame}"
+        );
+        assert!(
+            !frame.contains("delegated leaf"),
+            "delegated child leaked into the picker: {frame}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_search_headers_are_not_clickable_and_click_reroots() {
         let mut app = test_app().await;
         let first = SessionId::new_v7();
@@ -12993,7 +13141,12 @@ mod tests {
             );
         }
         frame_rows(&mut app, 80, 30);
-        assert_eq!(app.hit_map.tree_rows.len(), statuses.len());
+        // The six rows exceed the viewport cap, so the hit map covers exactly
+        // the visible window and the tail stays reachable by scrolling.
+        assert_eq!(
+            app.hit_map.tree_rows.len(),
+            statuses.len().min(crate::ui::MAX_AGENT_PANEL_ROWS)
+        );
         assert!(
             app.hit_map
                 .tree_rows
@@ -15159,6 +15312,69 @@ mod tests {
             },
             ..session_meta(session_id)
         }
+    }
+
+    #[test]
+    fn startup_pick_reopens_the_most_recent_root_session() {
+        let older = SessionId::new_v7();
+        let newer = SessionId::new_v7();
+        let child = SessionId::new_v7();
+        let mut older_meta = session_meta(older);
+        older_meta.last_activity = "2026-08-01T00:00:00Z".parse().expect("timestamp");
+        let mut newer_meta = session_meta(newer);
+        newer_meta.last_activity = "2026-08-09T00:00:00Z".parse().expect("timestamp");
+        // The delegated child is the most recently active session overall.
+        let mut delegated = delegated_meta(child, older, "worker");
+        delegated.last_activity = "2026-08-10T00:00:00Z".parse().expect("timestamp");
+
+        // Listing order comes from HashMap iteration, so recency must decide
+        // the pick regardless of position — and a delegated child never wins.
+        assert_eq!(
+            App::preferred_startup_session(&[
+                older_meta.clone(),
+                delegated.clone(),
+                newer_meta.clone()
+            ]),
+            Some(newer)
+        );
+        assert_eq!(
+            App::preferred_startup_session(&[
+                newer_meta.clone(),
+                older_meta.clone(),
+                delegated.clone()
+            ]),
+            Some(newer)
+        );
+        // Degenerate listings keep the documented fallbacks: the first entry
+        // when no root is listed, and no pick (create-new) when empty.
+        assert_eq!(App::preferred_startup_session(&[delegated]), Some(child));
+        assert_eq!(App::preferred_startup_session(&[]), None);
+    }
+
+    #[test]
+    fn startup_pick_breaks_activity_ties_deterministically() {
+        let one = SessionId::new_v7();
+        let two = SessionId::new_v7();
+        let (low, high) = if one < two { (one, two) } else { (two, one) };
+        // Both roots share the newest activity timestamp, so only the session
+        // ID can order them; listing order must not change the answer.
+        let low_meta = session_meta(low);
+        let high_meta = session_meta(high);
+        assert_eq!(low_meta.last_activity, high_meta.last_activity);
+        let delegated = delegated_meta(SessionId::new_v7(), low, "worker");
+
+        let forward = App::preferred_startup_session(&[
+            low_meta.clone(),
+            delegated.clone(),
+            high_meta.clone(),
+        ]);
+        let reversed = App::preferred_startup_session(&[
+            high_meta.clone(),
+            delegated.clone(),
+            low_meta.clone(),
+        ]);
+        assert_eq!(forward, reversed, "listing order must not move the pick");
+        assert_eq!(forward, Some(high));
     }
 
     #[tokio::test]

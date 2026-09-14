@@ -1079,7 +1079,7 @@ impl App {
         app.refresh_lists().await;
         if create_new_session {
             app.create_startup_session().await;
-        } else if let Some(session_id) = app.sessions.first().map(|session| session.session_id) {
+        } else if let Some(session_id) = Self::preferred_startup_session(&app.sessions) {
             app.open_session(session_id).await;
         }
         if app.draft.is_none() {
@@ -1090,6 +1090,23 @@ impl App {
             app.status = app.setup_status();
         }
         Ok(app)
+    }
+
+    /// The session reopened on startup: the root session with the most recent
+    /// activity. The listing is root-only, so the delegation tree — never a
+    /// delegated child — is what the user resumes; the first entry and the
+    /// create-new path remain as fallbacks.
+    ///
+    /// `session_id` breaks `last_activity` ties deterministically (the listing
+    /// arrives in HashMap order), choosing the highest session ID among roots
+    /// that share the newest activity timestamp.
+    pub(super) fn preferred_startup_session(sessions: &[SessionMeta]) -> Option<SessionId> {
+        sessions
+            .iter()
+            .filter(|session| matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root))
+            .max_by_key(|session| (session.last_activity, session.session_id))
+            .or_else(|| sessions.first())
+            .map(|session| session.session_id)
     }
 
     async fn open_session(&mut self, session_id: SessionId) {
@@ -4054,6 +4071,16 @@ impl App {
         self.sessions_revision = self.sessions_revision.wrapping_add(1);
     }
 
+    /// Session picker input: root-level entries only. `self.sessions` is the
+    /// general metadata cache and also carries delegated children once they are
+    /// watched from the Agents tree; the picker selects a session *tree*, so
+    /// those children must never surface as top-level rows.
+    pub(super) fn picker_sessions(&self) -> impl Iterator<Item = &SessionMeta> {
+        self.sessions
+            .iter()
+            .filter(|session| matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root))
+    }
+
     fn refresh_session_search_rows_cache(&mut self) {
         let now = jiff::Timestamp::now();
         let time_zone = jiff::tz::TimeZone::system();
@@ -4066,12 +4093,13 @@ impl App {
         {
             return;
         }
+        let rows = session_search_rows(self.picker_sessions(), query, now, &time_zone);
         self.session_search_rows_cache = SessionSearchRowsCache {
             query: query.to_owned(),
             sessions_revision: self.sessions_revision,
             sessions_len: self.sessions.len(),
             local_day: Some(local_day),
-            rows: session_search_rows(&self.sessions, query, now, &time_zone),
+            rows,
         };
     }
 
@@ -7887,9 +7915,10 @@ impl App {
             self.hit_map.tree_rows.clear();
             return;
         }
-        // The Agents panel has exactly clamp(visible row count, 1, 8) text
-        // rows, with its borders outside that count.
-        let text_rows = entries.len().clamp(1, 8) as u16;
+        // The Agents panel has exactly clamp(visible row count, 1,
+        // MAX_AGENT_PANEL_ROWS) text rows, with its borders outside that
+        // count; a longer tree scrolls within those rows.
+        let text_rows = entries.len().clamp(1, super::MAX_AGENT_PANEL_ROWS) as u16;
         let panel_height = text_rows.saturating_add(2).min(area.height);
         let panel = Rect::new(area.x, area.y, area.width, panel_height);
         let inner = inner_rect(panel);
@@ -8367,9 +8396,10 @@ impl App {
         self.hit_map.picker = Some(picker);
         self.clamp_picker_selection();
         self.refresh_session_search_rows_cache();
+        let picker_total = self.picker_sessions().count();
         let rows = &self.session_search_rows_cache.rows;
         let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
-        let title = format!("Sessions ({session_count}/{})", self.sessions.len());
+        let title = format!("Sessions ({session_count}/{picker_total})");
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)

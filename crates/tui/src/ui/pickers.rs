@@ -160,8 +160,9 @@ impl SessionSearchRow {
 }
 
 /// Search sessions by title and group matching rows by their local activity day.
-pub(crate) fn session_search_rows(
-    sessions: &[SessionMeta],
+/// Callers pass the sessions the picker may offer (root sessions only).
+pub(crate) fn session_search_rows<'a>(
+    sessions: impl IntoIterator<Item = &'a SessionMeta>,
     query: &str,
     now: Timestamp,
     time_zone: &TimeZone,
@@ -169,7 +170,7 @@ pub(crate) fn session_search_rows(
     let today = now.to_zoned(time_zone.clone()).date();
     let yesterday = today.yesterday().ok();
     let mut sessions = sessions
-        .iter()
+        .into_iter()
         .filter(|session| session_matches(session, query))
         .collect::<Vec<_>>();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_activity));
