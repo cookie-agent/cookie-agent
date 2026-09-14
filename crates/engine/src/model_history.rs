@@ -2056,20 +2056,20 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use cookie_agent_protocol::{
-        AgentMdEntry, ArtifactReference, AssistantToolCallRef, ContextCheckpoint,
-        ContextCheckpointBoundaries, ContextCheckpointBudgets, ContextCheckpointCommit,
-        DelegatedContextRole, DelegatedContextTurn, EventPayload, FrozenModelBinding,
-        InternalAgentInvocationId, InternalAgentRunId, InternalSummaryCheckpoint, ModelCallId,
-        ModelFinishReason, ModelKey, ModelSelection, NativeContextScope, NativeReplayArtifact,
-        OperationFingerprint, PermissionAction, PersistedAssistantPart, PersistedModelTurn,
-        PersistedToolResult, PreparedApprovalResource, PreparedBindingLifetime,
-        PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-        PreparedResourceIdentity, ProducerDeliveryMode, ProducerIdempotencyKey, ProducerMessageId,
-        ProducerOwner, ProviderId, ReplayDisposition, ResolvedModelRef, RunId, SafeCode,
-        SafeDisplayText, SessionId, SessionStatus, Sha256Digest, StoredEvent, SummaryByteLimit,
-        ToolCallId, ToolCallPresentation, ToolCallStart, ToolCallTermination, ToolEmittedContent,
-        ToolEmittedMessage, ToolEmittedMessageRole, ToolOutputTruncation, ToolTerminationOutcome,
-        Usage,
+        AgentMdEntry, ArtifactReference, AssistantToolCallRef, BoundedDisplayText,
+        ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
+        ContextCheckpointCommit, DelegatedContextRole, DelegatedContextTurn, EventPayload,
+        FrozenModelBinding, InternalAgentInvocationId, InternalAgentRunId,
+        InternalSummaryCheckpoint, ModelCallId, ModelFinishReason, ModelKey, ModelSelection,
+        NativeContextScope, NativeReplayArtifact, OperationFingerprint, PermissionAction,
+        PersistedAssistantPart, PersistedModelTurn, PersistedToolResult, PreparedApprovalResource,
+        PreparedBindingLifetime, PreparedCapabilityOperation, PreparedOperationIdentity,
+        PreparedResourceDigest, PreparedResourceIdentity, ProducerDeliveryMode,
+        ProducerIdempotencyKey, ProducerMessageId, ProducerOwner, ProviderId, ReplayDisposition,
+        ResolvedModelRef, RunId, SafeCode, SafeDisplayText, SessionId, SessionStatus, Sha256Digest,
+        StoredEvent, SummaryByteLimit, ToolCallId, ToolCallPresentation, ToolCallStart,
+        ToolCallTermination, ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole,
+        ToolOutputTruncation, ToolTerminationOutcome, Usage,
     };
     use oven_sdk::{
         AdapterId, HistoryTurn, NativeContextScope as OvenNativeContextScope,
@@ -4278,7 +4278,7 @@ mod tests {
                         presentation: ToolCallPresentation {
                             title: SafeDisplayText::new("Read README.md").expect("title"),
                             primary_argument: Some(
-                                SafeDisplayText::new("README.md").expect("argument"),
+                                BoundedDisplayText::new("README.md").expect("argument"),
                             ),
                         },
                         operation_fingerprint: OperationFingerprint::from_prepared_operation(

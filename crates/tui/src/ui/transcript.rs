@@ -1199,6 +1199,29 @@ fn transcript_layout_with_level(
     highlighter: &dyn Highlighter,
     minimum_event_level: crate::state::EventLevel,
 ) -> TranscriptLayout {
+    transcript_layout_at_clock(
+        state,
+        expanded,
+        width,
+        theme,
+        highlighter,
+        minimum_event_level,
+        0,
+    )
+}
+
+/// Layout at an explicit animation bucket, so tests can pin every phase of the
+/// running status marker (which changes the header's suffix width).
+#[cfg(test)]
+fn transcript_layout_at_clock(
+    state: &SessionState,
+    expanded: Option<&HashSet<BlockId>>,
+    width: u16,
+    theme: &Theme,
+    highlighter: &dyn Highlighter,
+    minimum_event_level: crate::state::EventLevel,
+    clock_bucket: u8,
+) -> TranscriptLayout {
     let mut layout = TranscriptLayout::default();
     let mut assistant_parts = HashMap::new();
     let mut assistant_part_layout_passes = 0;
@@ -1219,7 +1242,7 @@ fn transcript_layout_with_level(
                 theme,
                 highlighter,
                 minimum_event_level,
-                clock_bucket: 0,
+                clock_bucket,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,
@@ -2367,9 +2390,137 @@ fn tool_icon(title: &str) -> &'static str {
     }
 }
 
-fn abbreviate_tool_argument(title: &str, argument: &str, width: u16) -> String {
-    let cap = (usize::from(width) / 2).clamp(1, 60);
-    let argument = argument.split_whitespace().collect::<Vec<_>>().join(" ");
+/// The compact role name `tool_block_lines` brackets onto a narrow tool row.
+fn tool_row_short(role: Role) -> &'static str {
+    match role {
+        Role::ToolRunning => "T…",
+        Role::ToolSuccess => "T✓",
+        Role::ToolFailure => "T!",
+        _ => "T",
+    }
+}
+
+/// Narrowest row where `tool_block_lines` can still keep the assistant gutter.
+const TOOL_HEADER_GUTTER_MIN_COLUMNS: u16 = 8;
+/// The `"│ "` assistant gutter a header row hangs behind at normal widths.
+const TOOL_HEADER_GUTTER_COLUMNS: usize = 2;
+/// The full `"[T…] "` role label that replaces the gutter below
+/// `TOOL_HEADER_GUTTER_MIN_COLUMNS`, leaving the row no room for a wide icon.
+const TOOL_HEADER_LABEL_COLUMNS: usize = 5;
+
+/// Columns the compact role label may spend on a narrow row. It shortens with
+/// the row and always leaves `reserve` columns for text — at least one, and as
+/// much more as the widest grapheme the row has to carry whole needs — so
+/// neither the label nor its wrapped continuation can exceed the viewport.
+fn tool_row_label_columns(width: u16, reserve: usize) -> usize {
+    usize::from(width)
+        .saturating_sub(reserve.max(1))
+        .clamp(1, TOOL_HEADER_LABEL_COLUMNS)
+}
+
+/// The bracketed role label itself, shortened to that budget: `"[T…] "` while it
+/// fits, then `"[T…]"`, `"[T"`, and `"[…"` down to a single column.
+fn tool_row_prefix(short: &str, width: u16, reserve: usize) -> String {
+    let room = tool_row_label_columns(width, reserve);
+    let full = format!("[{short}] ");
+    if UnicodeWidthStr::width(full.as_str()) <= room {
+        return full;
+    }
+    super::app::truncate_with_ellipsis(&format!("[{short}]"), room)
+}
+
+/// Flatten an on-wire primary argument for single-line header display. The wire
+/// type is byte-capped only, so control characters reach the client: map each to
+/// a space before collapsing whitespace runs.
+fn flatten_header_argument(argument: &str) -> String {
+    argument
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Columns the header text may use at `width`, after the prefix
+/// `tool_block_lines` puts in front of the row. The header never wraps, so the
+/// markers, label, argument, and status suffix share exactly this budget.
+fn tool_header_content_width(width: u16) -> usize {
+    let gutter = if width >= TOOL_HEADER_GUTTER_MIN_COLUMNS {
+        TOOL_HEADER_GUTTER_COLUMNS
+    } else {
+        // The header is cut with `truncate_with_ellipsis`, which already counts
+        // display widths, so it only needs a single column to hang its tail on.
+        tool_row_label_columns(width, 1)
+    };
+    usize::from(width).saturating_sub(gutter)
+}
+
+/// The `{icon} {chevron} ` markers in front of the header title. A row too
+/// narrow for the icon drops it (its role colour and `[T…]` label already say
+/// what ran), then the separating space, and keeps the bare chevron last because
+/// that is the only expand/collapse cue the row has.
+fn tool_header_chrome(icon: &str, chevron: char, width: u16) -> String {
+    let room = tool_header_content_width(width);
+    [
+        format!("{icon} {chevron} "),
+        format!("{chevron} "),
+        chevron.to_string(),
+    ]
+    .into_iter()
+    .find(|chrome| UnicodeWidthStr::width(chrome.as_str()) <= room)
+    .unwrap_or_default()
+}
+
+/// The finished header row and its `{label} {argument}` title, which the
+/// expanded `path:` row compares against the raw path to see whether anything
+/// was lost. Text that does not fit drops out rather than wrapping: the status
+/// suffix goes first (the row style already carries the status), then the
+/// argument, then the label.
+fn tool_header_row(
+    tool: &crate::state::ToolCallState,
+    chevron: char,
+    suffix: &str,
+    width: u16,
+) -> (String, String) {
+    let chrome = tool_header_chrome(tool_icon(tool.presentation.title.as_str()), chevron, width);
+    let content =
+        tool_header_content_width(width).saturating_sub(UnicodeWidthStr::width(chrome.as_str()));
+    let (budget, suffix) = if UnicodeWidthStr::width(suffix) <= content {
+        (content - UnicodeWidthStr::width(suffix), suffix)
+    } else {
+        (content, "")
+    };
+    let title = tool_header_title(tool, budget);
+    // An empty title must not leave the markers' separator space behind.
+    let chrome = if title.is_empty() {
+        chrome.trim_end().to_owned()
+    } else {
+        chrome
+    };
+    (
+        format!("{chrome}{title}{suffix}").trim_end().to_owned(),
+        title,
+    )
+}
+
+/// Columns the primary argument may occupy inside the header's `budget`: what
+/// the `{label} ` prefix leaves over. Zero means the label alone fills the row,
+/// so the argument must be dropped to stay on one line.
+fn header_argument_width(label: &str, budget: usize) -> usize {
+    budget.saturating_sub(UnicodeWidthStr::width(label) + 1)
+}
+
+/// Abbreviate a primary argument to at most `cap` display columns. Path-shaped
+/// arguments keep their head and tail; everything else cuts at the right edge.
+fn abbreviate_tool_argument(title: &str, argument: &str, cap: usize) -> String {
+    let argument = flatten_header_argument(argument);
     if UnicodeWidthStr::width(argument.as_str()) <= cap {
         return argument;
     }
@@ -2395,20 +2546,21 @@ fn abbreviate_tool_argument(title: &str, argument: &str, width: u16) -> String {
     super::app::truncate_with_ellipsis(&argument, cap)
 }
 
-fn tool_header_title(tool: &crate::state::ToolCallState, width: u16) -> String {
+fn tool_header_title(tool: &crate::state::ToolCallState, budget: usize) -> String {
     let title = tool.presentation.title.as_str();
-    if tool_icon(title) == "🔨" {
-        return tool.compact_title();
-    }
     let label = if title == "read" { "Read" } else { title };
-    tool.presentation.primary_argument.as_ref().map_or_else(
-        || label.to_owned(),
-        |argument| {
-            format!(
-                "{label} {}",
-                abbreviate_tool_argument(title, argument.as_str(), width)
-            )
-        },
+    let argument_width = header_argument_width(label, budget);
+    let Some(argument) = tool.presentation.primary_argument.as_ref() else {
+        return super::app::truncate_with_ellipsis(label, budget);
+    };
+    if argument_width == 0 {
+        // The label alone fills the row (long plugin names at narrow widths):
+        // keep the label legible and drop the argument rather than wrap.
+        return super::app::truncate_with_ellipsis(label, budget);
+    }
+    format!(
+        "{label} {}",
+        abbreviate_tool_argument(title, argument.as_str(), argument_width)
     )
 }
 
@@ -2498,17 +2650,18 @@ fn tool_child_layout(
     let mut budget = RenderBudget::new(limits);
     let mut remaining_sections = section_count;
     let tool_name = tool.presentation.title.as_str();
-    let icon = tool_icon(tool_name);
-    let title = tool_header_title(tool, context.width);
     let chevron = if is_expanded { '▾' } else { '▸' };
-    let mut body = vec![ToolBodyLine::wrapped(Line::from(format!(
-        "{icon} {chevron} {title}{suffix}"
-    )))];
+    let (header, title) = tool_header_row(tool, chevron, &suffix, context.width);
+    let mut body = vec![ToolBodyLine::wrapped(Line::from(header))];
     if is_expanded {
         if tool_name == "read"
             && let Some(path) = tool.presentation.primary_argument.as_ref()
             && title != format!("Read {path}")
         {
+            // Tabs survive `safe_display_text` but the renderer drops control
+            // characters outright, so flatten them first: the expanded path must
+            // show the same text the collapsed header flattened to.
+            let path = safe_display_text(&path.as_str().replace('\t', " "));
             body.push(ToolBodyLine::wrapped(Line::from(format!("path: {path}"))));
         }
         if tool_name != "read" {
@@ -3614,15 +3767,22 @@ fn repeated_prefixed_hanging_line(
     continuation_indent: usize,
 ) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
-    let prefix_width = prefix
+    let unbreakable = unbreakable_columns(&line);
+    let mut prefix_width = prefix
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum::<usize>();
-    if prefix_width >= width {
+    // The gutter is indentation too, so it stands back until the row can host the
+    // widest grapheme that has to sit on it whole — and the inner budget is then
+    // measured against the columns the row actually has left.
+    if prefix_width + unbreakable > width {
         prefix.clear();
+        prefix_width = 0;
     }
     let inner_width = width.saturating_sub(prefix_width).max(1);
-    let continuation_indent = continuation_indent.min(inner_width.saturating_sub(1));
+    let continuation_indent = continuation_indent
+        .min(inner_width.saturating_sub(1))
+        .min(inner_width.saturating_sub(unbreakable));
     let line_style = line.style;
     let (first_prefix, content) = split_spans_at_width(line.spans, continuation_indent);
     let mut wrapped = wrapped_line(
@@ -3736,16 +3896,14 @@ fn tool_block_lines(
         let start = lines.len();
         match body_line.kind {
             ToolBodyLineKind::Wrapped if width < 8 => {
-                let short = match role {
-                    Role::ToolRunning => "T…",
-                    Role::ToolSuccess => "T✓",
-                    Role::ToolFailure => "T!",
-                    _ => "T",
-                };
+                // The label and its aligned indent share one budget, so every
+                // wrapped row of the block stays inside the viewport.
+                let reserve = unbreakable_columns(&line);
+                let label_width = tool_row_label_columns(width, reserve);
                 let prefix = if index == 0 {
-                    format!("[{short}] ")
+                    tool_row_prefix(tool_row_short(role), width, reserve)
                 } else {
-                    "    ".into()
+                    " ".repeat(label_width)
                 };
                 lines.extend(prefixed_wrapped_line(prefix, style, line, width));
             }
@@ -3815,7 +3973,8 @@ fn tool_block_lines(
             .iter()
             .map(|&index| lines[index].width())
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(usize::from(width));
         for index in banded_rows {
             let line = &mut lines[index];
             let padding = band_width.saturating_sub(line.width());
@@ -3963,18 +4122,54 @@ fn role_block_lines(
     lines
 }
 
+/// Widest grapheme `line` has to carry whole. Wrapping cannot split a grapheme,
+/// so any leading indentation has to stand back this far or the row it belongs to
+/// overflows the viewport.
+fn unbreakable_columns(line: &Line<'_>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| {
+            span.content
+                .graphemes(true)
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
 fn prefixed_wrapped_line(
     prefix: String,
     prefix_style: Style,
     line: Line<'static>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
-    let mut spans = vec![Span::styled(prefix, prefix_style)];
-    spans.extend(line.spans);
-    let mut wrapped = wrapped_line(Line::from(spans), width);
-    for line in wrapped.iter_mut().skip(1) {
-        line.spans.insert(0, Span::raw(continuation.clone()));
+    let room = usize::from(width);
+    // A label that cannot leave the row both a column and the widest grapheme it
+    // has to carry whole is dropped: it could not be hung off its own
+    // continuation rows without overflowing the viewport.
+    let prefix = if UnicodeWidthStr::width(prefix.as_str()) + unbreakable_columns(&line) > room {
+        String::new()
+    } else {
+        prefix
+    };
+    let prefix_width = UnicodeWidthStr::width(prefix.as_str());
+    let continuation = " ".repeat(prefix_width);
+    let mut wrapped = wrapped_line(
+        line,
+        u16::try_from(room.saturating_sub(prefix_width).max(1)).unwrap_or(u16::MAX),
+    );
+    for (index, line) in wrapped.iter_mut().enumerate() {
+        line.spans.insert(
+            0,
+            if index == 0 {
+                Span::styled(prefix.clone(), prefix_style)
+            } else {
+                Span::raw(continuation.clone())
+            },
+        );
     }
     wrapped
 }
@@ -3989,7 +4184,7 @@ fn repeated_prefixed_wrapped_line(
         .iter()
         .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
         .sum::<usize>();
-    if prefix_width >= width {
+    if prefix_width + unbreakable_columns(&line) > width {
         prefix.clear();
     }
     let prefix_width = prefix
@@ -4112,8 +4307,17 @@ pub(super) fn append_word(
             lines.push(line_from_spans(std::mem::take(current)));
             *current_width = 0;
         }
-        append_span(current, grapheme.to_owned(), style);
-        *current_width += grapheme_width;
+        // A grapheme is the smallest unit a row can hold, so one wider than the
+        // row has to be cut to it: spend the remaining columns on the same
+        // ellipsis the rest of the transcript truncates with.
+        let drawn = if *current_width + grapheme_width > width {
+            super::app::truncate_with_ellipsis(grapheme, width - *current_width)
+        } else {
+            grapheme.to_owned()
+        };
+        let drawn_width = UnicodeWidthStr::width(drawn.as_str());
+        append_span(current, drawn, style);
+        *current_width += drawn_width;
     }
 }
 
@@ -4399,9 +4603,9 @@ mod tests {
     use cookie_agent_protocol::{
         AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
         ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalResourceSource, ApprovalStatus,
-        ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, DecisionTrace,
-        EventPayload, EventSubscriptionMessage, GoalId, GoalItem, InvocationId, ModelCallId,
-        ModelKey, ModelSelection, OperationFingerprint, OutputDelta, OutputStream,
+        ApprovalTrigger, ApprovalUserDecision, AssistantToolCallRef, AttemptId, BoundedDisplayText,
+        DecisionTrace, EventPayload, EventSubscriptionMessage, GoalId, GoalItem, InvocationId,
+        ModelCallId, ModelKey, ModelSelection, OperationFingerprint, OutputDelta, OutputStream,
         PermissionAction, PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
         PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
         PreparedResourceIdentity, ProducerMessageId, ProviderId, RunId, RunSelection, SafeCode,
@@ -5849,7 +6053,7 @@ mod tests {
         cookie_agent_protocol::ToolCallPresentation {
             title: SafeDisplayText::new(title).expect("presentation title"),
             primary_argument: primary
-                .map(|argument| SafeDisplayText::new(argument).expect("primary argument")),
+                .map(|argument| BoundedDisplayText::new(argument).expect("primary argument")),
         }
     }
 
@@ -9426,10 +9630,17 @@ mod tests {
             assert_eq!(layout.regions.len(), 2);
             let rendered = snapshot_lines(&layout.lines);
             assert!(rendered.contains('💭'));
-            assert!(rendered.contains('💻'));
+            // Below 8 columns `tool_block_lines` swaps the assistant gutter for a
+            // compact `[T✓]` role label, which leaves no room for the tool's own
+            // icon: the chevron survives as the only expand/collapse cue.
+            assert!(rendered.contains("[T✓] ▾"), "{rendered:?}");
+            assert!(!rendered.contains('💻'), "{rendered:?}");
             assert_eq!(rendered.matches('▾').count(), 2);
         }
-        for width in [8, 12, 18] {
+        // Every row of the block from four columns up: the narrow role label and
+        // its continuation indent may simplify, but must never overflow. Below
+        // four columns even the two-column row icons cannot be drawn.
+        for width in [4, 5, 6, 7, 8, 12, 18] {
             let layout = transcript_layout(&state, Some(&expanded), width);
             assert!(
                 layout.lines.iter().all(|line| {
@@ -18504,14 +18715,40 @@ mod tests {
     #[test]
     fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         let path = "src/very/deeply/nested/module/transcript.rs";
+        let long_command = format!("command {} done", "long-argument ".repeat(12));
+        // A 40-column row keeps 38 columns of content behind its 2-column
+        // gutter, the `{icon} {chevron} ` markers take 5 of those, and `Read `
+        // takes 5 more: 28 columns are left for the argument.
+        assert_eq!(tool_header_content_width(40), 38);
         assert_eq!(
-            abbreviate_tool_argument("read", path, 40),
+            UnicodeWidthStr::width(tool_header_chrome("📖", '▸', 40).as_str()),
+            5
+        );
+        let read_budget = header_argument_width("Read", 33);
+        assert_eq!(read_budget, 28);
+        assert_eq!(
+            abbreviate_tool_argument("read", path, read_budget),
             "src/…/transcript.rs"
         );
-        assert_eq!(abbreviate_tool_argument("edit", path, 20), "…script.rs");
+        // Paths keep both ends while the budget covers the tail, otherwise the
+        // row truncates at the right edge.
+        assert_eq!(abbreviate_tool_argument("edit", path, 14), "…transcript.rs");
+        assert_eq!(abbreviate_tool_argument("read", path, 43), path);
+        // A `running` suffix costs two columns, and the argument fills exactly
+        // what the row leaves over rather than wrapping onto a second line.
+        let bash_budget = header_argument_width("bash", tool_header_content_width(80) - 5 - 2);
+        assert_eq!(bash_budget, 66);
+        let abbreviated = abbreviate_tool_argument("bash", &long_command, bash_budget);
+        assert_eq!(UnicodeWidthStr::width(abbreviated.as_str()), bash_budget);
+        assert!(abbreviated.ends_with('…'));
+        // On-wire arguments may carry controls; the header flattens them.
         assert_eq!(
             abbreviate_tool_argument("bash", "printf hello\n  && true", 80),
             "printf hello && true"
+        );
+        assert_eq!(
+            abbreviate_tool_argument("bash", "printf \u{1b}[31mred\u{0}\nsecond\tline", 80),
+            "printf [31mred second line"
         );
         for name in [
             "bash",
@@ -18529,7 +18766,7 @@ mod tests {
             let argument = if matches!(name, "read" | "write" | "edit") {
                 path.to_owned()
             } else {
-                format!("command {} done", "long-argument ".repeat(12))
+                long_command.clone()
             };
             let mut state = read_tool_state(path, ToolStatus::Completed, "result");
             let id = read_tool_id(&state);
@@ -18537,12 +18774,21 @@ mod tests {
             tool.presentation = presentation(name, Some(&argument));
             tool.arguments = serde_json::json!({"command": argument, "filePath": path}).to_string();
             let expanded = HashSet::from([BlockId::Tool(id)]);
+            let label = if name == "read" { "Read" } else { name };
             for width in [8, 12, 20, 40, 80, 160] {
-                let abbreviated = abbreviate_tool_argument(name, &argument, width);
-                assert!(
-                    UnicodeWidthStr::width(abbreviated.as_str())
-                        <= (usize::from(width) / 2).min(60)
-                );
+                // A zero budget means the label alone fills the row and the
+                // header drops the argument entirely; `.max(1)` keeps the
+                // abbreviation helper comparable here.
+                let budget = header_argument_width(
+                    label,
+                    tool_header_content_width(width)
+                        - UnicodeWidthStr::width(
+                            tool_header_chrome(tool_icon(name), '▸', width).as_str(),
+                        ),
+                )
+                .max(1);
+                let abbreviated = abbreviate_tool_argument(name, &argument, budget);
+                assert!(UnicodeWidthStr::width(abbreviated.as_str()) <= budget);
                 assert!(!abbreviated.contains(['\n', '\r', '\t']));
                 for blocks in [None, Some(&expanded)] {
                     let layout = transcript_layout_with(
@@ -18552,20 +18798,17 @@ mod tests {
                         &Theme::default(),
                         &PlainHighlighter,
                     );
-                    assert!(
-                        layout
-                            .lines
-                            .iter()
-                            .all(|line| line.width() <= usize::from(width))
-                    );
                     let region = layout
                         .regions
                         .iter()
                         .find(|region| region.id == BlockId::Tool(id))
                         .unwrap();
-                    if width >= 40 {
-                        assert!(region.header_lines.unwrap() <= 2);
-                    }
+                    assert_eq!(
+                        region.header_lines,
+                        Some(1),
+                        "{name}@{width}: {:?}",
+                        snapshot_lines(&layout.lines)
+                    );
                 }
             }
             if matches!(name, "read" | "write" | "edit") {
@@ -18573,17 +18816,245 @@ mod tests {
                 assert!(text.contains(path), "{name}: {text}");
             }
         }
-        let unicode = "src/目录/文件👩‍💻.rs";
-        for width in [2, 8, 16, 24] {
-            let short = abbreviate_tool_argument("read", unicode, width);
-            assert!(UnicodeWidthStr::width(short.as_str()) <= usize::from(width) / 2);
+        let unicode = "src/目录/文件/文件👩‍💻.rs";
+        for width in [8, 16, 24, 40] {
+            let budget = header_argument_width("Read", tool_header_content_width(width) - 5).max(1);
+            let short = abbreviate_tool_argument("read", unicode, budget);
+            assert!(UnicodeWidthStr::width(short.as_str()) <= budget);
             assert!(!short.starts_with("…\u{200d}"));
         }
         let mut plugin = read_tool_state(path, ToolStatus::Completed, "result");
         let id = read_tool_id(&plugin);
         let tool = plugin.tools.get_mut(&id).unwrap();
         tool.presentation = presentation("plugin.tool", Some(path));
-        assert_eq!(tool_header_title(tool, 20), tool.compact_title());
+        // The plugin header owns the full row: a wide row keeps its compact
+        // title, whose label width (not a fixed five-column budget) is spent.
+        assert_eq!(tool_header_row(tool, '▸', "", 80).1, tool.compact_title());
+        tool.presentation = presentation("plugin.tool", Some("run\u{1b} echo"));
+        assert_eq!(tool_header_row(tool, '▸', "", 40).1, "plugin.tool run echo");
+    }
+
+    /// Layout at an explicit animation bucket, using the plain highlighter so
+    /// only the header geometry under test varies.
+    fn tool_layout_at_clock(
+        state: &SessionState,
+        expanded: Option<&HashSet<BlockId>>,
+        width: u16,
+        clock_bucket: u8,
+    ) -> TranscriptLayout {
+        transcript_layout_at_clock(
+            state,
+            expanded,
+            width,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Debug,
+            clock_bucket,
+        )
+    }
+
+    #[test]
+    fn builtin_tool_headers_hold_one_row_at_every_width_and_status() {
+        let longest = "x".repeat(cookie_agent_protocol::BoundedDisplayText::MAX_BYTES);
+        // A plugin label longer than any row, and the built-in whose expanded
+        // body draws the terminal band that used to widen past the viewport.
+        for (name, argument) in [
+            ("mcp__long_running_server__exec_command", longest.as_str()),
+            ("bash", "xxxxxxx"),
+            // Two-column graphemes cannot be split, so a row that spends its
+            // last column on an indent would otherwise be pushed out of the
+            // viewport by a single character.
+            ("bash", "echo 世界界界"),
+        ] {
+            let mut state = read_tool_state("src/lib.rs", ToolStatus::Completed, "partial");
+            let id = read_tool_id(&state);
+            let tool = state.tools.get_mut(&id).unwrap();
+            tool.presentation = presentation(name, Some(argument));
+            tool.arguments = serde_json::json!({"command": argument}).to_string();
+            let expanded = HashSet::from([BlockId::Tool(id)]);
+            // `tool_block_lines` fronts a narrow row with its `"[T…] "` role
+            // label (shortened with the row) and the `"│ "` gutter from 8 columns
+            // up; the widest status suffix is `" interrupted"` (12) and the
+            // running marker grows with the animation clock, so every phase and
+            // every terminal status gets its own pass from one column up.
+            for status in [
+                ToolStatus::Completed,
+                ToolStatus::Running,
+                ToolStatus::Failed,
+                ToolStatus::Cancelled,
+                ToolStatus::Interrupted,
+            ] {
+                let status_name = format!("{status:?}");
+                state.tools.get_mut(&id).unwrap().status = status;
+                for clock_bucket in 0..=3u8 {
+                    for width in [1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 19, 20, 24, 40, 80] {
+                        for blocks in [None, Some(&expanded)] {
+                            let layout = tool_layout_at_clock(&state, blocks, width, clock_bucket);
+                            let region = layout
+                                .regions
+                                .iter()
+                                .find(|region| region.id == BlockId::Tool(id))
+                                .unwrap();
+                            let rendered = snapshot_lines(&layout.lines);
+                            assert_eq!(
+                                region.header_lines,
+                                Some(1),
+                                "{name}@{status_name}@{clock_bucket}x{width}: {rendered:?}"
+                            );
+                            assert!(
+                                layout
+                                    .lines
+                                    .iter()
+                                    .all(|line| line.width() <= usize::from(width)),
+                                "{name}@{status_name}@{clock_bucket}x{width}: {rendered:?}"
+                            );
+                            // Drawing through the widget the app renders with
+                            // proves the overflow is gone rather than merely
+                            // clipped: ratatui resets the cell behind a
+                            // double-width glyph, so text is compared with
+                            // spacing ignored.
+                            let rows = render_to_buffer(&layout.lines, width);
+                            let compact = |text: String| -> String {
+                                text.chars().filter(|c| !c.is_whitespace()).collect()
+                            };
+                            let laid_out = layout
+                                .lines
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<String>();
+                            assert_eq!(
+                                compact(rows.join("")),
+                                compact(laid_out),
+                                "{name}@{status_name}@{clock_bucket}x{width}: {rows:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_header_surrenders_suffix_argument_and_label_by_turn_on_narrow_rows() {
+        let mut state = read_tool_state("src/lib.rs", ToolStatus::Interrupted, "partial");
+        let id = read_tool_id(&state);
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("bash", Some("printf hello"));
+        let header = |width| {
+            let layout = tool_layout_at_clock(&state, None, width, 0);
+            let region = layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            assert_eq!(region.header_lines, Some(1), "width {width}");
+            layout.lines[region.start_line].to_string()
+        };
+        // 20 columns: gutter (2) + markers (5) + `" interrupted"` (12) leaves one
+        // column of title, so the argument gives way and the status stays.
+        assert_eq!(header(20), "│ 💻 ▸ … interrupted");
+        // One column narrower no title column survives, and the markers close up
+        // instead of leaving a gap in front of the suffix.
+        assert_eq!(header(19), "│ 💻 ▸ interrupted");
+        // Below the suffix's own width it drops out entirely: the row's failure
+        // colour already says the call did not finish, and the argument returns.
+        assert_eq!(header(18), "│ 💻 ▸ bash print…");
+        // Under 8 columns the gutter swaps for the role label, which leaves room
+        // for the chevron alone.
+        assert_eq!(header(7), "[T!] ▸");
+        assert_eq!(header(6), "[T!] ▸");
+        // From here the label shortens with the row instead of forcing a wrap,
+        // and always keeps a column for the markers.
+        assert_eq!(header(5), "[T!]▸");
+        assert_eq!(header(4), "[T…▸");
+        assert_eq!(header(3), "[…▸");
+        assert_eq!(header(2), "…▸");
+        // One column left: the label cannot survive, so the row keeps nothing that
+        // would overflow it.
+        assert_eq!(header(1), "");
+    }
+
+    /// Draw layout lines through the widget the app renders the transcript with,
+    /// so control characters behave exactly as they do on a real terminal.
+    fn render_to_buffer(lines: &[Line<'static>], width: u16) -> Vec<String> {
+        use ratatui::{
+            buffer::Buffer,
+            widgets::{Paragraph, Widget},
+        };
+        let area = Rect::new(
+            0,
+            0,
+            width,
+            u16::try_from(lines.len()).unwrap_or(u16::MAX - 1).max(1),
+        );
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(lines.to_vec()).render(area, &mut buffer);
+        (0..area.height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .filter(|row| !row.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn expanded_read_path_renders_embedded_tabs_as_spaces() {
+        let path = "src/my\tfile.rs";
+        let mut state = read_tool_state(path, ToolStatus::Completed, "result");
+        let id = read_tool_id(&state);
+        state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some(path));
+        let expanded = HashSet::from([BlockId::Tool(id)]);
+        let rows = render_to_buffer(&transcript_layout(&state, Some(&expanded), 80).lines, 80);
+        // The terminal renderer drops control characters outright, so a literal
+        // tab would silently vanish from the buffer row. Both the collapsed
+        // header and the expanded `path:` row must show the flattened space.
+        assert!(
+            rows.iter().any(|row| row.ends_with("Read src/my file.rs")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.ends_with("path: src/my file.rs")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains("src/myfile")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_tool_headers_flatten_control_bearing_arguments() {
+        let argument = "printf \u{1b}[31mred\u{1b}[0m\nsecond\tline";
+        let mut bash = read_tool_state("unused", ToolStatus::Completed, "result");
+        let id = read_tool_id(&bash);
+        bash.tools.get_mut(&id).unwrap().presentation = presentation("bash", Some(argument));
+        for blocks in [None, Some(&HashSet::from([BlockId::Tool(id)]))] {
+            let rendered = snapshot_lines(&transcript_layout(&bash, blocks, 80).lines);
+            assert!(
+                rendered.contains("bash printf [31mred [0m second line"),
+                "{rendered:?}"
+            );
+            assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
+        }
+        let mut read = read_tool_state("unused", ToolStatus::Completed, "result");
+        let id = read_tool_id(&read);
+        read.tools.get_mut(&id).unwrap().presentation =
+            presentation("read", Some("src/lib\u{1b}.rs"));
+        let rendered = snapshot_lines(&transcript_layout(&read, None, 80).lines);
+        assert!(rendered.contains("📖 ▸ Read src/lib .rs"), "{rendered:?}");
+        assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
+        let rendered = snapshot_lines(
+            &transcript_layout(&read, Some(&HashSet::from([BlockId::Tool(id)])), 80).lines,
+        );
+        assert!(
+            rendered.contains("path: src/lib\u{fffd}.rs"),
+            "{rendered:?}"
+        );
+        assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
     }
 
     #[test]
@@ -18657,6 +19128,149 @@ mod tests {
         );
     }
 
+    /// A row cannot break inside a grapheme, so the body's hanging indentation has
+    /// to stand back far enough to host a two-column character, and a row too
+    /// narrow for it at all cuts the character instead of overflowing.
+    #[test]
+    fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
+        let command = "echo 世界界界";
+        let mut state = read_tool_state("unused", ToolStatus::Completed, "partial");
+        let id = read_tool_id(&state);
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("bash", Some(command));
+        tool.arguments = serde_json::json!({"command": command}).to_string();
+        let expanded = HashSet::from([BlockId::Tool(id)]);
+        let compact = |text: String| -> String {
+            text.chars()
+                .filter(|character| !character.is_whitespace())
+                .collect()
+        };
+        let tool_rows = |width: u16| {
+            let layout = transcript_layout(&state, Some(&expanded), width);
+            for line in &layout.lines {
+                assert!(
+                    line.width() <= usize::from(width),
+                    "width {width}: {:?}",
+                    snapshot_lines(&layout.lines)
+                );
+            }
+            let rows = render_to_buffer(&layout.lines, width);
+            // Nothing is clipped by the renderer either: no row spills into cells
+            // the terminal would have to drop.
+            assert_eq!(
+                compact(rows.join("")),
+                compact(
+                    layout
+                        .lines
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<String>()
+                ),
+                "width {width}: {rows:?}"
+            );
+            let region = layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            layout.lines[region.start_line..region.end_line]
+                .iter()
+                .map(|line| line.to_string().trim_end().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // Five indentation columns plus a two-column glyph used to make this row
+        // seven wide; the indent now spends four and the glyph keeps its two.
+        assert_eq!(
+            tool_rows(6),
+            [
+                "[T✓] ▾",
+                "    ❯",
+                "    ec",
+                "    ho",
+                "    世",
+                "    界",
+                "    界",
+                "    界",
+                "     p",
+                "     a",
+                "     r",
+                "     t",
+                "     i",
+                "     a",
+                "     l",
+            ]
+        );
+        assert_eq!(
+            tool_rows(2),
+            [
+                "…▾", "❯", "ec", "ho", "世", "界", "界", "界", " p", " a", " r", " t", " i", " a",
+                " l",
+            ]
+        );
+        // The other shared wrappers carry the same guarantee, and the same
+        // stand-back for their gutters: at three columns a two-column `"│ "`
+        // gutter would leave a single column, so it yields and the glyph survives
+        // instead of being cut to an ellipsis.
+        let rows = |lines: Vec<Line<'static>>| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| line.to_string().trim_end().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            rows(prefixed_wrapped_line(
+                "   ".into(),
+                Style::new(),
+                Line::from("世界界"),
+                3
+            )),
+            ["世", "界", "界"]
+        );
+        assert_eq!(
+            rows(repeated_prefixed_wrapped_line(
+                vec![Span::raw("│ ")],
+                Line::from("世界界"),
+                3
+            )),
+            ["世", "界", "界"]
+        );
+        assert_eq!(
+            rows(repeated_prefixed_hanging_line(
+                vec![Span::raw("│ ")],
+                Line::from("- 世界界"),
+                3,
+                2
+            )),
+            ["-", " 世", " 界", " 界"]
+        );
+        for width in 1u16..=8 {
+            for lines in [
+                prefixed_wrapped_line("   ".into(), Style::new(), Line::from("世界界"), width),
+                repeated_prefixed_wrapped_line(vec![Span::raw("│ ")], Line::from("世界界"), width),
+                repeated_prefixed_hanging_line(
+                    vec![Span::raw("│ ")],
+                    Line::from("- 世界界"),
+                    width,
+                    2,
+                ),
+            ] {
+                assert!(
+                    lines.iter().all(|line| line.width() <= usize::from(width)),
+                    "width {width}: {lines:?}"
+                );
+            }
+        }
+        // Only a row too narrow to host the glyph in any form replaces it.
+        let narrow = tool_rows(1);
+        assert!(narrow.iter().any(|row| row == "…"), "{narrow:?}");
+        assert!(!narrow.iter().any(|row| row.contains('世')), "{narrow:?}");
+        assert!(
+            tool_rows(8).iter().any(|row| row == "│ 世界界"),
+            "{:?}",
+            tool_rows(8)
+        );
+    }
+
     #[test]
     fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
         let mut state = read_tool_state(
@@ -18693,7 +19307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrapped_bash_header_hover_covers_visible_header_only() {
+    async fn bash_header_hover_covers_visible_header_only() {
         use ratatui::style::Modifier;
 
         let mut app = test_app().await;
@@ -18729,7 +19343,9 @@ mod tests {
                 .find(|region| region.id == BlockId::Tool(id))
                 .unwrap();
             let header_lines = region.header_lines.unwrap();
-            assert!(header_lines > 1);
+            // The header takes exactly one row: an over-long argument truncates
+            // to the row instead of wrapping a second header line.
+            assert_eq!(header_lines, 1);
             for (offset, visible_header_lines) in [
                 (0, header_lines),
                 (region.start_line + 1, header_lines - 1),

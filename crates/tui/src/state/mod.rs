@@ -40,8 +40,9 @@ pub enum ToolStatus {
 }
 
 /// A tool invocation displayed inside its owning assistant item. The compact
-/// title uses only the persisted, sanitized `ToolCallPresentation`; raw
-/// arguments appear only in the expanded detail.
+/// title uses only the persisted `ToolCallPresentation`; raw arguments appear
+/// only in the expanded detail. The persisted display argument is byte-capped
+/// but may still carry control characters, so render sites flatten it.
 #[derive(Clone, Debug)]
 pub struct ToolCallState {
     pub id: ToolCallId,
@@ -56,7 +57,9 @@ pub struct ToolCallState {
 
 impl ToolCallState {
     /// The exact compact title: the persisted sanitized tool title plus its
-    /// persisted sanitized display argument, never reparsed from raw input.
+    /// persisted display argument, never reparsed from raw input. The argument is
+    /// byte-capped but not flattened, so a render site must sanitize it and
+    /// abbreviate it to its own budget.
     pub fn compact_title(&self) -> String {
         match &self.presentation.primary_argument {
             Some(argument) => format!("{} {argument}", self.presentation.title),

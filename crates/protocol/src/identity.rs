@@ -171,6 +171,16 @@ string_wire_impl!(
     "Control-free bounded presentation text.",
     |value: &str| validate_control_free(value, SafeDisplayText::MAX_BYTES)
 );
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
+#[ts(type = "string")]
+pub struct BoundedDisplayText(String);
+string_wire_impl!(
+    BoundedDisplayText,
+    1024,
+    "^[\\s\\S]+$",
+    "Bounded presentation text; byte-capped only, clients sanitize control characters.",
+    |value: &str| validate_bounded(value, BoundedDisplayText::MAX_BYTES)
+);
 bounded_control_free_type!(
     SafeErrorMessage,
     4096,

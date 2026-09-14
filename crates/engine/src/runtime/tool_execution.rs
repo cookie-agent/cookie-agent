@@ -2,9 +2,10 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
-    ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams, InternalAgentKind,
-    OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
-    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallPresentation,
+    BoundedDisplayText, ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams,
+    InternalAgentKind, OperationFingerprint, PersistedToolResult as ToolResult,
+    PluginDiagnosticKind, PreparedOperationIdentity, RunId, SessionId, Sha256Digest,
+    ToolCallPresentation,
 };
 use futures_util::FutureExt as _;
 use oven_sdk::{JsonSchema, ToolDefinition};
@@ -17,7 +18,7 @@ use super::{
     PublishedTool, PublishedToolSet, ToolCallFailureCode, ToolFailure, ToolInterceptionContext,
     approval_flow::approval_expiry,
     approval_projection::denied_tool_failure,
-    helpers::{safe_display, session_depth},
+    helpers::{safe_display, session_depth, truncate_utf8},
 };
 use crate::{
     events::OutputHub,
@@ -1112,9 +1113,17 @@ pub(crate) fn tool_title_only(name: &str) -> ToolCallPresentation {
 }
 
 pub(crate) fn tool_presentation(name: &str, primary: &str) -> ToolCallPresentation {
+    let argument = truncate_utf8(primary.trim(), BoundedDisplayText::MAX_BYTES);
     ToolCallPresentation {
         title: safe_display(name),
-        primary_argument: Some(safe_display(primary)),
+        primary_argument: Some(
+            BoundedDisplayText::new(if argument.is_empty() {
+                "unavailable".into()
+            } else {
+                argument
+            })
+            .expect("byte-bounded display argument"),
+        ),
     }
 }
 
@@ -1148,16 +1157,41 @@ pub(crate) fn validate_attachment(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn presentation_preserves_arguments_and_strips_controls() {
+    fn presentation_byte_caps_arguments_and_preserves_controls() {
         let presentation = super::tool_presentation("bash", "cat secret.txt; TOKEN=visible\u{1b}");
+        assert_eq!(presentation.title.as_str(), "bash");
         let argument = presentation.primary_argument.unwrap();
-        assert!(argument.as_str().contains("cat secret.txt; TOKEN=visible"));
-        assert!(!argument.as_str().contains('\u{1b}'));
+        assert_eq!(argument.as_str(), "cat secret.txt; TOKEN=visible\u{1b}");
+
+        let oversized = "x".repeat(BoundedDisplayText::MAX_BYTES + 8);
+        let argument = super::tool_presentation("bash", &oversized)
+            .primary_argument
+            .unwrap();
+        assert_eq!(argument.as_str().len(), BoundedDisplayText::MAX_BYTES);
+
+        // Three-byte graphemes do not divide the cap evenly: the cut stays on a
+        // character boundary rather than yielding an invalid UTF-8 prefix.
+        let multibyte = "→".repeat(BoundedDisplayText::MAX_BYTES);
+        let argument = super::tool_presentation("bash", &multibyte)
+            .primary_argument
+            .unwrap();
+        assert_eq!(
+            argument.as_str(),
+            "→".repeat(BoundedDisplayText::MAX_BYTES / 3)
+        );
+
+        assert_eq!(
+            super::tool_presentation("bash", "  \n\t ")
+                .primary_argument
+                .unwrap()
+                .as_str(),
+            "unavailable"
+        );
     }
 
     use std::path::Path;
 
-    use cookie_agent_protocol::ToolCallId;
+    use cookie_agent_protocol::{BoundedDisplayText, ToolCallId};
 
     use super::{
         MAX_VIDEO_ATTACHMENT_BYTES, ToolCall, fallback_operation_fingerprint, validate_attachment,

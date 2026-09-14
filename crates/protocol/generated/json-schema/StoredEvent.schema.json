@@ -6634,14 +6634,14 @@
       "type": "object",
       "properties": {
         "primary_argument": {
-          "description": "Control-free bounded presentation text.",
+          "description": "Bounded presentation text; byte-capped only, clients sanitize control characters.",
           "type": [
             "string",
             "null"
           ],
           "maxLength": 1024,
           "minLength": 1,
-          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+          "pattern": "^[\\s\\S]+$"
         },
         "title": {
           "description": "Control-free bounded presentation text.",

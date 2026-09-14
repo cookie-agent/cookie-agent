@@ -1651,6 +1651,20 @@ fn setup_bounds_and_shared_identity_types_are_enforced() {
 }
 
 #[test]
+fn bounded_display_text_bounds_bytes_but_permits_controls() {
+    assert_eq!(
+        BoundedDisplayText::new("line one\nline two\u{1b}")
+            .expect("byte-bounded argument")
+            .as_str(),
+        "line one\nline two\u{1b}"
+    );
+    assert!(BoundedDisplayText::new("").is_err());
+    assert!(BoundedDisplayText::new("x".repeat(BoundedDisplayText::MAX_BYTES)).is_ok());
+    assert!(BoundedDisplayText::new("x".repeat(BoundedDisplayText::MAX_BYTES + 1)).is_err());
+    assert!(SafeDisplayText::new("line one\n").is_err());
+}
+
+#[test]
 fn runtime_snapshot_schema_snapshot() {
     insta::assert_json_snapshot!(schema_for!(RuntimeSnapshotResult));
 }

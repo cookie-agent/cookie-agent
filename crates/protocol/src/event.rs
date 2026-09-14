@@ -704,8 +704,8 @@ pub struct AssistantToolCallRef {
 pub struct ToolCallPresentation {
     pub title: SafeDisplayText,
     #[serde(deserialize_with = "deserialize_required_option")]
-    #[schemars(with = "crate::NullableSchema<SafeDisplayText>", required)]
-    pub primary_argument: Option<SafeDisplayText>,
+    #[schemars(with = "crate::NullableSchema<BoundedDisplayText>", required)]
+    pub primary_argument: Option<BoundedDisplayText>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]

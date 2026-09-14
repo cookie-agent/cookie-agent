@@ -615,7 +615,7 @@ mod tests {
             presentation
                 .primary_argument
                 .as_ref()
-                .map(cookie_agent_protocol::SafeDisplayText::as_str),
+                .map(cookie_agent_protocol::BoundedDisplayText::as_str),
             Some("src/lib.rs")
         );
     }

@@ -39,6 +39,7 @@ export * from "./AuthCredentialDescriptor.js";
 export * from "./AuthMethodDescriptor.js";
 export * from "./AvailableModelDescriptor.js";
 export * from "./AvailableVariantDescriptor.js";
+export * from "./BoundedDisplayText.js";
 export * from "./BoundedSetupString.js";
 export * from "./CancellationCapability.js";
 export * from "./CatalogRuntimeState.js";
