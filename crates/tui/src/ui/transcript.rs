@@ -10541,6 +10541,347 @@ mod tests {
         assert_eq!(assistant_texts(assistants[0]), ["one", "two"]);
     }
 
+    /// Transcript shape that matters for block ordering: assistant blocks with
+    /// their children (by kind and content) plus every compaction marker,
+    /// ignoring event rows. Identity-free so a live projection and a rebuilt
+    /// one compare directly.
+    fn transcript_shape(state: &crate::state::SessionState) -> Vec<String> {
+        state
+            .transcript
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Assistant { children, .. } => Some(format!(
+                    "assistant[{}]",
+                    children
+                        .iter()
+                        .map(|child| match child {
+                            AssistantChild::Text { markdown, .. } =>
+                                format!("text:{}", markdown.as_str()),
+                            AssistantChild::Thinking { text, .. } => format!("thinking:{text}"),
+                            AssistantChild::Tool { .. } => "tool".to_owned(),
+                            AssistantChild::CommittedTool { .. } => "committed-tool".to_owned(),
+                            AssistantChild::MediaFile { .. } => "media".to_owned(),
+                            AssistantChild::Attribution { .. } => "attribution".to_owned(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )),
+                TranscriptItem::Compaction { seq, .. } => Some(format!("compaction:{seq}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One run whose context compacts mid-run: a reasoning/text/tool turn, the
+    /// checkpoint commit at the following attempt boundary, then a streamed
+    /// and committed retry turn with its own reasoning and tool call.
+    fn checkpoint_mid_run_events(
+        session: SessionId,
+        run: RunId,
+        before: AttemptId,
+        after: AttemptId,
+        before_call: ToolCallId,
+        after_call: ToolCallId,
+    ) -> Vec<StoredEvent> {
+        let completed = cookie_agent_protocol::ToolTerminationOutcome::Completed;
+        vec![
+            run_started_with_suffix(session, 1, run, vec![resolved_model(None)]),
+            attempt_started(session, 2, run, before, None),
+            reasoning_delta(session, 3, run, before, "pondering the pre-flight plan"),
+            text_delta(session, 4, run, before, "answer before the checkpoint"),
+            turn_committed(
+                session,
+                5,
+                run,
+                before,
+                11,
+                vec![
+                    reasoning_part("pondering the pre-flight plan"),
+                    text_part("answer before the checkpoint"),
+                    tool_part("pre-call"),
+                ],
+                Vec::new(),
+                None,
+            ),
+            tool_started_at(
+                session,
+                6,
+                run,
+                before_call,
+                11,
+                "pre-call",
+                2,
+                "pre-call",
+                None,
+            ),
+            tool_terminated(session, 7, run, before_call, 11, "pre-call", completed),
+            event(
+                session,
+                8,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint_commit("checkpoint summary"),
+                },
+            ),
+            attempt_started(session, 9, run, after, None),
+            text_delta(session, 10, run, after, "answer after the checkpoint"),
+            reasoning_delta(session, 11, run, after, "pondering the post-flight plan"),
+            turn_committed(
+                session,
+                12,
+                run,
+                after,
+                12,
+                vec![
+                    text_part("answer after the checkpoint"),
+                    reasoning_part("pondering the post-flight plan"),
+                    tool_part("post-call"),
+                ],
+                Vec::new(),
+                None,
+            ),
+            tool_started_at(
+                session,
+                13,
+                run,
+                after_call,
+                12,
+                "post-call",
+                2,
+                "post-call",
+                None,
+            ),
+            tool_terminated(session, 14, run, after_call, 12, "post-call", completed),
+        ]
+    }
+
+    /// Every thinking body in the projection, expanded so its text is visible
+    /// to the rendered-order assertions.
+    fn expand_thinking(state: &crate::state::SessionState, expanded: &mut HashSet<BlockId>) {
+        for item in &state.transcript {
+            if let TranscriptItem::Assistant { children, .. } = item {
+                for child in children {
+                    if let AssistantChild::Thinking { id, .. } = child {
+                        expanded.insert(BlockId::Thinking(*id));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_mid_run_splits_the_assistant_block_below_the_marker() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let before = AttemptId::new_v7();
+        let after = AttemptId::new_v7();
+        let before_call = ToolCallId::new_v7();
+        let after_call = ToolCallId::new_v7();
+        let mut store = StateStore::default();
+        let events =
+            checkpoint_mid_run_events(session, run, before, after, before_call, after_call);
+        for event in events {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        // The marker sits at its true position: the run's pre-compaction block
+        // above it, everything emitted after it in a fresh block below.
+        assert_eq!(
+            transcript_shape(state),
+            [
+                "assistant[thinking:pondering the pre-flight plan,text:answer before the checkpoint,tool]",
+                "compaction:8",
+                "assistant[text:answer after the checkpoint,thinking:pondering the post-flight plan,tool]",
+            ]
+        );
+        let assistants = assistant_items(state);
+        assert_eq!(
+            assistants.len(),
+            2,
+            "the checkpoint ends the run's first block"
+        );
+        assert!(children_has_tool(assistants[0], before_call));
+        assert!(!children_has_tool(assistants[1], before_call));
+        assert!(children_has_tool(assistants[1], after_call));
+        // Rendered order agrees with the projection order, segment by segment.
+        let mut expanded = HashSet::from([BlockId::Compaction(8)]);
+        expand_thinking(state, &mut expanded);
+        let rendered = snapshot_lines(&transcript_layout(state, Some(&expanded), 100).lines);
+        let position = |needle: &str| {
+            rendered
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?} in\n{rendered}"))
+        };
+        let marker = position("context compacted");
+        assert!(
+            position("pondering the pre-flight plan") < position("answer before the checkpoint"),
+            "{rendered}"
+        );
+        assert!(
+            position("answer before the checkpoint") < marker,
+            "{rendered}"
+        );
+        assert!(
+            position("pre-call") < marker,
+            "the pre-compaction tool row renders inside its own segment"
+        );
+        assert!(
+            marker < position("answer after the checkpoint"),
+            "{rendered}"
+        );
+        assert!(
+            position("answer after the checkpoint") < position("pondering the post-flight plan"),
+            "{rendered}"
+        );
+        assert!(
+            position("pondering the post-flight plan") < position("post-call"),
+            "the post-compaction tool row renders below the marker in its own segment"
+        );
+    }
+
+    #[test]
+    fn checkpoint_mid_run_split_survives_replay_rebuild() {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let before = AttemptId::new_v7();
+        let after = AttemptId::new_v7();
+        let before_call = ToolCallId::new_v7();
+        let after_call = ToolCallId::new_v7();
+        let events =
+            checkpoint_mid_run_events(session, run, before, after, before_call, after_call);
+        let mut live = StateStore::default();
+        for event in &events {
+            assert!(live.apply_event(event.clone()));
+        }
+        let mut rebuilt = StateStore::default();
+        assert!(rebuilt.rebuild_session(session, 0, events));
+        assert_eq!(
+            transcript_shape(&live.sessions[&session]),
+            [
+                "assistant[thinking:pondering the pre-flight plan,text:answer before the checkpoint,tool]",
+                "compaction:8",
+                "assistant[text:answer after the checkpoint,thinking:pondering the post-flight plan,tool]",
+            ]
+        );
+        assert_eq!(
+            transcript_shape(&rebuilt.sessions[&session]),
+            transcript_shape(&live.sessions[&session]),
+            "a rebuilt projection splits the run at the checkpoint too"
+        );
+    }
+
+    /// The engine's context-length recovery: an attempt abandoned before
+    /// anything commits, the checkpoint commit, then the retry that answers.
+    /// With `warned`, a row interleaves first, so the block is already
+    /// split-pending by the time the checkpoint lands on its emptied block.
+    fn checkpoint_recovery_events(
+        session: SessionId,
+        run: RunId,
+        first: AttemptId,
+        retry: AttemptId,
+        warned: bool,
+    ) -> Vec<StoredEvent> {
+        let abandoned = |seq| {
+            event(
+                session,
+                seq,
+                run,
+                EventPayload::AttemptAbandoned {
+                    attempt_id: first,
+                    model_error: None,
+                },
+            )
+        };
+        let checkpoint = |seq| {
+            event(
+                session,
+                seq,
+                run,
+                EventPayload::ContextCheckpointCommitted {
+                    commit: checkpoint_commit("context length recovery"),
+                },
+            )
+        };
+        let answered = |seq| {
+            turn_committed(
+                session,
+                seq,
+                run,
+                retry,
+                1,
+                vec![text_part("recovered answer")],
+                Vec::new(),
+                None,
+            )
+        };
+        let head = run_started_with_suffix(session, 1, run, vec![resolved_model(None)]);
+        let opened = attempt_started(session, 2, run, first, None);
+        let rejected = text_delta(session, 3, run, first, "rejected partial");
+        if warned {
+            vec![
+                head,
+                opened,
+                rejected,
+                mid_stream_failure(session, 4, run),
+                abandoned(5),
+                checkpoint(6),
+                attempt_started(session, 7, run, retry, None),
+                text_delta(session, 8, run, retry, "recovered answer"),
+                answered(9),
+            ]
+        } else {
+            vec![
+                head,
+                opened,
+                rejected,
+                abandoned(4),
+                checkpoint(5),
+                attempt_started(session, 6, run, retry, None),
+                text_delta(session, 7, run, retry, "recovered answer"),
+                answered(8),
+            ]
+        }
+    }
+
+    /// The emptied block of a pruned abandoned attempt must relocate below the
+    /// marker and be reused by the retry: never stranded above it, and never
+    /// duplicated as an empty header below it.
+    #[test]
+    fn checkpoint_after_a_pruned_abandoned_attempt_leaves_no_empty_block() {
+        for warned in [false, true] {
+            let session = SessionId::new_v7();
+            let run = run_id();
+            let first = AttemptId::new_v7();
+            let retry = AttemptId::new_v7();
+            let events = checkpoint_recovery_events(session, run, first, retry, warned);
+            let marker = if warned {
+                "compaction:6"
+            } else {
+                "compaction:5"
+            };
+            let mut store = StateStore::default();
+            for event in events {
+                assert!(store.apply_event(event));
+            }
+            let state = &store.sessions[&session];
+            assert_eq!(
+                transcript_shape(state),
+                [marker, "assistant[text:recovered answer]"],
+                "the checkpoint consumes the split of the emptied block (warned: {warned})"
+            );
+            let rendered = snapshot_lines(&transcript_layout(state, None, 100).lines);
+            assert_eq!(
+                rendered
+                    .lines()
+                    .filter(|line| line.starts_with("╭─ primary •"))
+                    .count(),
+                1,
+                "no empty assistant header survives around the marker (warned: {warned}):\n{rendered}"
+            );
+        }
+    }
+
     #[test]
     fn same_model_retry_after_abandonment_prunes_partials_without_marker() {
         let session = SessionId::new_v7();

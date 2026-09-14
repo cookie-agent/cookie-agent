@@ -666,6 +666,52 @@ impl SessionState {
             projection.split_pending = true;
         }
     }
+
+    /// Split the open run block at a committed context checkpoint. A
+    /// checkpoint is durable context history the run's output must not
+    /// straddle, so unlike an interleaved event row — which splits only while
+    /// something streams — it always splits: the next new segment (part, tool
+    /// call, or attempt) opens a fresh block below the compaction row. A block
+    /// that never committed anything (an abandoned attempt's pruned partials)
+    /// has nothing to split off: its index comes back instead — with any split
+    /// an earlier row left pending consumed, exactly as relocating an empty
+    /// block does for a mid-stream row — so the caller can move the block
+    /// itself below the row and the retry keeps using it, rather than leaving
+    /// an empty header stranded on either side of the marker.
+    pub(crate) fn split_run_at_compaction(&mut self) -> Option<usize> {
+        let item_id = self
+            .open_run_assistant
+            .as_ref()
+            .map(|projection| projection.item_id)?;
+        let index = self
+            .transcript
+            .iter()
+            .position(|item| item.id() == item_id)?;
+        if matches!(
+            &self.transcript[index],
+            TranscriptItem::Assistant {
+                children,
+                committed_turn_seq,
+                ..
+            } if children.is_empty() && committed_turn_seq.is_none()
+        ) {
+            // The relocated block is the one the next segment continues in, so
+            // moving it consumes any split left pending by an earlier row
+            // instead of making the retry open a second block around it.
+            let projection = self
+                .open_run_assistant
+                .as_mut()
+                .expect("located run projection");
+            projection.split_pending = false;
+            projection.committed_prefix = 0;
+            return Some(index);
+        }
+        self.open_run_assistant
+            .as_mut()
+            .expect("located run projection")
+            .split_pending = true;
+        None
+    }
 }
 
 /// All currently observed session projections.
@@ -2244,12 +2290,20 @@ fn reduce_event(
             timestamp,
         ),
         EventPayload::ContextCheckpointCommitted { commit } => {
+            // The compaction row is the run's chronological boundary: the next
+            // new segment opens fresh below it, and a block that never
+            // committed anything is moved under the row itself instead of
+            // being split off as an empty header.
+            let relocate = state.split_run_at_compaction();
             push_item(state, timestamp, |id| TranscriptItem::Compaction {
                 id,
                 version: 0,
                 seq: sequence,
                 commit,
-            })
+            });
+            if let Some(index) = relocate {
+                move_transcript_item_to_end(state, index);
+            }
         }
         EventPayload::ToolOutputElided {
             tool_call_id,
