@@ -3294,6 +3294,111 @@ fn empty_session_is_live_only_and_disappears_on_restart_without_artifacts() {
     assert!(!session_dir.exists());
 }
 
+/// Attach a delegated child session directly to the store with the same
+/// creation event admission writes, without running a delegation turn.
+fn create_buffered_delegated_child(engine: &Engine, parent: SessionId) -> SessionId {
+    let parent_projection = engine.inner.store.get(parent).expect("parent projection");
+    let EventPayload::SessionCreated {
+        origin: _,
+        cwd_identity,
+        creation_selection,
+        creation_agent,
+        runtime_revision,
+        catalog_revision,
+        provider_state_revision,
+        model_revision,
+        agent_revision,
+        recipe_registry_revision,
+        manifest_revision,
+    } = parent_projection
+        .log
+        .event_snapshot()
+        .first()
+        .expect("parent creation event")
+        .payload
+        .clone()
+    else {
+        panic!("expected a session creation event");
+    };
+    let child = SessionId::new_v7();
+    engine
+        .inner
+        .store
+        .create(
+            child,
+            cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
+            EventPayload::SessionCreated {
+                origin: cookie_agent_protocol::SessionOrigin::Delegated {
+                    root_session_id: parent,
+                    parent_session_id: parent,
+                    parent_run_id: cookie_agent_protocol::RunId::new_v7(),
+                    parent_tool_call_id: ToolCallId::new_v7(),
+                    invocation_id: InvocationId::new_v7(),
+                    depth: 1,
+                },
+                cwd_identity,
+                creation_selection,
+                creation_agent,
+                runtime_revision,
+                catalog_revision,
+                provider_state_revision,
+                model_revision,
+                agent_revision,
+                recipe_registry_revision,
+                manifest_revision,
+            },
+        )
+        .expect("create delegated child");
+    child
+}
+
+#[tokio::test]
+async fn list_sessions_returns_only_root_sessions() {
+    let (fixture, selection) = custom_fixture();
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("root session");
+    let sibling = fixture
+        .engine
+        .create_session(selection)
+        .expect("second root session");
+    let child = create_buffered_delegated_child(&fixture.engine, parent.session_id);
+
+    assert_eq!(
+        fixture
+            .engine
+            .list_sessions()
+            .into_iter()
+            .map(|session| session.session_id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([parent.session_id, sibling.session_id])
+    );
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .all_summaries()
+            .iter()
+            .any(|summary| summary.meta.session_id == child)
+    );
+
+    // Filtering happens at the listing boundary only: the delegated child
+    // stays resident and addressable through the per-session APIs.
+    assert!(fixture.engine.inner.store.is_resident(child));
+    let fetched = fixture
+        .engine
+        .get_session(child)
+        .expect("delegated child stays addressable");
+    assert_eq!(fetched.session_id, child);
+    assert!(matches!(
+        fetched.origin,
+        cookie_agent_protocol::SessionOrigin::Delegated { .. }
+    ));
+    assert!(fixture.engine.tree(parent.session_id).is_ok());
+}
+
 #[tokio::test]
 async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly() {
     let (fixture, selection) = custom_fixture();
@@ -18987,7 +19092,12 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     assert!(
         listed
             .iter()
-            .any(|session| session.session_id == transitioning)
+            .any(|session| session.session_id == parent_session_id)
+    );
+    assert!(
+        listed
+            .iter()
+            .all(|session| session.session_id != transitioning)
     );
     assert!(
         listed_children
@@ -19006,7 +19116,7 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     assert!(fixture.engine.inner.store.is_resident(children[2]));
     assert!(!fixture.engine.actor_resident_for_test(children[0]));
     assert!(fixture.engine.inner.store.is_resident(parent.session_id));
-    assert_eq!(fixture.engine.list_sessions().len(), 4);
+    assert_eq!(fixture.engine.list_sessions().len(), 1);
     assert_eq!(fixture.engine.children(parent.session_id).len(), 3);
 
     let result = fixture

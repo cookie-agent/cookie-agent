@@ -95,7 +95,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `provider.connect` | Provider, expected catalog revision, setup/auth values, client ID | Durable connection, effective auth, snapshot, replay state |
 | `provider.disconnect` | Provider, expected revisions/generation, client ID | Disconnect receipt, effective auth, snapshot, replay state |
 | `session.create` | Run selection | Session metadata with skipped-event diagnostics |
-| `session.list` | Optional cwd identity | Session metadata list with skipped-event diagnostics |
+| `session.list` | Optional cwd identity | Root session metadata list with skipped-event diagnostics |
 | `session.get` | Session ID | Session metadata with skipped-event diagnostics |
 | `session.goal.get` | Session ID | Required nullable `goal: GoalState` |
 | `session.goal.set` | Session ID, objective, optional `selection: RunSelection` | Activated `goal: GoalState` |
@@ -125,7 +125,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 
 Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
 session-aware `skills.list` and `skills.get` methods because visibility depends
-on the governing run policy and session overlay.
+on the governing run policy and session overlay. `session.list` returns root
+sessions only: a delegated child is selected as part of its root's tree, not as
+a top-level entry, and stays reachable via `session.tree`, `session.children`,
+`session.get`, and `session.resume`.
 
 ## Steering
 

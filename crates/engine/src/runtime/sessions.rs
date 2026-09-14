@@ -88,6 +88,10 @@ impl Engine {
         Ok(self.inner.store.get(id)?.metadata())
     }
 
+    /// Top-level session listing: delegation roots only. Delegated children are
+    /// selected through their root's tree and stay reachable via
+    /// [`Engine::get_session`], [`Engine::children`], [`Engine::tree`] and
+    /// resume.
     #[must_use]
     pub fn list_sessions(&self) -> Vec<SessionMeta> {
         self.inner
@@ -95,6 +99,7 @@ impl Engine {
             .all_summaries()
             .into_iter()
             .map(|session| session.meta)
+            .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
             .collect()
     }
     pub fn get_session(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
