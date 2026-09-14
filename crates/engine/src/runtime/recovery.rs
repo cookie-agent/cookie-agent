@@ -259,6 +259,16 @@ impl Engine {
             let Some(run_id) = approval_run_id(&events, record.request.approval_id()) else {
                 continue;
             };
+            // Resume is a liveness sweep, not a session-open ritual: a run
+            // that is still Running owns live approvals being evaluated or
+            // awaited, and finalizing them here would kill healthy work.
+            if session
+                .runs
+                .get(&run_id)
+                .is_some_and(|run| run.status == SessionStatus::Running)
+            {
+                continue;
+            }
             let decision = restart_approval_decision();
             self.append_direct(
                 session_id,

@@ -22306,3 +22306,531 @@ async fn permission_labels_come_from_prepared_permission_resource() {
     .expect("preserve labels");
     assert_eq!(labeled.policy_labels(), [Some("divergent-raw".into())]);
 }
+
+#[tokio::test]
+async fn session_resume_does_not_sweep_approvals_of_a_live_running_run() {
+    let primary_tool_call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
+    let internal_ask = "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"ask\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let final_text = "data: {\"choices\":[{\"delta\":{\"content\":\"approval flow complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let (endpoint, captured, reached, release) =
+        scripted_server_with_delayed_response(vec![primary_tool_call, internal_ask, final_text], 1)
+            .await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("live-resume").expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted run");
+    tokio::time::timeout(test_timeout(30), reached)
+        .await
+        .expect("internal approval evaluation started")
+        .expect("evaluation reached signal");
+
+    // The TUI resumes sessions merely to open or watch them; the still
+    // Pending approval on the live run must survive the resume sweep.
+    fixture
+        .engine
+        .resume(session.session_id)
+        .await
+        .expect("resume live session");
+    assert_eq!(
+        fixture
+            .engine
+            .list_approvals(session.session_id, Some(ApprovalStatus::Pending))
+            .approvals
+            .len(),
+        1,
+        "resume must not finalize a pending approval on a running run"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("projection")
+            .runs
+            .get(&run.run_id)
+            .expect("run")
+            .status,
+        SessionStatus::Running,
+        "resume must not disturb a healthy run"
+    );
+    release.notify_one();
+
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    // An escalated (still live) approval must survive resume as well.
+    fixture
+        .engine
+        .resume(session.session_id)
+        .await
+        .expect("resume live session again");
+    assert_eq!(
+        fixture
+            .engine
+            .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .approvals
+            .len(),
+        1,
+        "resume must not finalize an escalated approval on a running run"
+    );
+
+    approve_once(&fixture.engine, &approval, "live-resume-approval").await;
+    wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequest {
+    let binding = cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(
+        b"resume-sweep-binding",
+    );
+    let resource = PreparedApprovalResource {
+        capability: PermissionAction::Bash,
+        canonical: PreparedResourceIdentity::new("command:test")
+            .expect("prepared resource identity"),
+        binding_digest: binding.clone(),
+        binding_lifetime: PreparedBindingLifetime::RestartStable,
+        boundary: ApprovalBoundary::Exact,
+        source: ApprovalResourceSource::PrimaryOperation,
+    };
+    let operation = PreparedOperationIdentity::new(
+        Sha256Digest::of_bytes(b"resume-sweep-args"),
+        vec![ApprovalCapability {
+            action: PermissionAction::Bash,
+            operation: PreparedCapabilityOperation::new("bash:execute").expect("capability"),
+        }],
+        vec![resource],
+        Sha256Digest::of_bytes(b"resume-sweep-context"),
+    )
+    .expect("prepared operation");
+    cookie_agent_protocol::ApprovalRequest::new(
+        ApprovalId::new_v7(),
+        1,
+        cookie_agent_protocol::ApprovalTrigger::PermissionPolicy,
+        operation,
+        vec![cookie_agent_protocol::ApprovalEvaluation {
+            resource_digest: binding,
+            effect: PermissionEffect::Ask,
+            trace: cookie_agent_protocol::DecisionTrace {
+                action: PermissionAction::Bash,
+                normalized_resource: "command:test".into(),
+                candidates: Vec::new(),
+                effect: PermissionEffect::Ask,
+                precedence_reason: "resume-sweep-test".into(),
+            },
+        }],
+        cookie_agent_protocol::ApprovalConstraints {
+            allow_once: true,
+            allow_tree_grant: true,
+            cancellable: true,
+            expires_at: None,
+        },
+    )
+    .expect("approval request")
+}
+
+#[tokio::test]
+async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_ones() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection");
+    let selected_suffix = projection.creation_agent.fallback_chain.clone();
+    let run_started =
+        |label: &str, agent: Box<cookie_agent_protocol::AgentSnapshot>| EventPayload::RunStarted {
+            client_run_id: ClientRunId::new(label).expect("client run ID"),
+            selection: selection.clone(),
+            agent,
+            runtime_revision: projection.meta.runtime_revision.clone(),
+            catalog_revision: projection.meta.catalog_revision.clone(),
+            provider_state_revision: projection.meta.provider_state_revision.clone(),
+            model_revision: projection.meta.model_revision.clone(),
+            agent_revision: projection.meta.agent_revision.clone(),
+            recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+            manifest_revision: projection.meta.manifest_revision.clone(),
+            selected_suffix: selected_suffix.clone(),
+            internal_agents: Vec::new(),
+            input_through_seq: 1,
+        };
+    let dead_run = cookie_agent_protocol::RunId::new_v7();
+    let live_run = cookie_agent_protocol::RunId::new_v7();
+    let dead_approval = resume_sweep_test_request();
+    let live_approval = resume_sweep_test_request();
+    let store = &fixture.engine.inner.store;
+    store
+        .append(
+            session.session_id,
+            Some(dead_run),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            run_started("dead-run", Box::new(projection.creation_agent.clone())),
+        )
+        .expect("start dead run");
+    store
+        .append(
+            session.session_id,
+            Some(live_run),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            run_started("live-run", Box::new(projection.creation_agent.clone())),
+        )
+        .expect("start live run");
+    for (run_id, request) in [(dead_run, &dead_approval), (live_run, &live_approval)] {
+        store
+            .append(
+                session.session_id,
+                Some(run_id),
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::ApprovalRequested {
+                    request: request.clone(),
+                },
+            )
+            .expect("request approval");
+    }
+    store
+        .append(
+            session.session_id,
+            Some(dead_run),
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::RunInterrupted { reason: None },
+        )
+        .expect("interrupt dead run");
+
+    fixture
+        .engine
+        .resume(session.session_id)
+        .await
+        .expect("resume after interruption");
+
+    let records = fixture.engine.list_approvals(session.session_id, None);
+    let status = |approval_id: ApprovalId| {
+        records
+            .approvals
+            .iter()
+            .find(|record| record.request.approval_id() == approval_id)
+            .map(|record| record.status)
+    };
+    assert_eq!(
+        status(dead_approval.approval_id()),
+        Some(ApprovalStatus::Cancelled),
+        "approvals of interrupted runs must still be swept"
+    );
+    assert_eq!(
+        status(live_approval.approval_id()),
+        Some(ApprovalStatus::Pending),
+        "approvals of running runs must survive resume"
+    );
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    let cancelled: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ApprovalCancelled {
+                approval_id,
+                reason_code,
+            } => Some((*approval_id, *reason_code)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancelled,
+        vec![(
+            dead_approval.approval_id(),
+            ApprovalReasonCode::PreparedCapabilityLost
+        )]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized { approval_id, .. }
+                    if *approval_id == dead_approval.approval_id()
+            ))
+            .count(),
+        1
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
+    let primary_tool_call = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n".to_owned();
+    let internal_ask = "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"decision\\\":\\\"ask\\\"}\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let final_text = "data: {\"choices\":[{\"delta\":{\"content\":\"approval flow complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned();
+    let (endpoint, captured, reached, release) =
+        scripted_server_with_delayed_response(vec![primary_tool_call, internal_ask, final_text], 1)
+            .await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("late-evaluation").expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted run");
+    tokio::time::timeout(test_timeout(30), reached)
+        .await
+        .expect("internal approval evaluation started")
+        .expect("evaluation reached signal");
+    let approval = fixture
+        .engine
+        .list_approvals(session.session_id, Some(ApprovalStatus::Pending))
+        .approvals
+        .pop()
+        .expect("pending approval during evaluation");
+    let approval_id = approval.request.approval_id();
+
+    // Reproduce the incident shape: a recovery-style sweep finalizes the
+    // still-Pending approval while the internal approval agent is mid
+    // evaluation, then the late verdict arrives at a terminal record.
+    let origin = cookie_agent_protocol::EventOrigin::new("engine:recovery").unwrap();
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run.run_id),
+            origin.clone(),
+            EventPayload::ApprovalCancelled {
+                approval_id,
+                reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+            },
+        )
+        .expect("sweep cancellation");
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run.run_id),
+            origin,
+            EventPayload::ApprovalFinalized {
+                approval_id,
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Cancelled,
+                    source: ApprovalDecisionSource::System,
+                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        )
+        .expect("sweep finalization");
+    release.notify_one();
+
+    let termination = await_event(
+        &fixture.engine,
+        session.session_id,
+        "denied tool termination",
+        |event| matches!(&event.payload, EventPayload::ToolCallTerminated { .. }),
+    )
+    .await;
+    let EventPayload::ToolCallTerminated { termination } = &termination.payload else {
+        unreachable!("matched termination");
+    };
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+    let error = termination.error.as_ref().expect("denial error payload");
+    let message = error.message.as_str();
+    assert!(
+        message.contains("tool_denied"),
+        "tool result must reuse the denial envelope: {message}"
+    );
+    assert!(
+        message.contains("the session was interrupted while this operation awaited approval"),
+        "denial feedback must name the finalized reason: {message}"
+    );
+    assert!(
+        !message.contains("is not pending for session"),
+        "raw invariant error must never reach the tool result: {message}"
+    );
+    assert!(!executed.is_set(), "denied tool must not execute");
+    // The late evaluation completes the approval's lifecycle exactly once.
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized {
+                    approval_id: event_approval_id,
+                    ..
+                } if *event_approval_id == approval_id
+            ))
+            .count(),
+        1
+    );
+    assert!(
+        events.iter().all(
+            |event| !matches!(&event.payload, EventPayload::ToolCallTerminated { termination }
+                if termination.error.as_ref().is_some_and(|error| error
+                    .message
+                    .as_str()
+                    .contains("is not pending for session")))
+        ),
+        "no termination may surface the raw approval invariant"
+    );
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("terminal-race").expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted run");
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let approval_id = approval.request.approval_id();
+
+    // A terminal sweep (as performed by recovery) can finalize the record
+    // without notifying the escalation responder. The later terminal pass
+    // must still drain the responder so the tool wakes up.
+    let origin = cookie_agent_protocol::EventOrigin::new("engine:recovery").unwrap();
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run.run_id),
+            origin.clone(),
+            EventPayload::ApprovalCancelled {
+                approval_id,
+                reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+            },
+        )
+        .expect("finalize cancelled");
+    fixture
+        .engine
+        .inner
+        .store
+        .append(
+            session.session_id,
+            Some(run.run_id),
+            origin,
+            EventPayload::ApprovalFinalized {
+                approval_id,
+                decision: cookie_agent_protocol::ApprovalFinalDecision {
+                    outcome: ApprovalFinalOutcome::Cancelled,
+                    source: ApprovalDecisionSource::System,
+                    reason_code: ApprovalReasonCode::PreparedCapabilityLost,
+                    feedback: None,
+                    tree_grant_id: None,
+                },
+            },
+        )
+        .expect("finalize decision");
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "externally finalized approval",
+        |event| {
+            matches!(
+                &event.payload,
+                EventPayload::ApprovalFinalized {
+                    approval_id: event_approval_id,
+                    ..
+                } if *event_approval_id == approval_id
+            )
+        },
+    )
+    .await;
+
+    // Cancelling the run drives the already-terminal approval through the
+    // racing terminal path; without the responder drain the tool would hang.
+    fixture.engine.cancel_run(run.run_id).await.expect("cancel");
+    tokio::time::timeout(
+        test_timeout(60),
+        await_event(
+            &fixture.engine,
+            session.session_id,
+            "woken tool termination",
+            |event| matches!(&event.payload, EventPayload::ToolCallTerminated { .. }),
+        ),
+    )
+    .await
+    .expect("escalated waiter must wake after an external finalize");
+    wait_for_run_inactive(&fixture.engine, run.run_id).await;
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
