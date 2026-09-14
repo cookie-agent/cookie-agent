@@ -4603,13 +4603,22 @@ impl App {
         };
         match hover {
             HoverTarget::TranscriptBlock(id) => {
-                if let Some(rect) = self
+                // The block's own content rect — clamped past its leading
+                // gutter by `block_hit`, then intersected with the conversation
+                // viewport so no highlight can reach the reserved scrollbar
+                // columns — is the paint target; the wider hit rect stays the
+                // click/toggle target.
+                let rect = self
                     .hit_map
                     .blocks
                     .iter()
                     .find(|hit| hit.id == id)
                     .and_then(|hit| hit.hover_rect.map(|rect| rect.intersection(hit.rect)))
-                {
+                    .map(|rect| match self.hit_map.conversation {
+                        Some(viewport) => rect.intersection(viewport),
+                        None => rect,
+                    });
+                if let Some(rect) = rect {
                     patch(frame, rect, self.theme.block_hover());
                 }
             }
@@ -7380,10 +7389,12 @@ impl App {
         self.hit_map.clear();
         // The composer takes one text row by default and grows with its
         // soft-wrapped content up to the ceiling; the layout reclaims those
-        // rows from the conversation pane.
+        // rows from the conversation pane. The row count comes from the same
+        // scrollbar-aware wrap width the renderer uses, so the box never
+        // changes height (or re-wraps) because the track appeared.
         let input_text_rows = u16::try_from(
             self.input
-                .content_rows(frame.area().width.saturating_sub(2)),
+                .composer_rows(frame.area().width.saturating_sub(2)),
         )
         .unwrap_or(u16::MAX)
         .clamp(1, super::input::MAX_TEXT_ROWS);
@@ -8597,7 +8608,9 @@ impl App {
                 },
                 field.descriptor.help
             );
-            input::render_masked(
+            // The renderer owns the text area (minus any reserved scrollbar
+            // column), so hover and cursor math follow the painted geometry.
+            let rendered = input::render_masked(
                 frame,
                 field_area,
                 &mut field.input,
@@ -8607,12 +8620,7 @@ impl App {
             );
             self.hit_map.provider_fields.push(ProviderFieldHit {
                 rect: field_area,
-                text_rect: Rect::new(
-                    field_area.x.saturating_add(1),
-                    field_area.y.saturating_add(1),
-                    field_area.width.saturating_sub(2),
-                    field_area.height.saturating_sub(2),
-                ),
+                text_rect: rendered.text_rect,
                 focus: ProviderFormFocus::Credential(index),
             });
             y = y.saturating_add(height);
@@ -8645,7 +8653,7 @@ impl App {
                 field.descriptor.help
             );
             let focused = focus == ProviderFormFocus::Setup(index);
-            if secret {
+            let rendered = if secret {
                 input::render_masked(
                     frame,
                     field_area,
@@ -8653,7 +8661,7 @@ impl App {
                     focused,
                     &title,
                     &self.theme,
-                );
+                )
             } else {
                 input::render(
                     frame,
@@ -8665,16 +8673,11 @@ impl App {
                     // a placeholder could read as a prefilled default.
                     None,
                     &self.theme,
-                );
-            }
+                )
+            };
             self.hit_map.provider_fields.push(ProviderFieldHit {
                 rect: field_area,
-                text_rect: Rect::new(
-                    field_area.x.saturating_add(1),
-                    field_area.y.saturating_add(1),
-                    field_area.width.saturating_sub(2),
-                    field_area.height.saturating_sub(2),
-                ),
+                text_rect: rendered.text_rect,
                 focus: ProviderFormFocus::Setup(index),
             });
             y = y.saturating_add(height);

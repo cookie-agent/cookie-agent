@@ -119,6 +119,54 @@ impl ScrollbarGeometry {
     }
 }
 
+/// Columns every scrollable pane keeps free at the right edge of its
+/// interior: [`SCROLLBAR_MARGIN`] blank columns, then the
+/// [`SCROLLBAR_TRACK_COLUMNS`] track flush against the right border.
+///
+/// The reservation is **constant** — it never depends on whether content
+/// actually overflows. Wrap width is part of [`LayoutCacheKey`], so a
+/// conditional reservation re-wrapped the whole transcript the moment the
+/// "can this overflow?" heuristic flipped: a phantom reflow with no content
+/// change. Only the *thumb* stays conditional on real overflow; reserving is
+/// about width, drawing is about need.
+pub(super) const SCROLLBAR_RESERVE: u16 = 2;
+
+/// Track columns inside [`SCROLLBAR_RESERVE`].
+pub(super) const SCROLLBAR_TRACK_COLUMNS: u16 = 1;
+
+/// Blank columns between a pane's text and its scrollbar track.
+pub(super) const SCROLLBAR_MARGIN: u16 = SCROLLBAR_RESERVE - SCROLLBAR_TRACK_COLUMNS;
+
+/// Text width of a bordered pane: both borders, then the constant scrollbar
+/// reservation. Shared by the conversation pane and the message composer so
+/// both lay out, wrap, highlight and hit-test on the same columns.
+pub(super) fn pane_text_width(outer_width: u16) -> u16 {
+    outer_width
+        .saturating_sub(2)
+        .saturating_sub(SCROLLBAR_RESERVE)
+}
+
+/// The reserved scrollbar track of a bordered pane, given the pane `area` and
+/// the text `viewport` carved out of it: the rightmost reserved column, one
+/// blank margin away from the text. Collapses to zero width when the pane is
+/// too narrow to hold both the margin and the track.
+pub(super) fn pane_scrollbar_track(area: Rect, viewport: Rect) -> Rect {
+    Rect::new(
+        viewport
+            .x
+            .saturating_add(viewport.width)
+            .saturating_add(SCROLLBAR_MARGIN),
+        viewport.y,
+        SCROLLBAR_TRACK_COLUMNS.min(
+            area.width
+                .saturating_sub(2)
+                .saturating_sub(viewport.width)
+                .saturating_sub(SCROLLBAR_MARGIN),
+        ),
+        viewport.height,
+    )
+}
+
 #[derive(Debug)]
 pub struct ConversationScroll {
     pub(super) offset: usize,
@@ -166,6 +214,7 @@ impl ConversationScroll {
                 start_line: target,
                 end_line: target,
                 header_lines: None,
+                header_gutter: None,
             },
             1,
         );
@@ -240,6 +289,14 @@ pub struct BlockRegion {
     pub(super) end_line: usize,
     /// Item header height before viewport clipping; None retains single-row hover.
     pub(super) header_lines: Option<usize>,
+    /// Columns of chrome the builder hung in front of this block's header
+    /// rows, counted from the spans it created them with (`chrome` in the tool
+    /// layout). Provenance, not inference: the same glyphs arriving later in
+    /// the row are command output — a tree listing really does start with
+    /// `"│ "` — and must stay inside the highlight. `None` for blocks whose
+    /// builder does not count its gutters, where `block_hit` falls back to
+    /// reading the row.
+    pub(super) header_gutter: Option<u16>,
 }
 
 /// The logical-line range of one user message row, paired with the physical
@@ -883,9 +940,13 @@ impl App {
     }
 
     pub(super) fn render_conversation(&mut self, frame: &mut ratatui::Frame, area: Rect) {
-        // The rightmost inner column is reserved for the scrollbar whenever
-        // the content can overflow; content layout and block hit regions never
-        // extend into it, so the track can be grabbed without hitting blocks.
+        // The two rightmost inner columns always belong to the scrollbar: a
+        // blank margin and the track. Content layout, block hit regions and
+        // highlight rects are built at that reduced width and never extend
+        // into it, so the track can be grabbed without hitting blocks — and
+        // because the reservation is constant, the wrap width (a
+        // `LayoutCacheKey` input) never flips when content starts or stops
+        // overflowing.
         let descendant_warnings =
             if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
                 self.selected
@@ -894,22 +955,7 @@ impl App {
             } else {
                 Vec::new()
             };
-        let scrollable = self.selected.is_some_and(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .is_some_and(|state| !state.transcript.is_empty() || state.run_snapshot.is_some())
-        }) || !self.transient_notices.is_empty()
-            || self.selected.is_some_and(|session_id| {
-                self.goal_notices
-                    .get(&session_id)
-                    .is_some_and(|notices| !notices.is_empty())
-            })
-            || !descendant_warnings.is_empty();
-        let width = area
-            .width
-            .saturating_sub(2)
-            .saturating_sub(u16::from(scrollable));
+        let width = pane_text_width(area.width);
         let session_present = self
             .selected
             .is_some_and(|session_id| self.store.sessions.contains_key(&session_id));
@@ -973,22 +1019,10 @@ impl App {
         let viewport = Rect::new(
             area.x.saturating_add(1),
             area.y.saturating_add(1),
-            area.width
-                .saturating_sub(2)
-                .saturating_sub(u16::from(scrollable)),
+            width,
             area.height.saturating_sub(2),
         );
-        let scrollbar_track = scrollable.then(|| {
-            Rect::new(
-                viewport.x.saturating_add(viewport.width),
-                viewport.y,
-                area.width
-                    .saturating_sub(2)
-                    .saturating_sub(viewport.width)
-                    .min(1),
-                viewport.height,
-            )
-        });
+        let scrollbar_track = pane_scrollbar_track(area, viewport);
         let content_height = layout_lines.len() + notice_lines.len();
         if layout_changed
             && anchor_key == self.layout_cache.key
@@ -1008,7 +1042,7 @@ impl App {
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
-        self.hit_map.scrollbar = scrollbar_track.filter(|track| track.width > 0);
+        self.hit_map.scrollbar = (scrollbar_track.width > 0).then_some(scrollbar_track);
         self.hit_map.blocks.clear();
         let shifted_block_regions: Vec<BlockRegion>;
         let block_regions: &[BlockRegion] = if splice_shifts.is_empty() {
@@ -1021,11 +1055,16 @@ impl App {
                 .collect();
             &shifted_block_regions
         };
-        self.hit_map.blocks.extend(
-            block_regions
-                .iter()
-                .filter_map(|region| block_hit(*region, viewport, self.conversation_scroll.offset)),
-        );
+        self.hit_map
+            .blocks
+            .extend(block_regions.iter().filter_map(|region| {
+                block_hit(
+                    *region,
+                    layout_lines,
+                    viewport,
+                    self.conversation_scroll.offset,
+                )
+            }));
         self.hit_map.user_messages.clear();
         let shifted_user_regions: Vec<UserRegion>;
         let user_regions: &[UserRegion] = if splice_shifts.is_empty() {
@@ -1106,10 +1145,15 @@ impl App {
                 Rect::new(viewport.x, viewport.y + row as u16, viewport.width, 1),
             );
         }
-        self.scrollbar_geometry = scrollbar_track.and_then(|track| {
-            ScrollbarGeometry::resolve(track, content_height)
-                .map(|geometry| geometry.with_thumb(self.conversation_scroll.offset))
-        });
+        // The reservation always exists; the thumb only does. A pane too tight
+        // for the track, or content that fits the viewport, keeps its reserved
+        // columns blank.
+        self.scrollbar_geometry = (scrollbar_track.width > 0)
+            .then(|| {
+                ScrollbarGeometry::resolve(scrollbar_track, content_height)
+                    .map(|geometry| geometry.with_thumb(self.conversation_scroll.offset))
+            })
+            .flatten();
         if let Some(geometry) = self.scrollbar_geometry {
             render_scrollbar_track(frame, geometry, &self.theme);
         }
@@ -1272,7 +1316,7 @@ fn append_item_layout(assembled: &mut TranscriptLayout, item_layout: ItemLayout)
             id: region.id,
             start_line: start_line + region.start_line,
             end_line: start_line + region.end_line,
-            header_lines: region.header_lines,
+            ..region
         });
     }
     if let Some(seq) = item_layout.user_seq {
@@ -1652,6 +1696,7 @@ fn producer_message_layout(
             start_line: 0,
             end_line: lines.len(),
             header_lines: Some(1),
+            header_gutter: None,
         }],
         lines,
         user_seq: None,
@@ -1844,6 +1889,7 @@ fn collapsible_event_block(
             start_line: 0,
             end_line: lines.len(),
             header_lines: Some(header_lines),
+            header_gutter: None,
         }],
         lines,
         user_seq: None,
@@ -1914,6 +1960,7 @@ fn media_file_layout(
             start_line: 0,
             end_line: lines.len(),
             header_lines: Some(header_lines),
+            header_gutter: None,
         }],
         lines,
         user_seq: None,
@@ -2066,7 +2113,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
-                        header_lines: region.header_lines,
+                        ..region
                     }));
                 context.assistant_part_ranges.push(AssistantPartRange {
                     id: child.id(),
@@ -2086,7 +2133,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
-                        header_lines: region.header_lines,
+                        ..region
                     }));
             }
             AssistantChild::Attribution { resolved_model } => {
@@ -2119,7 +2166,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
-                        header_lines: region.header_lines,
+                        ..region
                     }));
             }
             AssistantChild::MediaFile {
@@ -2136,7 +2183,7 @@ fn assistant_item_layout(
                         id: region.id,
                         start_line: start_line + region.start_line,
                         end_line: start_line + region.end_line,
-                        header_lines: region.header_lines,
+                        ..region
                     }));
             }
         }
@@ -2253,7 +2300,7 @@ fn splice_active_assistant_part(
             id: region.id,
             start_line: old.lines.start + region.start_line,
             end_line: old.lines.start + region.end_line,
-            header_lines: region.header_lines,
+            ..region
         })
         .collect::<Vec<_>>();
     let old_region_len = old.regions.len();
@@ -2364,6 +2411,7 @@ fn assistant_child_layout(
                     start_line: 0,
                     end_line: lines.len(),
                     header_lines: Some(header_lines),
+                    header_gutter: None,
                 }],
                 lines,
                 user_seq: None,
@@ -2606,6 +2654,7 @@ fn tool_child_layout(
                 start_line: 0,
                 end_line: lines.len(),
                 header_lines: None,
+                header_gutter: None,
             }],
             lines,
             user_seq: None,
@@ -2703,14 +2752,19 @@ fn tool_child_layout(
         start_line: 0,
         end_line: rendered.lines.len(),
         header_lines: Some(rendered.header_lines),
+        header_gutter: Some(header_gutter_columns(&rendered)),
     }];
     if let Some(call_id) = call_id {
+        let chrome = rendered.chrome;
         regions.extend(rendered.output_toggles.into_iter().map(
             |(section, start_line, end_line)| BlockRegion {
                 id: BlockId::ToolOutput { call_id, section },
                 start_line,
                 end_line,
                 header_lines: None,
+                // A notice row hangs behind the same gutter as the rows it
+                // stands in for.
+                header_gutter: chrome.get(start_line).copied(),
             },
         ));
     }
@@ -3861,6 +3915,10 @@ struct ToolBlockLayout {
     lines: Vec<Line<'static>>,
     output_toggles: Vec<(ToolOutputSection, usize, usize)>,
     header_lines: usize,
+    /// Chrome columns per row, indexed alongside `lines`: the width of the
+    /// spans this builder hung in front of each row, counted from what it
+    /// built rather than from what the row says.
+    chrome: Vec<u16>,
 }
 
 fn tool_block_lines(
@@ -3878,6 +3936,13 @@ fn tool_block_lines(
     let mut lines = Vec::new();
     let mut output_toggles = Vec::new();
     let mut banded_rows = Vec::new();
+    // Row index → how many of its leading spans are chrome this builder put
+    // there: the block's `│ ` gutter, a narrow-mode label, a diff's line
+    // number and marker. Counted while the row is assembled because it is a
+    // fact about where the spans came from, not about what they say — the same
+    // characters arriving as command output are content, and command output
+    // that reads like a gutter (`│ `) is still content.
+    let mut gutters = Vec::new();
     let mut header_lines = 0;
     for (index, body_line) in body.into_iter().enumerate() {
         let banded = body_line.banded;
@@ -3905,13 +3970,17 @@ fn tool_block_lines(
                 } else {
                     " ".repeat(label_width)
                 };
+                // Every row keeps exactly one label column, even when the
+                // label itself would not fit and the span goes empty.
                 lines.extend(prefixed_wrapped_line(prefix, style, line, width));
+                gutters.resize(lines.len(), 1);
             }
-            ToolBodyLineKind::Wrapped => lines.extend(repeated_prefixed_wrapped_line(
-                vec![Span::styled("│ ", theme.assistant())],
-                line,
-                width,
-            )),
+            ToolBodyLineKind::Wrapped => {
+                let gutter = vec![Span::styled("│ ", theme.assistant())];
+                let chrome = usize::from(gutter_fits(&gutter, &line, width));
+                lines.extend(repeated_prefixed_wrapped_line(gutter, line, width));
+                gutters.resize(lines.len(), chrome);
+            }
             ToolBodyLineKind::Code {
                 mut first_gutter,
                 mut continuation_gutter,
@@ -3954,6 +4023,14 @@ fn tool_block_lines(
                         spans.extend(continuation_gutter.clone());
                     }
                     spans.extend(content);
+                    gutters.push(
+                        prefix.len()
+                            + if wrapped_index == 0 {
+                                first_gutter.len()
+                            } else {
+                                continuation_gutter.len()
+                            },
+                    );
                     lines.push(Line::from(spans).style(line_style));
                 }
             }
@@ -3965,24 +4042,28 @@ fn tool_block_lines(
             output_toggles.push((section, start, lines.len()));
         }
         if banded {
-            banded_rows.extend(start..lines.len());
+            banded_rows.extend((start..lines.len()).map(|row| (row, gutters[row])));
         }
     }
     if let Some(background) = theme.terminal_background() {
         let band_width = banded_rows
             .iter()
-            .map(|&index| lines[index].width())
+            .map(|(index, _)| lines[*index].width())
             .max()
             .unwrap_or(0)
             .min(usize::from(width));
-        for index in banded_rows {
+        for (index, chrome) in banded_rows {
             let line = &mut lines[index];
+            // The band stops at the block's own gutter: those spans keep their
+            // background and the content beside them takes the terminal band.
+            // Counted, never guessed — `│ ` arriving as command output is a
+            // tree row that must be banded, and a gutter welded to its text by
+            // `append_span` is chrome that must not be.
+            let content_start = chrome.min(line.spans.len());
             let padding = band_width.saturating_sub(line.width());
             line.spans.push(Span::raw(" ".repeat(padding)));
-            for span in &mut line.spans {
-                if span.content != "│ " {
-                    span.style = span.style.bg(background);
-                }
+            for span in &mut line.spans[content_start..] {
+                span.style = span.style.bg(background);
             }
         }
     }
@@ -3996,11 +4077,41 @@ fn tool_block_lines(
                 .remove_modifier(ratatui::style::Modifier::UNDERLINED);
         }
     }
+    // Measured last, from the counted spans: a row's chrome is whatever the
+    // builder put in front of it, so command output that reads like a gutter
+    // (`│ ├── src`, a tree listing) is measured as the content it is.
+    let chrome = gutters
+        .iter()
+        .zip(&lines)
+        .map(|(spans, line)| {
+            u16::try_from(
+                line.spans
+                    .iter()
+                    .take(*spans)
+                    .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum::<usize>(),
+            )
+            .unwrap_or(u16::MAX)
+        })
+        .collect();
     ToolBlockLayout {
         lines,
         output_toggles,
         header_lines,
+        chrome,
     }
+}
+
+/// Chrome columns of a tool block's header rows: the widest chrome row of the
+/// header, since one highlight spans them all.
+fn header_gutter_columns(rendered: &ToolBlockLayout) -> u16 {
+    rendered
+        .chrome
+        .iter()
+        .take(rendered.header_lines)
+        .copied()
+        .max()
+        .unwrap_or(0)
 }
 
 fn role_block_lines(
@@ -4140,6 +4251,17 @@ fn unbreakable_columns(line: &Line<'_>) -> usize {
         .max(1)
 }
 
+/// Whether a row can carry `prefix` and still host the widest grapheme it must
+/// break whole. Below that the gutter is dropped rather than overflow the
+/// viewport — it is indentation, and indentation is allowed to disappear.
+fn gutter_fits(prefix: &[Span<'_>], line: &Line<'_>, width: u16) -> bool {
+    let prefix_width = prefix
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    prefix_width + unbreakable_columns(line) <= usize::from(width.max(1))
+}
+
 fn prefixed_wrapped_line(
     prefix: String,
     prefix_style: Style,
@@ -4179,12 +4301,9 @@ fn repeated_prefixed_wrapped_line(
     line: Line<'static>,
     width: u16,
 ) -> Vec<Line<'static>> {
+    let guttered = gutter_fits(&prefix, &line, width);
     let width = usize::from(width.max(1));
-    let prefix_width = prefix
-        .iter()
-        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-        .sum::<usize>();
-    if prefix_width + unbreakable_columns(&line) > width {
+    if !guttered {
         prefix.clear();
     }
     let prefix_width = prefix
@@ -4341,6 +4460,7 @@ pub(super) fn line_from_spans(spans: Vec<Span<'static>>) -> Line<'static> {
 
 pub(super) fn block_hit(
     region: BlockRegion,
+    lines: &[Line<'static>],
     viewport: Rect,
     scroll_offset: usize,
 ) -> Option<BlockHit> {
@@ -4353,6 +4473,37 @@ pub(super) fn block_hit(
             region.start_line.saturating_add(height)
         })
         .min(end);
+    // The block's own content columns: everything right of its leading gutter
+    // and left of the viewport edge, which already stops before the reserved
+    // scrollbar columns. Highlights share this rect with the band and the
+    // selection so no painted row ever covers a `│` border or the track.
+    // Hit rectangles stay viewport-wide on purpose: the gutter and the blank
+    // tail of a row must still click, toggle and drag.
+    //
+    // The block's header rows stand behind their gutter, and only behind it:
+    // a builder that counted its own spans says how wide that is, which is the
+    // only reading that cannot mistake `"│ "` arriving as command output — a
+    // tree listing, a diff body — for a second gutter and hide real columns.
+    // Regions whose builders do not count fall back to reading the row; the
+    // walk is bounded to header rows, which carry the block's own gutter, and
+    // resolves the one case a bare line cannot settle — leading spaces that
+    // could be a continuation indent or indentation inside the content — as
+    // content, matching `extract_line` rather than hiding columns a reader
+    // could have selected.
+    let hovered = start.min(lines.len())..header_end.max(start).min(lines.len());
+    let gutter = region.header_gutter.unwrap_or_else(|| {
+        lines[hovered]
+            .iter()
+            .map(leading_gutter_columns)
+            .max()
+            .unwrap_or(0)
+    });
+    let content = Rect::new(
+        viewport.x.saturating_add(gutter),
+        viewport.y,
+        viewport.width.saturating_sub(gutter),
+        viewport.height,
+    );
     (start < end).then(|| BlockHit {
         rect: Rect::new(
             viewport.x,
@@ -4383,9 +4534,9 @@ pub(super) fn block_hit(
         },
         hover_rect: (start < header_end).then(|| {
             Rect::new(
-                viewport.x,
+                content.x,
                 viewport.y + u16::try_from(start - scroll_offset).unwrap_or(u16::MAX),
-                viewport.width,
+                content.width,
                 u16::try_from(header_end - start).unwrap_or(u16::MAX),
             )
         }),
@@ -4435,6 +4586,61 @@ const FIRST_SPAN_GUTTERS: &[&str] = &[
     "[E] ",
     "[I] ",
 ];
+
+/// The chrome token span `index` of a row hangs in front of its text, if any.
+///
+/// Row gutters are chrome wherever they stack, and a gutter span welded to its
+/// text is still the gutter a row builder hung there: the glyph gutters count
+/// from their prefix alone.
+///
+/// The wrap-continuation indents and narrow-mode tags (the first-span set) are
+/// *not* weld-eligible. Leading spaces in span 0 cannot be told apart from
+/// indentation that belongs to the content — `"  indented code"` is a code row,
+/// not a chrome band — so they only count when a span holds nothing but the
+/// token, exactly as [`extract_line`] requires before it strips a span from
+/// copied text. Past span 0 *nothing* welds: `"│ nested"` in column 3 is a tree
+/// row, while a `"│ "` welded to the front of the row is the gutter it was
+/// built as. Longest match wins so a tag is never mistaken for its own indent.
+fn leading_gutter_token(content: &str, index: usize) -> Option<&'static str> {
+    let first = index == 0;
+    GUTTER_SPANS
+        .iter()
+        .copied()
+        .filter(|token| content == *token || (first && content.starts_with(token)))
+        .chain(
+            first
+                .then(|| FIRST_SPAN_GUTTERS.iter().copied())
+                .into_iter()
+                .flatten()
+                .filter(|token| content == *token),
+        )
+        .max_by_key(|token| token.len())
+}
+
+/// Leading chrome columns of one rendered row: the gutter spans hanging off
+/// its front, peeled positionally from span 0 onwards.
+///
+/// This is deliberately *not* a content-equality test over every span: it walks
+/// the front of the row only. Row builders prepend gutters as whole spans, but
+/// `append_span` merges same-style runs, so the chrome can end up welded to the
+/// text it belongs to (`"│ title"`): the prefix counts, the rest of that span
+/// does not, and a `"│ "` arriving later is output, not chrome.
+pub(super) fn leading_gutter_columns(line: &Line<'_>) -> u16 {
+    let mut columns = 0usize;
+    for (index, span) in line.spans.iter().enumerate() {
+        let content = span.content.as_ref();
+        let Some(token) = leading_gutter_token(content, index) else {
+            break;
+        };
+        columns += UnicodeWidthStr::width(token);
+        // A welded gutter ends the chrome run at its own width; only a span
+        // that is nothing but gutter lets the walk continue behind it.
+        if content.len() > token.len() {
+            break;
+        }
+    }
+    u16::try_from(columns).unwrap_or(u16::MAX)
+}
 
 /// First characters of gutterless header/border/footer rows (role headers,
 /// assistant attribution and footer, code fences, table grids). Such rows
@@ -5415,10 +5621,15 @@ mod tests {
             .unwrap();
         assert_eq!(region.header_lines, Some(1));
         assert!(
-            block_hit(*region, Rect::new(0, 0, 80, 20), region.start_line + 1)
-                .unwrap()
-                .hover_rect
-                .is_none()
+            block_hit(
+                *region,
+                &cache.layout.lines,
+                Rect::new(0, 0, 80, 20),
+                region.start_line + 1,
+            )
+            .unwrap()
+            .hover_rect
+            .is_none()
         );
         assert!(text.ends_with("◇ ▸ Build completed: parser"));
         assert!(cache.layout.lines.len() <= MAX_EXPANDED_BODY_LINES + 6);
@@ -15946,6 +16157,104 @@ mod tests {
         assert!(app.conversation_scroll.offset > 0);
     }
 
+    /// Cell styles indexed `[y][x]`, for tests that must prove a highlight did
+    /// not paint outside the columns it owns.
+    fn drawn_styles(app: &mut App, width: u16, height: u16) -> Vec<Vec<Style>> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].style())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The rendered buffer indexed `[y][x]`, for tests that must name an exact
+    /// column — the reserved scrollbar cells and the border beside them.
+    fn frame_cells(app: &mut App, width: u16, height: u16) -> Vec<Vec<String>> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| app.draw_for_test(frame))
+            .expect("app render");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The reservation is layout, not decoration: a pane with nothing to scroll
+    /// gives up the same two columns as one that overflows, so the wrap width
+    /// feeding `LayoutCacheKey` cannot flip midway through a run and re-wrap
+    /// every row under the reader's thumb.
+    #[tokio::test]
+    async fn an_empty_conversation_reserves_the_same_columns_as_an_overflowing_one() {
+        let mut app = test_app().await;
+        let session = SessionId::new_v7();
+        app.selected = Some(session);
+        app.tree_root = Some(session);
+        app.store.sessions.insert(session, SessionState::default());
+        rendered_frame(&mut app, 80, 24);
+        let empty = app.hit_map.conversation.expect("conversation viewport");
+        let track = app
+            .hit_map
+            .scrollbar
+            .expect("the track column is reserved even with no thumb");
+        assert_eq!(empty.width, pane_text_width(80));
+        assert_eq!(track.width, SCROLLBAR_TRACK_COLUMNS);
+        assert_eq!(track.x, empty.right() + SCROLLBAR_MARGIN);
+        assert_eq!(app.scrollbar_geometry, None, "nothing to scroll yet");
+        let cells = frame_cells(&mut app, 80, 24);
+        let border = usize::from(empty.x + empty.width + SCROLLBAR_RESERVE);
+        assert_eq!(cells[usize::from(empty.y)][border], "│");
+        for row in empty.y..empty.bottom() {
+            for column in empty.right()..track.right() {
+                assert_eq!(
+                    cells[usize::from(row)][usize::from(column)],
+                    " ",
+                    "reserved columns stay blank ({row},{column})"
+                );
+            }
+        }
+
+        app.store
+            .sessions
+            .get_mut(&session)
+            .expect("session")
+            .transcript = tall_transcript_state(300).transcript;
+        rendered_frame(&mut app, 80, 24);
+        assert_eq!(
+            app.hit_map.conversation.expect("conversation viewport"),
+            empty
+        );
+        assert_eq!(app.hit_map.scrollbar, Some(track));
+        assert_eq!(
+            app.layout_cache.key.expect("layout key").width,
+            pane_text_width(80)
+        );
+        assert!(
+            app.scrollbar_geometry.is_some(),
+            "the same pane now overflows"
+        );
+        let cells = frame_cells(&mut app, 80, 24);
+        assert!(
+            (empty.y..empty.bottom())
+                .any(|row| cells[usize::from(row)][usize::from(track.x)] == "█"),
+            "the thumb draws in the column it was always reserved"
+        );
+        for row in empty.y..empty.bottom() {
+            assert_eq!(cells[usize::from(row)][usize::from(empty.right())], " ");
+        }
+    }
+
     /// A composer draft overflowing the ceiling-height box, rendered once so
     /// the hit map and scrollbar geometry exist.
     async fn app_with_overflowing_composer() -> (App, super::ScrollbarGeometry) {
@@ -16085,6 +16394,50 @@ mod tests {
         }
         rendered_frame(&mut app, 80, 50);
         assert_eq!(app.input.viewport_row(), 3);
+    }
+
+    /// The composer gives up its two rightmost columns only when it draws a
+    /// thumb in them: at the height ceiling a draft that still fits the
+    /// reserved wrap keeps the whole pane interior, and one that does not gets
+    /// the same track the conversation pane uses — without the box itself
+    /// changing size.
+    #[tokio::test]
+    async fn the_composer_reserves_columns_only_for_an_overflowing_ceiling() {
+        let mut app = test_app().await;
+        app.handle_paste("a\nb\nc\nd\ne");
+        rendered_frame(&mut app, 80, 40);
+        let fitted = app.hit_map.input.expect("composer hit");
+        assert_eq!(fitted.text_rect.height, crate::ui::input::MAX_TEXT_ROWS);
+        assert_eq!(fitted.text_rect.width, fitted.rect.width - 2);
+        assert_eq!(fitted.scrollbar, None);
+        assert_eq!(app.scrollbar_geometry, None);
+        assert!(!app.input.has_overflow());
+
+        app.handle_paste("\nf");
+        rendered_frame(&mut app, 80, 40);
+        let clipped = app.hit_map.input.expect("composer hit");
+        assert_eq!(clipped.rect, fitted.rect, "the box does not move");
+        assert_eq!(
+            clipped.text_rect.width,
+            fitted.text_rect.width - SCROLLBAR_RESERVE
+        );
+        let track = clipped.scrollbar.expect("composer track").track;
+        assert_eq!(track.width, SCROLLBAR_TRACK_COLUMNS);
+        assert_eq!(track.x, clipped.text_rect.right() + SCROLLBAR_MARGIN);
+        assert_eq!(
+            (track.y, track.height),
+            (clipped.text_rect.y, clipped.text_rect.height)
+        );
+        // The renderer, the wheel gate and the pane height all measure the same
+        // draft at the same width: overflow is real, not a reservation artefact.
+        assert!(app.input.has_overflow());
+        let geometry = clipped.scrollbar.expect("composer thumb");
+        assert!(geometry.content_height > geometry.viewport_height);
+        assert_eq!(geometry.thumb.width, geometry.track.width);
+        assert_eq!(
+            app.input.composer_rows(fitted.rect.width - 2),
+            usize::from(crate::ui::input::MAX_TEXT_ROWS) + 1
+        );
     }
 
     // ------------------------------------------------------------------
@@ -19446,16 +19799,22 @@ mod tests {
             let body_width = rows[1].width();
             for (index, row) in rows.iter().enumerate() {
                 let banded = !row.to_string().contains("more lines");
-                for span in row.spans.iter().filter(|span| span.content != "│ ") {
+                // Counted chrome columns, not span text: `"│ "` in the middle of
+                // a row is tree output and belongs on the band.
+                let chrome = usize::from(leading_gutter_columns(row));
+                let mut column = 0;
+                for span in row.spans.iter() {
+                    let is_gutter = column < chrome;
                     assert_eq!(
                         span.style.bg,
-                        if banded {
+                        if banded && !is_gutter {
                             theme.terminal_background()
                         } else {
                             None
                         },
                         "{index}: {row}"
                     );
+                    column += UnicodeWidthStr::width(span.content.as_ref());
                 }
                 if banded && theme.terminal_background().is_some() {
                     assert_eq!(row.width(), body_width);
@@ -19466,6 +19825,105 @@ mod tests {
         assert!(
             snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines)
                 .contains(r#"arguments: {"command":42}"#)
+        );
+    }
+
+    /// The band covers every column of real output — including output that
+    /// *reads* like a gutter — and stops dead at the block's own `│ `. Chrome
+    /// is counted from where the spans came from, so a tree listing printed by
+    /// `tree`/`ls` can never hide a hole in the band.
+    #[test]
+    fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
+        let theme = Theme::default();
+        let background = theme
+            .terminal_background()
+            .expect("the parchment theme bands the terminal");
+        let mut state = read_tool_state(
+            "unused",
+            ToolStatus::Completed,
+            "│ \n│ ├── src\n│ └── tests\n",
+        );
+        let id = read_tool_id(&state);
+        let tool = state.tools.get_mut(&id).unwrap();
+        tool.presentation = presentation("bash", Some("tree"));
+        tool.arguments = r#"{"command":"tree"}"#.into();
+        let layout = transcript_layout_with(
+            &state,
+            Some(&HashSet::from([BlockId::Tool(id)])),
+            80,
+            &theme,
+            &PlainHighlighter,
+        );
+        let region = layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(id))
+            .unwrap();
+        // A row whose own text starts with the block's gutter glyph is the
+        // whole trick: the chrome is one span wide and the output beside it,
+        // every padded column of it, is banded.
+        let row = layout.lines[region.start_line..region.end_line]
+            .iter()
+            .find(|row| row.to_string().contains("├──"))
+            .expect("the tree row reaches the layout");
+        assert_eq!(leading_gutter_columns(row), 2, "one `│ ` of chrome: {row}");
+        assert_eq!(row.spans[0].style.bg, None, "the gutter is never banded");
+        assert!(
+            row.spans[1..]
+                .iter()
+                .all(|span| span.style.bg == Some(background)),
+            "every column of output sits on the band: {row}"
+        );
+    }
+
+    /// Chrome is counted where a gutter hangs, not by what a span says: a
+    /// gutter welded to its text by `append_span` still protects its own two
+    /// columns, and the same token further along the row is content.
+    #[test]
+    fn leading_chrome_is_counted_by_position_not_by_string_equality() {
+        assert_eq!(leading_gutter_columns(&Line::from("plain row")), 0);
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("│ "), Span::raw("text")])),
+            2
+        );
+        assert_eq!(leading_gutter_columns(&Line::from("│ welded gutter")), 2);
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![
+                Span::raw("│ "),
+                Span::raw("│ nested"),
+                Span::raw(" tail"),
+            ])),
+            2,
+            "tree output behind the gutter is not a second gutter"
+        );
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("│ "), Span::raw("┃ ")])),
+            4
+        );
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("│ "), Span::raw("  indent")])),
+            2,
+            "indentation behind a real gutter is content"
+        );
+        // Leading spaces welded to the front of a row are ambiguous — a
+        // hanging indent and code indentation look identical — so they count
+        // as content, the same call `extract_line` makes about what to strip
+        // from a copy. A continuation indent the builder emitted as its own
+        // span is chrome.
+        assert_eq!(leading_gutter_columns(&Line::from("  indented code")), 0);
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("  "), Span::raw("code")])),
+            2
+        );
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("  "), Span::raw("  ")])),
+            2,
+            "a continuation indent is chrome once, never twice"
+        );
+        assert_eq!(
+            leading_gutter_columns(&Line::from(vec![Span::raw("[T…] "), Span::raw("[T…] ")])),
+            5,
+            "a narrow-mode tag is chrome; the same tag beside it is content"
         );
     }
 
@@ -20243,9 +20701,10 @@ mod tests {
             start_line: 10,
             end_line: 20,
             header_lines: None,
+            header_gutter: None,
         };
         let viewport = Rect::new(0, 0, 40, 5);
-        let hit = block_hit(region, viewport, 8).expect("hit");
+        let hit = block_hit(region, &[], viewport, 8).expect("hit");
         assert_eq!(hit.rect.y, 2);
         assert_eq!(hit.rect.height, 3);
         assert_eq!(hit.hover_rect.unwrap(), Rect::new(0, 2, 40, 1));
@@ -20255,17 +20714,20 @@ mod tests {
             ..region
         };
         assert_eq!(
-            block_hit(tool, viewport, 8).unwrap().hover_rect,
+            block_hit(tool, &[], viewport, 8).unwrap().hover_rect,
             Some(Rect::new(0, 2, 40, 3))
         );
         assert_eq!(
-            block_hit(tool, viewport, 11).unwrap().hover_rect,
+            block_hit(tool, &[], viewport, 11).unwrap().hover_rect,
             Some(Rect::new(0, 0, 40, 2))
         );
-        assert_eq!(block_hit(tool, viewport, 13).unwrap().hover_rect, None);
-        assert_eq!(block_hit(tool, viewport, 13).unwrap().toggle_rect, None);
+        assert_eq!(block_hit(tool, &[], viewport, 13).unwrap().hover_rect, None);
         assert_eq!(
-            block_hit(tool, viewport, 11).unwrap().toggle_rect,
+            block_hit(tool, &[], viewport, 13).unwrap().toggle_rect,
+            None
+        );
+        assert_eq!(
+            block_hit(tool, &[], viewport, 11).unwrap().toggle_rect,
             Some(Rect::new(0, 0, 40, 2))
         );
         let notice = BlockRegion {
@@ -20273,15 +20735,180 @@ mod tests {
             ..region
         };
         assert_eq!(
-            block_hit(notice, viewport, 8).unwrap().toggle_rect,
+            block_hit(notice, &[], viewport, 8).unwrap().toggle_rect,
             Some(Rect::new(0, 2, 40, 1))
         );
-        assert_eq!(block_hit(notice, viewport, 11).unwrap().toggle_rect, None);
         assert_eq!(
-            block_hit(region, viewport, 13).unwrap().hover_rect,
+            block_hit(notice, &[], viewport, 11).unwrap().toggle_rect,
+            None
+        );
+        assert_eq!(
+            block_hit(region, &[], viewport, 13).unwrap().hover_rect,
             Some(Rect::new(0, 0, 40, 1))
         );
-        assert!(block_hit(region, viewport, 25).is_none());
+        assert!(block_hit(region, &[], viewport, 25).is_none());
+    }
+
+    /// A highlight covers the block's text and nothing else: not the `│ `
+    /// gutter it hangs behind, and not the columns the scrollbar reserved —
+    /// the viewport it is measured against already stops before those.
+    #[test]
+    fn block_highlights_stop_at_the_gutter_and_at_the_reservation() {
+        let viewport = Rect::new(1, 4, pane_text_width(80), 12);
+        let lines = vec![
+            Line::from(vec![Span::raw("│ "), Span::raw("💭 ▸ thinking")]),
+            Line::from(vec![Span::raw("│ "), Span::raw("one thought")]),
+            Line::from(vec![Span::raw("┆ "), Span::raw("a continuation")]),
+        ];
+        let region = BlockRegion {
+            id: BlockId::Thinking(1),
+            start_line: 0,
+            end_line: 3,
+            header_lines: Some(2),
+            header_gutter: None,
+        };
+        let hit = block_hit(region, &lines, viewport, 0).expect("visible block");
+        assert_eq!(
+            hit.rect,
+            Rect::new(1, 4, viewport.width, 3),
+            "the gutter and the blank tail of a row still click"
+        );
+        let hovered = hit.hover_rect.expect("hoverable header");
+        assert_eq!(hovered, Rect::new(3, 4, viewport.width - 2, 2));
+        assert_eq!(
+            hovered.right(),
+            viewport.right(),
+            "the highlight ends where the reservation begins"
+        );
+
+        // A gutter welded to its text by `append_span` is still chrome for as
+        // far as it reaches, and the row is only as protected as its widest
+        // hovered gutter.
+        let welded = vec![
+            Line::from(vec![Span::raw("│ 💭 ▸ thinking")]),
+            Line::from(vec![Span::raw("two thoughts")]),
+        ];
+        let hit = block_hit(region, &welded, viewport, 0).expect("visible block");
+        assert_eq!(hit.hover_rect, Some(Rect::new(3, 4, viewport.width - 2, 2)));
+        let plain = vec![Line::from(vec![Span::raw("-- run started")])];
+        let hit = block_hit(region, &plain, viewport, 0).expect("visible block");
+        assert_eq!(
+            hit.hover_rect,
+            Some(Rect::new(1, 4, viewport.width, 2)),
+            "a gutterless row is highlighted edge to edge"
+        );
+    }
+
+    /// The hover clamp trusts what the builder hung in front of a row, never
+    /// what the row's glyphs look like. Tool output is arbitrary text: a tree
+    /// listing really does start with `"│ "`, so reading chrome off the content
+    /// hides columns the reader could hover, select and copy — and the same
+    /// reading misses chrome that is there (a diff's line-number column) just
+    /// because it does not look like a gutter.
+    #[test]
+    fn hover_clamps_to_the_builder_gutter_not_to_lookalike_output() {
+        let viewport = Rect::new(1, 4, pane_text_width(80), 12);
+        // A tool header row: the builder's gutter, then literal output that is
+        // itself a gutter glyph — a tree listing really does start with `"│ "`
+        // — arriving as its own span, as highlighted output does.
+        let lines = vec![Line::from(vec![
+            Span::styled("│ ", Theme::default().assistant()),
+            Span::raw("│ "),
+            Span::raw("├── src"),
+        ])];
+        let hover = |header_gutter| {
+            block_hit(
+                BlockRegion {
+                    id: BlockId::ToolOutput {
+                        call_id: ToolCallId::new_v7(),
+                        section: ToolOutputSection::Detail,
+                    },
+                    start_line: 0,
+                    end_line: lines.len(),
+                    header_lines: Some(1),
+                    header_gutter,
+                },
+                &lines,
+                viewport,
+                0,
+            )
+            .expect("visible header")
+            .hover_rect
+        };
+        assert_eq!(
+            leading_gutter_columns(&lines[0]),
+            4,
+            "what reading chrome off the row's glyphs makes of it"
+        );
+        assert_eq!(
+            hover(Some(2)),
+            Some(Rect::new(3, 4, viewport.width - 2, 1)),
+            "the highlight stops after the builder's own gutter"
+        );
+        assert_eq!(
+            hover(None),
+            Some(Rect::new(5, 4, viewport.width - 4, 1)),
+            "without provenance the clamp falls back to the glyph walk"
+        );
+
+        // The builder's count is what reaches the region, and it counts chrome
+        // the glyphs cannot see: the block gutter plus a diff's line-number
+        // column, both hung there by the same code.
+        let rendered = tool_block_lines(
+            Role::ToolSuccess,
+            vec![ToolBodyLine::guttered_code(
+                Line::from("ls"),
+                vec![Span::raw("1 │ ")],
+                vec![Span::raw("  │ ")],
+            )],
+            40,
+            &Theme::default(),
+        );
+        assert_eq!(rendered.chrome[0], 6);
+        assert_eq!(header_gutter_columns(&rendered), 6);
+        assert_eq!(
+            leading_gutter_columns(&rendered.lines[0]),
+            2,
+            "a line-number column is invisible to a glyph walk"
+        );
+    }
+    /// Hover paints inside the block's content columns and nowhere else: the
+    /// gutter, the border, and the reserved scrollbar cells keep their own
+    /// styling however the pointer moves.
+    #[tokio::test]
+    async fn hovering_a_block_only_repaints_its_own_content_columns() {
+        let (mut app, _session, block) = expansion_scroll_app("thinking").await;
+        rendered_frame(&mut app, 80, 24);
+        let plain = drawn_styles(&mut app, 80, 24);
+        app.hover = Some(HoverTarget::TranscriptBlock(block));
+        let hovered = drawn_styles(&mut app, 80, 24);
+        let viewport = app.hit_map.conversation.expect("conversation viewport");
+        let hit = app
+            .hit_map
+            .blocks
+            .iter()
+            .find(|hit| hit.id == block)
+            .expect("thinking block");
+        let rect = hit.hover_rect.expect("hovered header row");
+        assert!(rect.x > viewport.x, "the gutter is not a highlight");
+        assert_eq!(rect.right(), viewport.right());
+        assert!(
+            rect.rows()
+                .any(|row| plain[usize::from(row.y)][usize::from(rect.x)]
+                    != hovered[usize::from(row.y)][usize::from(rect.x)]),
+            "the header row is highlighted"
+        );
+        for (y, row) in hovered.iter().enumerate() {
+            for (x, style) in row.iter().enumerate() {
+                if rect.contains(ratatui::layout::Position::new(x as u16, y as u16)) {
+                    continue;
+                }
+                assert_eq!(
+                    plain[y][x], *style,
+                    "cell ({x},{y}) changed outside the block's content"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -12,7 +12,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::theme::Theme;
 
-use super::transcript::{ScrollbarGeometry, render_scrollbar_track};
+use super::transcript::{
+    SCROLLBAR_RESERVE, ScrollbarGeometry, pane_scrollbar_track, render_scrollbar_track,
+};
 
 /// Visible text-row ceiling for the growing message composer: the layout
 /// reclaims conversation rows up to this height, and the box scrolls beyond
@@ -155,8 +157,31 @@ impl InputState {
         visual_rows(&self.value, width).len()
     }
 
+    /// Rows the composer box needs inside a box of `inner` interior width,
+    /// measured at exactly the width [`render`] will wrap at.
+    ///
+    /// The box grows to the ceiling and only then reserves the scrollbar
+    /// columns, so the two widths disagree by design: a draft that still fits
+    /// once those columns are gone must not reserve them, and one that
+    /// overflows at the reserved width must not be counted at the full width
+    /// (which would promise a shorter box than the renderer produces). Sharing
+    /// this decision is what keeps the pane height, the rendered wrap, and
+    /// [`InputState::has_overflow`] from flip-flopping each other.
+    ///
+    /// The ceiling is assumed here — it is what the caller clamps to — since
+    /// the height is derived from this count: a draft over the reserved ceiling
+    /// is exactly the draft that ends up clipped at it.
+    pub(crate) fn composer_rows(&self, inner_width: u16) -> usize {
+        let (width, _) = composer_wrap(self.as_str(), inner_width, MAX_TEXT_ROWS);
+        self.content_rows(width.max(1))
+    }
+
     /// True when content rows exceed the laid-out viewport: the box is at
     /// its ceiling and wheel scrolling is meaningful.
+    ///
+    /// Both sides of the comparison come from the rendered box itself — the
+    /// width [`render`] wrapped at and the height it drew — so this agrees with
+    /// the scrollbar's presence by construction, reservation and all.
     pub(crate) fn has_overflow(&self) -> bool {
         self.layout_width > 0
             && self.layout_height > 0
@@ -557,6 +582,33 @@ pub(crate) struct RenderedInput {
     pub(crate) scrollbar: Option<ScrollbarGeometry>,
 }
 
+/// The width a composer wraps at, and whether it reserves the scrollbar
+/// columns: one decision, shared by [`render`], [`InputState::composer_rows`]
+/// and (through the width the renderer records) [`InputState::has_overflow`],
+/// so the wrap, the painted text, the cursor, the pane height and the wheel
+/// gate can never disagree about which columns the draft lives in.
+///
+/// The reservation is a *ceiling* affordance for the message composer: a box
+/// laid out shorter than [`MAX_TEXT_ROWS`] has room to grow into and never gives
+/// columns up. On top of that it is taken only when
+///
+/// * the reduced width still leaves text to draw (`reserved > 0`), and
+/// * the draft genuinely overflows *at that reduced width* — testing it at the
+///   full width and then wrapping narrower would re-flow every row the moment
+///   the bar appeared.
+///
+/// A pane narrower than the reservation itself is the case the first condition
+/// is for: reserving there would collapse the text area to zero columns, which
+/// paints no draft at all while leaving the scroll state reading a zero-width
+/// layout as "fits". Such a pane keeps its full interior and draws no track.
+fn composer_wrap(value: &str, inner_width: u16, inner_height: u16) -> (u16, bool) {
+    let reserved = inner_width.saturating_sub(SCROLLBAR_RESERVE);
+    let reserves = inner_height == MAX_TEXT_ROWS
+        && reserved > 0
+        && visual_rows(value, reserved).len() > usize::from(inner_height);
+    (if reserves { reserved } else { inner_width }, reserves)
+}
+
 pub(crate) fn render(
     frame: &mut Frame,
     area: Rect,
@@ -580,13 +632,12 @@ pub(crate) fn render(
         block
     };
     let inner = block.inner(area);
-    // A box at its height ceiling with overflowing content reserves its
-    // rightmost column for a scrollbar — the same track/thumb treatment as
-    // the conversation pane. Only the message composer is ever laid out at
-    // the ceiling, which scopes the affordance to it.
-    let overflowing = inner.height == MAX_TEXT_ROWS
-        && visual_rows(input.as_str(), inner.width.max(1)).len() > usize::from(inner.height);
-    let text_width = inner.width.saturating_sub(u16::from(overflowing));
+    // The wrap width and the reservation come from one shared decision
+    // (`composer_wrap`), measured at the width the text will actually be laid
+    // out in. Only the message composer is ever laid out at the ceiling, which
+    // scopes the affordance to it.
+    let (text_width, reserved) = composer_wrap(input.as_str(), inner.width, inner.height);
+    let text_area = Rect::new(inner.x, inner.y, text_width, inner.height);
     let (mut lines, cursor_column, cursor_row, rows_above, rows_below) =
         input.visible_rows(text_width, inner.height);
     let total_rows = rows_above
@@ -599,7 +650,7 @@ pub(crate) fn render(
         && let Some(first) = lines.first_mut()
     {
         let fitted =
-            super::app::truncate_with_ellipsis(placeholder, usize::from(inner.width.max(1)));
+            super::app::truncate_with_ellipsis(placeholder, usize::from(text_width.max(1)));
         *first = Line::from(Span::styled(fitted, theme.muted()));
     }
     let title_width = line_width(&title);
@@ -618,30 +669,31 @@ pub(crate) fn render(
     });
     let block = block.title(title_layout.text);
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)),
-        Rect::new(inner.x, inner.y, text_width, inner.height),
-    );
-    let scrollbar = if overflowing {
-        ScrollbarGeometry::resolve(
-            Rect::new(inner.x.saturating_add(text_width), inner.y, 1, inner.height),
-            total_rows,
-        )
-        .map(|geometry| geometry.with_thumb(rows_above))
-    } else {
-        None
-    };
+    frame.render_widget(Paragraph::new(Text::from(lines)), text_area);
+    // The track lives in the rightmost reserved column, one blank margin away
+    // from the text — cell-for-cell the conversation pane's geometry.
+    let track = pane_scrollbar_track(area, text_area);
+    let scrollbar = (reserved && track.width > 0)
+        .then(|| {
+            ScrollbarGeometry::resolve(track, total_rows)
+                .map(|geometry| geometry.with_thumb(rows_above))
+        })
+        .flatten();
     if let Some(geometry) = scrollbar {
         render_scrollbar_track(frame, geometry, theme);
     }
-    if focused && inner.width > 0 && inner.height > 0 {
+    // The cursor sits in the painted text area, not the box interior: those
+    // two differ by exactly the reserved columns.
+    if focused && text_area.width > 0 && text_area.height > 0 {
         frame.set_cursor_position((
-            inner.x.saturating_add(cursor_column),
-            inner.y.saturating_add(cursor_row.min(inner.height - 1)),
+            text_area.x.saturating_add(cursor_column),
+            text_area
+                .y
+                .saturating_add(cursor_row.min(text_area.height - 1)),
         ));
     }
     RenderedInput {
-        text_rect: inner,
+        text_rect: text_area,
         title_rect,
         scrollbar,
     }
@@ -904,8 +956,12 @@ mod tests {
         style::{Modifier, Style},
     };
 
-    use super::{CredentialInput, InputState, ScrollbarGeometry, render};
+    use super::{
+        CredentialInput, InputState, MAX_TEXT_ROWS, SCROLLBAR_RESERVE, ScrollbarGeometry, render,
+        visual_rows,
+    };
     use crate::theme::Theme;
+    use crate::ui::transcript::SCROLLBAR_MARGIN;
 
     #[test]
     fn focused_and_unfocused_message_borders_differ_by_weight_and_fill() {
@@ -1507,6 +1563,95 @@ mod tests {
 
         // Fitting content at the same height has nothing to scroll.
         assert!(rendered_scrollbar("a\nb\nc", Rect::new(0, 0, 20, 7)).is_none());
+    }
+
+    /// Across every pane width a composer can be laid out in, the wrap the
+    /// renderer picks, the columns the cursor may move through, the height the
+    /// layout asks for and the wheel's overflow flag must describe the *same*
+    /// text area — and that area must never collapse to zero columns while
+    /// there is a draft to show. Reserving the scrollbar columns in a pane too
+    /// narrow to host them broke all four at once: the text vanished and the
+    /// box stopped scrolling because its layout was measured at width zero.
+    #[test]
+    fn the_composer_reservation_never_collapses_the_text_area() {
+        let draft = "the quick brown fox\n".repeat(8);
+        for width in 0..=8 {
+            let mut input = InputState::default();
+            input.set_buffer(draft.clone());
+            let area = Rect::new(0, 0, width, MAX_TEXT_ROWS + 2);
+            let interior = width.saturating_sub(2);
+            let mut terminal =
+                Terminal::new(TestBackend::new(width.max(1), area.height)).expect("terminal");
+            let mut rendered = None;
+            terminal
+                .draw(|frame| {
+                    rendered = Some(render(
+                        frame,
+                        area,
+                        &mut input,
+                        true,
+                        "Message",
+                        None,
+                        &Theme::default(),
+                    ));
+                })
+                .expect("render");
+            let rendered = rendered.expect("rendered input");
+            let text = rendered.text_rect;
+            assert_eq!(text.height, MAX_TEXT_ROWS);
+            // Only ever one of the two candidates: the pane interior, or that
+            // minus the reservation.
+            assert!(
+                text.width == interior || text.width == interior.saturating_sub(SCROLLBAR_RESERVE),
+                "width {width} wrapped at {}",
+                text.width
+            );
+
+            if interior == 0 {
+                // No interior at all: nothing to paint, nothing to scroll.
+                assert_eq!(text.width, 0);
+                assert!(rendered.scrollbar.is_none());
+                assert!(!input.has_overflow());
+                continue;
+            }
+
+            assert!(
+                text.width > 0,
+                "width {width} collapsed its text area to zero"
+            );
+            // The track exists exactly when the columns were reserved for it,
+            // and never covers the border.
+            assert_eq!(
+                rendered.scrollbar.is_some(),
+                text.width == interior.saturating_sub(SCROLLBAR_RESERVE),
+                "width {width} reserved {} of {interior} columns",
+                text.width
+            );
+            if let Some(geometry) = rendered.scrollbar {
+                assert!(geometry.track.right() < area.x + area.width);
+                assert_eq!(geometry.track.x, text.right() + SCROLLBAR_MARGIN);
+            }
+            // The draft is on screen…
+            let buffer = terminal.backend().buffer();
+            assert!(
+                (text.y..text.bottom())
+                    .flat_map(|y| (text.x..text.right()).map(move |x| (x, y)))
+                    .any(|(x, y)| buffer[(x, y)].symbol() != " "),
+                "width {width} rendered no text for a long draft"
+            );
+            // …and overflow is judged at exactly that width, so the wheel and
+            // the scrollbar agree with what the reader can see.
+            assert_eq!(
+                input.has_overflow(),
+                visual_rows(&draft, text.width).len() > usize::from(text.height),
+                "width {width} disagrees with its own wrap"
+            );
+            assert!(input.has_overflow(), "width {width} lost its overflow");
+            assert!(
+                input.composer_rows(interior) > usize::from(MAX_TEXT_ROWS),
+                "width {width} measured a draft that fits the box it cannot"
+            );
+        }
     }
 
     #[test]
