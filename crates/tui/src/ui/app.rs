@@ -8011,8 +8011,8 @@ impl App {
         let cursor = if cursor { "> " } else { "  " };
         let status = match session.status {
             SessionStatus::Running => "⏳ ",
-            SessionStatus::Idle => "✅ ",
-            SessionStatus::Completed
+            SessionStatus::Idle
+            | SessionStatus::Completed
             | SessionStatus::Failed
             | SessionStatus::Cancelled
             | SessionStatus::Interrupted => "   ",

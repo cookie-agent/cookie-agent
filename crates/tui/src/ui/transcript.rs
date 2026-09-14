@@ -12549,9 +12549,9 @@ mod tests {
         // Primary text is exactly `agent-id:session-title` with no session
         // ID; cursor/watch markers live in prefix cells only.
         let label = app.tree_row_label(&entries[0], false);
-        assert_eq!(label, "  ● ✅ primary:fix the flaky test");
+        assert_eq!(label, "  ●    primary:fix the flaky test");
         let label = app.tree_row_label(&entries[0], true);
-        assert_eq!(label, "> ● ✅ primary:fix the flaky test");
+        assert_eq!(label, "> ●    primary:fix the flaky test");
         let root_id = root.to_string();
         assert!(!label.contains(&root_id));
         assert!(!label.contains(&root_id[..8]));
@@ -12564,7 +12564,7 @@ mod tests {
         let entries = app.tree_entries();
         assert_eq!(
             app.tree_row_label(&entries[0], false),
-            "    ✅ primary:untitled"
+            "       primary:untitled"
         );
     }
     #[tokio::test]
@@ -12741,7 +12741,7 @@ mod tests {
         let mut app = test_app().await;
         let statuses = [
             (SessionStatus::Running, "⏳ "),
-            (SessionStatus::Idle, "✅ "),
+            (SessionStatus::Idle, "   "),
             (SessionStatus::Completed, "   "),
             (SessionStatus::Failed, "   "),
             (SessionStatus::Cancelled, "   "),
@@ -13533,16 +13533,16 @@ mod tests {
             assert_eq!(app.tree_root, Some(root));
             assert_eq!(depths(&app), expected, "width {width}");
             assert!(
-                root_selected[0].starts_with("> ● ✅"),
+                root_selected[0].starts_with("> ●    "),
                 "width {width}: {root_selected:?}"
             );
-            assert!(root_selected[1].starts_with("  -   ✅"));
-            assert!(root_selected[2].starts_with("        ✅"));
-            assert!(child_selected[0].starts_with("    ✅"));
-            assert!(child_selected[1].starts_with("> - ● ✅"));
-            assert!(child_selected[2].starts_with("        ✅"));
-            assert!(root_selected_again[1].starts_with("  -   ✅"));
-            assert!(root_selected_again[2].starts_with("        ✅"));
+            assert!(root_selected[1].starts_with("  -      "));
+            assert!(root_selected[2].starts_with("           "));
+            assert!(child_selected[0].starts_with("       "));
+            assert!(child_selected[1].starts_with("> - ●    "));
+            assert!(child_selected[2].starts_with("           "));
+            assert!(root_selected_again[1].starts_with("  -      "));
+            assert!(root_selected_again[2].starts_with("           "));
 
             // These columns come from the actual rendered buffer. Selection
             // changes cursor/watch cells only; agent text retains depth 0/1/2.
