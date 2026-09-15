@@ -101,11 +101,15 @@ pub(crate) struct TreeState {
     children: HashMap<SessionId, Vec<SessionId>>,
     /// Terminal run statuses observed per child, persisted into `index.json`.
     terminal_runs: HashMap<SessionId, BTreeMap<String, SessionStatus>>,
+    /// Restart-stable tree grants folded in by the bulk load (4.3), retained so
+    /// grant rebuilds stay O(cached data) instead of O(logs).
+    grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
+    /// Children whose logs carry goal-producer state (4.4).
+    producer_sessions: Vec<SessionId>,
 }
 
 /// Products of a completed [`SessionStore::load_tree`] pass that the engine
 /// folds into its singletons (delegation registry, approvals, producers).
-#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
 #[derive(Debug)]
 pub(crate) struct TreeLoadProducts {
     pub(crate) root: SessionId,
@@ -117,25 +121,30 @@ pub(crate) struct TreeLoadProducts {
     )>,
     /// Restart-stable tree approval grants held in child logs.
     pub(crate) grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
+    /// Frozen model bindings referenced by child logs (4.2), validated with the
+    /// same acceptance list the startup pass applies to root logs.
+    pub(crate) bindings: Vec<(SessionId, cookie_agent_protocol::FrozenModelBinding)>,
     /// Children whose logs carry goal-producer state needing reconciliation.
     pub(crate) producer_sessions: Vec<SessionId>,
+    /// Every child summary the pass produced, for usage and listing caches.
+    pub(crate) summaries: Vec<SessionSummary>,
 }
 
 impl TreeLoadProducts {
-    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
     fn for_root(root: SessionId) -> Self {
         Self {
             root,
             delegations: Vec::new(),
             grants: Vec::new(),
+            bindings: Vec::new(),
             producer_sessions: Vec::new(),
+            summaries: Vec::new(),
         }
     }
 }
 
 /// Observer slot with a hand-written `Debug` (the payload is a `dyn` trait).
 #[derive(Default)]
-#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
 struct ObserverSlot(Mutex<Option<Arc<dyn TreeLoadObserver>>>);
 
 impl std::fmt::Debug for ObserverSlot {
@@ -147,10 +156,10 @@ impl std::fmt::Debug for ObserverSlot {
 }
 
 /// Callback the engine installs so store-side tree loads reach engine singletons
-/// even when the load was triggered from inside the store.
-#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+/// even when the load was triggered from inside the store. A failing observer
+/// fails the load, so the access that triggered it fails closed.
 pub(crate) trait TreeLoadObserver: Send + Sync {
-    fn tree_loaded(&self, products: TreeLoadProducts);
+    fn tree_loaded(&self, products: TreeLoadProducts) -> Result<(), crate::runtime::EngineError>;
 }
 
 #[derive(Debug, Error)]
@@ -182,6 +191,11 @@ pub enum SessionError {
     },
     #[error("invalid fork title: {0}")]
     InvalidForkTitle(String),
+    /// A lazy tree load completed but the engine rejected its products (a child
+    /// log referencing a manifest this runtime cannot serve, for example).
+    /// `impl From<SessionError> for EngineError` unwraps it back to its type.
+    #[error("tree load rejected: {0}")]
+    TreeRejected(Box<crate::runtime::EngineError>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -318,7 +332,6 @@ pub struct SessionStore {
     #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
     tree_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     /// Engine hook applied after each completed tree load.
-    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
     tree_observer: ObserverSlot,
     residency: Mutex<SessionResidency>,
     ownership: Mutex<HashMap<SessionId, StoreOwnership>>,
@@ -330,7 +343,6 @@ pub struct SessionStore {
     #[cfg(test)]
     publish_hook: Mutex<Option<PublishHook>>,
     #[cfg(test)]
-    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
     tree_load_count: Mutex<HashMap<SessionId, usize>>,
 }
 
@@ -541,11 +553,11 @@ impl SessionStore {
             self.record_location(id, SessionLocation::Root);
             return Ok(root_dir);
         }
-        if !self.flat_layout {
-            if let Some(root) = self.locate_child(id) {
-                self.record_location(id, SessionLocation::Child { root });
-                return Ok(self.path_for(SessionLocation::Child { root }, id));
-            }
+        if !self.flat_layout
+            && let Some(root) = self.locate_child(id)
+        {
+            self.record_location(id, SessionLocation::Child { root });
+            return Ok(self.path_for(SessionLocation::Child { root }, id));
         }
         Err(SessionError::Missing(id))
     }
@@ -653,10 +665,7 @@ impl SessionStore {
         origin: cookie_agent_protocol::EventOrigin,
         creation: EventPayload,
     ) -> Result<(Arc<EventLog>, bool), SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         self.ensure_open()?;
         if let Some(existing) = self
             .residency
@@ -704,10 +713,25 @@ impl SessionStore {
         if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
+        self.ensure_tree_for(id)?;
         if self.is_owned(id) {
             return self.reopen_owned(id);
         }
-        self.open_snapshot(id)
+        self.open_snapshot(id, true)
+    }
+
+    /// Read a session without completing its tree first.
+    ///
+    /// Startup passes need a session's own log for bookkeeping; going through
+    /// [`Self::get`] would put child reads back on the startup path (§4.1.1).
+    pub(crate) fn get_log_only(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session);
+        }
+        if self.is_owned(id) {
+            return self.reopen_owned(id);
+        }
+        self.open_snapshot(id, true)
     }
 
     #[must_use]
@@ -756,10 +780,7 @@ impl SessionStore {
     }
 
     fn reopen_owned(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         if let Some(session) = self
             .residency
             .lock()
@@ -786,7 +807,21 @@ impl SessionStore {
         Ok(reopened)
     }
 
-    fn open_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    /// Reads and folds one session log without making it resident.
+    ///
+    /// `direct` marks a read the caller asked for by session id (a `get` or a
+    /// direct-address child access). Child logs are otherwise only legal inside
+    /// [`Self::load_tree`], and a debug build asserts that invariant so hidden
+    /// child loads show up in CI instead of in startup profiles (§3.2.3, §3.3).
+    fn open_snapshot(
+        &self,
+        id: SessionId,
+        direct: bool,
+    ) -> Result<SessionProjection, SessionError> {
+        debug_assert!(
+            direct || TreeLoadReads::active() || !self.is_filed_child(id),
+            "child log {id} opened outside a tree load"
+        );
         let session_dir = self.resolve_dir(id)?;
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
@@ -800,11 +835,35 @@ impl SessionStore {
         Ok(snapshot)
     }
 
-    pub(crate) fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
-        let _mutation = self
+    /// Takes the store's durable-mutation lock, noting the holder on this
+    /// thread. Paths that already hold it must not start a lazy tree load: the
+    /// load's install phase needs the same lock, and waiting for another thread's
+    /// tree load while holding it inverts the two (append, create, fork and
+    /// `begin_write_locked` all reach `get` from inside a mutation).
+    fn lock_mutation(&self) -> MutationGuard<'_> {
+        if MUTATION_DEPTH.with(|depth| depth.get()) > 0 {
+            return MutationGuard { locked: None };
+        }
+        let guard = self
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        MUTATION_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        MutationGuard {
+            locked: Some(guard),
+        }
+    }
+
+    #[must_use]
+    fn mutation_held() -> bool {
+        MUTATION_DEPTH.with(|depth| depth.get() > 0)
+    }
+
+    pub(crate) fn begin_write(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
+        // The tree has to be complete before a session in it starts writing, and
+        // the load cannot run under `mutation` (it installs its own).
+        self.ensure_tree_for(id)?;
+        let _mutation = self.lock_mutation();
         self.ensure_open()?;
         self.begin_write_locked(id)
     }
@@ -987,17 +1046,12 @@ impl SessionStore {
     }
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         // Persisted child caches are refreshed after the residency guard drops.
         let parent_root = self.parent_root_of(id);
         let evicted = self.evict_locked(id)?;
-        if evicted {
-            if let Some(root) = parent_root {
-                self.persist_subagent_index(root);
-            }
+        if evicted && let Some(root) = parent_root {
+            self.persist_subagent_index(root);
         }
         Ok(evicted)
     }
@@ -1133,10 +1187,7 @@ impl SessionStore {
         event: EventPayload,
         recovery: bool,
     ) -> Result<cookie_agent_protocol::StoredEvent, SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         self.ensure_open()?;
         let capability = self.write_capability(id, recovery)?;
         let (log, was_persisted) = self.resident_log(id)?;
@@ -1200,10 +1251,8 @@ impl SessionStore {
                 residency.evicted.remove(&id);
             }
             // The publish that just happened changed the child's durable summary.
-            if !was_persisted {
-                if let Some(root) = self.parent_root_of(id) {
-                    self.persist_subagent_index(root);
-                }
+            if !was_persisted && let Some(root) = self.parent_root_of(id) {
+                self.persist_subagent_index(root);
             }
         }
         // Run-terminal events are rare and are the only thing the delegation
@@ -1226,10 +1275,7 @@ impl SessionStore {
         through_seq: u64,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionId, SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         self.ensure_open()?;
         let source = self.get(source_id)?;
         if !source.log.is_persisted() {
@@ -1463,10 +1509,7 @@ impl SessionStore {
     }
 
     pub(crate) fn persist_buffered_session(&self, id: SessionId) -> Result<(), SessionError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         self.ensure_open()?;
         let projection = self.get(id)?;
         if !projection.log.is_persisted() {
@@ -1558,11 +1601,293 @@ impl SessionStore {
     /// Read-only snapshot access that never triggers a lazy tree load. Startup
     /// passes and the delegation registry rebuild use this so a cold root stays
     /// cold until something actually resumes it.
+    /// The root whose tree must be complete before serving `id` (§3.2).
+    pub(crate) fn ensure_tree_for(&self, id: SessionId) -> Result<(), SessionError> {
+        if self.flat_layout {
+            return Ok(());
+        }
+        if Self::mutation_held() {
+            // Reached from inside a write path: its entry point (`begin_write`,
+            // the engine, or an earlier read) already completed this tree.
+            return Ok(());
+        }
+        if self.resolve_dir(id).is_err() {
+            // Unknown sessions stay unknown: the caller reports the miss, and a
+            // later create can still place them.
+            return Ok(());
+        }
+        let root = match self.cached_location(id) {
+            Some(SessionLocation::Child { root }) => root,
+            _ => id,
+        };
+        self.load_tree(root)
+    }
+
+    /// Whether the child tree of `root` was already bulk-loaded in this process.
+    #[must_use]
+    pub(crate) fn is_tree_loaded(&self, root: SessionId) -> bool {
+        self.trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&root)
+            .is_some_and(|state| state.loaded)
+    }
+
+    #[cfg(test)]
+    fn note_tree_load(&self, root: SessionId) {
+        *self
+            .tree_load_count
+            .lock()
+            .expect("tree load count lock poisoned")
+            .entry(root)
+            .or_default() += 1;
+    }
+
+    /// How many times a root's child tree was bulk-loaded in this process.
+    #[cfg(test)]
+    pub(crate) fn tree_load_count(&self, root: SessionId) -> usize {
+        self.tree_load_count
+            .lock()
+            .expect("tree load count lock poisoned")
+            .get(&root)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn tree_guard(&self, root: SessionId) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .tree_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(
+            locks
+                .entry(root)
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
+
+    /// Reads and folds every child log of `root` exactly once per process
+    /// (§3.3), harvesting what the engine singletons need — delegation records,
+    /// restart-stable grants, producer state, manifest bindings and summaries —
+    /// and leaving no child resident. Idempotent; concurrent triggers coalesce
+    /// per root.
+    pub(crate) fn load_tree(&self, root: SessionId) -> Result<(), SessionError> {
+        if self.flat_layout || self.is_tree_loaded(root) {
+            return Ok(());
+        }
+        let guard = self.tree_guard(root);
+        let _loading = guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.is_tree_loaded(root) {
+            return Ok(());
+        }
+        self.ensure_open()?;
+        #[cfg(test)]
+        self.note_tree_load(root);
+        let mut products = TreeLoadProducts::for_root(root);
+        let mut tree_grants = Vec::new();
+        let mut edges = HashMap::<SessionId, Vec<SessionId>>::new();
+        let mut terminal_runs = HashMap::<SessionId, BTreeMap<String, SessionStatus>>::new();
+        {
+            // Read phase: no store lock is held, so the pass cannot block appends
+            // and cannot re-enter the store's own write paths.
+            let _reads = TreeLoadReads::begin();
+            for child in self.child_dir_ids(root) {
+                let projection = self.open_snapshot(child, false)?;
+                let events = projection.log.event_snapshot();
+                products
+                    .summaries
+                    .push(summary_from_projection(&projection));
+                for envelope in events.iter() {
+                    match &envelope.payload {
+                        EventPayload::SessionCreated { creation_agent, .. } => {
+                            products.bindings.extend(
+                                creation_agent
+                                    .fallback_chain
+                                    .iter()
+                                    .cloned()
+                                    .map(|binding| (projection.meta.session_id, binding)),
+                            )
+                        }
+                        EventPayload::RunStarted {
+                            selected_suffix, ..
+                        } => products.bindings.extend(
+                            selected_suffix
+                                .iter()
+                                .cloned()
+                                .map(|binding| (projection.meta.session_id, binding)),
+                        ),
+                        EventPayload::TreeApprovalGrantCommitted { grant } => {
+                            // The visible-grant rebuild needs every grant; only
+                            // the approval store filters to restart-stable ones.
+                            if restart_stable_grant(grant) {
+                                products.grants.push(grant.clone());
+                            }
+                            tree_grants.push(grant.clone());
+                        }
+                        payload => {
+                            if !projection.log.delegation_event_tainted(envelope)
+                                && crate::delegation_events::is_delegation_payload(payload)
+                            {
+                                products.delegations.push((
+                                    projection.meta.session_id,
+                                    envelope.run_id,
+                                    payload.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                if crate::runtime::producers::producer_state_pending(&events) {
+                    products.producer_sessions.push(projection.meta.session_id);
+                }
+                let parent = match projection.meta.origin {
+                    SessionOrigin::Delegated {
+                        parent_session_id, ..
+                    } => parent_session_id,
+                    _ => root,
+                };
+                edges
+                    .entry(parent)
+                    .or_default()
+                    .push(projection.meta.session_id);
+                let runs = projection
+                    .runs
+                    .iter()
+                    .filter(|(_, run)| is_terminal_status(run.status))
+                    .map(|(run_id, run)| (run_id.to_string(), run.status))
+                    .collect::<BTreeMap<_, _>>();
+                if !runs.is_empty() {
+                    terminal_runs.insert(projection.meta.session_id, runs);
+                }
+            }
+        }
+        // Install phase: serialized with creates and appends so a concurrent
+        // child cannot be overwritten by the pass's snapshot of it.
+        {
+            let _mutation = self.lock_mutation();
+            {
+                let mut residency = self
+                    .residency
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                for summary in &products.summaries {
+                    let id = summary.meta.session_id;
+                    if residency.resident.contains_key(&id) {
+                        continue;
+                    }
+                    residency.evicted.insert(id, summary.clone());
+                }
+            }
+            let mut trees = self
+                .trees
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = trees.entry(root).or_default();
+            for (parent, children) in edges {
+                let slot = state.children.entry(parent).or_default();
+                for child in children {
+                    if !slot.contains(&child) {
+                        slot.push(child);
+                    }
+                }
+            }
+            for (child, runs) in terminal_runs {
+                let slot = state.terminal_runs.entry(child).or_default();
+                for (run_id, status) in runs {
+                    slot.entry(run_id).or_insert(status);
+                }
+            }
+            state.grants = tree_grants;
+            state.producer_sessions = products.producer_sessions.clone();
+            state.loaded = true;
+        }
+        self.persist_subagent_index(root);
+        // Observer runs with no store lock held: it calls back into the store.
+        self.notify_tree_loaded(products)
+    }
+
+    /// Grants installed by tree loads, so a rebuild stays O(cached data) (§4.3).
+    pub(crate) fn loaded_tree_grants(&self) -> Vec<cookie_agent_protocol::TreeApprovalGrant> {
+        self.trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|state| state.loaded)
+            .flat_map(|state| state.grants.clone())
+            .collect()
+    }
+
+    /// Sessions whose logs can carry goal-producer state without a hidden child
+    /// log read: every root, plus children already known to need reconciliation.
+    pub(crate) fn producer_scan_sessions(&self) -> Vec<SessionId> {
+        self.refresh_discovered();
+        let mut ids = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .known_ids()
+            .into_iter()
+            .filter(|id| self.is_root_id(*id))
+            .collect::<Vec<_>>();
+        let loaded = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for state in loaded.values() {
+            if state.loaded {
+                ids.extend(state.producer_sessions.iter().copied());
+            }
+        }
+        ids.sort_by_key(|id| id.to_string());
+        ids.dedup();
+        ids
+    }
+
+    /// Whether a session is filed inside another session's tree.
+    fn is_filed_child(&self, id: SessionId) -> bool {
+        matches!(
+            self.cached_location(id),
+            Some(SessionLocation::Child { .. })
+        )
+    }
+
+    /// Existence check that never opens an event log: the location cache and, for
+    /// unknown ids, a directory probe.
+    pub(crate) fn session_exists(&self, id: SessionId) -> bool {
+        self.resolve_dir(id).is_ok()
+    }
+
+    fn notify_tree_loaded(&self, products: TreeLoadProducts) -> Result<(), SessionError> {
+        let observer = self
+            .tree_observer
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(observer) = observer else {
+            return Ok(());
+        };
+        observer
+            .tree_loaded(products)
+            .map_err(|error| SessionError::TreeRejected(Box::new(error)))
+    }
+
+    /// Installs the engine hook that receives tree load products (§3.3).
+    pub(crate) fn set_tree_load_observer(&self, observer: Arc<dyn TreeLoadObserver>) {
+        *self
+            .tree_observer
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(observer);
+    }
+
     pub(crate) fn read_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
         if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
-        self.open_snapshot(id)
+        self.open_snapshot(id, false)
     }
 
     fn is_root_id(&self, id: SessionId) -> bool {
@@ -2128,6 +2453,8 @@ impl SessionStore {
     /// mentions from their `metadata` cache alone (§3.4). No child event log is
     /// read here — children of a cold tree report their persisted status.
     pub fn children(&self, parent: SessionId) -> Vec<ChildSummary> {
+        // Listing a tree is a use of it: make sure it is complete first (§3.2.2).
+        let _ = self.ensure_tree_for(parent);
         self.child_ids(parent)
             .into_iter()
             .filter_map(|id| self.child_summary(id))
@@ -2151,10 +2478,10 @@ impl SessionStore {
                 if let SessionOrigin::Delegated {
                     parent_session_id, ..
                 } = session.meta.origin
+                    && parent_session_id == parent
+                    && !children.contains(&session.meta.session_id)
                 {
-                    if parent_session_id == parent && !children.contains(&session.meta.session_id) {
-                        children.push(session.meta.session_id);
-                    }
+                    children.push(session.meta.session_id);
                 }
             }
             return children;
@@ -2244,6 +2571,7 @@ impl SessionStore {
     }
 
     pub fn tree(&self, id: SessionId) -> Result<SessionTree, SessionError> {
+        self.ensure_tree_for(id)?;
         // Assembly walks placement edges, so it costs one metadata cache read per
         // tree member instead of a rebuild of every resident session's log.
         let root = self.get(id)?;
@@ -2290,10 +2618,7 @@ impl SessionStore {
 
     pub(crate) fn release_ownership(&self) {
         self.closed.store(true, Ordering::Release);
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _mutation = self.lock_mutation();
         let residency = self
             .residency
             .lock()
@@ -2723,9 +3048,7 @@ fn publish_prepared_dir(
             source,
         })?
         .filter_map(|entry| entry.ok())
-        .all(|entry| {
-            entry.file_name() == std::ffi::OsString::from(SUBAGENTS_DIR) && entry.path().is_dir()
-        });
+        .all(|entry| entry.file_name() == SUBAGENTS_DIR && entry.path().is_dir());
     if !scaffold {
         return Err(SessionError::SessionLocked(session_id));
     }
@@ -2750,7 +3073,72 @@ fn publish_prepared_dir(
     })
 }
 
-/// The run status a payload drives to terminal, if any.
+/// Only restart-stable grants are folded into the approval store (§4.3): a grant
+/// whose binding cannot survive a restart must not outlive the process that
+/// earned it.
+pub(crate) fn restart_stable_grant(grant: &cookie_agent_protocol::TreeApprovalGrant) -> bool {
+    !grant.resources.is_empty()
+        && grant.resources.iter().all(|resource| {
+            resource.binding_lifetime
+                == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
+        })
+}
+
+/// Whether a run status ends a run.
+fn is_terminal_status(status: SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::Completed
+            | SessionStatus::Failed
+            | SessionStatus::Interrupted
+            | SessionStatus::Cancelled
+    )
+}
+
+thread_local! {
+    /// Nesting depth of this thread's `SessionStore::lock_mutation` guards.
+    static MUTATION_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// RAII holder for the store's durable-mutation lock. `None` means this thread
+/// already holds it further up the stack, so the guard is a no-op.
+struct MutationGuard<'a> {
+    locked: Option<std::sync::MutexGuard<'a, ()>>,
+}
+
+impl Drop for MutationGuard<'_> {
+    fn drop(&mut self) {
+        if self.locked.is_some() {
+            MUTATION_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+}
+
+thread_local! {
+    /// Depth of the enclosing `load_tree` read phase on this thread.
+    static TREE_LOAD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks a scope in which reading child event logs is legal (§3.3).
+struct TreeLoadReads;
+
+impl TreeLoadReads {
+    fn begin() -> Self {
+        TREE_LOAD_READS.with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+
+    fn active() -> bool {
+        TREE_LOAD_READS.with(|depth| depth.get() > 0)
+    }
+}
+
+impl Drop for TreeLoadReads {
+    fn drop(&mut self) {
+        TREE_LOAD_READS.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 fn terminal_run_of(run: Option<RunId>, payload: &EventPayload) -> Option<(RunId, SessionStatus)> {
     let status = match payload {
         EventPayload::RunCompleted { .. } => SessionStatus::Completed,
@@ -3954,16 +4342,110 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![grandchild]
         );
-        let tree = observer.tree(root).expect("tree without child logs");
-        assert_eq!(tree.session.session_id, root);
-        assert_eq!(tree.children.len(), 1);
-        assert_eq!(tree.children[0].session.session_id, child);
-        assert_eq!(tree.children[0].children[0].session.session_id, grandchild);
+        assert!(
+            !observer.is_tree_loaded(root),
+            "an unreadable child must not report a loaded tree"
+        );
         assert_eq!(
             observer.root_snapshots().len(),
             1,
             "only the root log is read"
         );
+
+        // A child log is only needed where the tree is actually assembled, and
+        // there an unreadable child fails closed (§3.2.2).
+        assert!(observer.tree(root).is_err());
+        for directory in [&child_dir, &grandchild_dir] {
+            fs::set_permissions(
+                directory.join("events.jsonl"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .expect("readable child log");
+        }
+        let tree = observer.tree(root).expect("tree after a lazy load");
+        assert_eq!(tree.session.session_id, root);
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].session.session_id, child);
+        assert_eq!(tree.children[0].children[0].session.session_id, grandchild);
+    }
+
+    /// §8.2 #5: opening a root reads each child log exactly once, leaves the
+    /// children evicted, and never re-reads them for later queries.
+    #[cfg(unix)]
+    #[test]
+    fn tree_load_reads_each_child_once_and_leaves_them_evicted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let root = persist_test_session(&owner);
+        let first = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+        let second = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+        drop(owner);
+
+        let store = SessionStore::open(&data, &cwd).expect("cold store");
+        assert!(
+            !store.is_tree_loaded(root),
+            "a cold store has no loaded trees"
+        );
+        store.get(root).expect("open the root");
+        assert!(store.is_tree_loaded(root), "opening a root loads its tree");
+        assert_eq!(store.tree_load_count(root), 1);
+        for child in [first, second] {
+            assert!(!store.is_resident(child), "children stay out of residency");
+            assert!(store.session_exists(child));
+        }
+        assert_eq!(store.children(root).len(), 2);
+
+        // Child logs go unreadable: everything the tree offers is already
+        // cached, so further queries keep working and no second load happens.
+        for child in [first, second] {
+            fs::set_permissions(
+                store.session_dir(child).join("events.jsonl"),
+                fs::Permissions::from_mode(0o000),
+            )
+            .expect("unreadable child log");
+        }
+        assert_eq!(store.children(root).len(), 2);
+        assert_eq!(store.tree(root).expect("cached tree").children.len(), 2);
+        assert_eq!(store.get(root).expect("root again").meta.session_id, root);
+        assert_eq!(store.tree_load_count(root), 1, "the pass runs once");
+    }
+
+    /// §8.2 #6: addressing a child directly locates it by directory, loads its
+    /// root's tree first, then serves the child.
+    #[test]
+    fn direct_address_child_loads_its_tree_first() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let owner = SessionStore::open(&data, &cwd).expect("owner store");
+        let root = persist_test_session(&owner);
+        let child = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+        drop(owner);
+
+        let store = SessionStore::open(&data, &cwd).expect("cold store");
+        // Force placement discovery instead of serving from the summary cache.
+        let index = store
+            .session_dir(root)
+            .join(SUBAGENTS_DIR)
+            .join(SUBAGENT_INDEX_FILE);
+        fs::remove_file(&index).expect("remove child index");
+        assert!(!store.is_tree_loaded(root));
+
+        let projection = store.get(child).expect("direct child access");
+        assert_eq!(projection.meta.session_id, child);
+        assert!(
+            store.is_tree_loaded(root),
+            "the child's tree completed first"
+        );
+        assert_eq!(store.tree_load_count(root), 1);
+        assert!(!store.is_resident(child));
+        assert!(index.is_file(), "the load rebuilt the child summary cache");
     }
 
     /// §8.2 #11: a fork inherits the source's tree, so fork-of-root is published

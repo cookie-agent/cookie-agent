@@ -26,10 +26,12 @@ impl Engine {
                 .unwrap_or(projection.meta.creation_selection),
         )
     }
+    /// Rebuilds the visible grant set from root logs plus the grant sets cached
+    /// by loaded trees, so it stays O(cached data) instead of O(all logs) (§4.3).
     pub(super) fn rebuild_visible_tree_grants(&self) {
         let invalidated = self.inner.grant_journal.invalidated_ids();
         let mut grants = Vec::new();
-        for session in self.inner.store.all_snapshots() {
+        for session in self.inner.store.root_snapshots() {
             for event in session.log.event_snapshot().iter() {
                 if let Event::TreeApprovalGrantCommitted { grant } = &event.payload
                     && !invalidated.contains(&grant.grant_id)
@@ -38,6 +40,13 @@ impl Engine {
                 }
             }
         }
+        grants.extend(
+            self.inner
+                .store
+                .loaded_tree_grants()
+                .into_iter()
+                .filter(|grant| !invalidated.contains(&grant.grant_id)),
+        );
         self.inner.approvals.replace(grants);
     }
 
@@ -261,6 +270,10 @@ impl Engine {
     }
     #[must_use]
     pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
+        // Listing is a use of the tree: complete it first so nested delegations
+        // and their summaries are in view (§3.2.2). A rejected load leaves the
+        // listing empty; the access that needs the child fails closed.
+        let _ = self.ensure_tree_loaded(id);
         let known: HashSet<_> = self
             .inner
             .delegation_events
@@ -304,6 +317,7 @@ impl Engine {
             .collect()
     }
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
+        self.ensure_tree_loaded(id)?;
         self.inner.store.get(id)?;
         self.tree_summary(id)
     }

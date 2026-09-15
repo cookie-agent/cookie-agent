@@ -260,19 +260,14 @@ impl Engine {
             .keys()
             .copied()
             .collect();
-        for summary in self.inner.store.all_summaries() {
-            let session = summary.meta.session_id;
+        // Roots only, plus children whose tree was already loaded: scanning every
+        // child log here is the startup cost this pass exists to avoid (§4.4).
+        for session in self.inner.store.producer_scan_sessions() {
             if self
                 .inner
                 .store
                 .recovery_event_snapshot(session)
-                .map(|events| GoalProducerProjection::from_events(&events))
-                .is_ok_and(|projection| {
-                    projection.goal.is_some()
-                        || projection.messages.iter().any(|message| {
-                            pending(message) || (message.consumed && !message.consumption_recorded)
-                        })
-                })
+                .is_ok_and(|events| producer_state_pending(&events))
             {
                 sessions.insert(session);
             }
@@ -1928,6 +1923,18 @@ fn next_revision(revision: u64) -> Result<u64, EngineError> {
     revision
         .checked_add(1)
         .ok_or_else(|| EngineError::Goal("revision exhausted".into()))
+}
+
+/// Whether a log carries goal-producer state that needs reconciliation after a
+/// restart: an active goal, an unread message, or a message consumed without its
+/// consumption record.
+pub(crate) fn producer_state_pending(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+    let projection = GoalProducerProjection::from_events(events);
+    projection.goal.is_some()
+        || projection
+            .messages
+            .iter()
+            .any(|message| pending(message) || (message.consumed && !message.consumption_recorded))
 }
 
 fn pending(message: &ProducerMessageRecord) -> bool {

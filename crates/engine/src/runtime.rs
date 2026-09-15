@@ -115,8 +115,11 @@ pub struct EngineOptions {
 
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error(transparent)]
-    Session(#[from] SessionError),
+    // Not `transparent`: the manual `From<SessionError>` below unwraps lazy tree
+    // load rejections back to their engine-side type, and a transparent variant
+    // may not carry an explicit `#[source]`.
+    #[error("{0}")]
+    Session(#[source] SessionError),
     #[error(transparent)]
     DelegationEvents(#[from] DelegationEventError),
     #[error(transparent)]
@@ -228,6 +231,17 @@ pub struct ApprovalRespondFailure {
 impl From<ModelError> for EngineError {
     fn from(error: ModelError) -> Self {
         Self::Model(Box::new(error))
+    }
+}
+
+impl From<SessionError> for EngineError {
+    fn from(error: SessionError) -> Self {
+        match error {
+            // A lazy tree load the engine rejected carries its own failure; keep
+            // the original type so callers see what actually went wrong.
+            SessionError::TreeRejected(inner) => *inner,
+            other => Self::Session(other),
+        }
     }
 }
 
@@ -1472,7 +1486,8 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
-        engine.validate_referenced_manifests()?;
+        engine.install_tree_load_observer();
+        engine.validate_root_manifests()?;
         engine.rebuild_approvals();
         engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
         engine.install_producer_runtime();
@@ -1784,55 +1799,33 @@ impl Engine {
         publication.runtime
     }
 
-    fn validate_referenced_manifests(&self) -> Result<(), EngineError> {
+    /// Startup manifest pass: root logs only (§4.2). Child logs are validated by
+    /// the same logic when their tree is loaded, so the fail-closed shape is
+    /// unchanged — only deferred to the access that needs the child.
+    fn validate_root_manifests(&self) -> Result<(), EngineError> {
         let runtime = self.current_runtime();
-        for session in self.inner.store.all_snapshots() {
+        let mut bindings = Vec::new();
+        for session in self.inner.store.root_snapshots() {
             for event in session.log.event_snapshot().iter() {
                 match &event.payload {
-                    Event::SessionCreated { creation_agent, .. } => {
-                        for binding in &creation_agent.fallback_chain {
-                            let validation = validate_referenced_binding(
-                                &runtime.manifests,
-                                &runtime.models,
-                                binding,
-                            );
-                            if !matches!(
-                                &validation,
-                                Ok(())
-                                    | Err(EngineError::SnapshotRehydration(
-                                        RehydrationError::SnapshotConfigMismatch
-                                            | RehydrationError::SnapshotCredentialsUnavailable
-                                    ))
-                            ) {
-                                validation?;
-                            }
-                        }
-                    }
+                    Event::SessionCreated { creation_agent, .. } => bindings.extend(
+                        creation_agent
+                            .fallback_chain
+                            .iter()
+                            .map(|binding| (session.meta.session_id, binding.clone())),
+                    ),
                     Event::RunStarted {
                         selected_suffix, ..
-                    } => {
-                        for binding in selected_suffix {
-                            let validation = validate_referenced_binding(
-                                &runtime.manifests,
-                                &runtime.models,
-                                binding,
-                            );
-                            if !matches!(
-                                &validation,
-                                Ok(())
-                                    | Err(EngineError::SnapshotRehydration(
-                                        RehydrationError::SnapshotConfigMismatch
-                                            | RehydrationError::SnapshotCredentialsUnavailable
-                                    ))
-                            ) {
-                                validation?;
-                            }
-                        }
-                    }
+                    } => bindings.extend(
+                        selected_suffix
+                            .iter()
+                            .map(|binding| (session.meta.session_id, binding.clone())),
+                    ),
                     _ => {}
                 }
             }
         }
+        self.validate_manifest_bindings(&bindings)?;
         for entry in self.inner.delegation_events.entries() {
             let manifest = runtime
                 .manifests
@@ -1854,21 +1847,119 @@ impl Engine {
                 return Err(EngineError::RuntimeCompileFailed);
             }
             for binding in &entry.selected_suffix {
-                let validation =
-                    validate_referenced_binding(&runtime.manifests, &runtime.models, binding);
-                if !matches!(
-                    &validation,
-                    Ok(())
-                        | Err(EngineError::SnapshotRehydration(
-                            RehydrationError::SnapshotConfigMismatch
-                                | RehydrationError::SnapshotCredentialsUnavailable
-                        ))
-                ) {
-                    validation?;
-                }
+                self.validate_manifest_bindings(&[(
+                    entry.reservation.child_session_id,
+                    binding.clone(),
+                )])?;
             }
         }
         Ok(())
+    }
+
+    /// The single acceptance rule for a referenced model binding: an unusable
+    /// snapshot reference is tolerated, anything else fails.
+    fn validate_manifest_bindings(
+        &self,
+        bindings: &[(SessionId, cookie_agent_protocol::FrozenModelBinding)],
+    ) -> Result<(), EngineError> {
+        let runtime = self.current_runtime();
+        for (_session_id, binding) in bindings {
+            let validation =
+                validate_referenced_binding(&runtime.manifests, &runtime.models, binding);
+            if !matches!(
+                &validation,
+                Ok(())
+                    | Err(EngineError::SnapshotRehydration(
+                        RehydrationError::SnapshotConfigMismatch
+                            | RehydrationError::SnapshotCredentialsUnavailable
+                    ))
+            ) {
+                validation?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Receives the products of a lazy tree load and folds them into the engine
+    /// singletons (§3.3(d)). Validation runs first so a rejected load cannot
+    /// leave half-applied state behind.
+    fn apply_tree_load(
+        &self,
+        products: crate::session::TreeLoadProducts,
+    ) -> Result<(), EngineError> {
+        if let Err(error) = self.validate_manifest_bindings(&products.bindings) {
+            eprintln!("session tree {} rejected: {error}", products.root);
+            return Err(error);
+        }
+        let extended = self
+            .inner
+            .delegation_events
+            .extend_from_payloads(&products.delegations)?;
+        if !extended.is_empty() {
+            // The registry is a fold over the whole event store, and its rebuild
+            // retains only what it is handed; rebuilding from all entries is now
+            // cheap because no child log is read to do it (§4.1).
+            self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), false)?;
+        }
+        let invalidated = self.inner.grant_journal.invalidated_ids();
+        for grant in &products.grants {
+            if !invalidated.contains(&grant.grant_id) {
+                self.inner.approvals.grant(grant.clone());
+            }
+        }
+        self.reconcile_loaded_tree_producers(products.producer_sessions);
+        Ok(())
+    }
+
+    fn install_tree_load_observer(&self) {
+        struct Observer(std::sync::Weak<Inner>);
+
+        impl crate::session::TreeLoadObserver for Observer {
+            fn tree_loaded(
+                &self,
+                products: crate::session::TreeLoadProducts,
+            ) -> Result<(), EngineError> {
+                let inner = self.0.upgrade().ok_or(EngineError::ActorStopped)?;
+                Engine { inner }.apply_tree_load(products)
+            }
+        }
+
+        self.inner
+            .store
+            .set_tree_load_observer(Arc::new(Observer(Arc::downgrade(&self.inner))));
+    }
+
+    /// Completes the tree of `id` before it is used (§3.2/§3.3). Cheap once the
+    /// tree is loaded.
+    pub(crate) fn ensure_tree_loaded(&self, id: SessionId) -> Result<(), EngineError> {
+        self.inner.store.ensure_tree_for(id)?;
+        Ok(())
+    }
+
+    /// Producer reconciliation for children surfaced by a tree load. Runs on the
+    /// engine runtime when one is available; otherwise the periodic plugin
+    /// producer scan picks them up, since loaded trees cache their hits (§4.4).
+    fn reconcile_loaded_tree_producers(&self, sessions: Vec<SessionId>) {
+        if sessions.is_empty() {
+            return;
+        }
+        let Some(handle) = self
+            .inner
+            .runtime
+            .clone()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+        else {
+            return;
+        };
+        let weak = Arc::downgrade(&self.inner);
+        handle.spawn(async move {
+            for session in sessions {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let _ = Engine { inner }.reconcile_producers(session).await;
+            }
+        });
     }
 
     pub(super) fn mutation_lock(

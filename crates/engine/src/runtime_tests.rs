@@ -1222,6 +1222,208 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
     fixture.engine.shutdown().await;
 }
 
+/// §8.2 #7: a tree grant committed inside a child log is invisible to startup
+/// and only reaches the approval store with that child's tree load (§4.3). A
+/// grant whose prepared binding cannot survive a restart stays out.
+#[tokio::test]
+async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
+    use cookie_agent_protocol::{
+        ApprovalConstraints, ApprovalEvaluation, ApprovalRequest, ApprovalTrigger, DecisionTrace,
+    };
+
+    let (fixture, selection) = custom_fixture();
+    let origin = cookie_agent_protocol::EventOrigin::new("client:test").expect("event origin");
+    let root = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("root session");
+    let child = create_buffered_delegated_child(&fixture.engine, root.session_id);
+
+    // A durable log needs a started run and a first user message (§2.1).
+    let publish =
+        |engine: &Engine, id, run: cookie_agent_protocol::RunId, selection: &RunSelection| {
+            let projection = engine.inner.store.get(id).expect("projection");
+            engine
+                .inner
+                .store
+                .append(
+                    id,
+                    Some(run),
+                    origin.clone(),
+                    EventPayload::RunStarted {
+                        client_run_id: ClientRunId::new("grant-setup-run").expect("client run ID"),
+                        selection: selection.clone(),
+                        agent: Box::new(projection.creation_agent.clone()),
+                        runtime_revision: projection.meta.runtime_revision.clone(),
+                        catalog_revision: projection.meta.catalog_revision.clone(),
+                        provider_state_revision: projection.meta.provider_state_revision.clone(),
+                        model_revision: projection.meta.model_revision.clone(),
+                        agent_revision: projection.meta.agent_revision.clone(),
+                        recipe_registry_revision: projection.meta.recipe_registry_revision.clone(),
+                        manifest_revision: projection.meta.manifest_revision.clone(),
+                        selected_suffix: projection.creation_agent.fallback_chain.clone(),
+                        internal_agents: Vec::new(),
+                        input_through_seq: 1,
+                    },
+                )
+                .expect("start the run");
+            engine
+                .inner
+                .store
+                .append(
+                    id,
+                    Some(run),
+                    origin.clone(),
+                    EventPayload::UserInputSubmitted {
+                        input: "persist the log".into(),
+                    },
+                )
+                .expect("publish the session");
+            run
+        };
+    let _root_run = publish(
+        &fixture.engine,
+        root.session_id,
+        cookie_agent_protocol::RunId::new_v7(),
+        &selection,
+    );
+    let child_run = publish(
+        &fixture.engine,
+        child,
+        cookie_agent_protocol::RunId::new_v7(),
+        &selection,
+    );
+
+    let resource = |lifetime| PreparedApprovalResource {
+        capability: PermissionAction::Bash,
+        canonical: PreparedResourceIdentity::new("command:git-status").expect("identity"),
+        binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(b"git status"),
+        binding_lifetime: lifetime,
+        boundary: ApprovalBoundary::CommandPrefix {
+            prefix: "git status".into(),
+        },
+        source: ApprovalResourceSource::PrimaryOperation,
+    };
+    let capabilities = vec![ApprovalCapability {
+        action: PermissionAction::Bash,
+        operation: PreparedCapabilityOperation::new("bash:execute").expect("operation"),
+    }];
+    let commit_grant = |engine: &Engine, grant_id| {
+        let resources = vec![resource(PreparedBindingLifetime::RestartStable)];
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"args"),
+            capabilities.clone(),
+            resources.clone(),
+            Sha256Digest::of_bytes(b"context"),
+        )
+        .expect("prepared operation");
+        let approval_id = ApprovalId::new_v7();
+        engine
+            .inner
+            .store
+            .append(
+                child,
+                Some(child_run),
+                origin.clone(),
+                EventPayload::ApprovalRequested {
+                    request: ApprovalRequest::new(
+                        approval_id,
+                        1,
+                        ApprovalTrigger::PermissionPolicy,
+                        operation.clone(),
+                        vec![ApprovalEvaluation {
+                            resource_digest: resources[0].binding_digest.clone(),
+                            effect: PermissionEffect::Ask,
+                            trace: DecisionTrace {
+                                action: PermissionAction::Bash,
+                                normalized_resource: "git status".into(),
+                                candidates: Vec::new(),
+                                effect: PermissionEffect::Ask,
+                                precedence_reason: "test escalation".into(),
+                            },
+                        }],
+                        ApprovalConstraints {
+                            allow_once: true,
+                            allow_tree_grant: true,
+                            cancellable: true,
+                            expires_at: None,
+                        },
+                    )
+                    .expect("approval request"),
+                },
+            )
+            .expect("request approval in the child log");
+        engine
+            .inner
+            .store
+            .append(
+                child,
+                Some(child_run),
+                origin.clone(),
+                EventPayload::TreeApprovalGrantCommitted {
+                    grant: TreeApprovalGrant {
+                        grant_id,
+                        root_session_id: root.session_id,
+                        approval_id,
+                        operation_fingerprint:
+                            cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
+                                &operation,
+                            ),
+                        capabilities: capabilities.clone(),
+                        resources,
+                        created_at: Timestamp::now(),
+                    },
+                },
+            )
+            .expect("commit a tree grant into the child log");
+    };
+    let grant_id = TreeApprovalGrantId::new_v7();
+    commit_grant(&fixture.engine, grant_id);
+
+    fixture.engine.shutdown().await;
+    let reopened = reopen_engine(&fixture);
+    assert!(
+        !reopened.inner.store.is_tree_loaded(root.session_id),
+        "startup must not read child logs"
+    );
+    assert!(
+        reopened
+            .inner
+            .approvals
+            .for_root(root.session_id)
+            .is_empty(),
+        "a grant living in a child log cannot be restored at startup"
+    );
+
+    let _ = reopened.children(root.session_id);
+    let granted = reopened.inner.approvals.for_root(root.session_id);
+    assert_eq!(
+        granted
+            .iter()
+            .map(|grant| grant.grant_id)
+            .collect::<Vec<_>>(),
+        vec![grant_id],
+        "the tree load restores the grant committed in the child log"
+    );
+    reopened.shutdown().await;
+
+    // A second pass over the same tree must not duplicate the grant.
+    let reopened = reopen_engine(&fixture);
+    let _ = reopened.children(root.session_id);
+    let _ = reopened.tree(root.session_id).expect("root tree");
+    assert_eq!(
+        reopened
+            .inner
+            .approvals
+            .for_root(root.session_id)
+            .iter()
+            .filter(|grant| grant.grant_id == grant_id)
+            .count(),
+        1
+    );
+    reopened.shutdown().await;
+}
+
 #[derive(Clone)]
 struct TestStreamingBashProvider {
     output_started: Arc<tokio::sync::Notify>,
@@ -17542,6 +17744,21 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
     drop(fixture.engine);
 
     let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    // §8.2 #8: startup folds root logs only, so the nested invocation recorded
+    // in the child's own log is still unknown to the delegation registry.
+    assert!(
+        !reopened.inner.store.is_tree_loaded(root.session_id),
+        "a reopened engine must not have loaded any tree"
+    );
+    assert!(
+        reopened
+            .inner
+            .delegation_events
+            .entries()
+            .iter()
+            .all(|entry| entry.reservation.child_session_id != grandchild_id),
+        "nested delegation records live in a child log"
+    );
     reopened
         .inner
         .store
@@ -17574,6 +17791,20 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
     assert_eq!(tree.usage.cache_read_tokens, 51);
     assert_eq!(tree.usage.cache_hit_rate, Some(51.0 / 150.0));
     assert_eq!(tree.usage.estimated_cost_usd, None);
+    assert!(
+        reopened.inner.store.is_tree_loaded(root.session_id),
+        "addressing the tree loaded it once"
+    );
+    assert!(
+        reopened
+            .inner
+            .delegation_events
+            .entries()
+            .iter()
+            .any(|entry| entry.reservation.child_session_id == grandchild_id
+                && entry.terminal_status.is_some()),
+        "the tree load restored the nested delegation with its terminal state"
+    );
     let unrelated_usage = reopened
         .session_usage(unrelated.session_id)
         .expect("unrelated usage")

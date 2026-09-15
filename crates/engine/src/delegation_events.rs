@@ -104,9 +104,12 @@ pub struct DelegationEventStore {
 }
 
 impl DelegationEventStore {
+    /// Folds delegation records from **root logs only**. Depth-1 records live in
+    /// the parent's log, so roots are complete at startup; nested records arrive
+    /// later through [`Self::extend_from_payloads`] when their tree is loaded.
     pub fn open(sessions: Arc<SessionStore>) -> Result<Arc<Self>, DelegationEventError> {
         let mut state = DelegationState::default();
-        let mut parents = sessions.all_snapshots();
+        let mut parents = sessions.root_snapshots();
         parents.sort_by_key(|session| session.meta.session_id);
         for parent in parents {
             for envelope in parent.log.event_snapshot().iter() {
@@ -125,6 +128,38 @@ impl DelegationEventStore {
             sessions,
             state: Mutex::new(state),
         }))
+    }
+
+    /// Folds delegation records harvested from child logs (§4.1.2), returning the
+    /// entries that changed so the engine can rebuild only what moved.
+    pub fn extend_from_payloads(
+        &self,
+        payloads: &[(
+            SessionId,
+            Option<RunId>,
+            cookie_agent_protocol::EventPayload,
+        )],
+    ) -> Result<Vec<DelegationEntry>, DelegationEventError> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut touched = Vec::new();
+        for (parent_session_id, run_id, payload) in payloads {
+            let Some(invocation_id) = delegation_invocation_of(payload) else {
+                continue;
+            };
+            let before = state.entries.get(&invocation_id).cloned();
+            apply_event(&mut state, *parent_session_id, *run_id, payload.clone())?;
+            match state.entries.get(&invocation_id).cloned() {
+                Some(updated) if Some(&updated) != before.as_ref() => touched.push(updated),
+                _ => {}
+            }
+        }
+        Ok(touched)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -454,6 +489,34 @@ impl DelegationEventStore {
         }
         Ok(())
     }
+}
+
+/// The invocation a delegation payload belongs to, for cache-diff bookkeeping.
+fn delegation_invocation_of(payload: &EventPayload) -> Option<cookie_agent_protocol::InvocationId> {
+    match payload {
+        EventPayload::DelegationReserved { reservation, .. } => Some(reservation.invocation_id),
+        EventPayload::DelegationStarted { invocation_id, .. }
+        | EventPayload::DelegationRunStarted { invocation_id, .. }
+        | EventPayload::DelegationRunAttached { invocation_id, .. }
+        | EventPayload::DelegationFinished { invocation_id, .. } => Some(*invocation_id),
+        _ => None,
+    }
+}
+
+/// The delegation lifecycle payloads [`apply_event`] consumes.
+///
+/// Lazy tree loads hand child-session payloads over in log order and must offer
+/// exactly this set: a missing arm would leave an entry half-folded, and the
+/// following payload would then be rejected as corrupt.
+pub(crate) fn is_delegation_payload(payload: &EventPayload) -> bool {
+    matches!(
+        payload,
+        EventPayload::DelegationReserved { .. }
+            | EventPayload::DelegationStarted { .. }
+            | EventPayload::DelegationRunStarted { .. }
+            | EventPayload::DelegationRunAttached { .. }
+            | EventPayload::DelegationFinished { .. }
+    )
 }
 
 fn apply_event(

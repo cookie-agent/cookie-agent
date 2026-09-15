@@ -496,18 +496,22 @@ impl Engine {
         Ok(())
     }
 
+    /// Re-installs restart-stable tree grants. Startup scans root logs only; a
+    /// grant committed in a child log arrives with its tree load (§4.3), and a
+    /// tree loaded earlier in this process contributes its cached grant set.
     pub(super) fn rebuild_approvals(&self) {
-        for session in self.inner.store.all_snapshots() {
+        for session in self.inner.store.root_snapshots() {
             for envelope in session.log.event_snapshot().iter() {
                 if let Event::TreeApprovalGrantCommitted { grant } = &envelope.payload
-                    && !grant.resources.is_empty()
-                    && grant.resources.iter().all(|resource| {
-                        resource.binding_lifetime
-                            == cookie_agent_protocol::PreparedBindingLifetime::RestartStable
-                    })
+                    && crate::session::restart_stable_grant(grant)
                 {
                     self.inner.approvals.grant(grant.clone());
                 }
+            }
+        }
+        for grant in self.inner.store.loaded_tree_grants() {
+            if crate::session::restart_stable_grant(&grant) {
+                self.inner.approvals.grant(grant);
             }
         }
         self.inner

@@ -2600,11 +2600,17 @@ impl Engine {
             .map_err(|_| EngineError::ActorStopped)?
             .retain(|child_session_id| latest.contains_key(child_session_id));
         for entry in latest.into_values() {
-            let child = match self.inner.store.get(entry.reservation.child_session_id) {
-                Ok(child) => child,
-                Err(_) => continue,
-            };
-            let parent = self.inner.store.get(entry.reservation.parent_session_id)?;
+            let child_id = entry.reservation.child_session_id;
+            // No child event log is read to rebuild the registry (§4.1.3):
+            // existence comes from placement, run status from the tree's
+            // terminal-run cache. An unknown child stays unregistered, as before.
+            if !self.inner.store.session_exists(child_id) {
+                continue;
+            }
+            let parent = self
+                .inner
+                .store
+                .get_log_only(entry.reservation.parent_session_id)?;
             let root_session_id = match parent.meta.origin {
                 SessionOrigin::Delegated {
                     root_session_id, ..
@@ -2618,7 +2624,7 @@ impl Engine {
                 match &event.payload {
                     Event::DelegateQueued { session_id, .. }
                         if event.run_id == Some(entry.reservation.parent_run_id)
-                            && *session_id == child.meta.session_id =>
+                            && *session_id == child_id =>
                     {
                         queued_event = true;
                     }
@@ -2627,7 +2633,7 @@ impl Engine {
                         session_id,
                         ..
                     } if *invocation_id == entry.reservation.invocation_id
-                        && *session_id == child.meta.session_id =>
+                        && *session_id == child_id =>
                     {
                         notification_sent = true;
                     }
@@ -2641,9 +2647,11 @@ impl Engine {
                 }
             }
             let background = entry.request.background;
+            // A cache miss means "not terminal", the conservative reading that
+            // startup recovery then corrects — never the other way round.
             let exact_run_status = entry
                 .child_run_id
-                .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status));
+                .and_then(|run_id| self.inner.store.terminal_run_status(child_id, run_id));
             let parent_interrupted = parent
                 .runs
                 .get(&entry.reservation.parent_run_id)
@@ -2674,7 +2682,7 @@ impl Engine {
                 .delegations_by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
-                .get(&child.meta.session_id)
+                .get(&child_id)
                 .filter(|record| record.invocation_id == entry.reservation.invocation_id)
                 .map_or((None, false), |record| {
                     (record.producer_id, record.monitor_started)
@@ -2684,7 +2692,7 @@ impl Engine {
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .insert(
-                    child.meta.session_id,
+                    child_id,
                     DelegationRecord {
                         parent_session_id: entry.reservation.parent_session_id,
                         parent_run_id: entry.reservation.parent_run_id,
@@ -2706,8 +2714,8 @@ impl Engine {
                     .delegation_queue
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?;
-                if !queue.contains(&child.meta.session_id) {
-                    queue.push_back(child.meta.session_id);
+                if !queue.contains(&child_id) {
+                    queue.push_back(child_id);
                 }
             }
         }
