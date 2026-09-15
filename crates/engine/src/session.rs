@@ -47,8 +47,9 @@ pub(crate) const LEGACY_SESSION_META_FILE: &str = "meta.json";
 /// Per-root directory holding delegated child sessions.
 pub(crate) const SUBAGENTS_DIR: &str = "subagents";
 /// Persisted child-summary cache inside [`SUBAGENTS_DIR`].
-#[allow(dead_code)] // wired up by the v2 discovery cache (P1)
 pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
+/// Current `subagents/index.json` schema version.
+const SUBAGENT_INDEX_VERSION: u32 = 1;
 /// Event log file name (unchanged across layouts).
 const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
@@ -94,9 +95,12 @@ pub(crate) struct TreeState {
     /// The one-time bulk child pass has completed for this root.
     #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
     loaded: bool,
-    /// Children discovered at load time (or seeded from `subagents/index.json`).
-    #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
-    child_ids: Vec<SessionId>,
+    /// Direct children keyed by parent session, covering the whole tree. Edges
+    /// come from child `origin` metadata, not from directory nesting: every
+    /// descendant of a root is filed one level under `<root>/subagents/`.
+    children: HashMap<SessionId, Vec<SessionId>>,
+    /// Terminal run statuses observed per child, persisted into `index.json`.
+    terminal_runs: HashMap<SessionId, BTreeMap<String, SessionStatus>>,
 }
 
 /// Products of a completed [`SessionStore::load_tree`] pass that the engine
@@ -206,12 +210,28 @@ pub struct SessionProjection {
     pub log: Arc<EventLog>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct SessionSummary {
     pub meta: SessionMeta,
     pub usage: Option<Usage>,
     pub usage_rollup: UsageRollup,
     pub agent_usage: BTreeMap<AgentId, UsageRollup>,
+}
+
+/// One entry of a root's `subagents/index.json` child-summary cache (§3.4).
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct IndexedChild {
+    summary: SessionSummary,
+    /// Run ids that reached a terminal status, for the delegation registry.
+    terminal_runs: BTreeMap<String, SessionStatus>,
+}
+
+/// Persisted child-summary cache (`subagents/index.json`, §3.4). A missing or
+/// corrupt file only means "children unknown until tree load".
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct SubagentIndex {
+    version: u32,
+    children: Vec<IndexedChild>,
 }
 
 impl SessionProjection {
@@ -293,7 +313,6 @@ pub struct SessionStore {
     /// lazily (tree load, index cache, or direct-address locate).
     locations: Mutex<HashMap<SessionId, SessionLocation>>,
     /// root id -> state of the lazy tree load.
-    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
     trees: Mutex<HashMap<SessionId, TreeState>>,
     /// Per-root coalescing guards for concurrent `load_tree` triggers.
     #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
@@ -370,7 +389,7 @@ impl SessionStore {
     }
 
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
-        Self::open_with_layout(data_root, cwd, LayoutChoice::ForceFlat)
+        Self::open_with_layout(data_root, cwd, LayoutChoice::PreferV2)
     }
 
     #[cfg(test)]
@@ -649,8 +668,8 @@ impl SessionStore {
         {
             return Ok((existing.log, false));
         }
-        let location =
-            self.placement_for(&Self::creation_origin(&creation).unwrap_or(SessionOrigin::Root));
+        let creation_origin = Self::creation_origin(&creation).unwrap_or(SessionOrigin::Root);
+        let location = self.placement_for(&creation_origin);
         self.record_location(session_id, location);
         let final_dir = self.dir_for_placement(location, session_id);
         if final_dir.exists() {
@@ -669,12 +688,15 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session_id, StoreOwnership::PendingPublish { authority });
-        let mut residency = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        residency.resident.insert(session_id, result);
-        residency.evicted.remove(&session_id);
+        {
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            residency.resident.insert(session_id, result);
+            residency.evicted.remove(&session_id);
+        }
+        self.note_placed_child(&location, &creation_origin, session_id);
         Ok((log, true))
     }
 
@@ -969,6 +991,37 @@ impl SessionStore {
             .mutation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Persisted child caches are refreshed after the residency guard drops.
+        let parent_root = self.parent_root_of(id);
+        let evicted = self.evict_locked(id)?;
+        if evicted {
+            if let Some(root) = parent_root {
+                self.persist_subagent_index(root);
+            }
+        }
+        Ok(evicted)
+    }
+
+    /// The root a session is filed under, from the location cache only (never
+    /// resolves paths, so it is safe to call while store locks are held).
+    fn parent_root_of(&self, id: SessionId) -> Option<SessionId> {
+        match self.cached_location(id) {
+            Some(SessionLocation::Child { root }) => Some(root),
+            Some(SessionLocation::Root) | None => {
+                if self.flat_layout {
+                    return None;
+                }
+                match self.cached_origin(id) {
+                    Some(SessionOrigin::Delegated {
+                        root_session_id, ..
+                    }) => Some(root_session_id),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn evict_locked(&self, id: SessionId) -> Result<bool, SessionError> {
         let mut residency = self
             .residency
             .lock()
@@ -1138,12 +1191,25 @@ impl SessionStore {
             } else if log.is_persisted() {
                 write_cache(&self.meta_cache_path(id)?, &rebuilt.meta)?;
             }
-            let mut residency = self
-                .residency
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            residency.resident.insert(id, rebuilt);
-            residency.evicted.remove(&id);
+            {
+                let mut residency = self
+                    .residency
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                residency.resident.insert(id, rebuilt);
+                residency.evicted.remove(&id);
+            }
+            // The publish that just happened changed the child's durable summary.
+            if !was_persisted {
+                if let Some(root) = self.parent_root_of(id) {
+                    self.persist_subagent_index(root);
+                }
+            }
+        }
+        // Run-terminal events are rare and are the only thing the delegation
+        // registry needs from a child log, so cache them per tree (§4.1.3).
+        if let Some(terminal) = terminal_run_of(run, &envelope.payload) {
+            self.record_terminal_run(id, terminal.0, terminal.1);
         }
         #[cfg(test)]
         {
@@ -1286,10 +1352,7 @@ impl SessionStore {
                 let _ = hook.release.recv();
             }
             fsync_directory(&temporary)?;
-            fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
-                path: final_dir.clone(),
-                source,
-            })?;
+            publish_prepared_dir(&temporary, &final_dir, session_id)?;
             fsync_directory(&destination_parent)?;
             self.ownership
                 .lock()
@@ -1303,11 +1366,13 @@ impl SessionStore {
                 );
             let log = EventLog::open_owned(final_dir.join("events.jsonl"), session_id, capability)?;
             let fork_projection = projection(log)?;
+            let fork_origin = fork_projection.meta.origin.clone();
             self.residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .resident
                 .insert(session_id, fork_projection);
+            self.note_placed_child(&location, &fork_origin, session_id);
             Ok(session_id)
         })();
         if result.is_err() {
@@ -1324,6 +1389,7 @@ impl SessionStore {
         self.write_capability(session_id, false)?;
         let location = self.placement_for(&projection.meta.origin);
         self.record_location(session_id, location);
+        self.note_placed_child(&location, &projection.meta.origin, session_id);
         let destination_parent = self.publish_parent_for(location)?;
         let final_dir = self.dir_for_placement(location, session_id);
         let temporary =
@@ -1362,10 +1428,7 @@ impl SessionStore {
                 let _ = hook.release.recv();
             }
             fsync_directory(&temporary)?;
-            fs::rename(&temporary, &final_dir).map_err(|source| SessionError::Io {
-                path: final_dir.clone(),
-                source,
-            })?;
+            publish_prepared_dir(&temporary, &final_dir, session_id)?;
             fsync_directory(&destination_parent)?;
             let mut ownership = self
                 .ownership
@@ -1581,7 +1644,72 @@ impl SessionStore {
             .map(|session| summary_from_projection(&session))
     }
 
+    /// Layout-aware discovery refresh. Metadata caches only — never an event log.
     fn refresh_discovered(&self) {
+        if self.flat_layout {
+            self.refresh_discovered_flat();
+        } else {
+            self.refresh_discovered_roots();
+        }
+    }
+
+    /// Whether `id` already has a residency entry (resident or evicted).
+    fn is_known(&self, id: SessionId) -> bool {
+        let residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        residency.resident.contains_key(&id) || residency.evicted.contains_key(&id)
+    }
+
+    /// Installs an evicted summary without ever displacing fresher in-memory
+    /// state (resident projections or an already-cached summary).
+    fn cache_summary(&self, id: SessionId, summary: SessionSummary) {
+        let mut residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if residency.resident.contains_key(&id) {
+            return;
+        }
+        residency.evicted.entry(id).or_insert(summary);
+    }
+
+    /// v2 root-only discovery (§2.3): root `metadata` caches plus each root's
+    /// tiny `subagents/index.json`. Directory placement encodes root-ness, so
+    /// no `origin` check (and no child event log) is needed.
+    fn refresh_discovered_roots(&self) {
+        let roots = self.root_dir_ids();
+        for root in roots {
+            let dir = self.workdir_dir.join(root.to_string());
+            if !self.is_known(root) {
+                // Invalid entries stay uncached so later discovery retries them
+                // and repeats the diagnostic (today's semantics).
+                match read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) {
+                    Ok(meta) if meta.session_id == root => {
+                        self.cache_summary(
+                            root,
+                            SessionSummary {
+                                meta,
+                                usage: None,
+                                usage_rollup: UsageRollup::default(),
+                                agent_usage: BTreeMap::new(),
+                            },
+                        );
+                    }
+                    Ok(_) => eprintln!("session {root} metadata ID does not match its directory"),
+                    Err(error) => {
+                        eprintln!("session {root} metadata skipped: {error}");
+                        continue;
+                    }
+                }
+            }
+            self.record_location(root, SessionLocation::Root);
+            self.seed_tree_from_index(root);
+        }
+    }
+
+    fn refresh_discovered_flat(&self) {
         let entries = match fs::read_dir(&self.workdir_dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -1609,10 +1737,7 @@ impl SessionStore {
             }
             // Invalid entries stay uncached so later discovery retries them and repeats the
             // diagnostic after callers have had a chance to repair the files.
-            match read_cache(
-                &entry.path().join("meta.json"),
-                &entry.path().join("events.jsonl"),
-            ) {
+            match read_cache(&meta_path(&entry.path()), &entry.path().join(EVENTS_FILE)) {
                 Ok(meta) if meta.session_id == id => {
                     self.residency
                         .lock()
@@ -1630,6 +1755,291 @@ impl SessionStore {
                 Err(error) => eprintln!("session {id} metadata skipped: {error}"),
             }
         }
+    }
+
+    /// Seeded child ids/terminal-run cache from a root's persisted
+    /// `subagents/index.json` (never from a child log).
+    fn seed_tree_from_index(&self, root: SessionId) {
+        let Some(index) = self.read_subagent_index(root) else {
+            return;
+        };
+        let mut edges = Vec::new();
+        let mut terminal_runs = HashMap::new();
+        for child in index.children {
+            let id = child.summary.meta.session_id;
+            if !self.is_known(id) {
+                self.cache_summary(id, child.summary.clone());
+            }
+            self.record_location(id, SessionLocation::Child { root });
+            let parent = match child.summary.meta.origin {
+                SessionOrigin::Delegated {
+                    parent_session_id, ..
+                } => parent_session_id,
+                _ => root,
+            };
+            edges.push((parent, id));
+            if !child.terminal_runs.is_empty() {
+                terminal_runs.insert(id, child.terminal_runs);
+            }
+        }
+        let mut trees = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = trees.entry(root).or_default();
+        if state.loaded {
+            return;
+        }
+        state.terminal_runs = terminal_runs;
+        for (parent, id) in edges {
+            let siblings = state.children.entry(parent).or_default();
+            if !siblings.contains(&id) {
+                siblings.push(id);
+            }
+        }
+    }
+
+    /// Where the descendants of `id` live (one flat level, whatever the depth).
+    fn subagents_dir(&self, id: SessionId) -> PathBuf {
+        self.session_dir(id).join(SUBAGENTS_DIR)
+    }
+
+    fn subagent_index_path(&self, root: SessionId) -> PathBuf {
+        self.subagents_dir(root).join(SUBAGENT_INDEX_FILE)
+    }
+
+    fn read_subagent_index(&self, root: SessionId) -> Option<SubagentIndex> {
+        let bytes = fs::read(self.subagent_index_path(root)).ok()?;
+        let index = serde_json::from_slice::<SubagentIndex>(&bytes).ok()?;
+        (index.version == SUBAGENT_INDEX_VERSION).then_some(index)
+    }
+
+    /// Every descendant filed under `root`, at any depth, without opening a log:
+    /// the seeded tree state plus the location cache. All descendants share one
+    /// directory level, so depth comes from `origin`, not from nesting.
+    fn tree_members(&self, root: SessionId) -> Vec<SessionId> {
+        let mut members = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&root)
+            .map(|state| {
+                state
+                    .children
+                    .values()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let located = {
+            let locations = self
+                .locations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locations
+                .iter()
+                .filter(|(_, location)| {
+                    matches!(location, SessionLocation::Child { root: parent } if *parent == root)
+                })
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>()
+        };
+        members.extend(located);
+        members.sort_by_key(|id| id.to_string());
+        members.dedup();
+        members
+    }
+
+    /// Direct children of `parent` inside tree `root`: recorded edges plus every
+    /// member whose origin names `parent`.
+    fn direct_children(&self, root: SessionId, parent: SessionId) -> Vec<SessionId> {
+        let mut children = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&root)
+            .and_then(|state| state.children.get(&parent).cloned())
+            .unwrap_or_default();
+        for id in self.tree_members(root) {
+            let filed_under = match self.cached_origin(id) {
+                Some(SessionOrigin::Delegated {
+                    parent_session_id, ..
+                }) => parent_session_id,
+                _ => root,
+            };
+            if filed_under == parent && !children.contains(&id) {
+                children.push(id);
+            }
+        }
+        children.sort_by_key(|id| id.to_string());
+        children.dedup();
+        children
+    }
+
+    /// Files a newly created session under its root: tree edge + index refresh.
+    fn note_placed_child(&self, location: &SessionLocation, origin: &SessionOrigin, id: SessionId) {
+        let SessionLocation::Child { root } = location else {
+            return;
+        };
+        let parent = match origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => *parent_session_id,
+            _ => *root,
+        };
+        self.record_child_edge(*root, parent, id);
+        self.persist_subagent_index(*root);
+    }
+
+    /// Records the `parent -> child` edge plus the child's placement, and the
+    /// root's index cache is refreshed by the caller.
+    fn record_child_edge(&self, root: SessionId, parent: SessionId, child: SessionId) {
+        let mut trees = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let siblings = trees
+            .entry(root)
+            .or_default()
+            .children
+            .entry(parent)
+            .or_default();
+        if !siblings.contains(&child) {
+            siblings.push(child);
+        }
+    }
+
+    /// Descendant session ids filed under `parent`, from the directory listing
+    /// only (non-uuid entries such as `index.json` are skipped).
+    fn child_dir_ids(&self, parent: SessionId) -> Vec<SessionId> {
+        let Ok(entries) = fs::read_dir(self.subagents_dir(parent)) else {
+            return Vec::new();
+        };
+        let mut ids = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .parse::<SessionId>()
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| id.to_string());
+        ids
+    }
+
+    /// Residency-only summary lookup (never opens a log).
+    fn cached_summary(&self, id: SessionId) -> Option<SessionSummary> {
+        let residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = residency.resident.get(&id) {
+            return Some(summary_from_projection(session));
+        }
+        residency.evicted.get(&id).cloned()
+    }
+
+    /// Rebuilds and atomically rewrites a root's child-summary cache. Whole-file
+    /// rewrite on purpose (§3.4); failures are reported, never fatal, because
+    /// the cache is rebuilt from logs on the next tree load.
+    fn persist_subagent_index(&self, root: SessionId) {
+        if self.flat_layout {
+            return;
+        }
+        let cached = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&root)
+            .map(|state| state.terminal_runs.clone())
+            .unwrap_or_default();
+        let children = self
+            .tree_members(root)
+            .into_iter()
+            .filter_map(|id| {
+                let summary = self.cached_summary(id)?;
+                Some(IndexedChild {
+                    summary,
+                    terminal_runs: cached.get(&id).cloned().unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let path = self.subagent_index_path(root);
+        if children.is_empty() && !path.is_file() {
+            return;
+        }
+        let index = SubagentIndex {
+            version: SUBAGENT_INDEX_VERSION,
+            children,
+        };
+        if let Err(error) = write_index_json(&path, &index) {
+            eprintln!("subagent index refresh skipped for {root}: {error}");
+        }
+    }
+
+    /// Remembers a terminal run status for the delegation registry cache, then
+    /// refreshes the owning root's index.
+    fn record_terminal_run(&self, id: SessionId, run_id: RunId, status: SessionStatus) {
+        if self.flat_layout {
+            return;
+        }
+        let Ok(root) = self.root_of(id) else {
+            return;
+        };
+        if root == id {
+            return;
+        }
+        let parent = match self.cached_origin(id) {
+            Some(SessionOrigin::Delegated {
+                parent_session_id, ..
+            }) => parent_session_id,
+            _ => root,
+        };
+        let refreshed = {
+            let mut trees = self
+                .trees
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = trees.entry(root).or_default();
+            let siblings = state.children.entry(parent).or_default();
+            if !siblings.contains(&id) {
+                siblings.push(id);
+            }
+            state
+                .terminal_runs
+                .entry(id)
+                .or_default()
+                .insert(run_id.to_string(), status)
+                .is_none()
+        };
+        if refreshed {
+            self.persist_subagent_index(root);
+        }
+    }
+
+    /// Terminal run statuses for a child, served from the index/tree cache
+    /// without paging the child log (§4.1.3).
+    #[allow(dead_code)] // consumed by the delegation registry rebuild (P2)
+    pub(crate) fn terminal_run_status(
+        &self,
+        id: SessionId,
+        run_id: RunId,
+    ) -> Option<SessionStatus> {
+        let root = self.root_of(id).ok()?;
+        let trees = self
+            .trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        trees
+            .get(&root)?
+            .terminal_runs
+            .get(&id)?
+            .get(&run_id.to_string())
+            .copied()
     }
 
     pub fn session_usage(
@@ -1712,45 +2122,148 @@ impl SessionStore {
         Ok(self.get(id)?.log.is_persisted())
     }
 
+    /// Every direct child of `parent`, resolved from *placement* rather than by
+    /// scanning every resident projection: seeded tree state + location cache,
+    /// then a `subagents/` directory scan that adopts children no cache
+    /// mentions from their `metadata` cache alone (§3.4). No child event log is
+    /// read here — children of a cold tree report their persisted status.
     pub fn children(&self, parent: SessionId) -> Vec<ChildSummary> {
-        self.all()
+        self.child_ids(parent)
             .into_iter()
-            .filter_map(|child| match child.meta.origin {
-                SessionOrigin::Delegated {
-                    parent_session_id, ..
-                } if parent_session_id == parent => Some(ChildSummary {
-                    session_id: child.meta.session_id,
-                    agent: child.meta.creation_selection.agent.clone(),
-                    title: child.meta.title.clone(),
-                    title_updated_seq: child.meta.title_updated_seq,
-                    status: child.status,
-                    usage: child.usage,
-                }),
-                _ => None,
-            })
+            .filter_map(|id| self.child_summary(id))
             .collect()
     }
 
-    pub fn tree(&self, id: SessionId) -> Result<SessionTree, SessionError> {
-        let root = self.get(id)?;
-        let mut sessions = self.all();
-        if !sessions.iter().any(|session| session.meta.session_id == id) {
-            sessions.push(root);
-        }
-        let mut metadata = HashMap::with_capacity(sessions.len());
-        let mut children = HashMap::<SessionId, Vec<SessionId>>::new();
-        for session in sessions {
-            let meta = session.metadata();
-            if let SessionOrigin::Delegated {
-                parent_session_id, ..
-            } = meta.origin
-            {
-                children
-                    .entry(parent_session_id)
-                    .or_default()
-                    .push(meta.session_id);
+    /// Direct child ids of `parent`, resolved from placement: seeded tree state
+    /// and location cache first, then a scan of the tree directory that adopts
+    /// filed children no cache mentions from their `metadata` alone.
+    fn child_ids(&self, parent: SessionId) -> Vec<SessionId> {
+        self.refresh_discovered();
+        let root = match self.cached_location(parent) {
+            Some(SessionLocation::Child { root }) => root,
+            _ => parent,
+        };
+        let mut children = self.direct_children(root, parent);
+        if self.flat_layout {
+            // The flat layout has no placement to read: `origin` is the only
+            // parent pointer, so fall back to resident projections (as before).
+            for session in self.all() {
+                if let SessionOrigin::Delegated {
+                    parent_session_id, ..
+                } = session.meta.origin
+                {
+                    if parent_session_id == parent && !children.contains(&session.meta.session_id) {
+                        children.push(session.meta.session_id);
+                    }
+                }
             }
-            metadata.insert(meta.session_id, meta);
+            return children;
+        }
+        for id in self.child_dir_ids(root) {
+            if children.contains(&id) {
+                continue;
+            }
+            if self.adopt_filed_child(root, id) == Some(parent) {
+                children.push(id);
+            }
+        }
+        children.sort_by_key(|id| id.to_string());
+        children
+    }
+
+    /// Adopts a child that is present on disk but missing from the caches (e.g.
+    /// a crash between the directory publish and the `index.json` refresh), and
+    /// reports the parent its origin names.
+    fn adopt_filed_child(&self, root: SessionId, id: SessionId) -> Option<SessionId> {
+        let dir = self.path_for(SessionLocation::Child { root }, id);
+        let Ok(meta) = read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) else {
+            return None;
+        };
+        if meta.session_id != id {
+            eprintln!("session {id} metadata ID does not match its directory");
+            return None;
+        }
+        let parent = match meta.origin {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => parent_session_id,
+            _ => root,
+        };
+        self.record_location(id, SessionLocation::Child { root });
+        self.cache_summary(
+            id,
+            SessionSummary {
+                meta,
+                usage: None,
+                usage_rollup: UsageRollup::default(),
+                agent_usage: BTreeMap::new(),
+            },
+        );
+        self.record_child_edge(root, parent, id);
+        self.persist_subagent_index(root);
+        Some(parent)
+    }
+
+    /// Metadata for a tree member without rebuilding its log.
+    fn summary_meta(&self, id: SessionId) -> Result<SessionMeta, SessionError> {
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session.meta);
+        }
+        if let Some(summary) = self.cached_summary(id) {
+            return Ok(summary.meta);
+        }
+        if !self.flat_layout {
+            // v2 tree assembly must never page a child log in implicitly.
+            return Err(SessionError::Missing(id));
+        }
+        Ok(self.get(id)?.meta)
+    }
+
+    /// Listing view of one child, preferring the live projection for resident
+    /// sessions and the summary cache otherwise.
+    fn child_summary(&self, id: SessionId) -> Option<ChildSummary> {
+        if let Some(session) = self.get_resident(id) {
+            return Some(ChildSummary {
+                session_id: session.meta.session_id,
+                agent: session.meta.creation_selection.agent.clone(),
+                title: session.meta.title.clone(),
+                title_updated_seq: session.meta.title_updated_seq,
+                status: session.status,
+                usage: session.usage,
+            });
+        }
+        let summary = self.cached_summary(id)?;
+        Some(ChildSummary {
+            session_id: summary.meta.session_id,
+            agent: summary.meta.creation_selection.agent.clone(),
+            title: summary.meta.title.clone(),
+            title_updated_seq: summary.meta.title_updated_seq,
+            status: summary.meta.status,
+            usage: summary.usage,
+        })
+    }
+
+    pub fn tree(&self, id: SessionId) -> Result<SessionTree, SessionError> {
+        // Assembly walks placement edges, so it costs one metadata cache read per
+        // tree member instead of a rebuild of every resident session's log.
+        let root = self.get(id)?;
+        let mut metadata = HashMap::new();
+        let mut children = HashMap::<SessionId, Vec<SessionId>>::new();
+        metadata.insert(id, root.metadata());
+        let mut queue = self.child_ids(id);
+        if !queue.is_empty() {
+            children.insert(id, queue.clone());
+        }
+        while let Some(current) = queue.pop() {
+            if metadata.contains_key(&current) {
+                continue;
+            }
+            metadata.insert(current, self.summary_meta(current)?);
+            let descendants = self.child_ids(current);
+            if !descendants.is_empty() {
+                children.insert(current, descendants.clone());
+                queue.extend(descendants);
+            }
         }
 
         fn build_tree(
@@ -2186,6 +2699,69 @@ fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError
     })
 }
 
+/// Moves a fully prepared session directory into its published location.
+///
+/// A root's directory can already exist as a placement scaffold: a child created
+/// while the root was still buffered is filed under `<root>/subagents/`, which
+/// brings `<root>` into being before the root itself publishes. Such a scaffold
+/// holds nothing but that directory, so the prepared files are merged into it;
+/// anything else present means the location is genuinely taken.
+fn publish_prepared_dir(
+    temporary: &Path,
+    final_dir: &Path,
+    session_id: SessionId,
+) -> Result<(), SessionError> {
+    if !final_dir.exists() {
+        return fs::rename(temporary, final_dir).map_err(|source| SessionError::Io {
+            path: final_dir.to_owned(),
+            source,
+        });
+    }
+    let scaffold = fs::read_dir(final_dir)
+        .map_err(|source| SessionError::Io {
+            path: final_dir.to_owned(),
+            source,
+        })?
+        .filter_map(|entry| entry.ok())
+        .all(|entry| {
+            entry.file_name() == std::ffi::OsString::from(SUBAGENTS_DIR) && entry.path().is_dir()
+        });
+    if !scaffold {
+        return Err(SessionError::SessionLocked(session_id));
+    }
+    let entries = fs::read_dir(temporary)
+        .map_err(|source| SessionError::Io {
+            path: temporary.to_owned(),
+            source,
+        })?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    for entry in entries {
+        fs::rename(entry.path(), final_dir.join(entry.file_name())).map_err(|source| {
+            SessionError::Io {
+                path: final_dir.join(entry.file_name()),
+                source,
+            }
+        })?;
+    }
+    fs::remove_dir(temporary).map_err(|source| SessionError::Io {
+        path: temporary.to_owned(),
+        source,
+    })
+}
+
+/// The run status a payload drives to terminal, if any.
+fn terminal_run_of(run: Option<RunId>, payload: &EventPayload) -> Option<(RunId, SessionStatus)> {
+    let status = match payload {
+        EventPayload::RunCompleted { .. } => SessionStatus::Completed,
+        EventPayload::RunFailed { .. } => SessionStatus::Failed,
+        EventPayload::RunCancelled { .. } => SessionStatus::Cancelled,
+        EventPayload::RunInterrupted { .. } => SessionStatus::Interrupted,
+        _ => return None,
+    };
+    Some((run?, status))
+}
+
 fn summary_from_projection(session: &SessionProjection) -> SessionSummary {
     SessionSummary {
         meta: session.meta.clone(),
@@ -2336,9 +2912,89 @@ fn write_layout_marker_if_absent(workdir_dir: &Path) -> Result<(), SessionError>
     result
 }
 
+/// Atomically rewrites a small JSON cache (temp file + rename + parent fsync),
+/// mirroring [`write_cache`]'s durability discipline.
+fn write_index_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), SessionError> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|source| SessionError::Json {
+        path: path.to_owned(),
+        source,
+    })?;
+    let parent = path.parent().ok_or_else(|| SessionError::Io {
+        path: path.to_owned(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "session cache has no parent",
+        ),
+    })?;
+    #[cfg(unix)]
+    create_unix_session_directory_all(parent)?;
+    #[cfg(windows)]
+    create_windows_session_directory(parent)?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "index".to_owned());
+    let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::now_v7()));
+    let result = (|| -> Result<(), SessionError> {
+        #[cfg(unix)]
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+                .map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            drop(file);
+            fs::rename(&temporary, path).map_err(|source| SessionError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            fsync_directory(parent)?;
+        }
+        #[cfg(windows)]
+        {
+            let mut file =
+                cookie_agent_models::secure_store::create_windows_private_file(&temporary)
+                    .map_err(|source| SessionError::Io {
+                        path: temporary.clone(),
+                        source,
+                    })?;
+            file.write_all(&bytes).map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            file.sync_all().map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            drop(file);
+            replace_windows_path_with_retry(&temporary, path).map_err(|source| {
+                SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 /// Session metadata cache path, preferring the v2 name and falling back to the
 /// pre-v2 `meta.json` for one release.
-fn meta_path(session_dir: &Path) -> PathBuf {
+pub(crate) fn meta_path(session_dir: &Path) -> PathBuf {
     let current = session_dir.join(SESSION_META_FILE);
     if current.exists() {
         return current;
@@ -2621,7 +3277,7 @@ mod tests {
     use cookie_agent_protocol::{
         AgentId, AgentMode, AgentRevision, AttemptId, CatalogRevision, ClientRunId, EventPayload,
         InternalAgentBackend, InternalAgentFailure, InternalAgentInvocationId, InternalAgentKind,
-        InternalAgentRunId, ModelFinishReason, ModelRevision, PersistedModelTurn,
+        InternalAgentRunId, InvocationId, ModelFinishReason, ModelRevision, PersistedModelTurn,
         ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision, SafeCode,
         SafeDisplayText, SafeErrorMessage, SafeInternalAgentCall, SafeInternalAgentResult,
         SessionId, SessionOrigin, SessionPermissionOverlay, SessionTitle, SessionTitleChange,
@@ -2630,11 +3286,22 @@ mod tests {
 
     use crate::ownership::owner_lock_path;
 
-    use super::{PROJECT_CWD_FILE, SessionError, SessionStore, projection};
+    use super::{
+        LAYOUT_MARKER_FILE, PROJECT_CWD_FILE, SESSION_META_FILE, SESSIONS_ROOT_DIR,
+        SUBAGENT_INDEX_FILE, SUBAGENT_INDEX_VERSION, SUBAGENTS_DIR, SessionError, SessionStore,
+        meta_path, projection,
+    };
+
+    /// The v2 work-dir store for `cwd` (what a freshly opened store creates).
+    fn workdir_dir(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
+        data_root
+            .join(SESSIONS_ROOT_DIR)
+            .join(SessionStore::workdir_key(cwd))
+    }
 
     #[cfg(unix)]
     fn cwd_file(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
-        SessionStore::project_dir(data_root, cwd).join(PROJECT_CWD_FILE)
+        workdir_dir(data_root, cwd).join(PROJECT_CWD_FILE)
     }
 
     fn private_tempdir() -> tempfile::TempDir {
@@ -2691,6 +3358,12 @@ mod tests {
     }
 
     fn persist_test_session(store: &SessionStore) -> SessionId {
+        persist_test_session_with_origin(store, SessionOrigin::Root)
+    }
+
+    /// Creates and durably publishes a session carrying `origin`. Delegated
+    /// origins land under the root's `subagents/` directory (§2.2).
+    fn persist_test_session_with_origin(store: &SessionStore, origin: SessionOrigin) -> SessionId {
         let session_id = SessionId::new_v7();
         let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
         let selection = crate::test_support::run_selection("test");
@@ -2707,7 +3380,7 @@ mod tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
-                    origin: SessionOrigin::Root,
+                    origin,
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
                         .unwrap(),
                     creation_selection: selection.clone(),
@@ -3133,7 +3806,7 @@ mod tests {
         let store = SessionStore::open(&data, &cwd).expect("session store");
         let session_id = persist_test_session(&store);
         let session_dir = store.session_dir(session_id);
-        let cache_path = session_dir.join("meta.json");
+        let cache_path = meta_path(&session_dir);
         let event_path = session_dir.join("events.jsonl");
         let meta = store.get(session_id).expect("projection").meta;
         let writer = thread::spawn({
@@ -3170,7 +3843,9 @@ mod tests {
             cookie_agent_protocol::SessionTitle::new("changed on disk").expect("replacement title"),
         );
         super::write_cache(
-            &observer.session_dir(session_id).join("meta.json"),
+            &observer
+                .meta_cache_path(session_id)
+                .expect("metadata cache path"),
             &replacement,
         )
         .expect("replace metadata cache");
@@ -3181,6 +3856,216 @@ mod tests {
             .find(|summary| summary.meta.session_id == session_id)
             .expect("rediscovered summary");
         assert_eq!(rediscovered.meta.title, cached.meta.title);
+    }
+
+    /// Builds a delegated origin filed under `root`, nested below `parent`.
+    fn delegated_origin(root: SessionId, parent: SessionId, depth: u32) -> SessionOrigin {
+        SessionOrigin::Delegated {
+            root_session_id: root,
+            parent_session_id: parent,
+            parent_run_id: RunId::new_v7(),
+            parent_tool_call_id: ToolCallId::new_v7(),
+            invocation_id: InvocationId::new_v7(),
+            depth,
+        }
+    }
+
+    fn test_user_input_seq(store: &SessionStore, id: SessionId) -> u64 {
+        store
+            .get(id)
+            .expect("session")
+            .log
+            .events()
+            .into_iter()
+            .find(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+            .expect("user input event")
+            .seq
+    }
+
+    /// §8.2 #4: startup discovery is root-only. With every child event log made
+    /// unreadable, a reopened store still lists the whole tree because it reads
+    /// root `metadata` caches plus each root's `subagents/index.json`.
+    #[cfg(unix)]
+    #[test]
+    fn startup_discovery_never_reads_child_logs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("owner store");
+        let root = persist_test_session(&store);
+        let child = persist_test_session_with_origin(&store, delegated_origin(root, root, 1));
+        let grandchild = persist_test_session_with_origin(&store, delegated_origin(root, child, 2));
+
+        // Both descendants sit one level under the root, whatever their depth.
+        let root_dir = store.session_dir(root);
+        let child_dir = store.session_dir(child);
+        let grandchild_dir = store.session_dir(grandchild);
+        assert_eq!(
+            child_dir,
+            root_dir.join(SUBAGENTS_DIR).join(child.to_string())
+        );
+        assert_eq!(
+            grandchild_dir,
+            root_dir.join(SUBAGENTS_DIR).join(grandchild.to_string())
+        );
+        let expected = store.all_summaries();
+        assert_eq!(expected.len(), 3);
+        drop(store);
+
+        for directory in [&child_dir, &grandchild_dir] {
+            fs::set_permissions(
+                directory.join("events.jsonl"),
+                fs::Permissions::from_mode(0o000),
+            )
+            .expect("unreadable child log");
+        }
+
+        let observer = SessionStore::open(&data, &cwd).expect("cold observer store");
+        let discovered = observer.all_summaries();
+        assert_eq!(
+            discovered.len(),
+            3,
+            "index.json pre-populates child summaries"
+        );
+        for summary in &expected {
+            let found = discovered
+                .iter()
+                .find(|found| found.meta.session_id == summary.meta.session_id)
+                .expect("discovered summary");
+            assert_eq!(found.meta, summary.meta);
+        }
+        assert!(!observer.is_resident(child));
+        assert_eq!(
+            observer
+                .children(root)
+                .into_iter()
+                .map(|child| child.session_id)
+                .collect::<Vec<_>>(),
+            vec![child]
+        );
+        assert_eq!(
+            observer
+                .children(child)
+                .into_iter()
+                .map(|child| child.session_id)
+                .collect::<Vec<_>>(),
+            vec![grandchild]
+        );
+        let tree = observer.tree(root).expect("tree without child logs");
+        assert_eq!(tree.session.session_id, root);
+        assert_eq!(tree.children.len(), 1);
+        assert_eq!(tree.children[0].session.session_id, child);
+        assert_eq!(tree.children[0].children[0].session.session_id, grandchild);
+        assert_eq!(
+            observer.root_snapshots().len(),
+            1,
+            "only the root log is read"
+        );
+    }
+
+    /// §8.2 #11: a fork inherits the source's tree, so fork-of-root is published
+    /// into the work dir and fork-of-child into the same root's `subagents/`.
+    #[test]
+    fn fork_placement_follows_the_source_tree() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("session store");
+        let root = persist_test_session(&store);
+        let child = persist_test_session_with_origin(&store, delegated_origin(root, root, 1));
+        let origin = cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
+
+        let root_fork = store
+            .fork(root, test_user_input_seq(&store, root), origin.clone())
+            .expect("fork of root");
+        let child_fork = store
+            .fork(child, test_user_input_seq(&store, child), origin)
+            .expect("fork of child");
+
+        let root_dir = store.session_dir(root);
+        assert_eq!(
+            store.session_dir(root_fork).parent(),
+            Some(store.workdir_dir.as_path())
+        );
+        assert_eq!(
+            store.session_dir(child_fork).parent(),
+            Some(root_dir.join(SUBAGENTS_DIR).as_path())
+        );
+        assert!(matches!(
+            store
+                .get(child_fork)
+                .expect("forked child")
+                .meta
+                .origin,
+            SessionOrigin::Delegated {
+                root_session_id,
+                parent_session_id,
+                ..
+            } if root_session_id == root && parent_session_id == root
+        ));
+        let index = store.tree_members(root);
+        assert!(index.contains(&child));
+        assert!(index.contains(&child_fork));
+        assert!(
+            !store
+                .children(root)
+                .into_iter()
+                .any(|listed| listed.session_id == root_fork)
+        );
+        assert!(root_dir.join(SUBAGENTS_DIR).join("index.json").is_file());
+    }
+
+    /// §8.2 #12: `subagents/index.json` is a cache. Corrupt or missing content
+    /// never fails a startup, and placement discovery rebuilds it.
+    #[test]
+    fn subagent_index_corruption_is_rebuilt_not_fatal() {
+        let temporary = private_tempdir();
+        let cwd = temporary.path().join("workspace");
+        create_private_test_dir_all(&cwd);
+        let data = temporary.path().join("data");
+        let store = SessionStore::open(&data, &cwd).expect("owner store");
+        let root = persist_test_session(&store);
+        let child = persist_test_session_with_origin(&store, delegated_origin(root, root, 1));
+        let index_path = store
+            .session_dir(root)
+            .join(SUBAGENTS_DIR)
+            .join(SUBAGENT_INDEX_FILE);
+        assert!(index_path.is_file(), "index written on child creation");
+        drop(store);
+
+        for corruption in ["not json at all", "{\"version\": 99, \"children\": []}"] {
+            fs::write(&index_path, corruption).expect("corrupt index");
+            let observer = SessionStore::open(&data, &cwd).expect("cold open with corrupt index");
+            let listed = observer
+                .children(root)
+                .into_iter()
+                .map(|child| child.session_id)
+                .collect::<Vec<_>>();
+            // The directory scan re-adopts the filed child and rebuilds the cache.
+            assert!(listed.contains(&child), "placement rescans filed children");
+            let rebuilt: serde_json::Value =
+                serde_json::from_slice(&fs::read(&index_path).expect("rebuilt index"))
+                    .expect("valid index json");
+            assert_eq!(
+                rebuilt["version"],
+                serde_json::json!(SUBAGENT_INDEX_VERSION)
+            );
+            assert_eq!(rebuilt["children"].as_array().expect("children").len(), 1);
+            drop(observer);
+        }
+
+        fs::remove_file(&index_path).expect("remove index");
+        let observer = SessionStore::open(&data, &cwd).expect("cold open with missing index");
+        assert!(
+            observer
+                .children(root)
+                .into_iter()
+                .any(|listed| listed.session_id == child)
+        );
     }
 
     fn append_pending_test_delta(
@@ -3362,9 +4247,8 @@ mod tests {
 
         for path in [
             data.clone(),
-            data.join("projects"),
+            data.join(SESSIONS_ROOT_DIR),
             project.to_owned(),
-            project.join("sessions"),
             session.clone(),
         ] {
             assert_eq!(
@@ -3374,8 +4258,9 @@ mod tests {
         }
         for path in [
             project.join(PROJECT_CWD_FILE),
+            project.join(LAYOUT_MARKER_FILE),
             session.join("events.jsonl"),
-            session.join("meta.json"),
+            session.join(SESSION_META_FILE),
         ] {
             assert_eq!(
                 fs::metadata(path).unwrap().permissions().mode() & 0o777,
@@ -3397,15 +4282,15 @@ mod tests {
         let session = store.session_dir(session_id);
         let directories = [
             data.clone(),
-            data.join("projects"),
+            data.join(SESSIONS_ROOT_DIR),
             project.clone(),
-            project.join("sessions"),
             session.clone(),
         ];
         let files = [
             project.join(PROJECT_CWD_FILE),
+            project.join(LAYOUT_MARKER_FILE),
             session.join("events.jsonl"),
-            session.join("meta.json"),
+            session.join(SESSION_META_FILE),
         ];
         for path in &directories {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();

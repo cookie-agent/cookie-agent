@@ -3219,12 +3219,8 @@ async fn unreadable_session_metadata_cache_is_rebuilt_from_events() {
         .await
         .expect("persist session");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let path = fixture
-        .engine
-        .inner
-        .store
-        .session_dir(session.session_id)
-        .join("meta.json");
+    let path = fixture.engine.inner.store.session_dir(session.session_id);
+    let path = crate::session::meta_path(&path);
     let expected = fixture
         .engine
         .get_session(session.session_id)
@@ -3424,7 +3420,7 @@ async fn first_user_message_flushes_complete_ordered_buffer_and_replays_exactly(
         .await
         .expect("start run");
 
-    assert!(session_dir.join("meta.json").is_file());
+    assert!(crate::session::meta_path(&session_dir).is_file());
     assert!(session_dir.join("events.jsonl").is_file());
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
