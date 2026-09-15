@@ -36,6 +36,118 @@ use crate::ownership::{
 };
 
 const PROJECT_CWD_FILE: &str = "cwd";
+/// v2 session-store root under the data root (`~/.cookie-agent/sessions`).
+pub(crate) const SESSIONS_ROOT_DIR: &str = "sessions";
+/// Marker file recording the on-disk layout version of a work-dir store.
+pub(crate) const LAYOUT_MARKER_FILE: &str = "layout.json";
+/// Session metadata cache file name in the v2 layout.
+pub(crate) const SESSION_META_FILE: &str = "metadata";
+/// Pre-v2 session metadata cache name, still read for one release.
+pub(crate) const LEGACY_SESSION_META_FILE: &str = "meta.json";
+/// Per-root directory holding delegated child sessions.
+pub(crate) const SUBAGENTS_DIR: &str = "subagents";
+/// Persisted child-summary cache inside [`SUBAGENTS_DIR`].
+#[allow(dead_code)] // wired up by the v2 discovery cache (P1)
+pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
+/// Event log file name (unchanged across layouts).
+const EVENTS_FILE: &str = "events.jsonl";
+/// Layout version written by this build.
+const LAYOUT_VERSION: u32 = 2;
+
+/// Where a session lives relative to its work-dir store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionLocation {
+    /// `sessions/<workdirkey>/<id>/`
+    Root,
+    /// `sessions/<workdirkey>/<root>/subagents/<id>/`
+    Child { root: SessionId },
+}
+
+impl SessionLocation {
+    #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
+    fn root_of(self) -> Option<SessionId> {
+        match self {
+            Self::Root => None,
+            Self::Child { root } => Some(root),
+        }
+    }
+}
+
+/// Which on-disk layout a store opens. Production uses [`LayoutChoice::PreferV2`];
+/// tests exercise the flat v1 layout explicitly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // every variant is constructed from P1 onwards
+enum LayoutChoice {
+    /// v2 (`sessions/<workdirkey>/`) unless a legacy project is still on disk.
+    PreferV2,
+    /// Always the legacy flat `projects/<hash>/sessions/` layout.
+    #[allow(dead_code)] // becomes the default until P1
+    ForceFlat,
+    /// Always v2, even with a legacy project on disk (used by migration tests).
+    #[allow(dead_code)]
+    ForceV2,
+}
+
+/// Lazy-tree state for one root session (§3.1 of the storage spec).
+#[derive(Debug, Default)]
+pub(crate) struct TreeState {
+    /// The one-time bulk child pass has completed for this root.
+    #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
+    loaded: bool,
+    /// Children discovered at load time (or seeded from `subagents/index.json`).
+    #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
+    child_ids: Vec<SessionId>,
+}
+
+/// Products of a completed [`SessionStore::load_tree`] pass that the engine
+/// folds into its singletons (delegation registry, approvals, producers).
+#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+#[derive(Debug)]
+pub(crate) struct TreeLoadProducts {
+    pub(crate) root: SessionId,
+    /// `(parent_session_id, run_id, payload)` delegation records held in child logs.
+    pub(crate) delegations: Vec<(
+        SessionId,
+        Option<cookie_agent_protocol::RunId>,
+        EventPayload,
+    )>,
+    /// Restart-stable tree approval grants held in child logs.
+    pub(crate) grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
+    /// Children whose logs carry goal-producer state needing reconciliation.
+    pub(crate) producer_sessions: Vec<SessionId>,
+}
+
+impl TreeLoadProducts {
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    fn for_root(root: SessionId) -> Self {
+        Self {
+            root,
+            delegations: Vec::new(),
+            grants: Vec::new(),
+            producer_sessions: Vec::new(),
+        }
+    }
+}
+
+/// Observer slot with a hand-written `Debug` (the payload is a `dyn` trait).
+#[derive(Default)]
+#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+struct ObserverSlot(Mutex<Option<Arc<dyn TreeLoadObserver>>>);
+
+impl std::fmt::Debug for ObserverSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ObserverSlot")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Callback the engine installs so store-side tree loads reach engine singletons
+/// even when the load was triggered from inside the store.
+#[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+pub(crate) trait TreeLoadObserver: Send + Sync {
+    fn tree_loaded(&self, products: TreeLoadProducts);
+}
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -115,6 +227,18 @@ struct SessionResidency {
     evicted: HashMap<SessionId, SessionSummary>,
 }
 
+impl SessionResidency {
+    fn known_ids(&self) -> Vec<SessionId> {
+        self.resident
+            .keys()
+            .chain(self.evicted.keys())
+            .copied()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
 #[derive(Debug)]
 enum StoreOwnership {
     PendingPublish {
@@ -153,9 +277,30 @@ struct PublishHook {
 
 #[derive(Debug)]
 pub struct SessionStore {
+    data_root: PathBuf,
+    /// Directory that root session dirs live in: `sessions/<workdirkey>/` for the
+    /// v2 layout, `projects/<hash>/sessions/` while a legacy store is still flat.
+    workdir_dir: PathBuf,
+    /// Directory holding project-level files (`cwd`, the layout marker, the grant
+    /// journal, runtime revisions and artifacts): `sessions/<workdirkey>/` under
+    /// v2, `projects/<hash>/` under the flat layout.
     project_dir: PathBuf,
-    sessions_dir: PathBuf,
+    /// Legacy flat layout: every session (root or child) is a direct child of
+    /// [`Self::workdir_dir`] and root-only discovery is replaced by a full scan.
+    flat_layout: bool,
     cwd: PathBuf,
+    /// id -> where it lives on disk. Roots are inserted at discovery; children
+    /// lazily (tree load, index cache, or direct-address locate).
+    locations: Mutex<HashMap<SessionId, SessionLocation>>,
+    /// root id -> state of the lazy tree load.
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    trees: Mutex<HashMap<SessionId, TreeState>>,
+    /// Per-root coalescing guards for concurrent `load_tree` triggers.
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    tree_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    /// Engine hook applied after each completed tree load.
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    tree_observer: ObserverSlot,
     residency: Mutex<SessionResidency>,
     ownership: Mutex<HashMap<SessionId, StoreOwnership>>,
     adoption_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
@@ -165,36 +310,137 @@ pub struct SessionStore {
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
     #[cfg(test)]
     publish_hook: Mutex<Option<PublishHook>>,
+    #[cfg(test)]
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    tree_load_count: Mutex<HashMap<SessionId, usize>>,
 }
 
 impl SessionStore {
+    /// Legacy v1 project directory. Retained for migration detection only.
     pub fn project_dir(data_root: &Path, cwd: &Path) -> PathBuf {
+        data_root.join("projects").join(Self::project_hash(cwd))
+    }
+
+    /// The `<16-hex-hash>` component shared by the v1 project dir and the v2
+    /// work-dir key. Bit-identical to the historical hash.
+    fn project_hash(cwd: &Path) -> String {
         let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         canonical.to_string_lossy().hash(&mut hash);
-        data_root
-            .join("projects")
-            .join(format!("{:016x}", hash.finish()))
+        format!("{:016x}", hash.finish())
+    }
+
+    /// v2 work-dir key: `<16-hex-hash>-<sanitized-basename>` (§1.1). The hash
+    /// prefix is the only component ever matched against; the suffix is
+    /// cosmetic and computed once at directory creation.
+    pub(crate) fn workdir_key(cwd: &Path) -> String {
+        let hash = Self::project_hash(cwd);
+        let suffix = workdir_key_suffix(cwd);
+        if suffix.is_empty() {
+            hash
+        } else {
+            format!("{hash}-{suffix}")
+        }
+    }
+
+    /// Locate the v2 work-dir for `cwd`, matching an existing directory by hash
+    /// prefix (a stale suffix after a cwd rename is harmless), else reserve the
+    /// freshly derived name.
+    fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
+        let hash = Self::project_hash(cwd);
+        let sessions_root = data_root.join(SESSIONS_ROOT_DIR);
+        if let Ok(entries) = fs::read_dir(&sessions_root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if name == hash || name.starts_with(&format!("{hash}-")) {
+                    return entry.path();
+                }
+            }
+        }
+        sessions_root.join(Self::workdir_key(cwd))
+    }
+
+    /// Whether `data_root` still holds an un-migrated v1 project for `cwd`.
+    #[allow(dead_code)] // consumed by the migration gate (P4)
+    pub(crate) fn legacy_project_present(data_root: &Path, cwd: &Path) -> bool {
+        Self::project_dir(data_root, cwd).join("sessions").is_dir()
     }
 
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
-        let project_dir = Self::project_dir(data_root, cwd);
-        let sessions_dir = project_dir.join("sessions");
+        Self::open_with_layout(data_root, cwd, LayoutChoice::ForceFlat)
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // layout-pinned fixtures land in P1/P4
+    pub(crate) fn open_flat_for_test(
+        data_root: &Path,
+        cwd: &Path,
+    ) -> Result<Arc<Self>, SessionError> {
+        Self::open_with_layout(data_root, cwd, LayoutChoice::ForceFlat)
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // layout-pinned fixtures land in P1/P4
+    pub(crate) fn open_v2_for_test(
+        data_root: &Path,
+        cwd: &Path,
+    ) -> Result<Arc<Self>, SessionError> {
+        Self::open_with_layout(data_root, cwd, LayoutChoice::ForceV2)
+    }
+
+    fn open_with_layout(
+        data_root: &Path,
+        cwd: &Path,
+        layout: LayoutChoice,
+    ) -> Result<Arc<Self>, SessionError> {
+        let v2_dir = Self::resolve_workdir_dir(data_root, cwd);
+        let legacy_root = Self::project_dir(data_root, cwd);
+        let legacy_dir = legacy_root.join("sessions");
+        // Migration is what promotes a legacy store; until it runs the store
+        // keeps serving the flat v1 layout it already has on disk.
+        let flat_layout = match layout {
+            LayoutChoice::PreferV2 => {
+                !v2_dir.join(LAYOUT_MARKER_FILE).is_file() && legacy_dir.is_dir()
+            }
+            LayoutChoice::ForceFlat => true,
+            LayoutChoice::ForceV2 => false,
+        };
+        let (workdir_dir, project_dir) = if flat_layout {
+            (legacy_dir, legacy_root)
+        } else {
+            (v2_dir.clone(), v2_dir.clone())
+        };
         #[cfg(unix)]
-        create_unix_session_directory_all(&sessions_dir)?;
+        create_unix_session_directory_all(&workdir_dir)?;
         #[cfg(windows)]
         for path in [
-            data_root.join("projects"),
+            data_root.join(if flat_layout {
+                "projects"
+            } else {
+                SESSIONS_ROOT_DIR
+            }),
             project_dir.clone(),
-            sessions_dir.clone(),
+            workdir_dir.clone(),
         ] {
             create_windows_session_directory(&path)?;
         }
+        if !flat_layout {
+            write_layout_marker_if_absent(&project_dir)?;
+        }
         write_project_cwd(&project_dir, cwd)?;
         let store = Arc::new(Self {
+            data_root: data_root.to_owned(),
+            workdir_dir: workdir_dir.clone(),
             project_dir,
-            sessions_dir: sessions_dir.clone(),
+            flat_layout,
             cwd: cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned()),
+            locations: Mutex::new(HashMap::new()),
+            trees: Mutex::new(HashMap::new()),
+            tree_locks: Mutex::new(HashMap::new()),
+            tree_observer: ObserverSlot::default(),
             residency: Mutex::new(SessionResidency::default()),
             ownership: Mutex::new(HashMap::new()),
             adoption_locks: Mutex::new(HashMap::new()),
@@ -204,9 +450,171 @@ impl SessionStore {
             eviction_transition_hook: Mutex::new(None),
             #[cfg(test)]
             publish_hook: Mutex::new(None),
+            #[cfg(test)]
+            tree_load_count: Mutex::new(HashMap::new()),
         });
         store.refresh_discovered();
         Ok(store)
+    }
+
+    /// The data root this store was opened against (migration detection).
+    #[must_use]
+    pub fn data_root(&self) -> &Path {
+        &self.data_root
+    }
+
+    #[must_use]
+    pub fn is_flat_layout(&self) -> bool {
+        self.flat_layout
+    }
+
+    /// Path of `id`'s session directory for a known placement.
+    fn path_for(&self, location: SessionLocation, id: SessionId) -> PathBuf {
+        if self.flat_layout {
+            return self.workdir_dir.join(id.to_string());
+        }
+        match location {
+            SessionLocation::Root => self.workdir_dir.join(id.to_string()),
+            SessionLocation::Child { root } => self
+                .workdir_dir
+                .join(root.to_string())
+                .join(SUBAGENTS_DIR)
+                .join(id.to_string()),
+        }
+    }
+
+    #[must_use]
+    fn cached_location(&self, id: SessionId) -> Option<SessionLocation> {
+        self.locations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .copied()
+    }
+
+    fn record_location(&self, id: SessionId, location: SessionLocation) {
+        self.locations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, location);
+    }
+
+    /// Root a session belongs to (`None` for a root session itself). Unknown
+    ///
+    /// (consumed by the lazy-tree passes; wired up in P2)
+    /// children are located on disk first so the answer is layout-accurate.
+    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    pub(crate) fn root_of(&self, id: SessionId) -> Result<SessionId, SessionError> {
+        self.resolve_dir(id)?;
+        match self.cached_location(id) {
+            Some(SessionLocation::Child { root }) => Ok(root),
+            _ => Ok(id),
+        }
+    }
+
+    /// Fallible replacement for the historical flat `session_dir()` (§2.2).
+    pub(crate) fn resolve_dir(&self, id: SessionId) -> Result<PathBuf, SessionError> {
+        if let Some(location) = self.cached_location(id) {
+            return Ok(self.path_for(location, id));
+        }
+        let root_dir = self.workdir_dir.join(id.to_string());
+        if root_dir.is_dir() {
+            self.record_location(id, SessionLocation::Root);
+            return Ok(root_dir);
+        }
+        if !self.flat_layout {
+            if let Some(root) = self.locate_child(id) {
+                self.record_location(id, SessionLocation::Child { root });
+                return Ok(self.path_for(SessionLocation::Child { root }, id));
+            }
+        }
+        Err(SessionError::Missing(id))
+    }
+
+    /// Direct-address locate for an unknown child: stat each root's
+    /// `subagents/<id>/metadata` (or the legacy `meta.json`). O(#roots) stats,
+    /// paid once per unknown child before `locations` caches the answer.
+    fn locate_child(&self, id: SessionId) -> Option<SessionId> {
+        for root in self.root_dir_ids() {
+            let dir = self
+                .workdir_dir
+                .join(root.to_string())
+                .join(SUBAGENTS_DIR)
+                .join(id.to_string());
+            if dir.join(SESSION_META_FILE).exists() || dir.join(LEGACY_SESSION_META_FILE).exists() {
+                return Some(root);
+            }
+        }
+        None
+    }
+
+    /// Session-id-named directories directly inside the work dir. Under the v2
+    /// layout these are roots *by construction*; the flat layout filters by the
+    /// cached origin instead.
+    fn root_dir_ids(&self) -> Vec<SessionId> {
+        let mut ids = Vec::new();
+        let Ok(entries) = fs::read_dir(&self.workdir_dir) else {
+            return ids;
+        };
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let Ok(id) = entry.file_name().to_string_lossy().parse::<SessionId>() else {
+                continue;
+            };
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Single source of truth for where a *new* session is created (§2.2).
+    fn placement_for(&self, origin: &SessionOrigin) -> SessionLocation {
+        if self.flat_layout {
+            return SessionLocation::Root;
+        }
+        match origin {
+            SessionOrigin::Root => SessionLocation::Root,
+            SessionOrigin::Delegated {
+                root_session_id, ..
+            } => SessionLocation::Child {
+                root: *root_session_id,
+            },
+        }
+    }
+
+    /// Origin carried by a creation payload, which decides placement.
+    fn creation_origin(creation: &EventPayload) -> Option<SessionOrigin> {
+        match creation {
+            EventPayload::SessionCreated { origin, .. } => Some(origin.clone()),
+            _ => None,
+        }
+    }
+
+    /// Directory a session's metadata cache lives in, plus its placement.
+    fn dir_for_placement(&self, location: SessionLocation, id: SessionId) -> PathBuf {
+        self.path_for(location, id)
+    }
+
+    /// Directory a new session directory is renamed into (must share the
+    /// filesystem with its temporary sibling).
+    fn publish_parent_for(&self, location: SessionLocation) -> Result<PathBuf, SessionError> {
+        match location {
+            SessionLocation::Root => Ok(self.workdir_dir.clone()),
+            SessionLocation::Child { root } => self.ensure_subagents_dir(root),
+        }
+    }
+
+    /// Ensure a root's `subagents/` directory exists, returning it.
+    fn ensure_subagents_dir(&self, root: SessionId) -> Result<PathBuf, SessionError> {
+        let dir = self.workdir_dir.join(root.to_string()).join(SUBAGENTS_DIR);
+        if !dir.exists() {
+            #[cfg(unix)]
+            create_unix_session_directory_all(&dir)?;
+            #[cfg(windows)]
+            create_windows_session_directory(&dir)?;
+        }
+        Ok(dir)
     }
 
     pub fn create(
@@ -241,13 +649,16 @@ impl SessionStore {
         {
             return Ok((existing.log, false));
         }
-        let final_dir = self.sessions_dir.join(session_id.to_string());
+        let location =
+            self.placement_for(&Self::creation_origin(&creation).unwrap_or(SessionOrigin::Root));
+        self.record_location(session_id, location);
+        let final_dir = self.dir_for_placement(location, session_id);
         if final_dir.exists() {
             return Err(SessionError::SessionLocked(session_id));
         }
         let authority = WriteAuthority::new();
         let log = EventLog::create_buffered_owned(
-            final_dir.join("events.jsonl"),
+            final_dir.join(EVENTS_FILE),
             session_id,
             origin,
             creation,
@@ -295,11 +706,7 @@ impl SessionStore {
         if let Some(session) = self.get_resident(id) {
             return Ok(session.log.event_snapshot());
         }
-        Ok(EventLog::open_read_only(
-            self.sessions_dir.join(id.to_string()).join("events.jsonl"),
-            id,
-        )?
-        .event_snapshot())
+        Ok(EventLog::open_read_only(self.resolve_dir(id)?.join(EVENTS_FILE), id)?.event_snapshot())
     }
 
     /// Arc clone of the resident log plus its persistence flag, without
@@ -341,12 +748,12 @@ impl SessionStore {
         {
             return Ok(session);
         }
-        let session_dir = self.sessions_dir.join(id.to_string());
+        let session_dir = self.resolve_dir(id)?;
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
         let capability = self.write_capability(id, false)?;
-        let log = EventLog::open_owned(session_dir.join("events.jsonl"), id, capability)?;
+        let log = EventLog::open_owned(session_dir.join(EVENTS_FILE), id, capability)?;
         let reopened = projection(log)?;
         let mut residency = self
             .residency
@@ -358,14 +765,11 @@ impl SessionStore {
     }
 
     fn open_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
-        let session_dir = self.sessions_dir.join(id.to_string());
+        let session_dir = self.resolve_dir(id)?;
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
-        let snapshot = projection(EventLog::open_read_only(
-            session_dir.join("events.jsonl"),
-            id,
-        )?)?;
+        let snapshot = projection(EventLog::open_read_only(session_dir.join(EVENTS_FILE), id)?)?;
         self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -401,10 +805,10 @@ impl SessionStore {
                 drop(session);
                 return Ok(WriteOpen::AlreadyOwned);
             }
-            let session_dir = self.sessions_dir.join(id.to_string());
+            let session_dir = self.resolve_dir(id)?;
             let capability = self.write_capability(id, false)?;
             let reopened = projection(EventLog::open_owned(
-                session_dir.join("events.jsonl"),
+                session_dir.join(EVENTS_FILE),
                 id,
                 capability,
             )?)?;
@@ -416,7 +820,7 @@ impl SessionStore {
             residency.evicted.remove(&id);
             return Ok(WriteOpen::AlreadyOwned);
         }
-        let session_dir = self.sessions_dir.join(id.to_string());
+        let session_dir = self.resolve_dir(id)?;
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
@@ -440,7 +844,7 @@ impl SessionStore {
         };
         let authority = WriteAuthority::new();
         let opened =
-            EventLog::open_owned(session_dir.join("events.jsonl"), id, authority.capability());
+            EventLog::open_owned(session_dir.join(EVENTS_FILE), id, authority.capability());
         let projection = match opened.and_then(|log| {
             projection(log).map_err(|error| match error {
                 SessionError::Event(error) => error,
@@ -725,20 +1129,14 @@ impl SessionStore {
                 let projection = self.get(id)?;
                 self.persist_buffered(id, &projection)?;
             } else if log.is_persisted() {
-                write_cache(
-                    &self.sessions_dir.join(id.to_string()).join("meta.json"),
-                    &meta,
-                )?;
+                write_cache(&self.meta_cache_path(id)?, &meta)?;
             }
         } else {
             let rebuilt = projection(log.clone())?;
             if first_user_message {
                 self.persist_buffered(id, &rebuilt)?;
             } else if log.is_persisted() {
-                write_cache(
-                    &self.sessions_dir.join(id.to_string()).join("meta.json"),
-                    &rebuilt.meta,
-                )?;
+                write_cache(&self.meta_cache_path(id)?, &rebuilt.meta)?;
             }
             let mut residency = self
                 .residency
@@ -794,10 +1192,14 @@ impl SessionStore {
         }
 
         let session_id = SessionId::new_v7();
-        let final_dir = self.sessions_dir.join(session_id.to_string());
-        let temporary = self
-            .sessions_dir
-            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        // A forked origin is copied verbatim from the source's `SessionCreated`
+        // event, so a fork of a child stays inside the same tree.
+        let location = self.placement_for(&source.meta.origin);
+        self.record_location(session_id, location);
+        let destination_parent = self.publish_parent_for(location)?;
+        let final_dir = self.dir_for_placement(location, session_id);
+        let temporary =
+            destination_parent.join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
         #[cfg(unix)]
         fs::create_dir(&temporary).map_err(|source| SessionError::Io {
             path: temporary.clone(),
@@ -858,7 +1260,10 @@ impl SessionStore {
             )?;
             log.suspend_writer()?;
             let fork_projection = projection(log)?;
-            write_cache(&temporary.join("meta.json"), &fork_projection.meta)?;
+            write_cache(
+                &temporary.join(self.meta_write_name()),
+                &fork_projection.meta,
+            )?;
             #[cfg(unix)]
             let lock_session_dir = &temporary;
             #[cfg(windows)]
@@ -885,7 +1290,7 @@ impl SessionStore {
                 path: final_dir.clone(),
                 source,
             })?;
-            fsync_directory(&self.sessions_dir)?;
+            fsync_directory(&destination_parent)?;
             self.ownership
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -917,10 +1322,12 @@ impl SessionStore {
         projection: &SessionProjection,
     ) -> Result<(), SessionError> {
         self.write_capability(session_id, false)?;
-        let final_dir = self.sessions_dir.join(session_id.to_string());
-        let temporary = self
-            .sessions_dir
-            .join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
+        let location = self.placement_for(&projection.meta.origin);
+        self.record_location(session_id, location);
+        let destination_parent = self.publish_parent_for(location)?;
+        let final_dir = self.dir_for_placement(location, session_id);
+        let temporary =
+            destination_parent.join(format!(".{session_id}.{}.tmp", SessionId::new_v7()));
         #[cfg(unix)]
         create_unix_session_directory_all(&temporary)?;
         #[cfg(windows)]
@@ -932,7 +1339,7 @@ impl SessionStore {
             for event in projection.log.all_events() {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
-            write_cache(&temporary.join("meta.json"), &projection.meta)?;
+            write_cache(&temporary.join(self.meta_write_name()), &projection.meta)?;
             #[cfg(unix)]
             let lock_session_dir = &temporary;
             #[cfg(windows)]
@@ -959,7 +1366,7 @@ impl SessionStore {
                 path: final_dir.clone(),
                 source,
             })?;
-            fsync_directory(&self.sessions_dir)?;
+            fsync_directory(&destination_parent)?;
             let mut ownership = self
                 .ownership
                 .lock()
@@ -1016,6 +1423,8 @@ impl SessionStore {
             .collect()
     }
 
+    /// Every snapshot known to the store. Superseded by [`Self::root_snapshots`]
+    /// and [`Self::tree_snapshots`]; retained until the last caller decides.
     pub fn all_snapshots(&self) -> Vec<SessionProjection> {
         self.refresh_discovered();
         let ids = {
@@ -1040,6 +1449,99 @@ impl SessionStore {
             })
             .collect()
     }
+    /// Snapshots of the sessions that are roots of their own tree. This is the
+    /// startup pass shape: never touches delegated child logs.
+    pub fn root_snapshots(&self) -> Vec<SessionProjection> {
+        self.refresh_discovered();
+        let ids = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .known_ids()
+            .into_iter()
+            .filter(|id| self.is_root_id(*id))
+            .collect::<Vec<_>>();
+
+        self.snapshots_for(ids)
+    }
+
+    /// Snapshots of `root` plus every session delegated from it.
+    pub fn tree_snapshots(&self, root: SessionId) -> Vec<SessionProjection> {
+        self.refresh_discovered();
+        let mut ids = vec![root];
+        ids.extend(
+            self.residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .known_ids()
+                .into_iter()
+                .filter(|id| *id != root && self.is_tree_member(root, *id)),
+        );
+        self.snapshots_for(ids)
+    }
+
+    fn snapshots_for(&self, ids: Vec<SessionId>) -> Vec<SessionProjection> {
+        ids.into_iter()
+            .filter_map(|id| match self.read_snapshot(id) {
+                Ok(session) => Some(session),
+                Err(error) => {
+                    eprintln!("session {id} snapshot skipped: {error}");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Read-only snapshot access that never triggers a lazy tree load. Startup
+    /// passes and the delegation registry rebuild use this so a cold root stays
+    /// cold until something actually resumes it.
+    pub(crate) fn read_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session);
+        }
+        self.open_snapshot(id)
+    }
+
+    fn is_root_id(&self, id: SessionId) -> bool {
+        if self.flat_layout {
+            return matches!(self.cached_origin(id), Some(SessionOrigin::Root) | None);
+        }
+        !matches!(
+            self.cached_location(id),
+            Some(SessionLocation::Child { .. })
+        )
+    }
+
+    fn is_tree_member(&self, root: SessionId, id: SessionId) -> bool {
+        if !self.flat_layout {
+            return matches!(
+                self.cached_location(id),
+                Some(SessionLocation::Child { root: parent }) if parent == root
+            );
+        }
+        matches!(
+            self.cached_origin(id),
+            Some(SessionOrigin::Delegated {
+                root_session_id,
+                ..
+            }) if root_session_id == root
+        )
+    }
+
+    fn cached_origin(&self, id: SessionId) -> Option<SessionOrigin> {
+        let residency = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(session) = residency.resident.get(&id) {
+            return Some(session.meta.origin.clone());
+        }
+        residency
+            .evicted
+            .get(&id)
+            .map(|summary| summary.meta.origin.clone())
+    }
+
     #[must_use]
     pub fn all_summaries(&self) -> Vec<SessionSummary> {
         self.refresh_discovered();
@@ -1080,7 +1582,7 @@ impl SessionStore {
     }
 
     fn refresh_discovered(&self) {
-        let entries = match fs::read_dir(&self.sessions_dir) {
+        let entries = match fs::read_dir(&self.workdir_dir) {
             Ok(entries) => entries,
             Err(error) => {
                 eprintln!("session discovery failed: {error}");
@@ -1165,13 +1667,20 @@ impl SessionStore {
             .filter(|session| matches!(session.meta.origin, SessionOrigin::Delegated { .. }))
             .count()
     }
+    /// Directory holding project-level files (artifacts, the grant journal,
+    /// runtime revisions, `cwd` and `layout.json`).
+    #[must_use]
+    pub fn workdir_dir_path(&self) -> &Path {
+        &self.project_dir
+    }
+
     #[must_use]
     pub fn project_dir_path(&self) -> &Path {
         &self.project_dir
     }
     #[must_use]
     pub(crate) fn sessions_dir_path(&self) -> &Path {
-        &self.sessions_dir
+        &self.workdir_dir
     }
     #[must_use]
     pub fn cwd(&self) -> &Path {
@@ -1179,7 +1688,24 @@ impl SessionStore {
     }
     #[must_use]
     pub fn session_dir(&self, id: SessionId) -> PathBuf {
-        self.sessions_dir.join(id.to_string())
+        self.cached_location(id)
+            .map(|location| self.path_for(location, id))
+            .unwrap_or_else(|| self.workdir_dir.join(id.to_string()))
+    }
+
+    /// Metadata cache path to *read* (handles the v1/v2 name fallback).
+    pub(crate) fn meta_cache_path(&self, id: SessionId) -> Result<PathBuf, SessionError> {
+        Ok(meta_path(&self.resolve_dir(id)?))
+    }
+
+    /// Metadata cache file name this layout writes.
+    #[must_use]
+    fn meta_write_name(&self) -> &'static str {
+        if self.flat_layout {
+            LEGACY_SESSION_META_FILE
+        } else {
+            SESSION_META_FILE
+        }
     }
 
     pub fn is_persisted(&self, id: SessionId) -> Result<bool, SessionError> {
@@ -1706,6 +2232,122 @@ fn turns_tool_name(
         }
         _ => None,
     })
+}
+
+/// Lowercased, `[a-z0-9._-]`-only, repeat-collapsed, 32-char-truncated basename
+/// of the canonical cwd (§1.1). Empty results fall back to a hash-only key.
+fn workdir_key_suffix(cwd: &Path) -> String {
+    fn trim(value: &str) -> String {
+        value
+            .trim_matches(|character| character == '-' || character == '_')
+            .to_owned()
+    }
+
+    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
+    let base = canonical
+        .file_name()
+        .map(|name| name.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut sanitized = String::with_capacity(base.len());
+    for character in base.chars() {
+        let mapped = if character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '.' | '_' | '-')
+        {
+            character
+        } else {
+            '-'
+        };
+        if mapped == '-' && sanitized.ends_with('-') {
+            continue;
+        }
+        sanitized.push(mapped);
+    }
+    trim(&trim(&sanitized).chars().take(32).collect::<String>())
+}
+
+fn write_layout_marker_if_absent(workdir_dir: &Path) -> Result<(), SessionError> {
+    let path = workdir_dir.join(LAYOUT_MARKER_FILE);
+    if path.exists() {
+        return Ok(());
+    }
+    let marker = serde_json::json!({ "version": LAYOUT_VERSION });
+    let temporary = workdir_dir.join(format!(".{LAYOUT_MARKER_FILE}.{}.tmp", Uuid::now_v7()));
+    let result = (|| -> Result<(), SessionError> {
+        #[cfg(unix)]
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)
+                .map_err(|source| SessionError::Io {
+                    path: temporary.clone(),
+                    source,
+                })?;
+            serde_json::to_writer_pretty(&mut file, &marker).map_err(|source| {
+                SessionError::Json {
+                    path: temporary.clone(),
+                    source,
+                }
+            })?;
+            file.sync_all().map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            drop(file);
+            fs::rename(&temporary, &path).map_err(|source| SessionError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            fsync_directory(workdir_dir)?;
+        }
+        #[cfg(windows)]
+        {
+            let mut file =
+                cookie_agent_models::secure_store::create_windows_private_file(&temporary)
+                    .map_err(|source| SessionError::Io {
+                        path: temporary.clone(),
+                        source,
+                    })?;
+            serde_json::to_writer_pretty(&mut file, &marker).map_err(|source| {
+                SessionError::Json {
+                    path: temporary.clone(),
+                    source,
+                }
+            })?;
+            file.sync_all().map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+            drop(file);
+            replace_windows_path_with_retry(&temporary, &path).map_err(|source| {
+                SessionError::Io {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Session metadata cache path, preferring the v2 name and falling back to the
+/// pre-v2 `meta.json` for one release.
+fn meta_path(session_dir: &Path) -> PathBuf {
+    let current = session_dir.join(SESSION_META_FILE);
+    if current.exists() {
+        return current;
+    }
+    let legacy = session_dir.join(LEGACY_SESSION_META_FILE);
+    if legacy.exists() {
+        return legacy;
+    }
+    current
 }
 
 fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
@@ -3118,7 +3760,7 @@ mod tests {
         let data = temp.path().join("fork-data");
         create_private_test_dir_all(&cwd);
         let seed = SessionStore::open(&data, &cwd).unwrap();
-        let sessions_dir = seed.sessions_dir.clone();
+        let sessions_dir = seed.sessions_dir_path().to_owned();
         drop(seed);
         let stamped_source = SessionId::new_v7();
         let unpriced_source = SessionId::new_v7();
