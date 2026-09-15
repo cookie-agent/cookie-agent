@@ -56,10 +56,7 @@ impl Engine {
         &self,
         grace: Duration,
     ) -> Result<super::artifacts::ArtifactGcReport, EngineError> {
-        Ok(self
-            .inner
-            .artifacts
-            .collect_garbage(self.inner.store.sessions_dir_path(), grace)?)
+        Ok(self.inner.artifacts.collect_garbage(grace)?)
     }
 
     #[cfg(test)]

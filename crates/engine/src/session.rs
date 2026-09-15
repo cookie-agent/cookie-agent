@@ -51,7 +51,7 @@ pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
 /// Current `subagents/index.json` schema version.
 const SUBAGENT_INDEX_VERSION: u32 = 1;
 /// Event log file name (unchanged across layouts).
-const EVENTS_FILE: &str = "events.jsonl";
+pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
 const LAYOUT_VERSION: u32 = 2;
 

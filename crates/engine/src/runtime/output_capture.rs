@@ -5,12 +5,12 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    MAX_TOOL_DELTA_BYTES, PersistedToolResult, RetainedToolOutput, RetainedToolStream,
+    MAX_TOOL_DELTA_BYTES, PersistedToolResult, RetainedToolOutput, RetainedToolStream, SessionId,
     Sha256Digest, ToolCompletionOutput, ToolOutputChunk, ToolOutputDeclaration, ToolOutputManifest,
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{artifacts::ArtifactStore, blocking_io};
+use super::{artifacts::ArtifactRouter, blocking_io};
 use crate::{ToolCompletion, ToolError, ToolProgress, events::OutputHub};
 
 #[derive(Debug)]
@@ -41,7 +41,8 @@ struct Publication {
 
 #[derive(Debug)]
 struct Capture {
-    store: Arc<ArtifactStore>,
+    store: Arc<ArtifactRouter>,
+    session: SessionId,
     declaration: ToolOutputDeclaration,
     max_lines: usize,
     max_bytes: usize,
@@ -61,7 +62,7 @@ impl Drop for Capture {
                 temporary, file, ..
             } = channel;
             drop(file.into_inner().unwrap_or_else(|p| p.into_inner()));
-            self.store.discard_capture(&temporary);
+            self.store.discard_capture(self.session, &temporary);
         }
     }
 }
@@ -70,6 +71,10 @@ impl Drop for Capture {
 pub(crate) struct OutputCapture(Arc<Capture>);
 
 impl OutputCapture {
+    fn session(&self) -> cookie_agent_protocol::SessionId {
+        self.0.session
+    }
+
     pub(crate) fn release_publication(&self) {
         let mut publication = self.0.publication.lock().unwrap_or_else(|p| p.into_inner());
         publication.released = true;
@@ -77,16 +82,19 @@ impl OutputCapture {
     }
 
     pub(crate) async fn new(
-        store: Arc<ArtifactStore>,
+        store: Arc<ArtifactRouter>,
+        session: SessionId,
         declaration: ToolOutputDeclaration,
         max_lines: usize,
         max_bytes: usize,
     ) -> Result<Self, ToolError> {
-        blocking_io::run(move || Self::create(store, declaration, max_lines, max_bytes)).await?
+        blocking_io::run(move || Self::create(store, session, declaration, max_lines, max_bytes))
+            .await?
     }
 
     fn create(
-        store: Arc<ArtifactStore>,
+        store: Arc<ArtifactRouter>,
+        session: SessionId,
         declaration: ToolOutputDeclaration,
         max_lines: usize,
         max_bytes: usize,
@@ -98,6 +106,7 @@ impl OutputCapture {
             max_bytes.min((PersistedToolResult::MAX_OUTPUT_BYTES - 16 * 1024) / names.len());
         let capture = Self(Arc::new(Capture {
             store,
+            session,
             declaration,
             max_lines,
             max_bytes,
@@ -118,7 +127,7 @@ impl OutputCapture {
                 let file = capture
                     .0
                     .store
-                    .create_capture_file(&temporary)
+                    .create_capture_file(session, &temporary)
                     .map_err(|e| ToolError::execution(e.to_string()))?;
                 state.channels.push(Channel {
                     name,
@@ -170,7 +179,7 @@ impl OutputCapture {
                 capture
                     .0
                     .store
-                    .io_test_hook
+                    .io_test_hook()
                     .run("capture_delivery", "")
                     .map_err(|error| ToolError::execution(error.to_string()))?;
             }
@@ -232,7 +241,7 @@ impl OutputCapture {
         #[cfg(test)]
         self.0
             .store
-            .io_test_hook
+            .io_test_hook()
             .run("capture_write", &channel.temporary)
             .map_err(|e| ToolError::execution(e.to_string()))?;
         let file = channel.file.get_mut().unwrap_or_else(|p| p.into_inner());
@@ -282,7 +291,7 @@ impl OutputCapture {
             .acquire_owned()
             .await
             .map_err(|_| ToolError::execution("output capture closed"))?;
-        let publication = self.0.store.publication.clone().read_owned().await;
+        let publication = self.0.store.publication().read_owned().await;
         let capture = self.clone();
         blocking_io::run(move || {
             let _operation = operation;
@@ -364,7 +373,7 @@ impl OutputCapture {
             let (artifact, _) = self
                 .0
                 .store
-                .commit_capture(&channel.temporary, &channel.file)
+                .commit_capture(self.session(), &channel.temporary, &channel.file)
                 .map_err(|e| ToolError::execution(e.to_string()))?;
             if artifact.sha256 != format!("{:x}", channel.hash.clone().finalize()) {
                 return Err(ToolError::execution("captured output digest mismatch"));
@@ -397,7 +406,7 @@ impl OutputCapture {
             .map_err(|e| ToolError::execution(e.to_string()))?;
             self.0
                 .store
-                .retain(&manifest)
+                .retain(self.session(), &manifest)
                 .map_err(|e| ToolError::execution(e.to_string()))?
         };
         let mut rendered = String::new();
@@ -516,9 +525,10 @@ mod tests {
     #[tokio::test]
     async fn named_streams_capture_in_declaration_order_with_independent_previews() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
         let capture = OutputCapture::new(
             store.clone(),
+            crate::test_session_id(),
             ToolOutputDeclaration::Named {
                 streams: vec!["results".into(), "diagnostics".into(), "empty".into()],
             },
@@ -589,10 +599,16 @@ mod tests {
     #[tokio::test]
     async fn streamed_completion_rejects_resupply_and_preserves_incomplete_utf8_output() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store.clone(), ToolOutputDeclaration::Single, 10, 3)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            ToolOutputDeclaration::Single,
+            10,
+            3,
+        )
+        .await
+        .unwrap();
         append(
             &capture,
             &[ToolOutputChunk {
@@ -645,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
         let result = finish_page(completion(ToolCompletionOutput::Single {
             text: "one\ntwo\n".into(),
         }))
@@ -671,9 +687,15 @@ mod tests {
                 .count(),
             0
         );
-        let capture = OutputCapture::new(store.clone(), ToolOutputDeclaration::Single, 1, 4)
-            .await
-            .unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            ToolOutputDeclaration::Single,
+            1,
+            4,
+        )
+        .await
+        .unwrap();
         let result = capture
             .finish(
                 completion(ToolCompletionOutput::Single {
@@ -701,9 +723,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let sessions = root.path().join("sessions");
         std::fs::create_dir_all(sessions.join("session")).unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
         let capture = OutputCapture::new(
             store.clone(),
+            crate::test_session_id(),
             ToolOutputDeclaration::Named {
                 streams: vec!["a".into(), "b".into()],
             },
@@ -732,7 +755,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .collect_garbage(&sessions, std::time::Duration::ZERO)
+                .collect_garbage(std::time::Duration::ZERO)
                 .unwrap()
                 .deleted,
             0
@@ -743,9 +766,7 @@ mod tests {
         )
         .unwrap();
         drop(capture);
-        let report = store
-            .collect_garbage(&sessions, std::time::Duration::ZERO)
-            .unwrap();
+        let report = store.collect_garbage(std::time::Duration::ZERO).unwrap();
         assert_eq!(report.deleted, 0);
         assert_eq!(report.retained, 3);
     }
@@ -753,10 +774,16 @@ mod tests {
     #[tokio::test]
     async fn output_deltas_reject_undeclared_channels_and_oversized_chunks() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store, ToolOutputDeclaration::Single, 1, 1)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store,
+            crate::test_session_id(),
+            ToolOutputDeclaration::Single,
+            1,
+            1,
+        )
+        .await
+        .unwrap();
         assert!(
             append(
                 &capture,
@@ -784,10 +811,11 @@ mod tests {
     #[tokio::test]
     async fn absent_final_display_does_not_fall_back_to_authoritative_output() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store, Default::default(), 10, 100)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture =
+            OutputCapture::new(store, crate::test_session_id(), Default::default(), 10, 100)
+                .await
+                .unwrap();
         let mut completion = completion(ToolCompletionOutput::Single {
             text: "model-only output".into(),
         });
@@ -800,10 +828,16 @@ mod tests {
     #[tokio::test]
     async fn display_budget_does_not_stop_authoritative_capture() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store.clone(), Default::default(), 1, 100)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            Default::default(),
+            1,
+            100,
+        )
+        .await
+        .unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
         let id = cookie_agent_protocol::ToolCallId::new_v7();
         let sink = crate::ProgressSink::with_capture(
@@ -846,10 +880,16 @@ mod tests {
     #[tokio::test]
     async fn progress_backpressure_precedes_acceptance_and_never_drops_output() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store.clone(), Default::default(), 10, 100)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            Default::default(),
+            10,
+            100,
+        )
+        .await
+        .unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let id = cookie_agent_protocol::ToolCallId::new_v7();
         let sink = crate::ProgressSink::with_capture(
@@ -901,10 +941,16 @@ mod tests {
     async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("artifacts");
-        let store = ArtifactStore::open(directory.clone()).unwrap();
-        let capture = OutputCapture::new(store.clone(), Default::default(), 10, 100)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(directory.clone()).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            Default::default(),
+            10,
+            100,
+        )
+        .await
+        .unwrap();
         append(
             &capture,
             &[ToolOutputChunk {
@@ -955,12 +1001,13 @@ mod tests {
     #[tokio::test]
     async fn aggregate_previews_stay_within_the_event_bound() {
         let root = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(root.path().join("artifacts")).unwrap();
+        let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
         let names = (0..cookie_agent_protocol::MAX_TOOL_STREAMS)
             .map(|index| format!("stream{index}"))
             .collect::<Vec<_>>();
         let capture = OutputCapture::new(
             store,
+            crate::test_session_id(),
             ToolOutputDeclaration::Named {
                 streams: names.clone(),
             },
@@ -995,11 +1042,17 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn cancelled_append_awaiter_cannot_lose_bytes_or_let_finalization_overtake_io() {
         let directory = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store.clone(), Default::default(), 10, 100)
-            .await
-            .unwrap();
-        let (entered, release) = blocking_io::gate(&store, "capture_write", None);
+        let store = ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            Default::default(),
+            10,
+            100,
+        )
+        .await
+        .unwrap();
+        let (entered, release) = blocking_io::gate(store.io_test_hook(), "capture_write", None);
         let writer = capture.clone();
         let writing = tokio::spawn(async move {
             append(
@@ -1045,10 +1098,16 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn capture_finalization_does_not_block_async_workers_or_publication_release() {
         let directory = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let capture = OutputCapture::new(store.clone(), Default::default(), 10, 100)
-            .await
-            .unwrap();
+        let store = ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let capture = OutputCapture::new(
+            store.clone(),
+            crate::test_session_id(),
+            Default::default(),
+            10,
+            100,
+        )
+        .await
+        .unwrap();
         append(
             &capture,
             &[ToolOutputChunk {
@@ -1058,7 +1117,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let (entered, release) = blocking_io::gate(&store, "capture_finalize", None);
+        let (entered, release) = blocking_io::gate(store.io_test_hook(), "capture_finalize", None);
         let owner = capture.clone();
         let finishing = tokio::spawn(async move {
             owner
@@ -1074,9 +1133,9 @@ mod tests {
         // An aborted terminal owner must not wait on the capture's heavy state lock,
         // and an in-flight finalizer must not restore publication protection later.
         capture.release_publication();
-        assert!(store.publication.try_write().is_err());
+        assert!(store.publication().try_write().is_err());
         release.send(()).unwrap();
         assert_eq!(finishing.await.unwrap().unwrap().output, "complete\n");
-        assert!(store.publication.try_write().is_ok());
+        assert!(store.publication().try_write().is_ok());
     }
 }

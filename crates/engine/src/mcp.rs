@@ -3035,7 +3035,7 @@ mod tests {
 
     use crate::{
         ProgressSink, SessionToolContext, ToolCall, ToolExecutionContext, ToolPreparationContext,
-        ToolProvider as _, TurnAgentContext, events::OutputHub, runtime::ArtifactStore,
+        ToolProvider as _, TurnAgentContext, events::OutputHub,
     };
 
     use super::{
@@ -3274,7 +3274,7 @@ for line in sys.stdin:
                 cancellation: CancellationToken::new(),
                 stdin: None,
                 turn_context: turn_context(),
-                artifacts: ArtifactStore::open(directory.path().join("artifacts"))
+                artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
                     .expect("artifact store"),
             })
             .await
@@ -3304,7 +3304,8 @@ for line in sys.stdin:
                 cookie_agent_protocol::AdaptorId::Anthropic,
                 false,
             )),
-            artifacts: ArtifactStore::open(directory.path().join("artifacts")).unwrap(),
+            artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
+                .unwrap(),
         };
         let structured = json!({"a": 1, "b": [2]});
         for (texts, data, retain) in [
@@ -3371,7 +3372,7 @@ for line in sys.stdin:
             cancellation: CancellationToken::new(),
             stdin: None,
             turn_context: Arc::new(turn),
-            artifacts: ArtifactStore::open(directory.path().join("artifacts"))
+            artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
                 .expect("artifact store"),
         };
 
@@ -3537,7 +3538,7 @@ for line in sys.stdin:
             cancellation: CancellationToken::new(),
             stdin: None,
             turn_context: Arc::new(make_turn_context(AdaptorId::Anthropic, true)),
-            artifacts: ArtifactStore::open(directory.path().join("artifacts"))
+            artifacts: crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
                 .expect("artifact store"),
         };
 

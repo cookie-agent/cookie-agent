@@ -1424,6 +1424,63 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
     reopened.shutdown().await;
 }
 
+/// §8.2: artifact placement follows the writing session's root, so a child's
+/// tool output is collected with its own tree and read from anywhere (§5.1).
+#[test]
+fn delegated_child_artifacts_are_placed_inside_the_root_tree() {
+    let (fixture, selection) = custom_fixture();
+    let root = fixture
+        .engine
+        .create_session(selection)
+        .expect("root session");
+    let child = create_buffered_delegated_child(&fixture.engine, root.session_id);
+
+    let (reference, digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(child, b"child tool output")
+        .expect("retain child artifact");
+    let path = fixture.engine.inner.artifacts.blob_path(child, &digest);
+    assert_eq!(
+        reference.uri,
+        format!("artifact://sha256/{digest}"),
+        "the URI stays content-addressed with no tree in it"
+    );
+    assert!(path.is_file(), "the blob was written: {path:?}");
+    let root_artifacts = fixture
+        .engine
+        .inner
+        .store
+        .resolve_dir(root.session_id)
+        .expect("root session directory")
+        .join("artifacts");
+    assert_eq!(
+        path.parent(),
+        Some(root_artifacts.as_path()),
+        "a child writes into its root's artifact directory"
+    );
+    assert!(
+        !fixture
+            .engine
+            .inner
+            .store
+            .resolve_dir(child)
+            .expect("child directory")
+            .join("artifacts")
+            .exists(),
+        "the child has no private store of its own"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .read_artifact(&format!("artifact://{digest}"), 0, 1)
+            .expect("read back")
+            .content,
+        "child tool output"
+    );
+}
+
 #[derive(Clone)]
 struct TestStreamingBashProvider {
     output_started: Arc<tokio::sync::Notify>,
@@ -6717,7 +6774,7 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
         .engine
         .inner
         .artifacts
-        .io_test_hook
+        .io_test_hook()
         .set(Arc::new(move |operation, _| {
             if operation.starts_with("capture_") {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -6729,8 +6786,7 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
         .engine
         .inner
         .artifacts
-        .publication
-        .clone()
+        .publication()
         .write_owned()
         .await;
     let session = fixture.engine.create_session(selection.clone()).unwrap();
@@ -9817,6 +9873,7 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
     };
     let capture = OutputCapture::new(
         fixture.engine.inner.artifacts.clone(),
+        crate::test_session_id(),
         Default::default(),
         10,
         1024,
@@ -9975,7 +10032,9 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         };
 
     let full = "zero\none\ntwo\nthree";
-    let (retained, retained_id) = artifacts.retain(full.as_bytes()).unwrap();
+    let (retained, retained_id) = artifacts
+        .retain(crate::test_session_id(), full.as_bytes())
+        .unwrap();
     let truncated_call = append_compaction_tool_history(
         &fixture,
         session.session_id,
@@ -10000,7 +10059,9 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
     assert_eq!(page.next_offset_lines, Some(3));
     assert_eq!(page.source, "artifact");
 
-    let (elided_preview, preview_id) = artifacts.retain(b"zero\n").unwrap();
+    let (elided_preview, preview_id) = artifacts
+        .retain(crate::test_session_id(), b"zero\n")
+        .unwrap();
     fixture
         .engine
         .append_direct(
@@ -10087,7 +10148,7 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .engine
         .inner
         .artifacts
-        .retain(content.as_bytes())
+        .retain(crate::test_session_id(), content.as_bytes())
         .unwrap();
     // There is no session or tool event referencing this artifact.
     let page = fixture
@@ -10120,11 +10181,10 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         .engine
         .inner
         .artifacts
-        .retain(&vec![
-            b'x';
-            cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES
-                + 1
-        ])
+        .retain(
+            crate::test_session_id(),
+            &vec![b'x'; cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES + 1],
+        )
         .unwrap();
     assert!(matches!(
         fixture
@@ -10133,12 +10193,17 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         Err(ToolError::ResourceLimit(_))
     ));
 
-    let (stdout, stdout_digest) = fixture.engine.inner.artifacts.retain(b"out\n").unwrap();
+    let (stdout, stdout_digest) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(crate::test_session_id(), b"out\n")
+        .unwrap();
     let (stderr, stderr_digest) = fixture
         .engine
         .inner
         .artifacts
-        .retain(b"err-0\nerr-1\n")
+        .retain(crate::test_session_id(), b"err-0\nerr-1\n")
         .unwrap();
     let manifest = serde_json::to_vec(&cookie_agent_protocol::ToolOutputManifest {
         streams: vec![
@@ -10163,7 +10228,12 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         ],
     })
     .unwrap();
-    let (_, manifest_id) = fixture.engine.inner.artifacts.retain(&manifest).unwrap();
+    let (_, manifest_id) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(crate::test_session_id(), &manifest)
+        .unwrap();
     let page = fixture
         .engine
         .read_artifact(&format!("artifact://{manifest_id}/stderr"), 1, 1)
@@ -10185,7 +10255,12 @@ async fn artifact_read_uses_bearer_uris_and_bounds_pages() {
         "ordinary non-Bash output".into(),
     ))
     .unwrap();
-    let (_, serialized_id) = fixture.engine.inner.artifacts.retain(&serialized).unwrap();
+    let (_, serialized_id) = fixture
+        .engine
+        .inner
+        .artifacts
+        .retain(crate::test_session_id(), &serialized)
+        .unwrap();
     let raw_serialized = fixture
         .engine
         .read_artifact(&format!("artifact://{serialized_id}"), 0, 1)
@@ -10249,19 +10324,16 @@ async fn artifact_read_rejects_invalid_missing_and_corrupt_artifacts() {
             .to_string()
             .contains("artifact missing")
     );
+    let writer = crate::test_session_id();
     let (_, digest) = fixture
         .engine
         .inner
         .artifacts
-        .retain(b"original\n")
+        .retain(writer, b"original\n")
         .unwrap();
-    let artifacts = fixture
-        .engine
-        .inner
-        .store
-        .project_dir_path()
-        .join("artifacts");
-    fs::write(artifacts.join(&digest), b"modified\n").unwrap();
+    let stored = fixture.engine.inner.artifacts.blob_path(writer, &digest);
+    assert!(stored.is_file(), "write lands in the tree directory");
+    fs::write(stored, b"modified\n").unwrap();
     assert!(
         fixture
             .engine
@@ -10375,14 +10447,14 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             .engine
             .inner
             .artifacts
-            .retain(full_output.as_bytes())
+            .retain(crate::test_session_id(), full_output.as_bytes())
             .expect("retain full output behind truncated preview");
         let image_bytes = vec![7_u8; 1024 * 1024];
         let (image_reference, image_digest) = fixture
             .engine
             .inner
             .artifacts
-            .retain(&image_bytes)
+            .retain(crate::test_session_id(), &image_bytes)
             .expect("retain compaction image");
         let image_attachment = cookie_agent_protocol::ToolAttachment {
             mime_type: cookie_agent_protocol::MimeType::new("image/png").unwrap(),
@@ -13750,7 +13822,7 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     // Hold the blocking job after it enqueues progress but before send().await can
     // resume. Progress receipt, not the producer's continuation, proves acceptance.
     let (delivery_enqueued, release_delivery) = crate::runtime::block_artifact_io_for_test(
-        &fixture.engine.inner.artifacts,
+        fixture.engine.inner.artifacts.io_test_hook(),
         "capture_delivery",
         None,
     );
@@ -17124,7 +17196,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .engine
         .inner
         .artifacts
-        .retain(b"fork-shared-artifact")
+        .retain(crate::test_session_id(), b"fork-shared-artifact")
         .expect("retain shared artifact");
     assert_eq!(artifact.uri, format!("artifact://sha256/{digest}"));
     assert!(

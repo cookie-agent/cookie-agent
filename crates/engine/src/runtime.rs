@@ -85,6 +85,14 @@ mod tool_prompts;
 use admission::InflightDelegation;
 pub use artifact_reads::ArtifactReadPage;
 pub(crate) use artifact_reads::read_artifact_async;
+pub(crate) use artifacts::ArtifactRouter;
+
+/// Session id for artifact/capture tests that do not model tree placement.
+#[cfg(test)]
+pub(crate) fn test_session_id() -> cookie_agent_protocol::SessionId {
+    cookie_agent_protocol::SessionId::new_v7()
+}
+#[cfg(test)]
 pub(crate) use artifacts::ArtifactStore;
 #[cfg(test)]
 pub(crate) use blocking_io::gate as block_artifact_io_for_test;
@@ -1170,7 +1178,7 @@ const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 4;
 pub(crate) struct Inner {
     config: LoadedConfiguration,
     pub(crate) config_store: Mutex<crate::config_store::ConfigStore>,
-    pub(crate) artifacts: Arc<ArtifactStore>,
+    pub(crate) artifacts: Arc<ArtifactRouter>,
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) store: Arc<SessionStore>,
     pub(crate) delegation_events: Arc<DelegationEventStore>,
@@ -1310,7 +1318,14 @@ impl Engine {
             current_manifest: prepared_manifest.manifest,
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
-        let artifacts = ArtifactStore::open(store.project_dir_path().join("artifacts"))?;
+        let artifacts = ArtifactRouter::for_store(&store)?;
+        if !store.is_flat_layout() {
+            // Every write belongs to the directory of the writing session's root.
+            let placement = Arc::clone(&store);
+            artifacts.install_tree_resolver(Arc::new(move |session| {
+                Some(placement.root_of(session).unwrap_or(session))
+            }));
+        }
         let mcp = Arc::new(
             crate::McpRegistry::new(
                 options.config.mcp_servers.clone(),
@@ -1887,6 +1902,9 @@ impl Engine {
         &self,
         products: crate::session::TreeLoadProducts,
     ) -> Result<(), EngineError> {
+        // Its child logs are now part of the durable live set for artifact
+        // collection, and its own directory may be collected (§5.2).
+        self.inner.artifacts.note_tree_loaded(products.root);
         if let Err(error) = self.validate_manifest_bindings(&products.bindings) {
             eprintln!("session tree {} rejected: {error}", products.root);
             return Err(error);

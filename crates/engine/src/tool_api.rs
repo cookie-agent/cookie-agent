@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     events::OutputHub,
     runtime::tool_execution::validate_attachment,
-    runtime::{ArtifactStore, OutputCapture, ToolCallFailureCode},
+    runtime::{ArtifactRouter, OutputCapture, ToolCallFailureCode},
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -193,9 +193,10 @@ impl ProgressSink {
         directory: PathBuf,
         declaration: cookie_agent_protocol::ToolOutputDeclaration,
     ) -> Result<Self, ToolError> {
-        let store =
-            ArtifactStore::open(directory).map_err(|e| ToolError::execution(e.to_string()))?;
-        let capture = OutputCapture::new(store, declaration, 2_000, 16 * 1024).await?;
+        let router = ArtifactRouter::open_flat(directory)
+            .map_err(|e| ToolError::execution(e.to_string()))?;
+        let capture =
+            OutputCapture::new(router, SessionId::new_v7(), declaration, 2_000, 16 * 1024).await?;
         Ok(Self::with_capture(sender, output, capture))
     }
 
@@ -352,7 +353,7 @@ pub struct ToolExecutionContext {
     pub stdin: Option<ToolStdin>,
     /// Static agent/model context shared with preparation for this batch.
     pub turn_context: Arc<TurnAgentContext>,
-    pub(crate) artifacts: Arc<ArtifactStore>,
+    pub(crate) artifacts: Arc<ArtifactRouter>,
 }
 
 impl ToolExecutionContext {
@@ -379,7 +380,7 @@ impl ToolExecutionContext {
             cancellation: CancellationToken::new(),
             stdin: None,
             turn_context,
-            artifacts: ArtifactStore::open(artifact_directory.into())
+            artifacts: ArtifactRouter::open_flat(artifact_directory.into())
                 .map_err(|error| ToolError::execution(error.to_string()))?,
         })
     }
@@ -405,7 +406,7 @@ impl ToolExecutionContext {
         let mime_type = mime_type.into();
         let (reference, sha256) = self
             .artifacts
-            .retain(bytes)
+            .retain(self.session, bytes)
             .map_err(|error| ToolError::execution(error.to_string()))?;
         Ok(ToolAttachment {
             mime_type: cookie_agent_protocol::MimeType::new(mime_type)

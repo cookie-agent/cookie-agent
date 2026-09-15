@@ -24,7 +24,7 @@ pub(crate) async fn run<T: Send + 'static>(
 
 #[cfg(test)]
 pub(crate) fn gate(
-    store: &super::artifacts::ArtifactStore,
+    hook: &super::artifacts::ArtifactIoTestHook,
     operation: &'static str,
     key: Option<String>,
 ) -> (
@@ -34,20 +34,16 @@ pub(crate) fn gate(
     let (entered, observed) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let pending = std::sync::Mutex::new(Some((entered, wait)));
-    store
-        .io_test_hook
-        .set(std::sync::Arc::new(move |current, current_key| {
-            if current == operation && key.as_ref().is_none_or(|key| key == current_key) {
-                let gate = pending.lock().unwrap().take();
-                if let Some((entered, wait)) = gate {
-                    let _ = entered.send(());
-                    wait.recv_timeout(std::time::Duration::from_secs(30))
-                        .map_err(|error| {
-                            std::io::Error::other(format!("I/O test gate: {error}"))
-                        })?;
-                }
+    hook.set(std::sync::Arc::new(move |current, current_key| {
+        if current == operation && key.as_ref().is_none_or(|key| key == current_key) {
+            let gate = pending.lock().unwrap().take();
+            if let Some((entered, wait)) = gate {
+                let _ = entered.send(());
+                wait.recv_timeout(std::time::Duration::from_secs(30))
+                    .map_err(|error| std::io::Error::other(format!("I/O test gate: {error}")))?;
             }
-            Ok(())
-        }));
+        }
+        Ok(())
+    }));
     (observed, release)
 }

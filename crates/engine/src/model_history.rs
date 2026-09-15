@@ -8,8 +8,8 @@ use cookie_agent_protocol::{
     NativeContextScope, NativeReplayArtifact, PersistedAssistantPart, PersistedContentValue,
     PersistedFilePart, PersistedFileSource, PersistedModelTurn, PersistedToolContent,
     PersistedToolResult, ReplayDecision, ReplayDisposition, ResolvedModelRef, SafeCode,
-    SafeErrorMessage, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId, ToolEmittedContent,
-    ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
+    SafeErrorMessage, SessionId, Sha256Digest, StoredEvent, ToolAttachment, ToolCallId,
+    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolTerminationOutcome, Usage,
 };
 use oven_sdk::{
     AdapterId, AssistantMessage, AssistantPart, CompletedTurn, ContentValue, CustomPart, FilePart,
@@ -22,7 +22,7 @@ use oven_sdk::{
 };
 use thiserror::Error;
 
-use crate::{ArtifactStore, goal_projection::GoalProducerProjection};
+use crate::{ArtifactRouter, goal_projection::GoalProducerProjection};
 
 pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
@@ -119,7 +119,8 @@ pub(crate) fn wire_model(binding: &FrozenModelBinding) -> ResolvedModelRef {
 
 pub(crate) fn persist_turn(
     mut turn: CompletedTurn,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
+    session: SessionId,
     binding: &FrozenModelBinding,
 ) -> Result<(PersistedModelTurn, Vec<SafeErrorMessage>), HistoryError> {
     turn.finish
@@ -150,7 +151,7 @@ pub(crate) fn persist_turn(
                 .message
                 .content
                 .into_iter()
-                .map(|part| persist_assistant_part(part, store))
+                .map(|part| persist_assistant_part(part, store, session))
                 .collect::<Result<_, _>>()?,
             provider_options: turn.message.provider_options,
             finish_reason: persist_finish_reason(turn.finish.finish_reason),
@@ -440,7 +441,7 @@ fn insert_summary(assembled: &mut AssembledHistory, events: &[StoredEvent], summ
 
 pub(crate) fn project_summary_context(
     events: &[StoredEvent],
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
     source_through_seq: u64,
@@ -466,7 +467,7 @@ pub(crate) fn project_summary_context(
 
 pub(crate) fn compaction_prefix_history(
     events: &[StoredEvent],
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
     recent_from_seq: Option<u64>,
@@ -702,7 +703,7 @@ struct AssembledHistory {
 
 pub(crate) fn assemble_model_context(
     events: &[StoredEvent],
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<ModelContext, HistoryError> {
@@ -750,7 +751,7 @@ pub(crate) fn assemble_model_context(
 
 pub(crate) fn assemble_full_history(
     events: &[StoredEvent],
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
@@ -762,7 +763,7 @@ pub(crate) fn assemble_full_history(
 fn assemble_history_with_replay(
     events: &[StoredEvent],
     context_events: &[StoredEvent],
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
@@ -1330,7 +1331,7 @@ fn attach_result(
 fn append_tool_emitted_message(
     history: &mut Vec<HistoryTurn>,
     message: &ToolEmittedMessage,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
 ) -> Result<(), HistoryError> {
     let mut content = Vec::with_capacity(
         message.content.len() + usize::from(message.role == ToolEmittedMessageRole::System),
@@ -1377,7 +1378,7 @@ fn denied_failure(message: &str) -> Option<DeniedToolFailure> {
 
 fn tool_result_part(
     result: &PersistedToolResult,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
 ) -> Result<ToolResultPart, HistoryError> {
     let truncation = if let Some(truncation) = &result.truncation {
         let artifact_id = retained_artifact_id(&truncation.retained)?;
@@ -1412,7 +1413,7 @@ fn tool_result_part(
 
 fn attachment_file(
     attachment: &ToolAttachment,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
 ) -> Result<FilePart, HistoryError> {
     let bytes = store.read_verified_attachment(attachment)?;
     Ok(FilePart {
@@ -1425,7 +1426,8 @@ fn attachment_file(
 
 fn persist_assistant_part(
     part: AssistantPart,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
+    session: SessionId,
 ) -> Result<PersistedAssistantPart, HistoryError> {
     Ok(match part {
         AssistantPart::Text(part) => PersistedAssistantPart::Text {
@@ -1453,12 +1455,12 @@ fn persist_assistant_part(
         AssistantPart::ToolResult(part) => PersistedAssistantPart::ToolResult {
             tool_call_id: cookie_agent_protocol::ModelCallId::new(part.tool_call_id)
                 .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
-            content: persist_tool_content(part.content, store)?,
+            content: persist_tool_content(part.content, store, session)?,
             is_error: part.is_error,
             metadata: part.metadata,
         },
         AssistantPart::File(file) => PersistedAssistantPart::File {
-            file: persist_file(file, store)?,
+            file: persist_file(file, store, session)?,
         },
         AssistantPart::Source(part) => PersistedAssistantPart::Source {
             id: part.id,
@@ -1564,7 +1566,8 @@ fn restore_assistant_part(part: &PersistedAssistantPart) -> Result<AssistantPart
 
 fn persist_tool_content(
     content: ToolContent,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
+    session: SessionId,
 ) -> Result<PersistedToolContent, HistoryError> {
     Ok(match content {
         ToolContent::Text(text) => PersistedToolContent::Text { text },
@@ -1576,7 +1579,7 @@ fn persist_tool_content(
                     ContentValue::Text(text) => Ok(PersistedContentValue::Text { text }),
                     ContentValue::Json(value) => Ok(PersistedContentValue::Json { value }),
                     ContentValue::File(file) => Ok(PersistedContentValue::File {
-                        file: persist_file(file, store)?,
+                        file: persist_file(file, store, session)?,
                     }),
                 })
                 .collect::<Result<_, HistoryError>>()?,
@@ -1607,10 +1610,14 @@ fn restore_tool_content(content: &PersistedToolContent) -> Result<ToolContent, H
     })
 }
 
-fn persist_file(file: FilePart, store: &ArtifactStore) -> Result<PersistedFilePart, HistoryError> {
+fn persist_file(
+    file: FilePart,
+    store: &ArtifactRouter,
+    session: SessionId,
+) -> Result<PersistedFilePart, HistoryError> {
     let source = match file.source {
-        FileSource::Bytes(bytes) => persisted_artifact(store, &bytes)?,
-        FileSource::Text(text) => persisted_artifact(store, text.as_bytes())?,
+        FileSource::Bytes(bytes) => persisted_artifact(store, session, &bytes)?,
+        FileSource::Text(text) => persisted_artifact(store, session, text.as_bytes())?,
         FileSource::Url(url) => PersistedFileSource::Url {
             url: url.to_string(),
         },
@@ -1631,10 +1638,11 @@ fn persist_file(file: FilePart, store: &ArtifactStore) -> Result<PersistedFilePa
 }
 
 fn persisted_artifact(
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
+    session: SessionId,
     bytes: &[u8],
 ) -> Result<PersistedFileSource, HistoryError> {
-    let (reference, sha256) = store.retain(bytes)?;
+    let (reference, sha256) = store.retain(session, bytes)?;
     Ok(PersistedFileSource::Artifact {
         byte_length: bytes.len() as u64,
         sha256: Sha256Digest::new(sha256)
@@ -1671,7 +1679,7 @@ fn restore_file(file: &PersistedFilePart) -> Result<FilePart, HistoryError> {
 
 fn restore_file_with_store(
     file: &PersistedFilePart,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
 ) -> Result<FilePart, HistoryError> {
     if let PersistedFileSource::Artifact {
         byte_length,
@@ -1934,7 +1942,7 @@ fn restore_finish_reason(reason: &ModelFinishReason) -> FinishReason {
 // Artifact-backed files need the store only while assembling a live request.
 fn restore_assistant_part_with_store(
     part: &PersistedAssistantPart,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
 ) -> Result<AssistantPart, HistoryError> {
     match part {
         PersistedAssistantPart::File { file } => {
@@ -1970,7 +1978,7 @@ fn restore_assistant_part_with_store(
 fn restore_turn_with_store(
     turn: &PersistedModelTurn,
     resolved_model: &ResolvedModelRef,
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     binding: &FrozenModelBinding,
 ) -> Result<(CompletedTurn, Option<ReplayDisposition>), HistoryError> {
     let (native_replay, replay_disposition) =
@@ -2108,7 +2116,7 @@ mod tests {
         )
         .unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let mut finish = oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::Stop);
         finish.native_replay = Some(artifact);
         let turn = oven_sdk::CompletedTurn::new(
@@ -2117,7 +2125,8 @@ mod tests {
             )]),
             finish,
         );
-        let (mut persisted, _) = super::persist_turn(turn, &store, &binding).unwrap();
+        let (mut persisted, _) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
         assert_eq!(
             persisted.native_replay.as_ref().unwrap().scope().model_id,
             binding.selection.model.model_id()
@@ -2164,8 +2173,9 @@ mod tests {
             oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
         );
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let (persisted, _) = super::persist_turn(turn, &store, &binding).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let (persisted, _) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
         let encoded = serde_json::to_string(&persisted).unwrap();
         assert!(!encoded.contains("opaque-required-state"));
         let persisted = serde_json::from_str(&encoded).unwrap();
@@ -2181,7 +2191,7 @@ mod tests {
     #[test]
     fn tool_result_materializes_output_and_metadata_as_separate_values() {
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let session_id = SessionId::new_v7();
         let result = PersistedToolResult {
             display: None,
@@ -2211,7 +2221,7 @@ mod tests {
     #[test]
     fn truncated_tool_result_names_the_readback_tool() {
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let result = PersistedToolResult {
             display: None,
             retained_output: None,
@@ -2382,7 +2392,7 @@ mod tests {
             ),
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let history = assemble_full_history(&events, &store, &binding(), "system prompt").unwrap();
         assert_eq!(history.len(), 4);
         let rendered = history
@@ -2407,9 +2417,8 @@ mod tests {
             "[tool output elided; retained at artifact://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 12345 bytes] 2 tool-emitted message(s) were elided with this result and are not recoverable."
         );
     }
-    use crate::{
-        ArtifactStore,
-        test_support::{model_binding as binding, model_binding_named, variant_model_binding},
+    use crate::test_support::{
+        model_binding as binding, model_binding_named, variant_model_binding,
     };
 
     fn event(seq: u64, run: RunId, payload: EventPayload) -> StoredEvent {
@@ -2501,7 +2510,7 @@ mod tests {
             "durable producer result",
         );
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let current_binding = binding();
 
         let accepted_history = assemble_full_history(
@@ -2559,7 +2568,7 @@ mod tests {
             run_started_event(5, run_b, &current_binding),
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
 
         let old_admission_history =
             assemble_full_history(&events, &store, &current_binding, "system").unwrap();
@@ -2618,7 +2627,7 @@ mod tests {
             discarded,
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
 
         let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
         assert!(
@@ -2673,7 +2682,7 @@ mod tests {
             ),
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
 
         let history = assemble_full_history(&events, &store, &current_binding, "system").unwrap();
         assert!(
@@ -2729,7 +2738,7 @@ mod tests {
             ),
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
         let rendered = serde_json::to_string(&history).unwrap();
         assert!(!rendered.contains("duplicate"));
@@ -2790,7 +2799,7 @@ mod tests {
             ),
         ];
         let directory = tempfile::tempdir().unwrap();
-        let store = crate::ArtifactStore::open(directory.path().join("artifacts")).unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
         let context = assemble_model_context(&events, &store, &binding(), "frozen system").unwrap();
         let rendered = serde_json::to_string(&context.history).unwrap();
         assert!(rendered.contains("Summary does not contain"));
@@ -2924,7 +2933,8 @@ mod tests {
 
     fn switched_context(current: &FrozenModelBinding) -> super::ModelContext {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let original = binding();
         assemble_model_context(
             &[replay_turn_event(&original)],
@@ -2969,7 +2979,8 @@ mod tests {
     #[test]
     fn normalized_history_keeps_native_artifacts_for_adapter_scoped_replay() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let resolved = wire_model(&binding);
         let artifact = NativeReplayArtifact::new(
@@ -3024,7 +3035,8 @@ mod tests {
     #[test]
     fn native_replay_is_reused_across_variants_with_the_same_protocol() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let base = binding();
         let resolved = wire_model(&base);
         let artifact = NativeReplayArtifact::new(
@@ -3096,7 +3108,8 @@ mod tests {
     #[test]
     fn native_replay_with_adapter_mismatching_persisted_turn_is_discarded() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let base = binding();
         let resolved = wire_model(&base);
         // The artifact matches the CURRENT binding's adapter, but the
@@ -3432,7 +3445,8 @@ mod tests {
     #[test]
     fn checkpoint_before_new_user_keeps_summary_and_user_live() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let summary_limit = SummaryByteLimit::new(1024).expect("limit");
@@ -3497,7 +3511,8 @@ mod tests {
     #[test]
     fn injected_and_transformed_messages_replay_from_durable_events() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let events = vec![
@@ -3538,7 +3553,8 @@ mod tests {
     #[test]
     fn native_checkpoint_carries_window_and_drops_pre_checkpoint_history() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let mut binding = binding();
         binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
         let run = RunId::new_v7();
@@ -3612,7 +3628,8 @@ mod tests {
     #[test]
     fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let mut binding = binding();
         binding.descriptor.capabilities.compaction = oven_sdk::CompactionCapability::Native;
         let run = RunId::new_v7();
@@ -3759,7 +3776,8 @@ mod tests {
     #[test]
     fn revert_voids_checkpoint_beyond_boundary_and_keeps_older_checkpoint() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let summary_limit = SummaryByteLimit::new(1024).expect("limit");
@@ -3841,7 +3859,8 @@ mod tests {
     #[test]
     fn projected_summary_matches_persisted_checkpoint_replay() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let mut events = Vec::from(user_events(1, run, "discarded"));
@@ -3874,7 +3893,8 @@ mod tests {
     #[test]
     fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run_a = RunId::new_v7();
         let run_b = RunId::new_v7();
@@ -3953,7 +3973,8 @@ mod tests {
     #[test]
     fn summary_projection_orders_and_deduplicates_pinned_context() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let mut events = vec![
@@ -4004,7 +4025,8 @@ mod tests {
     #[test]
     fn repeated_checkpoint_skips_old_tail_as_first_candidate_but_summarizes_it() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let mut events = Vec::from(user_events(1, run, "first discarded"));
@@ -4073,7 +4095,8 @@ mod tests {
     #[test]
     fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
         let directory = tempfile::tempdir().expect("tempdir");
-        let store = ArtifactStore::open(directory.path().join("artifacts")).expect("store");
+        let store =
+            crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
         let binding = binding();
         let run = RunId::new_v7();
         let tool_call_id = ToolCallId::new_v7();
@@ -4190,7 +4213,7 @@ mod tests {
     fn assembled_tool_transcript_snapshot_is_stable() {
         let directory = tempfile::tempdir().expect("tempdir");
         let artifact_path = directory.path().join("artifacts");
-        let store = ArtifactStore::open(artifact_path.clone()).expect("store");
+        let store = crate::ArtifactRouter::open_flat(artifact_path.clone()).expect("store");
         let binding = binding();
         let resolved = wire_model(&binding);
         let run = RunId(uuid::Uuid::from_u128(2));
@@ -4316,7 +4339,8 @@ mod tests {
         let history = assemble_full_history(&events, &store, &binding, "System prompt.")
             .expect("assembled history");
         drop(store);
-        let restarted_store = ArtifactStore::open(artifact_path.clone()).expect("restarted store");
+        let restarted_store =
+            crate::ArtifactRouter::open_flat(artifact_path.clone()).expect("restarted store");
         let replayed = assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
             .expect("replayed history");
         assert_eq!(history, replayed);
@@ -4379,7 +4403,9 @@ mod tests {
             );
         }
 
-        let (retained, _) = restarted_store.retain(b"contents").expect("retain output");
+        let (retained, _) = restarted_store
+            .retain(crate::test_session_id(), b"contents")
+            .expect("retain output");
         events.push(event(
             8,
             run,
@@ -4399,7 +4425,8 @@ mod tests {
         let elided = assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
             .expect("elided history");
         drop(restarted_store);
-        let restarted_store = ArtifactStore::open(artifact_path).expect("second restart");
+        let restarted_store =
+            crate::ArtifactRouter::open_flat(artifact_path).expect("second restart");
         let replayed_elision =
             assemble_full_history(&events, &restarted_store, &binding, "System prompt.")
                 .expect("replayed elision");

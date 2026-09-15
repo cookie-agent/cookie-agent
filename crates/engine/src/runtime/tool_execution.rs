@@ -710,6 +710,7 @@ impl Engine {
                 Some(
                     OutputCapture::new(
                         engine.inner.artifacts.clone(),
+                        active.session,
                         output_declaration,
                         active.policy.result_limits.tool_output_max_lines,
                         active.policy.result_limits.tool_output_max_bytes,

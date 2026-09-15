@@ -1887,7 +1887,7 @@ impl Engine {
                 match result {
                     Ok(turn) => {
                         let (mut turn, warnings) =
-                            persist_turn(turn, &self.inner.artifacts, binding)?;
+                            persist_turn(turn, &self.inner.artifacts, session, binding)?;
                         for plugin in self.inner.plugins.interception_plugins(
                             cookie_agent_protocol::ExtensionInterceptionHook::MessageEnd,
                         ) {

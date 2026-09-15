@@ -5651,8 +5651,8 @@ mod tests {
         let EventPayload::SessionCreated { creation_agent, .. } = &events[0].payload else {
             panic!("creation event")
         };
-        let artifacts =
-            crate::ArtifactStore::open(directory.path().join("artifacts")).expect("artifact store");
+        let artifacts = crate::ArtifactRouter::open_flat(directory.path().join("artifacts"))
+            .expect("artifact store");
         crate::model_history::assemble_full_history(
             &events,
             &artifacts,

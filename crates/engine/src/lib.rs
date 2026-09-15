@@ -52,4 +52,6 @@ pub use tool_api::{
     ToolResultTruncationPolicy, ToolSpec, ToolStdin, TurnAgentContext,
 };
 
-pub(crate) use runtime::ArtifactStore;
+pub(crate) use runtime::ArtifactRouter;
+#[cfg(test)]
+pub(crate) use runtime::{ArtifactStore, test_session_id};

@@ -585,6 +585,7 @@ impl Engine {
             let history = pruned_compaction_history(
                 &events,
                 &self.inner.artifacts,
+                input.session,
                 input.binding,
                 &composed_prompt,
             )?;
@@ -775,7 +776,10 @@ impl Engine {
             ) {
                 continue;
             }
-            let (retained, _) = self.inner.artifacts.retain(result.output.as_bytes())?;
+            let (retained, _) = self
+                .inner
+                .artifacts
+                .retain(session, result.output.as_bytes())?;
             self.append_compaction_event(
                 session,
                 event.run_id,
@@ -1126,7 +1130,8 @@ fn compaction_instruction(focus: Option<&str>) -> String {
 
 fn pruned_compaction_history(
     events: &[StoredEvent],
-    store: &super::artifacts::ArtifactStore,
+    store: &super::artifacts::ArtifactRouter,
+    session: SessionId,
     binding: &cookie_agent_protocol::FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<Vec<oven_sdk::HistoryTurn>, EngineError> {
@@ -1165,13 +1170,13 @@ fn pruned_compaction_history(
                 }
                 for part in &mut turn.message.content {
                     if let oven_sdk::AssistantPart::ToolResult(result) = part {
-                        prune_compaction_result(result, &retrieval_calls, store)?;
+                        prune_compaction_result(result, &retrieval_calls, store, session)?;
                     }
                 }
             }
             oven_sdk::HistoryTurn::Tool(message) => {
                 for result in &mut message.results {
-                    prune_compaction_result(result, &retrieval_calls, store)?;
+                    prune_compaction_result(result, &retrieval_calls, store, session)?;
                 }
             }
             _ => {}
@@ -1183,7 +1188,8 @@ fn pruned_compaction_history(
 fn prune_compaction_result(
     result: &mut oven_sdk::ToolResultPart,
     retrieval_calls: &HashSet<String>,
-    store: &super::artifacts::ArtifactStore,
+    store: &super::artifacts::ArtifactRouter,
+    session: SessionId,
 ) -> Result<(), EngineError> {
     let marker = if retrieval_calls.contains(&result.tool_call_id) {
         // This is a private summary-input copy; the original result stays in history.
@@ -1194,7 +1200,7 @@ fn prune_compaction_result(
             content => serde_json::to_vec(content)
                 .map_err(|error| ModelError::invalid_request(error.to_string()))?,
         };
-        let (_, artifact_id) = store.retain(&content)?;
+        let (_, artifact_id) = store.retain(session, &content)?;
         let mut marker =
             model_history::tool_output_elision_marker(&artifact_id, content.len() as u64, 0);
         if !matches!(result.content, oven_sdk::ToolContent::Text(_)) {
@@ -1277,10 +1283,7 @@ mod tests {
     };
     use crate::{
         model_history::assemble_model_context,
-        runtime::{
-            ContextTokenEstimator, Event, FrozenInternalAgentPolicy, InternalAgentLimits,
-            artifacts::ArtifactStore,
-        },
+        runtime::{ContextTokenEstimator, Event, FrozenInternalAgentPolicy, InternalAgentLimits},
     };
     use cookie_agent_config::ContextCompactionTrigger;
 
@@ -1609,8 +1612,8 @@ mod tests {
     #[test]
     fn compact_provider_request_is_the_assembled_normal_prefix_plus_one_instruction() {
         let temporary = tempfile::TempDir::new().expect("temp directory");
-        let artifacts =
-            ArtifactStore::open(temporary.path().join("artifacts")).expect("artifact store");
+        let artifacts = crate::ArtifactRouter::open_flat(temporary.path().join("artifacts"))
+            .expect("artifact store");
         let (runtime, binding) = crate::test_support::model_runtime_and_binding();
         let session = SessionId::new_v7();
         let run = RunId::new_v7();

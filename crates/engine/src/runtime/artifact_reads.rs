@@ -2,7 +2,7 @@ use cookie_agent_protocol::{ArtifactReadPath, PersistedToolResult, ToolOutputMan
 
 use std::sync::Arc;
 
-use super::{Engine, artifacts::ArtifactStore, blocking_io};
+use super::{Engine, artifacts::ArtifactRouter, blocking_io};
 use crate::ToolError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ impl Engine {
 }
 
 pub(crate) fn read_artifact(
-    store: &ArtifactStore,
+    store: &ArtifactRouter,
     path: &str,
     offset: u64,
     limit: u64,
@@ -69,7 +69,7 @@ pub(crate) fn read_artifact(
 }
 
 pub(crate) async fn read_artifact_async(
-    store: Arc<ArtifactStore>,
+    store: Arc<ArtifactRouter>,
     path: &str,
     offset: u64,
     limit: u64,
@@ -93,10 +93,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn blocked_artifact_verification_leaves_async_tasks_and_other_readers_responsive() {
         let directory = tempfile::tempdir().unwrap();
-        let store = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let (_, first) = store.retain(b"first\n").unwrap();
-        let (_, second) = store.retain(b"second\n").unwrap();
-        let (entered, release) = blocking_io::gate(&store, "read", Some(first.clone()));
+        let store = ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let (_, first) = store.retain(crate::test_session_id(), b"first\n").unwrap();
+        let (_, second) = store.retain(crate::test_session_id(), b"second\n").unwrap();
+        let (entered, release) =
+            blocking_io::gate(store.io_test_hook(), "read", Some(first.clone()));
         let reader = store.clone();
         let blocked = tokio::spawn(async move {
             read_artifact_async(reader, &format!("artifact://{first}"), 0, 1).await
@@ -128,13 +129,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let sessions = directory.path().join("sessions");
         std::fs::create_dir(&sessions).unwrap();
-        let store = ArtifactStore::open(directory.path().join("artifacts")).unwrap();
-        let (_, digest) = store.retain(b"verified\n").unwrap();
+        let store = ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let (_, digest) = store
+            .retain(crate::test_session_id(), b"verified\n")
+            .unwrap();
         let path = format!("artifact://{digest}");
         read_artifact_async(store.clone(), &path, 0, 1)
             .await
             .unwrap();
-        let (entered, release) = blocking_io::gate(&store, "read", Some(digest));
+        let (entered, release) = blocking_io::gate(store.io_test_hook(), "read", Some(digest));
         let reader = store.clone();
         let reading_path = path.clone();
         let reading =
@@ -145,7 +148,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .collect_garbage(&sessions, std::time::Duration::ZERO)
+                .collect_garbage(std::time::Duration::ZERO)
                 .unwrap()
                 .deleted,
             1

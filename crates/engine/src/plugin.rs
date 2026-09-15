@@ -3100,7 +3100,6 @@ mod tests {
         assert_eq!(legacy, plugin_event_origin("command_handler"));
     }
     use crate::{
-        ArtifactStore,
         events::OutputHub,
         tool_api::{
             ProgressSink, ToolCall, ToolExecutionContext, ToolPreparationContext, ToolProvider,
@@ -3328,8 +3327,10 @@ mod tests {
                 cancellation,
                 stdin: None,
                 turn_context: turn_context(),
-                artifacts: ArtifactStore::open(harness.directory.path().join("artifacts"))
-                    .expect("artifact store"),
+                artifacts: crate::ArtifactRouter::open_flat(
+                    harness.directory.path().join("artifacts"),
+                )
+                .expect("artifact store"),
             })
             .await?
             .into_result_for_test()
