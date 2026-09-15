@@ -9,6 +9,7 @@ mod goal_projection;
 pub mod grant_journal;
 mod mcp;
 mod media;
+mod migration;
 mod model_bridge;
 mod model_history;
 mod model_policy;

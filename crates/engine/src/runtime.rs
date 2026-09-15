@@ -60,7 +60,7 @@ mod approval_api;
 mod approval_flow;
 mod approval_projection;
 mod artifact_reads;
-mod artifacts;
+pub(crate) mod artifacts;
 mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;

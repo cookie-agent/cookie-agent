@@ -35,7 +35,7 @@ use crate::ownership::{
     HeldLock, SessionOwnership, WriteAuthority, WriteCapability, owner_lock_path, try_acquire,
 };
 
-const PROJECT_CWD_FILE: &str = "cwd";
+pub(crate) const PROJECT_CWD_FILE: &str = "cwd";
 /// v2 session-store root under the data root (`~/.cookie-agent/sessions`).
 pub(crate) const SESSIONS_ROOT_DIR: &str = "sessions";
 /// Marker file recording the on-disk layout version of a work-dir store.
@@ -53,7 +53,7 @@ const SUBAGENT_INDEX_VERSION: u32 = 1;
 /// Event log file name (unchanged across layouts).
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
-const LAYOUT_VERSION: u32 = 2;
+pub(crate) const LAYOUT_VERSION: u32 = 2;
 
 /// Where a session lives relative to its work-dir store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -196,6 +196,11 @@ pub enum SessionError {
     /// `impl From<SessionError> for EngineError` unwraps it back to its type.
     #[error("tree load rejected: {0}")]
     TreeRejected(Box<crate::runtime::EngineError>),
+    /// A v1 to v2 store migration (§6) refused to start or could not be verified.
+    /// A refused migration leaves the legacy store untouched; an unfinished one
+    /// leaves `.migrating` behind so the next open resumes where this one stopped.
+    #[error("session store migration: {0}")]
+    Migration(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -377,7 +382,7 @@ impl SessionStore {
     /// Locate the v2 work-dir for `cwd`, matching an existing directory by hash
     /// prefix (a stale suffix after a cwd rename is harmless), else reserve the
     /// freshly derived name.
-    fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
+    pub(crate) fn resolve_workdir_dir(data_root: &Path, cwd: &Path) -> PathBuf {
         let hash = Self::project_hash(cwd);
         let sessions_root = data_root.join(SESSIONS_ROOT_DIR);
         if let Ok(entries) = fs::read_dir(&sessions_root) {
@@ -392,12 +397,6 @@ impl SessionStore {
             }
         }
         sessions_root.join(Self::workdir_key(cwd))
-    }
-
-    /// Whether `data_root` still holds an un-migrated v1 project for `cwd`.
-    #[allow(dead_code)] // consumed by the migration gate (P4)
-    pub(crate) fn legacy_project_present(data_root: &Path, cwd: &Path) -> bool {
-        Self::project_dir(data_root, cwd).join("sessions").is_dir()
     }
 
     pub fn open(data_root: &Path, cwd: &Path) -> Result<Arc<Self>, SessionError> {
@@ -427,6 +426,11 @@ impl SessionStore {
         cwd: &Path,
         layout: LayoutChoice,
     ) -> Result<Arc<Self>, SessionError> {
+        if matches!(layout, LayoutChoice::PreferV2) {
+            // Blocking v1 -> v2 migration (§6.2): the store never serves a
+            // half-migrated layout because this gate runs before construction.
+            crate::migration::run_if_needed(data_root, cwd, &crate::migration::stderr_progress)?;
+        }
         let v2_dir = Self::resolve_workdir_dir(data_root, cwd);
         let legacy_root = Self::project_dir(data_root, cwd);
         let legacy_dir = legacy_root.join("sessions");
@@ -3605,7 +3609,7 @@ fn project_cwd_is_current(path: &Path, expected: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
-fn create_unix_session_directory_all(path: &Path) -> Result<(), SessionError> {
+pub(crate) fn create_unix_session_directory_all(path: &Path) -> Result<(), SessionError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     let mut builder = fs::DirBuilder::new();
@@ -3617,7 +3621,7 @@ fn create_unix_session_directory_all(path: &Path) -> Result<(), SessionError> {
 }
 
 #[cfg(windows)]
-fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
+pub(crate) fn create_windows_session_directory(path: &Path) -> Result<(), SessionError> {
     cookie_agent_models::secure_store::SecureDirectory::open(path)
         .map(|_| ())
         .map_err(|error| match error {
@@ -4911,8 +4915,11 @@ mod tests {
         assert_eq!(fs::metadata(path).expect("metadata").ino(), inode);
     }
 
+    /// An empty legacy project folder is promoted by the migration gate (§6.3);
+    /// unrelated files in it are left where they are and the folder keeps a
+    /// pointer for builds that still read the flat layout.
     #[test]
-    fn existing_project_folder_gains_cwd_file_without_moving_children() {
+    fn empty_legacy_project_promotes_to_the_v2_work_dir() {
         let temp = private_tempdir();
         let data = temp.path().join("data");
         let project = SessionStore::project_dir(&data, temp.path());
@@ -4924,13 +4931,18 @@ mod tests {
         fs::write(project.join("sentinel"), b"keep").expect("sentinel");
         assert!(!project.join(PROJECT_CWD_FILE).exists());
 
-        SessionStore::open(&data, temp.path()).expect("open existing project");
+        let store = SessionStore::open(&data, temp.path()).expect("migrate existing project");
+        assert!(!store.is_flat_layout());
         assert_eq!(
             fs::read(project.join("sentinel")).expect("sentinel"),
             b"keep"
         );
-        assert!(project.join("sessions").is_dir());
-        assert!(project.join(PROJECT_CWD_FILE).is_file());
+        assert!(!project.join("sessions").is_dir(), "emptied legacy store");
+        assert!(project.join(".migrated").is_file(), "migration marker");
+        assert!(project.join("MIGRATED").is_file(), "pointer for old builds");
+        let workdir = store.workdir_dir_path();
+        assert!(workdir.join(LAYOUT_MARKER_FILE).is_file(), "layout marker");
+        assert!(workdir.join(PROJECT_CWD_FILE).is_file(), "cwd file");
     }
 
     #[test]

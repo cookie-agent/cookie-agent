@@ -304,6 +304,7 @@ fn session_debug_code(error: &SessionError) -> &'static str {
         SessionError::InvalidSequence { .. } => "session_invalid_sequence",
         SessionError::InvalidForkTitle(_) => "session_invalid_fork_title",
         SessionError::TreeRejected(_) => "session_tree_rejected",
+        SessionError::Migration(_) => "session_migration",
     }
 }
 

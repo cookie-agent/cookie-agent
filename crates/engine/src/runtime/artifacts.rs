@@ -248,7 +248,7 @@ fn artifact_uri_digest(value: &str) -> Option<&str> {
         .filter(|digest| is_digest_name_common(digest))
 }
 
-fn is_digest_name_common(name: &str) -> bool {
+pub(crate) fn is_digest_name_common(name: &str) -> bool {
     name.len() == 64
         && name
             .bytes()
@@ -1664,7 +1664,7 @@ mod windows {
 pub(crate) use windows::*;
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -2260,7 +2260,7 @@ impl ArtifactRouter {
     }
 }
 
-fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<HashSet<String>> {
+pub(crate) fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<HashSet<String>> {
     use std::io::BufRead as _;
 
     let mut live = HashSet::new();
@@ -2275,12 +2275,49 @@ fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<HashSet<Strin
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => return Err(error),
         };
+        // Every reference carries this prefix, so lines without it never need
+        // to be parsed. Startup and migration walk the whole log.
+        if !line.contains("artifact://") {
+            continue;
+        }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
         collect_artifact_references(&value, &mut live);
     }
     Ok(live)
+}
+
+/// Rewrite the cross-reference ledger wholesale. Only the v1 migration
+/// (§6.3 step 5) does this; steady-state collection appends to the file.
+pub(crate) fn write_cross_ref_ledger(
+    path: &Path,
+    entries: &BTreeSet<(String, SessionId)>,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let temporary = path.with_extension("jsonl.tmp");
+    {
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::options()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?,
+        );
+        for (digest, tree) in entries {
+            serde_json::to_writer(
+                &mut file,
+                &StoredCrossReference {
+                    digest: digest.clone(),
+                    tree: tree.to_string(),
+                },
+            )?;
+            file.write_all(b"\n")?;
+        }
+        file.flush()?;
+        file.get_ref().sync_all()?;
+    }
+    std::fs::rename(&temporary, path)
 }
 
 #[cfg(test)]
