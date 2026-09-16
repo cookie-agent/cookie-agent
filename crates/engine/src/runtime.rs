@@ -119,6 +119,9 @@ pub struct EngineOptions {
     pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelManager>,
     pub tools: Vec<Arc<dyn ToolProvider>>,
+    /// Test and embedding override; production callers leave this unset so
+    /// manifests stay in the fixed user directory.
+    pub model_snapshot_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -1306,7 +1309,12 @@ impl Engine {
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
-        let manifest_store = ModelSnapshotManifestStore::open(&options.cwd)?;
+        let manifest_store = options
+            .model_snapshot_directory
+            .as_ref()
+            .map(ModelSnapshotManifestStore::open_directory)
+            .transpose()?
+            .unwrap_or(ModelSnapshotManifestStore::open()?);
         let prepared_manifest = prepare_runtime_manifest(&manifest_store, &current_models)?;
         let snapshot = build_runtime_snapshot(&current_models, &agents, &agent_presets)?;
         let published_runtime = Arc::new(PublishedRuntime {

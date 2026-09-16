@@ -2647,7 +2647,17 @@ fn tool_child_layout(
             ),
             None => (Role::Error, "tool: unavailable payload".to_owned()),
         };
-        let lines = role_block(role, vec![Line::from(text)], context.width, context.theme);
+        let lines = if pending_name.is_some() {
+            tool_block_lines(
+                role,
+                vec![ToolBodyLine::wrapped(Line::from(text))],
+                context.width,
+                context.theme,
+            )
+            .lines
+        } else {
+            role_block(role, vec![Line::from(text)], context.width, context.theme)
+        };
         return ItemLayout {
             regions: vec![BlockRegion {
                 id: block_id,
@@ -4913,6 +4923,7 @@ mod tests {
             config,
             model_manager: manager,
             tools: Vec::new(),
+            model_snapshot_directory: None,
         })
         .expect("production engine");
         let server = Arc::new(Server::new(engine.clone()));
@@ -9985,8 +9996,8 @@ mod tests {
         }]);
         let layout = transcript_layout(&state, None, 60);
         let text = snapshot_lines(&layout.lines);
-        assert!(text.contains("bash"), "{text}");
-        assert!(text.contains("pending"), "{text}");
+        assert!(text.contains("│ 💻 ▸ bash · pending"), "{text}");
+        assert!(!text.contains("TOOL RUNNING"), "{text}");
         assert!(!text.contains("unavailable payload"), "{text}");
     }
 
@@ -14930,7 +14941,11 @@ mod tests {
             model: second.key.clone(),
             variant: Some(cookie_agent_protocol::VariantId::new("high").expect("variant")),
         }];
-        let reviewer = descriptor("reviewer", true);
+        let mut reviewer = descriptor("reviewer", true);
+        reviewer.resolved_fallback = vec![ModelSelection {
+            model: second.key.clone(),
+            variant: None,
+        }];
         app.agents = vec![primary, reviewer];
         app.models = vec![first.clone(), second.clone()];
         app.draft = Some(RunSelection {
@@ -14952,14 +14967,14 @@ mod tests {
             "reselecting the current model preserves its variant"
         );
         app.set_draft_agent(AgentId::new("reviewer").expect("agent"));
-        assert_eq!(app.draft.as_ref().expect("draft").model.model, first.key);
+        assert_eq!(app.draft.as_ref().expect("draft").model.model, second.key);
         assert_eq!(
             app.draft
                 .as_ref()
                 .and_then(|draft| draft.model.variant.as_ref())
                 .map(|variant| variant.as_str()),
-            Some("high"),
-            "agent changes preserve a valid global model selection"
+            None,
+            "agent changes select the new agent's first live fallback"
         );
 
         app.set_draft_model(second.key.clone());

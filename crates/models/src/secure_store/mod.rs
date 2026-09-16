@@ -77,25 +77,6 @@ impl SecureDirectory {
         }
     }
 
-    /// Opens a storage path below an existing project anchor.
-    pub(crate) fn open_in_untrusted_project_anchor(
-        anchor: impl AsRef<Path>,
-        relative: impl AsRef<Path>,
-    ) -> Result<Self, SecureStoreError> {
-        #[cfg(unix)]
-        {
-            let anchor_path = anchor.as_ref().to_path_buf();
-            let anchor = open_absolute_directory(&anchor_path)?;
-            let mut directory = Self::open_private_in(&anchor, relative.as_ref())?;
-            directory.path = anchor_path.join(relative.as_ref());
-            Ok(directory)
-        }
-        #[cfg(windows)]
-        {
-            windows::open_private(anchor.as_ref(), relative.as_ref())
-        }
-    }
-
     /// Opens a directory or creates it privately when missing.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SecureStoreError> {
         let path = path.as_ref();

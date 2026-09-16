@@ -1582,7 +1582,6 @@ impl App {
         &self,
         preset: Option<&str>,
         preferred_agent: Option<&AgentId>,
-        preferred_model: Option<&ModelSelection>,
     ) -> Option<RunSelection> {
         let candidates = self
             .agents
@@ -1602,16 +1601,11 @@ impl App {
                     .copied()
             })
             .or_else(|| candidates.first().copied())?;
-        let model = preferred_model
-            .filter(|selection| self.selection_is_live(selection))
+        let model = agent
+            .resolved_fallback
+            .iter()
+            .find(|selection| self.selection_is_live(selection))
             .cloned()
-            .or_else(|| {
-                agent
-                    .resolved_fallback
-                    .iter()
-                    .find(|selection| self.selection_is_live(selection))
-                    .cloned()
-            })
             .or_else(|| self.models.first().map(Self::default_model_selection))?;
         Some(RunSelection {
             agent: agent.id.clone(),
@@ -1964,16 +1958,11 @@ impl App {
         }) else {
             return;
         };
-        let model = current
-            .map(|draft| draft.model.clone())
-            .filter(|selection| self.selection_is_live(selection))
-            .or_else(|| {
-                descriptor
-                    .resolved_fallback
-                    .iter()
-                    .find(|selection| self.selection_is_live(selection))
-                    .cloned()
-            })
+        let model = descriptor
+            .resolved_fallback
+            .iter()
+            .find(|selection| self.selection_is_live(selection))
+            .cloned()
             .or_else(|| self.models.first().map(Self::default_model_selection));
         let Some(model) = model else {
             return;
@@ -1998,6 +1987,18 @@ impl App {
             return;
         };
         if draft.model.model == model {
+            if self.watching_root_session()
+                && draft.model.variant.is_none()
+                && let Some(selection) = self
+                    .model_descriptor(&model)
+                    .map(Self::default_model_selection)
+            {
+                self.draft = Some(RunSelection {
+                    agent: draft.agent,
+                    model: selection,
+                    preset: draft.preset,
+                });
+            }
             self.set_draft_reset_intent(true);
             self.status = self.draft_status("Draft run model");
             return;
@@ -2005,7 +2006,19 @@ impl App {
         // Delegated sessions resolve only against the persisted frozen
         // suffix; root sessions use the complete live catalog and select the
         // chosen model's resolved default variant.
-        let selection = if self.watching_root_session() {
+        let selection = if self.watching_root_session()
+            || self.selected.is_none()
+            || self.persisted_chain_selection(&draft.model.model).is_none()
+            || self
+                .agents
+                .iter()
+                .find(|agent| agent.id == draft.agent)
+                .is_some_and(|agent| {
+                    agent
+                        .resolved_fallback
+                        .iter()
+                        .any(|candidate| candidate.model == model)
+                }) {
             self.model_descriptor(&model)
                 .map(Self::default_model_selection)
         } else {
@@ -2028,6 +2041,13 @@ impl App {
         let Some(draft) = self.draft.clone() else {
             return;
         };
+        if !self.watching_root_session()
+            && self
+                .persisted_chain_selection(&draft.model.model)
+                .is_none_or(|selection| selection.variant != variant)
+        {
+            return;
+        }
         self.draft = Some(RunSelection {
             agent: draft.agent,
             model: ModelSelection {
@@ -6238,14 +6258,12 @@ impl App {
                 };
                 if let Some(preset) = preset {
                     let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
-                    let preferred_model = self.draft.as_ref().map(|draft| draft.model.clone());
                     self.set_draft_reset_intent(true);
                     self.selected_preset = preset;
                     if self.watching_root_session() {
                         self.draft = self.draft_selection_for_preset(
                             self.selected_preset.as_deref(),
                             preferred_agent.as_ref(),
-                            preferred_model.as_ref(),
                         );
                     }
                     if self.draft.is_none() && self.watching_root_session() {
@@ -6928,7 +6946,7 @@ impl App {
                     return;
                 }
                 self.new_session_draft =
-                    self.draft_selection_for_preset(self.selected_preset.as_deref(), None, None);
+                    self.draft_selection_for_preset(self.selected_preset.as_deref(), None);
                 self.open_selection_modal(Modal::Agents);
                 if self.modal == Modal::Agents {
                     self.status = "Select the agent for the new root session.".into();

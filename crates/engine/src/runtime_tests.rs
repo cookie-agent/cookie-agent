@@ -3062,6 +3062,7 @@ fn fixture() -> Fixture {
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("empty engine");
     Fixture {
@@ -3187,12 +3188,14 @@ fn open_workspace_engine(
         )
         .expect("workspace manager"),
     );
+    fs::create_dir_all(data.join("model-snapshots")).expect("workspace manifest directory");
     let engine = Engine::open(EngineOptions {
         data_dir: data.to_owned(),
         cwd: workspace.to_owned(),
         config,
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(data.join("model-snapshots")),
     })
     .expect("workspace engine");
     (engine, manager)
@@ -3315,6 +3318,7 @@ compaction = "openai-responses-compact"
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("managed engine");
     (
@@ -3777,6 +3781,7 @@ async fn retry_fixture_with_endpoint(
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("retry engine");
     fixture.manager = manager;
@@ -3797,6 +3802,7 @@ async fn reopen_fixture_with_residency(
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen fixture with subagent residency settings");
 }
@@ -4118,6 +4124,7 @@ __MODEL_CAPABILITIES__
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("custom engine");
     let selection = RunSelection {
@@ -4614,6 +4621,7 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
             Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
             Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
         ],
+        model_snapshot_directory: None,
     };
     let startup_error = match Engine::open(duplicate_options) {
         Ok(_) => panic!("duplicate startup provider ID must fail"),
@@ -5277,6 +5285,7 @@ default_variant = "precise"
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("engine");
     Fixture {
@@ -11334,6 +11343,7 @@ fn reopen_engine_parts(
         config: config.clone(),
         model_manager: manager,
         tools: Vec::new(),
+        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("reopened engine")
 }
@@ -12144,7 +12154,7 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     reopened.shutdown().await;
 }
 
-// This regression asserts exact POSIX mode bits for a shared workspace.
+// This regression asserts exact POSIX mode bits for the shared user store.
 #[cfg(unix)]
 #[test]
 fn shared_project_cwd_creates_and_reopens_model_manifests() {
@@ -12161,6 +12171,7 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("engine in shared workspace");
     let revision = engine
@@ -12170,7 +12181,9 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         .model_revision;
     drop(engine);
 
-    let snapshots = workspace.join(".cookie-agent/model-snapshots");
+    let snapshots = cookie_agent_protocol::paths::user_data_root()
+        .unwrap()
+        .join("model-snapshots");
     assert_eq!(
         fs::metadata(&snapshots).unwrap().permissions().mode() & 0o777,
         0o700
@@ -12189,6 +12202,7 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopened engine in shared workspace");
     assert_eq!(
@@ -12793,7 +12807,7 @@ fn corrupt_matching_manifest_rejects_reopen() {
     let path = fixture
         ._directory
         .path()
-        .join(".cookie-agent/model-snapshots")
+        .join("model-snapshots")
         .join(format!("{revision}.json"));
     fs::write(&path, b"{\"schema_version\":1}\n").expect("corrupt manifest");
     let reopened = Engine::open(EngineOptions {
@@ -12802,6 +12816,7 @@ fn corrupt_matching_manifest_rejects_reopen() {
         config: fixture.config,
         model_manager: fixture.manager,
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     });
     assert!(matches!(reopened, Err(EngineError::Manifest(_))));
 }
@@ -15914,6 +15929,7 @@ async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixture, RunSelec
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("replay engine");
     fixture.manager = manager;
@@ -17773,6 +17789,7 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("tree usage engine");
     fixture
@@ -18157,6 +18174,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         config,
         model_manager: manager,
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen missing-child reservation window");
     reopened
@@ -18282,6 +18300,7 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         config,
         model_manager: manager,
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen at staged reservation window");
     reopened
@@ -21804,6 +21823,7 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         config,
         model_manager: manager,
         tools: Vec::new(),
+        model_snapshot_directory: Some(snapshot.path().join("model-snapshots")),
     })
     .expect("reopen queued child snapshot");
     reopened
@@ -22375,6 +22395,7 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         config: fixture.config,
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
+        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     });
     assert!(matches!(
         rejected,

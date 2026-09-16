@@ -1039,9 +1039,12 @@ mod windows {
     use std::{
         fs,
         io::{Read, Seek, SeekFrom, Write},
-        path::{Path, PathBuf},
+        path::PathBuf,
         sync::{Arc, Mutex},
     };
+
+    #[cfg(test)]
+    use std::path::Path;
 
     use bytes::Bytes;
     use cookie_agent_protocol::{ArtifactReference, ToolAttachment};

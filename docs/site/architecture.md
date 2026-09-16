@@ -174,14 +174,15 @@ See [Configuration](guide/configuration.md) and the
    `oven-sdk-bedrock`, `oven-sdk-azure`, `oven-sdk-cohere`, and the
    `reqwest-oven` HTTP transport) provide normalized language-model
    implementations. The `models` crate selects the adapter for each compiled
-   model and freezes it into project manifests.
+   model and freezes it into user manifests.
 5. **Provider store.** Managed connections live in a global per-user provider
    store (`~/.cookie-agent/providers/store-v3.json`) and are shared
    across workspaces. Credentials are checked on first use, not at connect time.
 
-Each accepted run freezes its model selection into a project manifest under
-`<cwd>/.cookie-agent/model-snapshots/`, so later catalog, configuration, or store
-changes cannot silently change an accepted run's model behavior.
+Each accepted run freezes its model selection into a global user manifest under
+`~/.cookie-agent/model-snapshots/`, so later catalog, configuration, or store
+changes cannot silently change an accepted run's model behavior. The manifests
+are shared across workspaces.
 
 Local selection/pricing identity is distinct from the effective provider wire
 model ID. Model and variant overrides resolve before execution; frozen bindings
@@ -394,9 +395,8 @@ Legacy project-level `delegations.jsonl` files are ignored. In-flight
 delegations that existed only in that pre-release journal are not recovered;
 their child directories remain ordinary sessions available for inspection.
 
-Project model-snapshot manifests live inside the workspace at
-`.cookie-agent/model-snapshots/` and are the only per-project engine state the
-workspace owns.
+Model-snapshot manifests live in the global user directory at
+`~/.cookie-agent/model-snapshots/` and are shared across workspaces.
 
 ### Event bus
 

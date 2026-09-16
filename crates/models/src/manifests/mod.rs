@@ -1,4 +1,4 @@
-//! Secure project model-snapshot manifests, schema 1.
+//! Secure user model-snapshot manifests, schema 1.
 
 use std::{
     cmp::Ordering,
@@ -27,8 +27,8 @@ pub use cookie_agent_protocol::{
     SafeStaticHeaderValue, Sha256Digest,
 };
 
-/// Fixed project manifest directory below the exact current working directory.
-pub const MODEL_SNAPSHOT_DIRECTORY: &str = ".cookie-agent/model-snapshots";
+/// Fixed user manifest directory below `~/.cookie-agent`.
+pub const MODEL_SNAPSHOT_DIRECTORY: &str = "model-snapshots";
 /// Fixed cross-process manifest lock.
 pub const MODEL_SNAPSHOT_LOCK_FILE: &str = "model-snapshots-v1.lock";
 /// Hard per-manifest byte limit.
@@ -40,20 +40,17 @@ const MAX_IJSON_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_JSON_DEPTH: usize = 64;
 const MAX_JSON_ITEMS: usize = 1_000_000;
 
-/// Secure handle for one exact-cwd manifest directory.
+/// Secure handle for the global user manifest directory.
 #[derive(Debug)]
 pub struct ModelSnapshotManifestStore {
     directory: SecureDirectory,
 }
 
 impl ModelSnapshotManifestStore {
-    /// Opens the fixed project directory below an exact cwd.
-    pub fn open(cwd: impl AsRef<Path>) -> Result<Self, ManifestError> {
+    /// Opens the fixed global user directory below `~/.cookie-agent`.
+    pub fn open() -> Result<Self, ManifestError> {
         Ok(Self {
-            directory: SecureDirectory::open_in_untrusted_project_anchor(
-                cwd,
-                MODEL_SNAPSHOT_DIRECTORY,
-            )?,
+            directory: SecureDirectory::user_data(MODEL_SNAPSHOT_DIRECTORY)?,
         })
     }
 
