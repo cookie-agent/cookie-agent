@@ -2181,13 +2181,48 @@ impl Engine {
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(&child_session_id)
                 .copied();
-            let queued = record.is_some_and(|record| record.state == DelegationState::Queued);
-            let pending_terminal = record.and_then(|record| match record.state {
-                DelegationState::Finished(status) if record.child_run_id.is_none() => Some(status),
-                _ => None,
+            let durable = self
+                .inner
+                .delegation_events
+                .entries()
+                .into_iter()
+                .rev()
+                .find(|entry| entry.reservation.child_session_id == child_session_id);
+            // Durable lifecycle data wins when the registry still points at an
+            // older invocation (which can happen after a resumed delegation).
+            let registry_is_current = match (record, durable.as_ref()) {
+                (Some(record), Some(entry)) => {
+                    record.invocation_id == entry.reservation.invocation_id
+                }
+                (None, _) => false,
+                (Some(_), None) => true,
+            };
+            let state = record
+                .filter(|_| registry_is_current)
+                .map(|record| record.state);
+            let durable_state = durable.as_ref().map(|entry| {
+                entry.terminal_status.map_or_else(
+                    || {
+                        if entry.started {
+                            DelegationState::Running
+                        } else {
+                            DelegationState::Queued
+                        }
+                    },
+                    DelegationState::Finished,
+                )
             });
-            let terminal = pending_terminal.is_some()
-                || (!queued
+            let effective_state = state.or(durable_state);
+            let terminal_status = effective_state.and_then(|state| match state {
+                DelegationState::Finished(status) => Some(status),
+                DelegationState::Queued | DelegationState::Starting | DelegationState::Running => {
+                    None
+                }
+            });
+            let durable_child_run_id = durable.as_ref().and_then(|entry| entry.child_run_id);
+            let terminal = terminal_status.is_some()
+                || (effective_state.is_none()
+                    && durable.is_none()
                     && matches!(
                         child.status,
                         SessionStatus::Completed
@@ -2196,15 +2231,26 @@ impl Engine {
                             | SessionStatus::Cancelled
                     ));
             if terminal || !wait {
-                let status = if queued {
-                    "queued"
-                } else if let Some(status) = pending_terminal {
-                    session_status_name(status)
-                } else {
-                    session_status_name(child.status)
+                let status = match effective_state {
+                    Some(DelegationState::Queued) => "queued",
+                    Some(DelegationState::Starting | DelegationState::Running) => "running",
+                    Some(DelegationState::Finished(status)) => session_status_name(status),
+                    None => terminal_status
+                        .map(session_status_name)
+                        .unwrap_or_else(|| session_status_name(child.status)),
                 };
-                let text = if terminal && pending_terminal.is_none() {
-                    delegate_final_text(&child, handle.child_run_id)
+                let text = if terminal {
+                    delegate_final_text(
+                        &child,
+                        if durable.is_some() {
+                            durable_child_run_id
+                        } else {
+                            record
+                                .filter(|_| registry_is_current)
+                                .and_then(|record| record.child_run_id)
+                                .or(handle.child_run_id)
+                        },
+                    )
                 } else {
                     ""
                 };

@@ -20216,6 +20216,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .await
         .expect("cancelled queued resume result");
     assert!(result.output.starts_with("<status>cancelled</status>"));
+    assert!(!result.output.contains("queued resume done"));
     let child_events = fixture
         .engine
         .inner
