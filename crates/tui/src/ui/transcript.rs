@@ -8883,6 +8883,7 @@ mod tests {
         let (client, recorded, incoming) = live_recording_client();
         app.client = client;
         app.run_command(SlashCommand::New).await;
+        app.choose_picker_entry(0).await;
         let recorded_for_response = recorded.clone();
         let response = tokio::spawn(async move {
             let id = wait_for_recorded_request(&recorded_for_response, "session.create", 1).await;
@@ -8894,11 +8895,18 @@ mod tests {
                 })))
                 .expect("script create failure");
         });
-        app.choose_picker_entry(0).await;
+        type_input(&mut app, "first message").await;
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
         response.await.expect("create failure response");
 
         assert_eq!(app.modal, Modal::None);
-        assert!(app.new_session_draft.is_none());
+        assert_eq!(recorded_method_count(&recorded, "session.create"), 1);
+        assert_eq!(app.input.as_str(), "first message");
+        assert_eq!(
+            app.new_session_draft.as_ref().map(|d| d.agent.as_str()),
+            Some("primary")
+        );
         assert_eq!(
             app.draft.as_ref().map(|draft| draft.agent.as_str()),
             Some("reviewer")
@@ -13666,6 +13674,11 @@ mod tests {
         app.run_command(SlashCommand::New).await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
+        // Agent selection only closes the picker. The first prompt performs
+        // session.create, adopts the new root, and then submits run.start.
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "first message").await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
 
@@ -15580,6 +15593,9 @@ mod tests {
                 })))
                 .expect("script create response");
         });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        type_input(&mut app, "first message").await;
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         response.await.expect("create response");
@@ -18908,6 +18924,21 @@ mod tests {
                 .and_then(|draft| draft.preset.as_deref()),
             Some("python")
         );
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(2).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("rust"));
+        assert_eq!(
+            app.new_session_draft
+                .as_ref()
+                .and_then(|draft| draft.preset.as_deref()),
+            Some("rust")
+        );
+        assert!(app.status.contains("preset rust"));
+        assert!(!app.status.contains("preset python"));
+        assert_eq!(
+            app.draft.as_ref().and_then(|draft| draft.preset.as_deref()),
+            Some("python")
+        );
         assert_eq!(
             app.selectable_agents()
                 .iter()
@@ -18915,8 +18946,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["primary", "reviewer"]
         );
-        let rendered = rendered_frame(&mut app, 100, 30);
-        assert!(rendered.contains("preset: python"));
+        app.run_command(SlashCommand::Preset).await;
+        app.choose_picker_entry(1).await;
+        assert_eq!(app.selected_preset.as_deref(), Some("python"));
         app.cycle_agent(false);
         assert_eq!(
             app.new_session_draft
@@ -18931,11 +18963,44 @@ mod tests {
             Some("python")
         );
 
+        app.run_command(SlashCommand::New).await;
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .await;
         assert!(app.new_session_draft.is_none());
         let fresh = test_app().await;
         assert_eq!(fresh.selected_preset, None);
+    }
+
+    #[tokio::test]
+    async fn read_only_session_allows_starting_new_session_with_new_command() {
+        let mut app = test_app().await;
+        let session_id = SessionId::new_v7();
+        app.sessions.push(session_meta(session_id));
+        app.selected = Some(session_id);
+        app.read_only_sessions.insert(session_id);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await;
+        assert!(app.input.as_str().is_empty());
+        assert!(app.status.contains("input is disabled"));
+
+        type_input(&mut app, "/new").await;
+        if app.command_palette_visible() {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+
+        assert!(
+            app.input.as_str().is_empty(),
+            "input={:?}, modal={:?}, status={:?}",
+            app.input.as_str(),
+            app.modal,
+            app.status
+        );
+        assert!(app.new_session_draft.is_some());
+        assert_eq!(app.modal, Modal::Agents);
     }
 
     #[tokio::test]
@@ -21957,6 +22022,8 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .await;
         assert_eq!(app.status, crate::state::EMPTY_RUNTIME_GUIDANCE);
+        assert_eq!(app.input.as_str(), "ordinary text");
+        app.input.set_buffer(String::new());
         settle_recording().await;
         for method in ["session.create", "run.start", "run.steer"] {
             assert_eq!(recorded_method_count(&recorded, method), 0, "{method}");

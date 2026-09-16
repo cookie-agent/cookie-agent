@@ -789,15 +789,7 @@ mod tests {
         let local_app = App::new_with_new_session(local)
             .await
             .expect("local TUI config");
-        assert_eq!(local_app.store.sessions.len(), 1);
-        let local_session = local_app
-            .store
-            .sessions
-            .keys()
-            .next()
-            .copied()
-            .expect("new local root session");
-        assert_ne!(local_session, existing.session_id);
+        assert!(local_app.store.sessions.is_empty());
     }
 
     #[test]

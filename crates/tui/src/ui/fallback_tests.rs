@@ -319,6 +319,7 @@ async fn old_acknowledgements_cannot_consume_newer_choices_or_another_sessions_i
         client_run_id: other_params.client_run_id.clone(),
         draft_generation: generation,
         reset_fallback: true,
+        input: "prompt".into(),
         result: Ok(()),
     });
     assert!(

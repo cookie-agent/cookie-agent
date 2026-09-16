@@ -689,6 +689,7 @@ pub(super) enum RpcUpdate {
         client_run_id: ClientRunId,
         draft_generation: u64,
         reset_fallback: bool,
+        input: String,
         result: Result<(), String>,
     },
     GoalFinished {
@@ -1078,7 +1079,9 @@ impl App {
         };
         app.refresh_lists().await;
         if create_new_session {
-            app.create_startup_session().await;
+            // Keep a fresh root entirely client-side until the first prompt.
+            app.new_session_draft = app.default_draft_selection();
+            app.selected = None;
         } else if let Some(session_id) = Self::preferred_startup_session(&app.sessions) {
             app.open_session(session_id).await;
         }
@@ -1294,19 +1297,7 @@ impl App {
         }
     }
 
-    async fn create_startup_session(&mut self) {
-        if self.runtime.is_empty() {
-            self.status = EMPTY_RUNTIME_GUIDANCE.into();
-            return;
-        }
-        let Some(selection) = self.default_draft_selection() else {
-            self.status = self.setup_status();
-            return;
-        };
-        self.create_root_session(selection).await;
-    }
-
-    async fn create_root_session(&mut self, selection: RunSelection) {
+    async fn create_root_session(&mut self, selection: RunSelection) -> bool {
         let agent = selection.agent.clone();
         match self
             .client
@@ -1322,10 +1313,13 @@ impl App {
                 self.new_session_draft = None;
                 self.status =
                     format!("New root session opened with agent {agent}. Type /help for commands.");
+                true
             }
             Err(error) => {
-                self.new_session_draft = None;
+                // Preserve the draft so the user can retry after a transient
+                // create failure.
                 self.status = error.to_string();
+                false
             }
         }
     }
@@ -1510,6 +1504,7 @@ impl App {
             self.selected_preset = None;
         }
         self.revalidate_draft();
+        self.revalidate_new_session_draft();
         if self.runtime.is_empty() && self.watching_root_session() {
             self.draft = None;
             self.status = EMPTY_RUNTIME_GUIDANCE.into();
@@ -1667,7 +1662,7 @@ impl App {
     /// delegated sessions within their frozen agent's persisted suffix.
     /// This gate is independent of the active run.
     pub(super) fn model_selection_allowed(&self) -> bool {
-        self.draft.is_some()
+        self.new_session_draft.is_some() || self.draft.is_some()
     }
 
     /// The frozen child agent a delegated session is pinned to, and the
@@ -1706,11 +1701,30 @@ impl App {
             }
             _ => {
                 match modal {
-                    Modal::Agents => self.agent_search.reset(),
-                    Modal::Models => self.model_search.reset(),
-                    _ => {}
+                    Modal::Agents => {
+                        self.agent_search.reset();
+                        let active_agent = self
+                            .new_session_draft
+                            .as_ref()
+                            .or(self.draft.as_ref())
+                            .map(|draft| &draft.agent);
+                        let row = active_agent
+                            .and_then(|agent| {
+                                self.agent_picker_candidates()
+                                    .iter()
+                                    .position(|candidate| &candidate.id == agent)
+                            })
+                            .unwrap_or(0);
+                        self.picker_state.select(Some(row));
+                    }
+                    Modal::Models => {
+                        self.model_search.reset();
+                        self.picker_state.select(Some(0));
+                    }
+                    _ => {
+                        self.picker_state.select(Some(0));
+                    }
                 }
-                self.picker_state.select(Some(0));
                 self.modal = modal;
             }
         }
@@ -1745,6 +1759,49 @@ impl App {
             draft.model.variant = descriptor.default_variant.clone();
         }
         self.draft = Some(draft);
+    }
+
+    fn revalidate_new_session_draft(&mut self) {
+        let Some(mut draft) = self.new_session_draft.clone() else {
+            return;
+        };
+        let Some(agent) = self.agents.iter().find(|agent| {
+            agent.runnable_as_root
+                && agent.mode != cookie_agent_protocol::AgentMode::Internal
+                && agent.id == draft.agent
+                && agent.preset == draft.preset
+        }) else {
+            let preset = self
+                .selected_preset
+                .as_deref()
+                .filter(|preset| self.preset_names().iter().any(|name| name == preset));
+            self.new_session_draft = self.draft_selection_for_preset(preset, None);
+            self.selected_preset = self
+                .new_session_draft
+                .as_ref()
+                .and_then(|draft| draft.preset.clone());
+            return;
+        };
+        if let Some(descriptor) = self.model_descriptor(&draft.model.model) {
+            if !Self::variant_is_valid(descriptor, draft.model.variant.as_ref()) {
+                draft.model.variant = descriptor.default_variant.clone();
+            }
+        } else {
+            let Some(model) = agent
+                .resolved_fallback
+                .iter()
+                .find(|selection| self.selection_is_live(selection))
+                .cloned()
+                .or_else(|| self.models.first().map(Self::default_model_selection))
+            else {
+                self.new_session_draft = None;
+                self.selected_preset = None;
+                return;
+            };
+            draft.model = model;
+        }
+        self.selected_preset = draft.preset.clone();
+        self.new_session_draft = Some(draft);
     }
 
     fn validated_draft_selection(&mut self) -> Option<RunSelection> {
@@ -1869,14 +1926,14 @@ impl App {
     /// Models listed for the draft: every coherent global descriptor for root
     /// sessions; the persisted frozen suffix for delegated sessions.
     pub(super) fn draft_models(&self) -> Vec<ModelSelection> {
-        if !self.watching_root_session() {
+        if self.new_session_draft.is_none() && !self.watching_root_session() {
             return self.persisted_chain().unwrap_or_default();
         }
+        let draft = self.new_session_draft.as_ref().or(self.draft.as_ref());
         self.models
             .iter()
             .map(|descriptor| {
-                self.draft
-                    .as_ref()
+                draft
                     .filter(|draft| draft.model.model == descriptor.key)
                     .map_or_else(
                         || Self::default_model_selection(descriptor),
@@ -1904,10 +1961,10 @@ impl App {
     /// expose only their exact persisted selection, so cycling cannot escape
     /// the suffix.
     pub(super) fn draft_variants(&self) -> Vec<Option<VariantId>> {
-        let Some(draft) = &self.draft else {
+        let Some(draft) = self.new_session_draft.as_ref().or(self.draft.as_ref()) else {
             return Vec::new();
         };
-        if !self.watching_root_session() {
+        if self.new_session_draft.is_none() && !self.watching_root_session() {
             return self
                 .persisted_chain_selection(&draft.model.model)
                 .map(|selection| vec![selection.variant])
@@ -1983,30 +2040,44 @@ impl App {
     }
 
     pub(super) fn set_draft_model(&mut self, model: ModelKey) {
-        let Some(draft) = self.draft.clone() else {
+        let targets_new_session = self.new_session_draft.is_some();
+        let Some(draft) = self
+            .new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .cloned()
+        else {
             return;
         };
         if draft.model.model == model {
-            if self.watching_root_session()
+            if (targets_new_session || self.watching_root_session())
                 && draft.model.variant.is_none()
                 && let Some(selection) = self
                     .model_descriptor(&model)
                     .map(Self::default_model_selection)
             {
-                self.draft = Some(RunSelection {
+                let updated = RunSelection {
                     agent: draft.agent,
                     model: selection,
                     preset: draft.preset,
-                });
+                };
+                if targets_new_session {
+                    self.new_session_draft = Some(updated);
+                } else {
+                    self.draft = Some(updated);
+                }
             }
-            self.set_draft_reset_intent(true);
+            if !targets_new_session {
+                self.set_draft_reset_intent(true);
+            }
             self.status = self.draft_status("Draft run model");
             return;
         }
         // Delegated sessions resolve only against the persisted frozen
         // suffix; root sessions use the complete live catalog and select the
         // chosen model's resolved default variant.
-        let selection = if self.watching_root_session()
+        let selection = if targets_new_session
+            || self.watching_root_session()
             || self.selected.is_none()
             || self.persisted_chain_selection(&draft.model.model).is_none()
             || self
@@ -2028,35 +2099,56 @@ impl App {
             self.status = format!("model {model} is not available for agent {}", draft.agent);
             return;
         };
-        self.draft = Some(RunSelection {
+        let updated = RunSelection {
             agent: draft.agent,
             model: selection,
             preset: draft.preset,
-        });
-        self.set_draft_reset_intent(true);
+        };
+        if targets_new_session {
+            self.new_session_draft = Some(updated);
+        } else {
+            self.draft = Some(updated);
+        }
+        if !targets_new_session {
+            self.set_draft_reset_intent(true);
+        }
         self.status = self.draft_status("Draft run model");
     }
 
     pub(super) fn set_draft_variant(&mut self, variant: Option<VariantId>) {
-        let Some(draft) = self.draft.clone() else {
+        let targets_new_session = self.new_session_draft.is_some();
+        let Some(draft) = self
+            .new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .cloned()
+        else {
             return;
         };
-        if !self.watching_root_session()
+        if !targets_new_session
+            && !self.watching_root_session()
             && self
                 .persisted_chain_selection(&draft.model.model)
                 .is_none_or(|selection| selection.variant != variant)
         {
             return;
         }
-        self.draft = Some(RunSelection {
+        let updated = RunSelection {
             agent: draft.agent,
             model: ModelSelection {
                 model: draft.model.model,
                 variant,
             },
             preset: draft.preset,
-        });
-        self.set_draft_reset_intent(true);
+        };
+        if targets_new_session {
+            self.new_session_draft = Some(updated);
+        } else {
+            self.draft = Some(updated);
+        }
+        if !targets_new_session {
+            self.set_draft_reset_intent(true);
+        }
         self.status = self.draft_status("Draft run variant");
     }
 
@@ -2065,7 +2157,12 @@ impl App {
         if variants.len() <= 1 {
             return;
         }
-        let Some(current) = self.draft.as_ref().map(|draft| draft.model.variant.clone()) else {
+        let Some(current) = self
+            .new_session_draft
+            .as_ref()
+            .or(self.draft.as_ref())
+            .map(|draft| draft.model.variant.clone())
+        else {
             return;
         };
         let index = variants
@@ -2169,11 +2266,11 @@ impl App {
     }
 
     fn draft_status(&self, action: &str) -> String {
-        let Some(draft) = &self.draft else {
+        let Some(draft) = self.new_session_draft.as_ref().or(self.draft.as_ref()) else {
             return "no draft selection".into();
         };
         let preset = draft.preset.as_deref().unwrap_or("shared");
-        if self.active_run_agent().is_some() {
+        if self.new_session_draft.is_none() && self.active_run_agent().is_some() {
             format!(
                 "{action}: {} · preset {preset}; applies to the next run — the active run is unchanged",
                 draft_title(draft),
@@ -2442,6 +2539,7 @@ impl App {
                 client_run_id,
                 draft_generation,
                 reset_fallback,
+                input,
                 result,
             } => {
                 match result {
@@ -2453,15 +2551,19 @@ impl App {
                         None,
                     ),
                     Err(error) => {
-                        // A failed response is not admission proof. Keep the intent
-                        // (and correlation for a possibly persisted RunStarted).
+                        // A failed response is not admission proof. Restore the
+                        // submitted prompt while retaining the draft selection.
                         if self.selected == Some(session_id)
                             && self.draft_generation == draft_generation
                             && (!reset_fallback
                                 || self.pending_fallback_resets.contains_key(&client_run_id))
                         {
+                            self.restore_composer_text(vec![input]);
                             self.session_errors.record(&error);
-                            self.status = error;
+                            self.status =
+                                format!("run failed to start ({error}); restored to the composer");
+                        } else {
+                            self.store.park_voided_input(session_id, input);
                         }
                     }
                 }
@@ -5380,10 +5482,22 @@ impl App {
         self.retire_composer_selection();
     }
 
+    fn read_only_input_allowed(&self) -> bool {
+        if self.new_session_draft.is_some() {
+            return true;
+        }
+        let input = self.input.as_str().trim_start();
+        !input.is_empty() && ("/new".starts_with(input) || input.starts_with("/new "))
+    }
+
     pub(super) async fn handle_input_key(&mut self, key: KeyEvent) {
         if self
             .selected
             .is_some_and(|session| self.read_only_sessions.contains(&session))
+            && !self.read_only_input_allowed()
+            && !(self.input.as_str().is_empty()
+                && key.code == KeyCode::Char('/')
+                && key.modifiers.is_empty())
         {
             self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
@@ -5576,6 +5690,8 @@ impl App {
         if self
             .selected
             .is_some_and(|session| self.read_only_sessions.contains(&session))
+            && !self.read_only_input_allowed()
+            && !text.trim_start().starts_with("/new")
         {
             self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
@@ -6245,9 +6361,9 @@ impl App {
                     self.set_draft_agent(agent);
                     self.agent_search.reset();
                     self.modal = Modal::None;
-                    if let Some(selection) = self.new_session_draft.clone() {
-                        self.create_root_session(selection).await;
-                    }
+                    // Agent selection only updates the client-side draft.
+                    // Creation is deferred until the first prompt so the
+                    // session and its first run follow one admission flow.
                 }
             }
             Modal::Presets => {
@@ -6257,10 +6373,21 @@ impl App {
                     self.preset_names().get(index - 1).cloned().map(Some)
                 };
                 if let Some(preset) = preset {
-                    let preferred_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
-                    self.set_draft_reset_intent(true);
+                    let preferred_agent = self
+                        .new_session_draft
+                        .as_ref()
+                        .or(self.draft.as_ref())
+                        .map(|draft| draft.agent.clone());
+                    if self.new_session_draft.is_none() {
+                        self.set_draft_reset_intent(true);
+                    }
                     self.selected_preset = preset;
-                    if self.watching_root_session() {
+                    if self.new_session_draft.is_some() {
+                        self.new_session_draft = self.draft_selection_for_preset(
+                            self.selected_preset.as_deref(),
+                            preferred_agent.as_ref(),
+                        );
+                    } else if self.watching_root_session() {
                         self.draft = self.draft_selection_for_preset(
                             self.selected_preset.as_deref(),
                             preferred_agent.as_ref(),
@@ -6316,6 +6443,7 @@ impl App {
         if self
             .selected
             .is_some_and(|session| self.read_only_sessions.contains(&session))
+            && !self.read_only_input_allowed()
         {
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
@@ -6329,7 +6457,55 @@ impl App {
             .filter(|skill| skill.precedence_winner && skill.user_invocable)
             .map(|skill| skill.name.clone())
             .collect::<Vec<_>>();
-        let submission = match parse_submission_with_skills(self.input.as_str(), &skills) {
+        let mut submission = parse_submission_with_skills(self.input.as_str(), &skills);
+        let could_be_pending_skill = self
+            .input
+            .as_str()
+            .strip_prefix('/')
+            .and_then(|input| input.split_whitespace().next())
+            .is_some_and(|name| {
+                !COMMANDS
+                    .iter()
+                    .any(|spec| spec.name == name || spec.aliases.contains(&name))
+            });
+        if submission.is_err() && self.new_session_draft.is_some() && could_be_pending_skill {
+            let selection = self
+                .new_session_draft
+                .clone()
+                .expect("pending new-session draft");
+            if self.create_root_session(selection).await {
+                let Some(session_id) = self.selected else {
+                    self.status = "new session was created without a selection".into();
+                    return;
+                };
+                match self
+                    .client
+                    .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
+                    .await
+                {
+                    Ok(result) => {
+                        self.skills = result.skills.clone();
+                        self.skill_panel.install(result);
+                        let skill_names = self
+                            .skills
+                            .iter()
+                            .filter(|skill| skill.precedence_winner && skill.user_invocable)
+                            .map(|skill| skill.name.clone())
+                            .collect::<Vec<_>>();
+                        submission =
+                            parse_submission_with_skills(self.input.as_str(), &skill_names);
+                    }
+                    Err(error) => {
+                        self.status = format!("skill discovery failed: {error}");
+                        return;
+                    }
+                }
+            } else {
+                // Keep both the original slash input and pending selection for retry.
+                return;
+            }
+        }
+        let submission = match submission {
             Ok(submission) => submission,
             Err(error) => {
                 self.mutate_input(|input| {
@@ -6366,21 +6542,22 @@ impl App {
             return;
         }
         if self.runtime.is_empty() {
-            self.mutate_input(|input| {
-                input.take();
-            });
-            self.palette_dismissed = false;
             self.status = EMPTY_RUNTIME_GUIDANCE.into();
             return;
+        }
+        if let Some(selection) = self.new_session_draft.clone() {
+            // `/new` may be opened while an existing session remains
+            // selected. The draft is the authoritative signal that this
+            // first message belongs to a new root.
+            self.create_root_session(selection).await;
+            if self.new_session_draft.is_some() {
+                return;
+            }
         }
         let Some(session_id) = self.selected else {
             self.status = "create or select a session first".into();
             return;
         };
-        self.mutate_input(|input| {
-            input.take();
-        });
-        self.palette_dismissed = false;
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         let active_run = self
@@ -6398,6 +6575,10 @@ impl App {
             self.status = "select a draft agent/model before submitting".into();
             return;
         }
+        self.mutate_input(|input| {
+            input.take();
+        });
+        self.palette_dismissed = false;
         let submitted_id = client_run_id();
         let draft_generation = self.draft_generation;
         if active_run.is_none() {
@@ -6416,6 +6597,16 @@ impl App {
                     })
                     .await
                 {
+                    Ok(result) if !result.accepted => {
+                        let error = result
+                            .handled_reason
+                            .unwrap_or_else(|| "steer request was rejected".into());
+                        let _ = updates.send(RpcUpdate::SteerFailed {
+                            session_id,
+                            input,
+                            error,
+                        });
+                    }
                     Ok(result) if result.handled_reason.is_some() => {
                         let _ = updates.send(RpcUpdate::Notice(
                             result.handled_reason.expect("reason is present"),
@@ -6437,7 +6628,7 @@ impl App {
                         session_id,
                         client_run_id: submitted_id.clone(),
                         selection: selection.expect("draft selection checked"),
-                        input,
+                        input: input.clone(),
                     })
                     .await
                     .map(|_| ())
@@ -6447,6 +6638,7 @@ impl App {
                     client_run_id: submitted_id,
                     draft_generation,
                     reset_fallback,
+                    input,
                     result,
                 });
             }
@@ -7391,7 +7583,7 @@ impl App {
     /// would otherwise lend them, so they stay regular.
     fn message_title_spans(&self) -> Vec<Span<'static>> {
         let regular = Style::default().remove_modifier(Modifier::BOLD);
-        match &self.draft {
+        match self.new_session_draft.as_ref().or(self.draft.as_ref()) {
             Some(draft) => vec![
                 Span::styled(
                     draft.agent.to_string(),
@@ -7469,14 +7661,15 @@ impl App {
             self.input_focused
                 && self.goal_focus.is_none()
                 && self.modal == Modal::None
-                && self
-                    .selected
-                    .is_none_or(|session| !self.read_only_sessions.contains(&session)),
+                && self.selected.is_none_or(|session| {
+                    !self.read_only_sessions.contains(&session) || self.new_session_draft.is_some()
+                }),
             Line::from(title_spans.clone()),
             Some(
                 if self
                     .selected
                     .is_some_and(|session| self.read_only_sessions.contains(&session))
+                    && self.new_session_draft.is_none()
                 {
                     "Read-only snapshot"
                 } else {
@@ -7487,7 +7680,7 @@ impl App {
         );
         // Agent, Model, and the complete bracketed Variant suffix are separate
         // clickable regions inside the canonical title. The bullet is decoration.
-        self.hit_map.title_segments = if self.draft.is_none() {
+        self.hit_map.title_segments = if self.new_session_draft.is_none() && self.draft.is_none() {
             Vec::new()
         } else {
             let segments = [
@@ -8088,10 +8281,15 @@ impl App {
         // Primary text is exactly `agent-id:session-title`; hierarchy,
         // cursor, and watch markers live in prefix cells only, and the row
         // shows no session ID.
-        format!(
-            "{cursor}{indent}{watched}{status}{agent}:{title}{degraded}",
-            agent = session.creation_selection.agent,
-        )
+        let agent = if *depth == 0 && self.selected == Some(*session_id) {
+            self.draft
+                .as_ref()
+                .map(|draft| draft.agent.clone())
+                .unwrap_or_else(|| session.creation_selection.agent.clone())
+        } else {
+            session.creation_selection.agent.clone()
+        };
+        format!("{cursor}{indent}{watched}{status}{agent}:{title}{degraded}",)
     }
 
     pub(super) fn tree_entries(&self) -> Vec<(SessionId, SessionMeta, usize)> {
