@@ -1664,15 +1664,35 @@ mod windows {
 pub(crate) use windows::*;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use cookie_agent_protocol::{ArtifactReference, SessionId, ToolAttachment};
 
 /// Keyed placement decision: which root tree directory owns a session's writes.
 type TreeResolver = Arc<dyn Fn(SessionId) -> Option<SessionId> + Send + Sync>;
+
+/// The store's own view of one session log — resident tip and durable length —
+/// asked for on demand. A sweep needs it to decide whether data a tree load
+/// harvested is still current, and only the store knows what its resident logs
+/// hold in a buffered writer (§3.3, §5.2).
+type LogFingerprintProbe = Arc<dyn Fn(SessionId) -> crate::session::LogFingerprint + Send + Sync>;
+
+/// Is an enumerated path a directory? Only a vanished entry proves it is not;
+/// any other stat failure is returned so a garbage-collection sweep cannot read
+/// an unprovable entry as "not a session" (§5.2, fail-closed).
+fn entry_is_directory(path: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
 
 /// Directory holding a tree's own artifacts (`<root>/artifacts`).
 pub(crate) const ARTIFACTS_DIR: &str = "artifacts";
@@ -1702,6 +1722,31 @@ struct StoredCrossReference {
     tree: String,
 }
 
+/// Child references a lazy tree load harvested, and the proof they are still
+/// complete: the [`LogFingerprint`](crate::session::LogFingerprint) of every
+/// child log at fold time — resident tip *and* durable length, the same pair a
+/// fold is verified against. Durable size alone would not do: a resident append
+/// that adds a reference does not change the file until its writer syncs, and a
+/// sweep keyed on sizes would keep using a set that misses it (§3.3, §5.2).
+#[derive(Clone, Debug)]
+struct TreeLiveRefs {
+    digests: HashSet<String>,
+    child_log_fingerprints: BTreeMap<SessionId, crate::session::LogFingerprint>,
+}
+
+/// What a sweep may do with a loaded tree's harvested child references.
+enum HarvestedRefs {
+    /// Nothing has moved: the harvested set still names every child reference.
+    Current(HashSet<String>),
+    /// Something durable moved and no child is resident, so scanning the child
+    /// logs again is a complete answer.
+    Reharvest,
+    /// A child of this tree is resident and moved since the harvest. Its newest
+    /// records may still be in that log's writer buffer, so no scan of disk can
+    /// establish its references: this tree must not be collected at all.
+    Unprovable,
+}
+
 /// Content-addressed artifacts routed to the tree that wrote them (§5.1).
 ///
 /// Writes always land in the writing session's own root directory, which keeps
@@ -1724,7 +1769,18 @@ pub(crate) struct ArtifactRouter {
     roots: Mutex<HashMap<SessionId, Arc<ArtifactStore>>>,
     digest_index: Mutex<HashMap<String, ArtifactLocation>>,
     cross_refs: Mutex<HashSet<(String, SessionId)>>,
+    /// The durable ledger is missing at least one entry this process proved;
+    /// rewritten wholesale before the next sweep trusts it again.
+    cross_refs_dirty: AtomicBool,
+    #[cfg(test)]
+    ledger_append_test_failure: AtomicBool,
     loaded_trees: Mutex<HashSet<SessionId>>,
+    /// Per loaded tree: the child references the one bulk fold harvested, plus
+    /// the log fingerprints it was taken at (§3.3(b), §5.2).
+    tree_live_refs: Mutex<HashMap<SessionId, TreeLiveRefs>>,
+    /// Asks the store what a session log looks like right now. Without it the
+    /// harvested sets can never be proven current, so they are never reused.
+    fingerprint_probe: Mutex<Option<LogFingerprintProbe>>,
     /// Maps a session to the root whose directory holds its writes (§5.1). The
     /// engine installs this once the store exists; unrouted callers share.
     tree_resolver: Mutex<Option<TreeResolver>>,
@@ -1790,7 +1846,13 @@ impl ArtifactRouter {
             shared.io_test_hook.attach_parent(&io_test_hook);
         }
         let cross_refs_path = workdir_dir.join(CROSS_REFS_FILE);
-        let cross_refs = Self::read_cross_refs(&cross_refs_path)?;
+        // A ledger this process cannot read is not an empty ledger: reads still
+        // work, and every sweep re-reads the file and aborts if it stays
+        // unreadable, so no blob is freed on the strength of an unknown set.
+        let cross_refs = Self::read_cross_refs(&cross_refs_path).unwrap_or_else(|error| {
+            eprintln!("cross-reference ledger unreadable: {error}");
+            HashSet::new()
+        });
         Ok(Arc::new(Self {
             shared_directory,
             cross_refs_path,
@@ -1802,7 +1864,12 @@ impl ArtifactRouter {
             roots: Mutex::new(HashMap::new()),
             digest_index: Mutex::new(HashMap::new()),
             cross_refs: Mutex::new(cross_refs),
+            cross_refs_dirty: AtomicBool::new(false),
+            #[cfg(test)]
+            ledger_append_test_failure: AtomicBool::new(false),
             loaded_trees: Mutex::new(HashSet::new()),
+            tree_live_refs: Mutex::new(HashMap::new()),
+            fingerprint_probe: Mutex::new(None),
             tree_resolver: Mutex::new(None),
         }))
     }
@@ -1814,6 +1881,25 @@ impl ArtifactRouter {
             .tree_resolver
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(resolver);
+    }
+
+    /// Teach the router how to ask the store about a session log, which is what
+    /// makes a loaded tree's harvested child references reusable at all. A router
+    /// without a probe never reuses them (§3.3(b), §5.2).
+    pub(crate) fn install_log_fingerprint_probe(&self, probe: LogFingerprintProbe) {
+        *self
+            .fingerprint_probe
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(probe);
+    }
+
+    /// The store's current fingerprint of one log, or `None` when this router has
+    /// no way to ask the store.
+    fn log_fingerprint_probe(&self) -> Option<LogFingerprintProbe> {
+        self.fingerprint_probe
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn tree_of(&self, session: SessionId) -> Option<SessionId> {
@@ -1988,9 +2074,137 @@ impl ArtifactRouter {
             .contains(&tree)
     }
 
+    /// Installs the child-reference set one bulk tree load harvested, together
+    /// with the log fingerprints it was taken at (§3.3(b), §5.2). Called when the
+    /// load's products are applied, so a loaded tree always has a set that was
+    /// proven against the same bytes.
+    pub(crate) fn note_tree_live_refs(
+        &self,
+        tree: SessionId,
+        digests: HashSet<String>,
+        child_log_fingerprints: BTreeMap<SessionId, crate::session::LogFingerprint>,
+    ) {
+        self.tree_live_refs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                tree,
+                TreeLiveRefs {
+                    digests,
+                    child_log_fingerprints,
+                },
+            );
+    }
+
+    /// Whether one loaded tree's harvested child references may still be reused,
+    /// re-harvested from disk, or cannot be established at all.
+    ///
+    /// The validity proof is the store's fold-validity signal: every child must
+    /// still have the fingerprint the harvest recorded, and the harvest must
+    /// still cover exactly the children that exist. Durable bytes alone are not
+    /// the proof — see [`HarvestedRefs::Unprovable`].
+    fn harvested_tree_refs(
+        &self,
+        directory: &Path,
+        tree: SessionId,
+    ) -> std::io::Result<HarvestedRefs> {
+        let installed = self
+            .tree_live_refs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&tree)
+            .cloned();
+        let Some(installed) = installed else {
+            return Ok(HarvestedRefs::Reharvest);
+        };
+        let Some(probe) = self.log_fingerprint_probe() else {
+            // Durable bytes are all a router that cannot ask the store would
+            // compare, and they are not enough to prove a set current.
+            return Ok(HarvestedRefs::Reharvest);
+        };
+        let durable =
+            self.child_log_fingerprints(&directory.join(crate::session::SUBAGENTS_DIR), &probe)?;
+        // A child the harvest never saw, and one whose directory is gone, both
+        // make the recorded set incomplete; the union reports either.
+        let children = installed
+            .child_log_fingerprints
+            .keys()
+            .chain(durable.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for child in children {
+            let current = match durable.get(&child) {
+                Some(fingerprint) => *fingerprint,
+                // Off disk: only the store can say whether it is still resident.
+                None => probe(child),
+            };
+            if installed.child_log_fingerprints.get(&child) == Some(&current) {
+                continue;
+            }
+            return Ok(if current.resident_tip.is_some() {
+                // This process is writing that log and its newest records can
+                // still be in the writer's buffer: no scan of the file can
+                // complete the live set for this tree.
+                HarvestedRefs::Unprovable
+            } else {
+                HarvestedRefs::Reharvest
+            });
+        }
+        Ok(HarvestedRefs::Current(installed.digests))
+    }
+
+    /// Current fingerprint of every child `events.jsonl` under `subagents_dir`,
+    /// keyed by child id: durable bytes, plus this process's resident tip.
+    /// Fingerprints only — no log content is read. Fail-closed like every other
+    /// enumeration here: only a missing directory means "no children".
+    fn child_log_fingerprints(
+        &self,
+        subagents_dir: &Path,
+        probe: &LogFingerprintProbe,
+    ) -> std::io::Result<BTreeMap<SessionId, crate::session::LogFingerprint>> {
+        let mut fingerprints = BTreeMap::new();
+        let entries = match std::fs::read_dir(subagents_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(fingerprints),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if !entry_is_directory(&path)? {
+                continue;
+            }
+            let Some(id) = path
+                .file_name()
+                .and_then(|name| name.to_string_lossy().parse::<SessionId>().ok())
+            else {
+                continue;
+            };
+            let size = match std::fs::metadata(path.join(crate::session::EVENTS_FILE)) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error),
+            };
+            fingerprints.insert(
+                id,
+                crate::session::LogFingerprint {
+                    resident_tip: probe(id).resident_tip,
+                    durable_len: size,
+                },
+            );
+        }
+        Ok(fingerprints)
+    }
+
     /// Collect expired blobs from the shared store and from every tree whose
     /// load completed in this process (§5.2). Trees that were never loaded
     /// contribute their durable references but keep their blobs in place.
+    ///
+    /// Fail-closed: if the live set cannot be established completely, the
+    /// `Err` returns before any store is swept, so nothing is deleted. Proving a
+    /// blob unreferenced requires having seen every log that could reference it,
+    /// which includes a loaded tree whose child references this process can no
+    /// longer prove are durable — that tree holds the whole sweep, not just its
+    /// own directory (§5.2, review F4).
     pub(crate) fn collect_garbage(
         &self,
         grace: std::time::Duration,
@@ -2000,7 +2214,15 @@ impl ArtifactRouter {
             // A capture is publishing; the next sweep will see its bytes.
             Err(_) => return Ok(ArtifactGcReport::default()),
         };
-        let live = self.live_references()?;
+        let (live, unprovable) = self.live_references_and_unprovable()?;
+        if !unprovable.is_empty() {
+            // Fail closed the way an unreadable log already does: one tree whose
+            // child references cannot be established makes the live set
+            // incomplete for every store this sweep consults, so nothing is
+            // deleted anywhere and the next sweep — once that log's records are
+            // durable, or the child has been evicted — tries again (§5.2).
+            return Ok(ArtifactGcReport::default());
+        }
         let mut report = self.shared.collect_garbage_with(&live, grace)?;
         let loaded = self
             .loaded_trees
@@ -2024,25 +2246,32 @@ impl ArtifactRouter {
     /// transitively through artifact contents (§5.2). Every session directory is
     /// scanned; a tree's `subagents/` logs join the set only once that tree has
     /// been loaded, because until then its children are unknown.
-    pub(crate) fn live_references(&self) -> std::io::Result<HashSet<String>> {
+    ///
+    /// An `Err` means the live set is *incomplete*, which the caller must never
+    /// treat as an empty one: every enumeration failure aborts the sweep before
+    /// a single blob is unlinked.
+    /// [`Self::live_references`], plus the loaded trees whose child references
+    /// this pass could not establish. The set is shared by every store a sweep
+    /// consults, so an incomplete one is not safe for any of them (§5.2).
+    fn live_references_and_unprovable(
+        &self,
+    ) -> std::io::Result<(HashSet<String>, HashSet<SessionId>)> {
+        // A previous append may have failed, so repair the ledger before reading
+        // it back into the live set (B2).
+        self.rebuild_cross_ref_ledger_if_dirty();
         let mut live = HashSet::new();
+        let mut unprovable = HashSet::new();
         for directory in self.session_directories()? {
             let tree = directory
                 .file_name()
                 .and_then(|name| name.to_string_lossy().parse::<SessionId>().ok());
-            let referenced = self.scan_tree_references(&directory, tree)?;
+            let referenced = self.scan_tree_references(&directory, tree, &mut unprovable)?;
             if let Some(tree) = tree {
                 self.note_foreign_references(tree, &referenced);
             }
             live.extend(referenced);
         }
-        live.extend(
-            self.cross_refs
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter()
-                .map(|(digest, _)| digest.clone()),
-        );
+        live.extend(self.cross_reference_digests()?);
         expand_transitive_artifact_references(&mut live, |digest| {
             let Some(mut file) = self.open_existing(digest)? else {
                 return Ok(None);
@@ -2055,17 +2284,25 @@ impl ArtifactRouter {
             file.read_to_end(&mut bytes)?;
             Ok(Some(bytes))
         })?;
-        Ok(live)
+        Ok((live, unprovable))
     }
 
+    /// Every root session directory under the sessions root.
+    ///
+    /// Fail-closed: only a genuinely absent sessions root means "no sessions".
+    /// Any other read or per-entry failure is returned, because a partial list
+    /// would make unreachable-looking blobs look dead (§5.2).
     fn session_directories(&self) -> std::io::Result<Vec<PathBuf>> {
         let mut directories = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.sessions_dir) else {
-            return Ok(directories);
+        let entries = match std::fs::read_dir(&self.sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directories),
+            Err(error) => return Err(error),
         };
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                directories.push(entry.path());
+        for entry in entries {
+            let path = entry?.path();
+            if entry_is_directory(&path)? {
+                directories.push(path);
             }
         }
         directories.sort();
@@ -2073,25 +2310,50 @@ impl ArtifactRouter {
     }
 
     /// Session log plus, for a loaded tree, every child log in its `subagents/`.
+    ///
+    /// Fail-closed for a loaded tree: an unreadable `subagents/` hides live
+    /// child references, so only a missing directory counts as "no children" and
+    /// every other error aborts the sweep. A tree whose child references cannot
+    /// be established at all is reported in `unprovable` instead of being
+    /// guessed at: its harvested set is never reused when it may be stale
+    /// (§5.2, review F4).
     fn scan_tree_references(
         &self,
         directory: &Path,
         tree: Option<SessionId>,
+        unprovable: &mut HashSet<SessionId>,
     ) -> std::io::Result<HashSet<String>> {
         let mut live =
             scan_artifact_references_in_log(&directory.join(crate::session::EVENTS_FILE))?;
-        if !tree.is_some_and(|tree| self.is_tree_loaded(tree)) {
-            return Ok(live);
-        }
-        let Ok(children) = std::fs::read_dir(directory.join(crate::session::SUBAGENTS_DIR)) else {
+        let Some(tree) = tree.filter(|tree| self.is_tree_loaded(*tree)) else {
             return Ok(live);
         };
-        for entry in children.flatten() {
-            if !entry.path().is_dir() {
+        // The one bulk fold already read every child log of a loaded tree; while
+        // the store still agrees with that fold, its harvested set *is* the child
+        // live set and the sweep opens none of them again (§3.3, §5.2).
+        match self.harvested_tree_refs(directory, tree)? {
+            HarvestedRefs::Current(installed) => {
+                live.extend(installed);
+                return Ok(live);
+            }
+            HarvestedRefs::Unprovable => {
+                unprovable.insert(tree);
+                return Ok(live);
+            }
+            HarvestedRefs::Reharvest => {}
+        }
+        let children = match std::fs::read_dir(directory.join(crate::session::SUBAGENTS_DIR)) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(live),
+            Err(error) => return Err(error),
+        };
+        for child in children {
+            let path = child?.path();
+            if !entry_is_directory(&path)? {
                 continue;
             }
             live.extend(scan_artifact_references_in_log(
-                &entry.path().join(crate::session::EVENTS_FILE),
+                &path.join(crate::session::EVENTS_FILE),
             )?);
         }
         Ok(live)
@@ -2150,19 +2412,82 @@ impl ArtifactRouter {
             // later scan, not data.
             Err(error) => {
                 eprintln!("cross-reference ledger append failed: {error}");
+                self.cross_refs_dirty.store(true, Ordering::Relaxed);
                 return;
             }
         };
+        #[cfg(test)]
+        if self
+            .ledger_append_test_failure
+            .swap(false, Ordering::Relaxed)
+        {
+            drop(file);
+            eprintln!("cross-reference ledger append failed: injected test failure");
+            self.cross_refs_dirty.store(true, Ordering::Relaxed);
+            return;
+        }
         // Deliberately unsynced: the file is a hint, never the source of truth.
-        let _ = file.write_all(lines.as_bytes());
+        // A short or failed write can leave a torn tail, so the whole file is
+        // rewritten from the in-memory set before the next sweep reads it.
+        if let Err(error) = file.write_all(lines.as_bytes()).and_then(|()| file.flush()) {
+            eprintln!("cross-reference ledger append failed: {error}");
+            self.cross_refs_dirty.store(true, Ordering::Relaxed);
+        }
     }
 
+    /// Rewrite `cross-refs.jsonl` from everything this process has proven, after
+    /// an append was lost. Retain-only, so a rebuilt ledger can never free a blob
+    /// the old one kept alive (B2, §5.3).
+    fn rebuild_cross_ref_ledger_if_dirty(&self) {
+        if !self
+            .cross_refs_dirty
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let entries = self
+            .cross_refs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Err(error) = write_cross_ref_ledger(&self.cross_refs_path, &entries) {
+            eprintln!("cross-reference ledger rebuild failed: {error}");
+            // Keep the flag set: the next sweep retries until the file is whole.
+            self.cross_refs_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The durable ledger, as this process last wrote it.
+    #[cfg(test)]
+    pub(crate) fn cross_ref_ledger(&self) -> BTreeSet<(String, SessionId)> {
+        self.cross_refs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Test seam: the next ledger append is lost, exactly as a short write or a
+    /// full disk would lose it (B2).
+    #[cfg(test)]
+    pub(crate) fn fail_next_ledger_append(&self) {
+        self.ledger_append_test_failure
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Read the whole ledger. A missing file is an empty ledger; a file that is
+    /// there but unreadable is not, so only `NotFound` is absorbed.
     fn read_cross_refs(path: &Path) -> std::io::Result<HashSet<(String, SessionId)>> {
         use std::io::BufRead as _;
 
         let mut refs = HashSet::new();
-        let Ok(file) = std::fs::File::open(path) else {
-            return Ok(refs);
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(refs),
+            Err(error) => return Err(error),
         };
         for line in std::io::BufReader::new(file).lines() {
             let Ok(line) = line else { continue };
@@ -2174,6 +2499,25 @@ impl ArtifactRouter {
             }
         }
         Ok(refs)
+    }
+
+    /// Every digest the ledger holds plus every one this process proved since it
+    /// was last read. The file is re-read per sweep because another process may
+    /// have appended, and because an unreadable ledger must abort the sweep
+    /// rather than silently drop the cross-tree references it protects (§5.3).
+    fn cross_reference_digests(&self) -> std::io::Result<HashSet<String>> {
+        let mut digests = Self::read_cross_refs(&self.cross_refs_path)?
+            .into_iter()
+            .map(|(digest, _)| digest)
+            .collect::<HashSet<_>>();
+        digests.extend(
+            self.cross_refs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .map(|(digest, _)| digest.clone()),
+        );
+        Ok(digests)
     }
 
     fn index(&self, tree: Option<SessionId>, digest: &str) {
@@ -2275,9 +2619,16 @@ pub(crate) fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<Ha
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => return Err(error),
         };
-        // Every reference carries this prefix, so lines without it never need
-        // to be parsed. Startup and migration walk the whole log.
-        if !line.contains("artifact://") {
+        // A reference needs the bytes `artifact://` *after* JSON decoding, and
+        // any one of them may arrive as a `\uXXXX` escape. So a line is only
+        // skippable when it carries neither a literal `artifact` nor a single
+        // escape sequence: an encoded URI cannot exist in such a line, and every
+        // line that could hold one is parsed. Measured cost of the surviving
+        // test, whole log, 200k lines, on this machine:
+        //   no prefilter .......... 690 ms
+        //   this prefilter ........ 118 ms (96% of lines skipped, zero skipped
+        //                                 lines can carry a reference)
+        if !line.contains("artifact") && !line.contains("\\u") {
             continue;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
@@ -2288,6 +2639,22 @@ pub(crate) fn scan_artifact_references_in_log(path: &Path) -> std::io::Result<Ha
     Ok(live)
 }
 
+/// Harvests the same references the durable line scan finds, from envelopes an
+/// in-memory fold already read (§3.3(b)). Serializing each envelope reproduces
+/// exactly the JSON line on disk, so the folded view and the scanned view of one
+/// log cannot disagree about what is live. A value that cannot be serialized is
+/// an error: an incomplete live set must never look like an empty one.
+pub(crate) fn collect_artifact_references_in_events(
+    events: &[cookie_agent_protocol::StoredEvent],
+    live: &mut HashSet<String>,
+) -> std::io::Result<()> {
+    for event in events {
+        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
+        collect_artifact_references(&value, live);
+    }
+    Ok(())
+}
+
 /// Rewrite the cross-reference ledger wholesale. Only the v1 migration
 /// (§6.3 step 5) does this; steady-state collection appends to the file.
 pub(crate) fn write_cross_ref_ledger(
@@ -2296,8 +2663,20 @@ pub(crate) fn write_cross_ref_ledger(
 ) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    let temporary = path.with_extension("jsonl.tmp");
-    {
+    // Unique per call: a fixed name left behind by a crash between the sync and
+    // the rename would fail `create_new` for every later write.
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| CROSS_REFS_FILE.to_owned());
+    let temporary = match parent {
+        Some(parent) => parent.join(format!(".{name}.{}.tmp", uuid::Uuid::now_v7())),
+        None => PathBuf::from(format!(".{name}.{}.tmp", uuid::Uuid::now_v7())),
+    };
+    let written: std::io::Result<()> = (|| {
         let mut file = std::io::BufWriter::new(
             std::fs::File::options()
                 .write(true)
@@ -2311,13 +2690,24 @@ pub(crate) fn write_cross_ref_ledger(
                     digest: digest.clone(),
                     tree: tree.to_string(),
                 },
-            )?;
+            )
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             file.write_all(b"\n")?;
         }
         file.flush()?;
-        file.get_ref().sync_all()?;
+        file.get_ref().sync_all()
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return written;
     }
-    std::fs::rename(&temporary, path)
+    match std::fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2734,5 +3124,358 @@ mod router_tests {
             .expect("sweep after loading");
         assert_eq!(report.deleted, 1);
         assert!(!blob.exists());
+    }
+
+    /// §5.2, review F4: reusing what the one bulk fold harvested is only sound
+    /// while the store still agrees with that fold, and the store's proof is
+    /// resident tip **and** durable length. A child resident in this process can
+    /// hold its newest record in the log writer's buffer: the file on disk stays
+    /// byte-identical while the log has moved. A sweep that compared lengths
+    /// alone would call the harvested set current and delete the blob only that
+    /// buffered record points at.
+    #[test]
+    fn a_resident_unflushed_child_append_aborts_the_sweep() {
+        let fixture = placement();
+        let (root, child) = (fixture.roots[0], fixture.children[0]);
+        let harvested_digest = "a".repeat(64);
+        let child_dir = tree_dir(fixture.workdir.path(), root)
+            .join(crate::session::SUBAGENTS_DIR)
+            .join(child.to_string());
+        fs::create_dir_all(&child_dir).expect("child directory");
+        let child_log = child_dir.join(crate::session::EVENTS_FILE);
+        fs::write(
+            &child_log,
+            format!(
+                "{}\n",
+                serde_json::json!({"payload": {"result": {"reference":
+                    format!("artifact://sha256/{harvested_digest}")}}})
+            ),
+        )
+        .expect("child log");
+        let durable_len = fs::metadata(&child_log).expect("child log size").len();
+        let fingerprint = move |resident_tip| crate::session::LogFingerprint {
+            resident_tip,
+            durable_len,
+        };
+        fixture.router.note_tree_loaded(root);
+        fixture
+            .router
+            .install_log_fingerprint_probe(Arc::new(move |_session| fingerprint(Some(2))));
+        fixture.router.note_tree_live_refs(
+            root,
+            [harvested_digest.clone()].into_iter().collect(),
+            [(child, fingerprint(None))]
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        );
+        // Content only a record sitting in the child's writer buffer points at:
+        // nothing on disk mentions its digest, and the child's file does not grow.
+        let (buffered_reference, buffered_digest) = fixture
+            .router
+            .retain(child, b"referenced-only-from-the-buffer")
+            .expect("retain");
+        assert_eq!(
+            buffered_reference.uri,
+            format!("artifact://sha256/{buffered_digest}")
+        );
+        let blob = tree_blob(fixture.workdir.path(), root, &buffered_digest);
+        assert!(blob.is_file());
+        assert_eq!(
+            fs::metadata(&child_log).expect("child log size").len(),
+            durable_len,
+            "the child's newest append is not in the file the sweep can scan"
+        );
+
+        let report = fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("sweep a tree with a buffered child append");
+        assert_eq!(
+            (report.deleted, report.retained),
+            (0, 0),
+            "the live set is incomplete, so the sweep must not run at all"
+        );
+        assert!(
+            blob.is_file(),
+            "an artifact a resident child still references must survive the sweep"
+        );
+
+        // Control: with nothing buffered, the same harvested set is current and
+        // the very same sweep deletes the unreferenced blob.
+        let reopened_log = child_log.clone();
+        fixture
+            .router
+            .install_log_fingerprint_probe(Arc::new(move |_session| {
+                crate::session::LogFingerprint {
+                    resident_tip: None,
+                    durable_len: fs::metadata(&reopened_log).expect("child log size").len(),
+                }
+            }));
+        let report = fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("sweep the quiet tree");
+        assert_eq!(report.deleted, 1, "a proven-current harvest does collect");
+        assert!(!blob.exists());
+    }
+
+    /// A log line whose artifact URI is JSON-escaped. A legal encoding of
+    /// `artifact://…` that a naive `contains("artifact://")` prefilter misses,
+    /// which would drop a live reference out of the sweep entirely.
+    fn escaped_reference_line(digest: &str) -> String {
+        format!(r#"{{"payload":{{"result":{{"reference":"\u0061rtifact://sha256/{digest}"}}}}}}"#)
+    }
+
+    /// Same, with the scheme separator escaped instead of the first letter.
+    fn escaped_separator_line(digest: &str) -> String {
+        format!(r#"{{"payload":{{"result":{{"reference":"artifact\u003a//sha256/{digest}"}}}}}}"#)
+    }
+
+    #[test]
+    fn an_escaped_artifact_uri_is_scanned_like_a_literal_one() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let escaped = "a".repeat(64);
+        let separator = "b".repeat(64);
+        let literal = "c".repeat(64);
+        let log = root.path().join(crate::session::EVENTS_FILE);
+        fs::write(
+            &log,
+            format!(
+                "{}\n{}\n{}\n{{\"payload\":{{\"text\":\"nothing to see\"}}}}\n",
+                escaped_reference_line(&escaped),
+                escaped_separator_line(&separator),
+                serde_json::json!({
+                    "payload": {"result": {"reference": format!("artifact://sha256/{literal}")}}
+                }),
+            ),
+        )
+        .expect("log");
+
+        let found = super::scan_artifact_references_in_log(&log).expect("scan");
+        assert_eq!(
+            found,
+            [escaped, separator, literal]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+            "an escaped URI must reach the live set exactly like a literal one"
+        );
+    }
+
+    #[test]
+    fn collection_retains_a_blob_only_an_escaped_uri_references() {
+        let fixture = placement();
+        let (_, digest) = fixture
+            .router
+            .retain(fixture.roots[0], b"referenced-through-an-escape")
+            .expect("retain");
+        let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
+        // The referencing log belongs to the *other* tree and uses an escape, so
+        // the scanner has to decode it before it can recognise the reference.
+        let directory = tree_dir(fixture.workdir.path(), fixture.roots[1]);
+        fs::create_dir_all(&directory).expect("tree directory");
+        fs::write(
+            directory.join(crate::session::EVENTS_FILE),
+            format!("{}\n", escaped_reference_line(&digest)),
+        )
+        .expect("escaped log");
+
+        fixture.router.note_tree_loaded(fixture.roots[0]);
+        let report = fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("sweep");
+        assert_eq!(report.deleted, 0);
+        assert!(blob.is_file(), "an escaped reference is a live reference");
+        assert!(
+            fixture
+                .router
+                .cross_ref_ledger()
+                .contains(&(digest.clone(), fixture.roots[1])),
+            "the escaped reference is also recorded as a cross-tree one"
+        );
+        assert!(
+            fs::read_to_string(fixture.workdir.path().join(super::CROSS_REFS_FILE))
+                .expect("ledger")
+                .contains(&digest),
+            "the ledger on disk names the escaped digest"
+        );
+    }
+
+    /// §5.2: a sweep may only delete what it has *proven* unreferenced. If the
+    /// child logs of a loaded tree cannot be listed, liveness is unproven and
+    /// the whole sweep must abort without unlinking anything.
+    #[test]
+    fn collection_aborts_without_deleting_when_a_loaded_tree_cannot_be_listed() {
+        let fixture = placement();
+        let (_, digest) = fixture
+            .router
+            .retain(fixture.roots[0], b"referenced-only-by-a-child")
+            .expect("retain");
+        let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
+        write_root_log(fixture.workdir.path(), fixture.roots[0], &[]);
+        let subagents =
+            tree_dir(fixture.workdir.path(), fixture.roots[0]).join(crate::session::SUBAGENTS_DIR);
+        let child = subagents.join(fixture.children[0].to_string());
+        fs::create_dir_all(&child).expect("child directory");
+        fs::write(
+            child.join(crate::session::EVENTS_FILE),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "payload": {"result": {"reference": format!("artifact://sha256/{digest}")}}
+                })
+            ),
+        )
+        .expect("child log");
+        fixture.router.note_tree_loaded(fixture.roots[0]);
+        let report = fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("healthy sweep");
+        assert_eq!(report.deleted, 0, "the child log keeps the blob alive");
+        assert!(blob.is_file());
+
+        // A sweep that would delete an expired shared blob if it ran at all.
+        let shared_blob = fixture
+            .workdir
+            .path()
+            .join(SHARED_ARTIFACTS_DIR)
+            .join("d".repeat(64));
+        fs::write(&shared_blob, b"expired and unreferenced").expect("shared blob");
+
+        // Inject the enumeration failure: listing `subagents/` now errors with
+        // something that is not "no such directory".
+        fs::remove_dir_all(&subagents).expect("remove subagents");
+        fs::write(&subagents, b"not a directory").expect("subagents becomes a file");
+        let error = fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect_err("an incomplete live set must abort the sweep");
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "only an absent directory may mean \"no children\": {error}"
+        );
+        assert!(
+            blob.is_file(),
+            "the sole referencer of the blob was hidden from the sweep"
+        );
+        assert!(
+            shared_blob.is_file(),
+            "the sweep deleted despite an unproven live set"
+        );
+    }
+
+    /// §5.2: the same rule one level up. If the sessions root cannot be listed,
+    /// nothing is known to be live, which is not the same as nothing being live.
+    #[test]
+    fn collection_aborts_without_deleting_when_the_sessions_root_cannot_be_listed() {
+        let fixture = placement();
+        let (_, digest) = fixture
+            .router
+            .retain(fixture.roots[0], b"referenced-by-a-root-log")
+            .expect("retain");
+        let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
+        write_root_log(fixture.workdir.path(), fixture.roots[0], &[&digest]);
+        let shared_blob = fixture
+            .workdir
+            .path()
+            .join(SHARED_ARTIFACTS_DIR)
+            .join("e".repeat(64));
+        fs::write(&shared_blob, b"expired and unreferenced").expect("shared blob");
+
+        // A router whose sessions root is a plain file: enumeration fails with
+        // `NotADirectory`, and treating that as "no sessions" would free both
+        // blobs below.
+        let blocked = fixture.workdir.path().join("not-a-sessions-root");
+        fs::write(&blocked, b"").expect("blocking file");
+        let broken = ArtifactRouter::open_layout(
+            fixture.workdir.path().to_path_buf(),
+            fixture.workdir.path().join(SHARED_ARTIFACTS_DIR),
+            blocked,
+        )
+        .expect("router over an unlistable sessions root");
+        broken.note_tree_loaded(fixture.roots[0]);
+
+        let error = broken
+            .collect_garbage(Duration::ZERO)
+            .expect_err("an unlistable sessions root must abort the sweep");
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "only an absent sessions root may mean \"no sessions\": {error}"
+        );
+        assert!(
+            blob.is_file(),
+            "a tree blob was freed on an unknown live set"
+        );
+        assert!(
+            shared_blob.is_file(),
+            "the shared store was swept on an unknown live set"
+        );
+
+        // Sanity: the same fixture with a readable sessions root does collect
+        // the unreferenced shared blob.
+        let healthy =
+            ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("healthy router");
+        healthy.note_tree_loaded(fixture.roots[0]);
+        let report = healthy.collect_garbage(Duration::ZERO).expect("sweep");
+        assert_eq!(report.deleted, 1);
+        assert!(blob.is_file());
+    }
+
+    /// B2: a lost ledger append must never leave the durable ledger short of a
+    /// reference this process already proved — the next sweep rewrites it.
+    #[test]
+    fn a_lost_ledger_append_is_rewritten_by_the_next_sweep() {
+        let fixture = placement();
+        let (_, digest) = fixture
+            .router
+            .retain(fixture.roots[0], b"foreign-but-for-a-lost-append")
+            .expect("retain");
+        let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
+        write_root_log(fixture.workdir.path(), fixture.roots[1], &[&digest]);
+        fixture.router.note_tree_loaded(fixture.roots[0]);
+
+        fixture.router.fail_next_ledger_append();
+        fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("sweep with a lost append");
+        let ledger_path = fixture.workdir.path().join(super::CROSS_REFS_FILE);
+        assert!(
+            !fs::read_to_string(&ledger_path)
+                .unwrap_or_default()
+                .contains(&digest),
+            "the injected failure must actually lose the entry"
+        );
+
+        // The next sweep repairs the file wholesale, so a later process cannot
+        // see a ledger missing a reference this one proved.
+        fixture
+            .router
+            .collect_garbage(Duration::ZERO)
+            .expect("repairing sweep");
+        let text = fs::read_to_string(&ledger_path).expect("rebuilt ledger");
+        assert!(
+            text.contains(&digest),
+            "the ledger was not rebuilt after the lost append: {text}"
+        );
+        assert!(blob.is_file());
+
+        // A reopened router reads the rebuilt file back into its live set.
+        drop(fixture.router);
+        let reopened =
+            ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");
+        reopened.note_tree_loaded(fixture.roots[0]);
+        let live = reopened
+            .live_references_and_unprovable()
+            .expect("live set")
+            .0;
+        assert!(
+            live.contains(&digest),
+            "the durable ledger no longer carries the reference back"
+        );
+        assert!(blob.is_file());
     }
 }

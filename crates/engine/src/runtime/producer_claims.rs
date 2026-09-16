@@ -85,7 +85,7 @@ impl Engine {
         session: SessionId,
         run: RunId,
     ) -> Result<ClaimedPrompt, EngineError> {
-        self.reconcile_goal_registration(session)?;
+        self.reconcile_goal_registration(session, None)?;
         let projection = self.goal_producer_projection(session)?;
         let message_ids: Vec<_> = projection
             .messages

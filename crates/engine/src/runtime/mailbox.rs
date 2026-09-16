@@ -1945,7 +1945,7 @@ impl Engine {
                 let _ = reply.send(result);
             }
         }
-        if reconcile && let Err(error) = self.reconcile_producers_direct(session) {
+        if reconcile && let Err(error) = self.reconcile_producers_direct(session, None) {
             eprintln!("session {session} producer reconciliation failed: {error}");
         }
     }

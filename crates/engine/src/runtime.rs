@@ -1325,6 +1325,14 @@ impl Engine {
             artifacts.install_tree_resolver(Arc::new(move |session| {
                 Some(placement.root_of(session).unwrap_or(session))
             }));
+            // A sweep reuses what a tree load harvested only while the store
+            // still agrees the harvest is current, so it has to ask the store:
+            // resident tip and durable length, the same pair a fold is verified
+            // against (§3.3, §5.2).
+            let fingerprinting = Arc::clone(&store);
+            artifacts.install_log_fingerprint_probe(Arc::new(move |session| {
+                fingerprinting.log_fingerprint(session)
+            }));
         }
         let mcp = Arc::new(
             crate::McpRegistry::new(
@@ -1501,7 +1509,7 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
-        engine.install_tree_load_observer();
+        engine.install_tree_load_observer()?;
         engine.validate_root_manifests()?;
         engine.rebuild_approvals();
         engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
@@ -1897,14 +1905,13 @@ impl Engine {
 
     /// Receives the products of a lazy tree load and folds them into the engine
     /// singletons (§3.3(d)). Validation runs first so a rejected load cannot
-    /// leave half-applied state behind.
+    /// leave half-applied state behind, and the artifact router is told the tree
+    /// is loaded last: until this function returns `Ok` the load is not a
+    /// completed one, and a sweep must still treat the child logs as unproven.
     fn apply_tree_load(
         &self,
-        products: crate::session::TreeLoadProducts,
+        products: Arc<crate::session::TreeLoadProducts>,
     ) -> Result<(), EngineError> {
-        // Its child logs are now part of the durable live set for artifact
-        // collection, and its own directory may be collected (§5.2).
-        self.inner.artifacts.note_tree_loaded(products.root);
         if let Err(error) = self.validate_manifest_bindings(&products.bindings) {
             eprintln!("session tree {} rejected: {error}", products.root);
             return Err(error);
@@ -1925,17 +1932,28 @@ impl Engine {
                 self.inner.approvals.grant(grant.clone());
             }
         }
-        self.reconcile_loaded_tree_producers(products.producer_sessions);
+        self.reconcile_loaded_tree_producers(products.producer_projections.clone());
+        // Its child logs are now part of the durable live set for artifact
+        // collection, and its own directory may be collected: the set the one
+        // fold harvested replaces any later child-log scan (§3.3(b), §5.2).
+        self.inner.artifacts.note_tree_live_refs(
+            products.root,
+            products.artifact_refs.clone(),
+            products.child_log_fingerprints.clone(),
+        );
+        self.inner.artifacts.note_tree_loaded(products.root);
         Ok(())
     }
 
-    fn install_tree_load_observer(&self) {
+    /// Installs the store-side hook and delivers everything a load that already
+    /// completed was holding back (§3.3, D5).
+    fn install_tree_load_observer(&self) -> Result<(), EngineError> {
         struct Observer(std::sync::Weak<Inner>);
 
         impl crate::session::TreeLoadObserver for Observer {
             fn tree_loaded(
                 &self,
-                products: crate::session::TreeLoadProducts,
+                products: Arc<crate::session::TreeLoadProducts>,
             ) -> Result<(), EngineError> {
                 let inner = self.0.upgrade().ok_or(EngineError::ActorStopped)?;
                 Engine { inner }.apply_tree_load(products)
@@ -1944,21 +1962,27 @@ impl Engine {
 
         self.inner
             .store
-            .set_tree_load_observer(Arc::new(Observer(Arc::downgrade(&self.inner))));
+            .set_tree_load_observer(Arc::new(Observer(Arc::downgrade(&self.inner))))?;
+        Ok(())
     }
 
-    /// Completes the tree of `id` before it is used (§3.2/§3.3). Cheap once the
-    /// tree is loaded.
+    /// Completes the tree of `id` before it is used (§3.2/§3.3), then delivers
+    /// any load this process finished while no hook was installed yet (D5).
+    /// Cheap once the tree is loaded.
     pub(crate) fn ensure_tree_loaded(&self, id: SessionId) -> Result<(), EngineError> {
         self.inner.store.ensure_tree_for(id)?;
+        self.inner.store.drain_pending_loads()?;
         Ok(())
     }
 
     /// Producer reconciliation for children surfaced by a tree load. Runs on the
     /// engine runtime when one is available; otherwise the periodic plugin
     /// producer scan picks them up, since loaded trees cache their hits (§4.4).
-    fn reconcile_loaded_tree_producers(&self, sessions: Vec<SessionId>) {
-        if sessions.is_empty() {
+    fn reconcile_loaded_tree_producers(
+        &self,
+        projections: Vec<(SessionId, crate::goal_projection::GoalProducerProjection)>,
+    ) {
+        if projections.is_empty() {
             return;
         }
         let Some(handle) = self
@@ -1971,11 +1995,20 @@ impl Engine {
         };
         let weak = Arc::downgrade(&self.inner);
         handle.spawn(async move {
-            for session in sessions {
+            for (session, projection) in projections {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                let _ = Engine { inner }.reconcile_producers(session).await;
+                let _ = Engine { inner }
+                    .request(session, |reply| {
+                        SessionCommand::Producer(
+                            crate::runtime::producers::ProducerCommand::Reconcile {
+                                projection: Some(projection.clone()),
+                                reply,
+                            },
+                        )
+                    })
+                    .await;
             }
         });
     }

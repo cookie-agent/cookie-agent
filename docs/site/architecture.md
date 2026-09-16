@@ -246,31 +246,113 @@ session and drive the run loop:
 ## Sessions and persistence
 
 Sessions are append-only event logs. A new session exists only in memory until
-its first user message, when its directory, `events.jsonl`, and `meta.json`
+its first user message, when its directory, `events.jsonl`, and `metadata`
 cache are published atomically while its ownership lock is held. Revert appends
 a `session_reverted` marker and fork copies a persisted prefix under a new
 session ID; neither truncates physical events.
 
-Session data lives under the user data directory keyed by a hash of the
-canonical working directory:
+### Work-dir layout
+
+Session data lives under the user data directory in one store per canonical
+working directory:
 
 ```text
 ~/.cookie-agent/
   daemon/token-v1                  # daemon bearer token
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache
-  projects/<16-hex-cwd-hash>/
-    cwd                            # canonical project path
-    sessions/<session-id>/         # events.jsonl + meta.json (+ owner.lock on Unix)
-    sessions/<session-id>.owner.lock # ownership sidecar on Windows
-    artifacts/                     # content-addressed tool output
+  sessions/<workdirkey>/           # one store per canonical cwd
+    layout.json                    # {"version":2}; "migration" while migrating
+    cwd                            # canonical work-dir path
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
+    artifacts.shared/              # cross-tree and orphaned tool output
+    cross-refs.jsonl               # cross-tree artifact reference ledger
+    <root-session-id>/             # root sessions live directly inside
+      metadata                     # derived session cache
+      events.jsonl                 # append-only root log
+      owner.lock                   # Unix in-directory ownership lock
+      artifacts/                   # artifacts owned by this root's tree
+      <root-session-id>.owner.lock # Windows sidecar for a root
+      subagents/
+        index.json                 # child-summary cache, {"version":1,...}
+        <child-session-id>/        # metadata, events.jsonl, owner.lock
+        <child-session-id>.owner.lock # Windows sidecar for a child
+  projects/<16-hex-cwd-hash>/      # legacy flat store, see "Migration"
 ```
+
+`<workdirkey>` is `<16-hex-hash>-<sanitized-basename>`, where the hash is the
+`DefaultHasher` of the canonical path string and the suffix is the lowercased
+final path component with every character outside `[a-z0-9._-]` replaced by
+`-`, repeats collapsed, length capped at 32, and edge `-`/`_` trimmed. The
+suffix exists for browsability only and is computed once at directory creation:
+resolution scans `sessions/` for the entry equal to the hash or prefixed by
+`<hash>-`, so the hash alone is the addressing key and a stale suffix after a
+cwd rename is harmless. An empty suffix leaves the bare hash as the whole key.
+
+Directories and files are created private (`0o700` / `0o600` on Unix).
+
+### Root-only startup and lazy children
+
+Opening a store reads root `metadata` files and at most one
+`subagents/index.json` per root; it never opens a child `events.jsonl`. That
+cache carries each child's `SessionSummary` and its terminal run statuses, so
+listing, usage rollups, and the session tree stay correct at startup. It is a
+cache only: a missing, corrupt, or stale entry simply means the children are
+unknown until the tree is loaded, and `metadata` remains authoritative per
+session.
+
+When a root first comes into use — resume, open for mutation, fork source, tree
+or child access — every descendant of that root is read and folded exactly once
+in a single bulk pass. That pass assembles the tree, harvests the artifact
+digests the tree references, and produces the delegation-registry and
+approval-grant records the engine needs. The children then leave the pass
+without ever entering residency, so residency caps and janitor pressure are
+unaffected; a child that actually runs becomes resident through the ordinary
+write path and later evicts like any other session.
+
+### Artifacts
+
+Tool output is content-addressed under a digest-named file. A v2 store
+partitions artifacts by tree: output written by a root or one of its descendants
+lands in that root's `artifacts/`, while cross-tree references, orphans, and
+unplaced writes land in the work-dir's `artifacts.shared/`. Collection is
+therefore per tree, and a digest is retained while any live session references
+it — the root log, the log of any child in a loaded tree, or the
+`cross-refs.jsonl` ledger that records references made from another tree.
+Unloaded trees are never collected, which keeps an unread child log from
+looking unreferenced. Expired, unreferenced digests are unlinked after a grace
+period that protects newly published files.
+
+### Migration
+
+A store that still has the flat v1 shape (`projects/<hash>/sessions/<id>/`) is
+migrated once, on the first open, before the store is constructed; progress
+prints one `cookie-agent:` line per phase to stderr. Nothing runs concurrently
+with it: migration takes a `migration.lock` for the work dir and aborts with a
+loud error if any legacy session is owned by a live process, so no session can
+be appending while it moves. Every move is a rename — session directories,
+`meta.json` → `metadata`, project-level files, and Windows sidecars — so a
+large store migrates at directory-entry speed rather than by copying bytes.
+
+The steps are journal-driven and existence-checked, so an interrupted migration
+resumes rather than repeating or skipping work: plan, scaffold the v2 work dir,
+move roots, move children under their root's `subagents/`, place artifacts, then
+verify. Verification runs before completion and checks session counts, that
+every `metadata` parses and names its own directory, that each child appears in
+exactly one root's `subagents/`, and that the artifact inventory is conserved.
+`.migrating` is the resume journal, `.migrated` and a `layout.json` carrying
+`"migration":"complete"` mark the store done, and `projects/<hash>/MIGRATED`
+is left as a tombstone pointing at the new location. A store is never served
+half-migrated: only a `complete` marker licenses the v2 layout. An older binary
+pointed at a migrated store sees the tombstone and creates a fresh empty legacy
+project rather than corrupting the new store, so run one current version per
+data directory.
 
 Delegation reservations, child publication, run start/attachment, and terminal
 state use the parent session's `events.jsonl`. On open, the engine projects
-these records while it opens session logs and recovers nonterminal delegations.
+these records from root logs while it recovers nonterminal delegations, and
+completes the projection for a tree during that tree's single load pass.
 The reservation fingerprint is recomputed from the replayed request, child
 agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
 rejects recovery. A delegation event skipped by best-effort reading is absent
@@ -278,15 +360,16 @@ from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.
 
 Multiple cookie processes may share this project data directory. Ownership is
-per session, not per project: the process that successfully locks `owner.lock`
+per session, not per work dir: the process that successfully locks `owner.lock`
 is the only writer and retains that lock until process exit, including while an
 idle session is evicted from memory. On Unix the lock is
-`sessions/<session-id>/owner.lock`; on Windows it is the adjacent
-`sessions/<session-id>.owner.lock` sidecar so its open handle does not prevent
+`<session-dir>/owner.lock`; on Windows it is the adjacent
+`<session-id>.owner.lock` sidecar so its open handle does not prevent
 directory renames. New-session and fork publication acquire the Windows sidecar
 derived from the final directory path before renaming the temporary directory.
 Session discovery ignores the sidecar because it scans only directories.
-Session listing reads `meta.json` without locking. Opening an existing session
+Session listing reads `metadata` without locking, falling back to the legacy
+`meta.json` name. Opening an existing session
 for mutation attempts the lock; success enters a non-writable adoption state,
 reconciles only that session's interrupted work, and then publishes ownership.
 Reconciliation failure revokes the log's write capability and releases the lock

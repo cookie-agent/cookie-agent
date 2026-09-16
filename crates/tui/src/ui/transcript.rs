@@ -7931,14 +7931,14 @@ mod tests {
         // Walking the cursor down scrolls the window one row at a time only
         // once the cursor leaves the viewport, and never past the last page.
         let max_offset = entries.len() - max_rows;
-        for step in 1..entries.len() {
+        for (step, label) in labels.iter().enumerate().skip(1) {
             app.move_tree_selection(false);
             let expected_offset = step
                 .saturating_add(1)
                 .saturating_sub(max_rows)
                 .min(max_offset);
             let (offset, visible, text) = panel_state(&mut app);
-            assert_eq!(offset, expected_offset, "cursor on {}", labels[step]);
+            assert_eq!(offset, expected_offset, "cursor on {label}");
             assert_eq!(
                 visible,
                 entries[expected_offset..expected_offset + max_rows]
@@ -7947,9 +7947,8 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             assert!(
-                text.iter().any(|row| row.contains(&labels[step])),
-                "cursor row {} must stay visible: {text:?}",
-                labels[step]
+                text.iter().any(|row| row.contains(label)),
+                "cursor row {label} must stay visible: {text:?}",
             );
         }
         let (_, _, tail) = panel_state(&mut app);

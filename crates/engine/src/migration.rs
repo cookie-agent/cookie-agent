@@ -17,17 +17,20 @@ use std::{
 
 use cookie_agent_protocol::{SessionId, SessionMeta, SessionOrigin};
 use fs2::FileExt as _;
+use sha2::{Digest as _, Sha256};
+use uuid::Uuid;
 
 use crate::{
-    events::fsync_directory,
-    ownership::{SessionOwnership, owner_lock_path, try_acquire},
+    events::{EventLog, fsync_directory},
+    ownership::{HeldLock, SessionOwnership, owner_lock_path, try_acquire},
     runtime::artifacts::{
         ARTIFACTS_DIR, CROSS_REFS_FILE, SHARED_ARTIFACTS_DIR, is_digest_name_common,
         scan_artifact_references_in_log, write_cross_ref_ledger,
     },
     session::{
         EVENTS_FILE, LAYOUT_MARKER_FILE, LAYOUT_VERSION, LEGACY_SESSION_META_FILE,
-        PROJECT_CWD_FILE, SESSION_META_FILE, SUBAGENTS_DIR, SessionError, SessionStore,
+        PROJECT_CWD_FILE, SESSION_META_FILE, SUBAGENTS_DIR, SessionError, SessionStore, meta_path,
+        projection,
     },
 };
 
@@ -80,11 +83,21 @@ pub(crate) fn run_if_needed(
 ) -> Result<Option<Outcome>, SessionError> {
     let legacy_root = SessionStore::project_dir(data_root, cwd);
     let legacy_sessions = legacy_root.join(LEGACY_SESSIONS_DIR);
+    let legacy_artifacts = legacy_root.join(ARTIFACTS_DIR);
+    let target = SessionStore::resolve_workdir_dir(data_root, cwd);
     if !legacy_sessions.is_dir() {
+        // Nothing is left to move. The finishing window is the one place where
+        // the work can be done while the marker still says `in-progress`:
+        // `.migrated` is written before the flat directories are retired, so it
+        // proves verification passed. Claim completion instead of leaving the
+        // store in-progress forever.
+        finish_claimed_completion(&legacy_root, &target, &legacy_sessions, &legacy_artifacts)?;
         return Ok(None);
     }
-    let target = SessionStore::resolve_workdir_dir(data_root, cwd);
-    if migration_state(&target).as_deref() == Some(MIGRATION_COMPLETE) {
+    if migration_state(&target).as_deref() == Some(MIGRATION_COMPLETE)
+        && !has_remnants(&legacy_sessions)?
+        && !has_remnants(&legacy_artifacts)?
+    {
         // §6.1: the v2 store is live and the flat directory is a leftover. Point
         // old binaries at the new home and leave the remnant alone.
         ensure_tombstone(&legacy_root, &target)?;
@@ -92,20 +105,73 @@ pub(crate) fn run_if_needed(
         return Ok(None);
     }
     let _lock = MigrationLock::acquire(&legacy_root)?;
-    reject_live_owners(&legacy_sessions)?;
-    let plan = Plan::discover(&legacy_sessions, &target)?;
+    // Nothing else writes here while the lock is held, so a temporary left by an
+    // interrupted atomic write is litter; under it the flat project still counts
+    // as unfinished and the store never gets to claim its migration is done.
+    sweep_litter(&legacy_root, &target)?;
+    // Plan first, then lock: knowing where each directory lands is what lets the
+    // same process hold its owner lock across the rename (M1) instead of probing
+    // and releasing.
+    let mut plan = Plan::discover(&legacy_sessions, &target)?;
+    let mut journal = Journal::load(&legacy_root);
+    let resumed = journal.is_resumed();
+    // Which caches were already unreadable before anything moved. Recorded so a
+    // resume reports those sessions as repaired rather than as new damage; the
+    // completion check itself rebuilds them from the event logs (§6.6).
+    plan.opaque.extend(journal.opaque());
+    // Every legacy owner lock, held until the last session directory has moved.
+    let owners = OwnerLocks::acquire(&plan, &legacy_sessions, &target)?;
+    journal.ensure_plan(&plan, &legacy_artifacts)?;
     progress(&format!(
-        "migrating session store… {} sessions in {}",
+        "{} session store migration… {} sessions in {}",
+        if resumed { "resuming" } else { "starting" },
         plan.pending_total(),
         legacy_root.display()
     ));
-    let mut journal = Journal::load(&legacy_root);
-    let outcome = migrate(&legacy_root, &target, &plan, &mut journal, progress)?;
+    let outcome = migrate(&legacy_root, &target, &plan, &mut journal, progress, owners)?;
     progress(&format!(
         "migrating session store… done ({} roots, {} children, {} artifacts)",
         outcome.roots, outcome.children, outcome.artifacts
     ));
     Ok(Some(outcome))
+}
+
+/// Anything the completed job left behind in a legacy directory: a stray file
+/// means finalization is not finished, so the marker must not claim it is (B1).
+fn has_remnants(directory: &Path) -> Result<bool, SessionError> {
+    if !directory.exists() {
+        return Ok(false);
+    }
+    Ok(!directory_is_empty(directory)?)
+}
+
+/// Close the one finishing window that can outlive its work: verification
+/// passed, `.migrated` and the tombstone are down, the flat directories are
+/// gone, but a crash landed before `layout.json` was flipped to `complete`.
+/// Claims the completion the store already earned instead of stranding it in
+/// `in-progress` with no legacy directory left to resume from.
+fn finish_claimed_completion(
+    legacy_root: &Path,
+    target: &Path,
+    legacy_sessions: &Path,
+    legacy_artifacts: &Path,
+) -> Result<(), SessionError> {
+    if migration_state(target).as_deref() != Some(MIGRATION_IN_PROGRESS) {
+        return Ok(());
+    }
+    // Every finalization step has to have landed: `.migrated` is written only
+    // after verification, and the retirement of both flat directories is what
+    // `finish` reports as retired.
+    if !legacy_root.join(MIGRATED_MARKER_FILE).is_file()
+        || !legacy_root.join(TOMBSTONE_FILE).is_file()
+        || legacy_sessions.exists()
+        || legacy_artifacts.exists()
+    {
+        return Ok(());
+    }
+    sweep_litter(legacy_root, target)?;
+    write_layout_marker(target, MIGRATION_COMPLETE)?;
+    fsync_directory_tolerant(target)
 }
 
 /// Steps 2 through 6 of §6.3, resumable at any point.
@@ -115,60 +181,66 @@ fn migrate(
     plan: &Plan,
     journal: &mut Journal,
     progress: &dyn Fn(&str),
+    owners: OwnerLocks,
 ) -> Result<Outcome, SessionError> {
     let legacy_sessions = legacy_root.join(LEGACY_SESSIONS_DIR);
     let legacy_artifacts = legacy_root.join(ARTIFACTS_DIR);
-    let expected_digests = file_names(&legacy_artifacts)?.len();
 
     // 2. SCAFFOLD: reserve the v2 work dir and move the project-level files.
     write_layout_marker(target, MIGRATION_IN_PROGRESS)?;
     for file in PROJECT_FILES {
         let source = legacy_root.join(file);
-        if source.is_file() {
-            let destination = target.join(file);
-            if !destination.exists() {
-                rename(&source, &destination, target)?;
-            }
+        if source.is_file() && !target.join(file).exists() {
+            rename(&source, &target.join(file))?;
         }
+        crash_after("project-file", Some(file))?;
     }
-    journal.store(legacy_root)?;
-    crash_after("scaffold")?;
+    crash_after("scaffold", None)?;
 
     // 3. ROOTS first so every child has a `subagents/` parent to land in.
-    for root in plan.pending_roots() {
-        let destination = target.join(root.to_string());
+    //    Every planned root goes through `move_session`, not only the still-flat
+    //    ones: the call also reconciles components a crash left half-moved (B2).
+    for root in &plan.roots {
         let source = legacy_sessions.join(root.to_string());
-        journal.consistent(&source, root)?;
+        let destination = target.join(root.to_string());
+        journal.consistent(&source, "roots", *root)?;
         move_session(&source, &destination)?;
         ensure_private_dir(&destination.join(ARTIFACTS_DIR))?;
         ensure_private_dir(&destination.join(SUBAGENTS_DIR))?;
-        journal.done(legacy_root, "roots", root)?;
+        journal.done("roots", *root)?;
+        crash_after("root", Some(&root.to_string()))?;
     }
     progress(&format!(
         "migrating session store… {} roots moved",
         plan.pending_roots().count()
     ));
-    crash_after("roots")?;
+    crash_after("roots", None)?;
 
     // 4. CHILDREN under their discovered root.
-    for (child, root) in plan.pending_children() {
+    for (child, root) in plan.all_children() {
+        let source = legacy_sessions.join(child.to_string());
         let destination = target
             .join(root.to_string())
             .join(SUBAGENTS_DIR)
             .join(child.to_string());
-        let source = legacy_sessions.join(child.to_string());
-        journal.consistent(&source, child)?;
+        journal.consistent(&source, "children", child)?;
         move_session(&source, &destination)?;
-        journal.done(legacy_root, "children", child)?;
+        journal.done("children", child)?;
+        crash_after("child", Some(&child.to_string()))?;
     }
     progress(&format!(
         "migrating session store… {} child sessions moved",
         plan.pending_children().count()
     ));
-    crash_after("children")?;
+    // No session directory moves after this point, so the owner locks can go and
+    // the sidecar files that could not be renamed while held can.
+    owners.release()?;
+    crash_after("children", None)?;
 
     // 5. ARTIFACTS: place each digest in the tree that references it, shared
-    // otherwise (§6.3 step 5, §6.5).
+    // otherwise (§6.3 step 5, §6.5). The inventory is the durable plan record
+    // plus whatever the flat store holds now, so a resumed run reconciles blobs
+    // already moved as well as those still to place (B3).
     let references = tree_references(target, plan)?;
     let mut outcome = Outcome {
         roots: plan.roots.len(),
@@ -177,55 +249,39 @@ fn migrate(
     };
     let mut ledger = BTreeSet::new();
     let mut touched: BTreeSet<PathBuf> = BTreeSet::new();
-    for name in file_names(&legacy_artifacts)? {
-        let source = legacy_artifacts.join(&name);
-        // Torn or temporary names are not digests: they belong to the shared
-        // store, where startup cleanup and the grace window handle them (§6.5).
-        let placement = is_digest_name_common(&name)
-            .then(|| placement_root(&references, &name))
+    // The flat artifact directory is the source parent of every rename below;
+    // one sync at the end of the batch makes the removals durable (M2).
+    touched.insert(legacy_artifacts.clone());
+    let mut names = journal.artifact_inventory()?;
+    names.extend(file_names(&legacy_artifacts)?);
+    for name in &names {
+        let placement = is_digest_name_common(name)
+            .then(|| placement_root(&references, name))
             .flatten();
         let destination = match placement {
             Some(root) => {
                 outcome.artifacts += 1;
-                let trees = references.get(&name).into_iter().flatten();
+                let trees = references.get(name.as_str()).into_iter().flatten();
                 for tree in trees.filter(|tree| **tree != root) {
                     ledger.insert((name.clone(), *tree));
                 }
-                target
-                    .join(root.to_string())
-                    .join(ARTIFACTS_DIR)
-                    .join(&name)
+                target.join(root.to_string()).join(ARTIFACTS_DIR).join(name)
             }
             None => {
                 outcome.shared_artifacts += 1;
-                target.join(SHARED_ARTIFACTS_DIR).join(&name)
+                target.join(SHARED_ARTIFACTS_DIR).join(name)
             }
         };
-        let parent = destination
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(target);
-        if !parent.is_dir() {
-            ensure_private_dir(parent)?;
-        }
-        match fs::rename(&source, &destination) {
-            Ok(()) => {
-                touched.insert(parent.to_path_buf());
-            }
-            // Lost the race with a resumed run: already placed.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source_error) => {
-                return Err(SessionError::Io {
-                    path: destination,
-                    source: source_error,
-                });
-            }
-        }
+        let source = legacy_artifacts.join(name);
+        place_blob(&source, &destination, &mut touched)?;
+        crash_after("artifact", Some(name))?;
     }
-    // Renames are cheap; one sync per directory is enough to make the batch
-    // durable (§6.3 step 5), which a sync per blob would not be.
-    for directory in touched {
-        fsync_directory(&directory)?;
+    // Renames are cheap; one sync per touched directory is enough to make the
+    // batch durable (§6.3 step 5), which a sync per blob would not be.
+    for directory in &touched {
+        // A flat artifact directory that never existed — a store that retained no
+        // output — has nothing to make durable, and neither has its parent.
+        fsync_directory_tolerant(directory)?;
     }
     if !ledger.is_empty() {
         write_cross_ref_ledger(&target.join(CROSS_REFS_FILE), &ledger).map_err(|source| {
@@ -234,24 +290,99 @@ fn migrate(
                 source,
             }
         })?;
+        fsync_directory(target)?;
         outcome.cross_refs = ledger.len();
     }
     progress(&format!(
         "migrating session store… {} artifacts placed, {} shared",
         outcome.artifacts, outcome.shared_artifacts
     ));
-    crash_after("artifacts")?;
+    crash_after("artifacts", None)?;
 
-    // 6. VERIFY, then mark the job complete and retire the flat project (§6.6).
-    verify(target, &legacy_sessions, plan, expected_digests, &outcome)?;
+    // 6. VERIFY against the durable plan, retire the flat project, and only then
+    // let the marker claim completion (B1). `before_verify` is the last crash
+    // point with a journal behind a fully moved store: everything after it is
+    // the finishing window, which the `retire`/`complete` points exercise.
+    crash_after("before_verify", None)?;
+    verify(target, &legacy_sessions, &legacy_artifacts, plan, journal)?;
     // The journal is dropped as soon as the moves are known good, so a crash in
-    // what follows resumes from a completed plan rather than a stale journal.
+    // what follows resumes from a verified plan rather than a stale record.
     Journal::clear(legacy_root)?;
-    write_layout_marker(target, MIGRATION_COMPLETE)?;
-    fsync_directory(target)?;
-    finish(legacy_root, target, &legacy_sessions, &legacy_artifacts)?;
-    crash_after("verify")?;
+    let retired = finish(legacy_root, target, &legacy_sessions, &legacy_artifacts)?;
+    crash_after("retire", None)?;
+    if retired {
+        write_layout_marker(target, MIGRATION_COMPLETE)?;
+        fsync_directory(target)?;
+    } else {
+        // Something an old binary dropped is still in the flat project. The
+        // marker stays in-progress so the next open finishes it: an incomplete
+        // finalization must never become authoritative (B1).
+        write_layout_marker(target, MIGRATION_IN_PROGRESS)?;
+        fsync_directory(target)?;
+        progress(
+            "session store migration… legacy project still holds files, finishing on next open",
+        );
+    }
+    // The marker writes above leave their own temporaries behind when a crash
+    // lands between the sync and the rename.
+    sweep_litter(legacy_root, target)?;
+    crash_after("complete", None)?;
     Ok(outcome)
+}
+
+/// Move one artifact into its destination store, reconciling whatever a previous,
+/// interrupted run left behind (B3).
+fn place_blob(
+    source: &Path,
+    destination: &Path,
+    touched: &mut BTreeSet<PathBuf>,
+) -> Result<(), SessionError> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(destination);
+    if !parent.is_dir() {
+        ensure_private_dir(parent)?;
+    }
+    match (source.is_file(), destination.is_file()) {
+        (true, true) => {
+            // Both exist: the rename survived and its source-side removal did
+            // not. Keep the placed copy, and drop the duplicate only when the
+            // bytes agree — a mismatch is corruption, not a resume.
+            if read_digest(source)? == read_digest(destination)? {
+                fs::remove_file(source).map_err(|source_error| SessionError::Io {
+                    path: source.to_owned(),
+                    source: source_error,
+                })?;
+            } else {
+                return Err(SessionError::Migration(format!(
+                    "{} and {} hold different bytes for the same artifact",
+                    source.display(),
+                    destination.display()
+                )));
+            }
+        }
+        (true, false) => {
+            rename(source, destination)?;
+            touched.insert(parent.to_path_buf());
+        }
+        // Already placed by the run that crashed.
+        (false, true) => {}
+        // The blob is in neither store. It was there when the plan was recorded,
+        // so this is a loss, not a skip: refuse to call the store migrated.
+        (false, false) => {
+            return Err(SessionError::Migration(format!(
+                "artifact {} vanished from both {} and {}",
+                destination
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                source.display(),
+                destination.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Which root owns a digest's bytes.
@@ -267,6 +398,10 @@ fn placement_root(
 }
 
 /// Digest → set of trees whose logs reference it, from the freshly moved logs.
+///
+/// Fail-closed: an unreadable log would make its blobs look unreferenced and
+/// send them to the shared store while the migration still claimed success, so
+/// the scan error aborts the job and leaves `.migrating` for the next open.
 fn tree_references(
     target: &Path,
     plan: &Plan,
@@ -275,20 +410,22 @@ fn tree_references(
     for root in &plan.roots {
         let directory = target.join(root.to_string());
         let mut live = HashSet::new();
+        let root_log = directory.join(EVENTS_FILE);
         absorb(
-            scan_artifact_references_in_log(&directory.join(EVENTS_FILE)),
+            scan_artifact_references_in_log(&root_log),
+            &root_log,
             &mut live,
-        );
+        )?;
         for child in plan.children_of(*root) {
+            let child_log = directory
+                .join(SUBAGENTS_DIR)
+                .join(child.to_string())
+                .join(EVENTS_FILE);
             absorb(
-                scan_artifact_references_in_log(
-                    &directory
-                        .join(SUBAGENTS_DIR)
-                        .join(child.to_string())
-                        .join(EVENTS_FILE),
-                ),
+                scan_artifact_references_in_log(&child_log),
+                &child_log,
                 &mut live,
-            );
+            )?;
         }
         for digest in live {
             references.entry(digest).or_default().insert(*root);
@@ -297,24 +434,36 @@ fn tree_references(
     Ok(references)
 }
 
-fn absorb(result: std::io::Result<HashSet<String>>, into: &mut HashSet<String>) {
+/// Fold one log's references into the set. A planned session must have a
+/// readable event log: the low-level event reader can represent a missing file
+/// as an empty byte stream, but `EventLog::open_read_only` rejects that stream
+/// because it has no `SessionCreated` record. Migration therefore fails closed
+/// rather than silently treating a missing session history as empty.
+fn absorb(
+    result: std::io::Result<HashSet<String>>,
+    path: &Path,
+    into: &mut HashSet<String>,
+) -> Result<(), SessionError> {
     match result {
-        Ok(found) => into.extend(found),
-        // A log that cannot be read contributes nothing: its digests then look
-        // unreferenced and land in the shared store, which the router still
-        // searches (§6.5).
-        Err(error) => eprintln!("migration: artifact scan skipped: {error}"),
+        Ok(found) => {
+            into.extend(found);
+            Ok(())
+        }
+        Err(source) => Err(SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }),
     }
 }
 
-/// §6.6. Any mismatch aborts before `.migrated` is written, leaving `.migrating`
-/// for the next open to resume.
+/// §6.6. Any mismatch aborts before the completion marker is written, leaving
+/// `.migrating` and an in-progress marker for the next open to resume.
 fn verify(
     target: &Path,
     legacy_sessions: &Path,
+    legacy_artifacts: &Path,
     plan: &Plan,
-    expected_digests: usize,
-    outcome: &Outcome,
+    journal: &Journal,
 ) -> Result<(), SessionError> {
     let stranded: Vec<String> = directory_names(legacy_sessions)?
         .into_iter()
@@ -329,19 +478,20 @@ fn verify(
     let mut placed_children: HashMap<SessionId, usize> = HashMap::new();
     for root in &plan.roots {
         let directory = target.join(root.to_string());
-        check_metadata(&directory, *root, plan)?;
+        check_placed(&directory, *root, plan)?;
         if !directory.join(ARTIFACTS_DIR).is_dir() || !directory.join(SUBAGENTS_DIR).is_dir() {
             return Err(SessionError::Migration(format!(
                 "{} is missing artifacts/ or subagents/",
                 directory.display()
             )));
         }
-        for name in directory_names(&directory.join(SUBAGENTS_DIR))? {
+        let subagents = directory.join(SUBAGENTS_DIR);
+        for name in directory_names(&subagents)? {
             let Ok(child) = name.parse::<SessionId>() else {
                 continue;
             };
             *placed_children.entry(child).or_default() += 1;
-            check_metadata(&directory.join(SUBAGENTS_DIR).join(&name), child, plan)?;
+            check_placed(&subagents.join(&name), child, plan)?;
         }
     }
     for (child, root) in &plan.children {
@@ -355,59 +505,187 @@ fn verify(
             ))),
         }?;
     }
-    let moved = outcome.artifacts + outcome.shared_artifacts;
-    if moved != expected_digests {
+    // Artifact inventory: every digest the flat store held when the plan was
+    // recorded must now sit in exactly one place, with bytes matching its name.
+    // Counting this invocation's moves would let a lost blob pass (§6.6, B3).
+    let inventory = journal.artifact_inventory()?;
+    let placed = placement_inventory(target, plan)?;
+    let still_flat = file_names(legacy_artifacts)?;
+    let still_flat: BTreeSet<&str> = still_flat.iter().map(String::as_str).collect();
+    for name in &inventory {
+        match placed.get(name).map(Vec::as_slice) {
+            None if still_flat.contains(&name.as_str()) => {
+                return Err(SessionError::Migration(format!(
+                    "artifact {name} was never placed and is still in the flat store"
+                )));
+            }
+            None => {
+                return Err(SessionError::Migration(format!(
+                    "artifact {name} is in neither the flat store nor its destination"
+                )));
+            }
+            Some([path]) => {
+                if is_digest_name_common(name) && read_digest(path)? != name.as_str() {
+                    return Err(SessionError::Migration(format!(
+                        "{} does not hash to its name",
+                        path.display()
+                    )));
+                }
+            }
+            Some(paths) => {
+                return Err(SessionError::Migration(format!(
+                    "artifact {name} sits in {} places",
+                    paths.len()
+                )));
+            }
+        }
+    }
+    if let Some(leftover) = still_flat.iter().find(|name| inventory.contains(**name)) {
         return Err(SessionError::Migration(format!(
-            "artifact count changed: {expected_digests} legacy, {moved} placed"
+            "artifact {leftover} is still in the flat store"
         )));
     }
     Ok(())
 }
 
-fn check_metadata(directory: &Path, id: SessionId, plan: &Plan) -> Result<(), SessionError> {
-    let Some(meta) = read_metadata(directory) else {
-        if plan.opaque.contains(&id) {
-            // Its cache was already unreadable before the move; the store
-            // rebuilds it from the event log on first use.
-            return Ok(());
+/// Every artifact placement the migrated store can serve: the shared store plus
+/// each tree's own store, keyed by file name.
+fn placement_inventory(
+    target: &Path,
+    plan: &Plan,
+) -> Result<BTreeMap<String, Vec<PathBuf>>, SessionError> {
+    let mut placed: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut stores = vec![target.join(SHARED_ARTIFACTS_DIR)];
+    for root in &plan.roots {
+        stores.push(target.join(root.to_string()).join(ARTIFACTS_DIR));
+    }
+    for store in stores {
+        for name in file_names(&store)? {
+            placed
+                .entry(name.clone())
+                .or_default()
+                .push(store.join(&name));
         }
+    }
+    Ok(placed)
+}
+
+/// One placed session (§6.6 check 2): scaffold present, and a metadata cache
+/// that parses and names this session.
+///
+/// A cache that was already unreadable in the flat store grants no exemption:
+/// the event log is authoritative, so an unusable cache is rebuilt from the log
+/// and revalidated. A session that neither has a usable cache nor can rebuild
+/// one aborts the migration rather than being declared complete.
+fn check_placed(directory: &Path, id: SessionId, plan: &Plan) -> Result<(), SessionError> {
+    if !directory.is_dir() {
         return Err(SessionError::Migration(format!(
-            "{} has no readable metadata after the move",
+            "{} is missing after the move",
             directory.display()
         )));
+    }
+    if metadata_is_current(directory, id)? {
+        return Ok(());
+    }
+    if plan.opaque.contains(&id) {
+        eprintln!(
+            "migration: {} arrived without a usable cache; rebuilding it from the event log",
+            directory.display()
+        );
+    }
+    rebuild_metadata(directory, id)?;
+    if metadata_is_current(directory, id)? {
+        return Ok(());
+    }
+    Err(SessionError::Migration(format!(
+        "{} still has no metadata cache naming {id} after rebuilding from its event log",
+        directory.display()
+    )))
+}
+
+/// Whether the cache in `directory` parses and declares `id`.
+fn metadata_is_current(directory: &Path, id: SessionId) -> Result<bool, SessionError> {
+    let path = meta_path(directory);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(SessionError::Io { path, source });
+        }
     };
+    // An unparseable cache is a hole in the cache, not in the session: the log
+    // below rebuilds it.
+    match serde_json::from_str::<SessionMeta>(&text) {
+        Ok(meta) => Ok(meta.session_id == id),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Replace the cache with one folded from the session's own event log, durably
+/// and before anything is allowed to call the store migrated.
+fn rebuild_metadata(directory: &Path, id: SessionId) -> Result<(), SessionError> {
+    let cache = directory.join(SESSION_META_FILE);
+    let events = directory.join(EVENTS_FILE);
+    if !events.is_file() {
+        return Err(SessionError::Migration(format!(
+            "{} has no usable metadata cache and no {} to rebuild one from",
+            directory.display(),
+            EVENTS_FILE
+        )));
+    }
+    let meta = projection(EventLog::open_read_only(events.clone(), id)?)?.meta;
     if meta.session_id != id {
         return Err(SessionError::Migration(format!(
-            "{} declares session {}",
+            "{} describes session {}, not {id}",
             directory.display(),
             meta.session_id
         )));
     }
+    let bytes = serde_json::to_vec_pretty(&meta).map_err(|source| SessionError::Json {
+        path: cache.clone(),
+        source,
+    })?;
+    write_atomically(&cache, &bytes, directory)?;
+    if cache != directory.join(LEGACY_SESSION_META_FILE) {
+        remove_file(&directory.join(LEGACY_SESSION_META_FILE))?;
+    }
     Ok(())
 }
 
-/// Write the tombstone, drop the emptied legacy directories, release nothing —
-/// the caller still holds `migration.lock`.
+/// Write the tombstone and drop the emptied legacy directories. `false` means
+/// something is still in the flat project, so completion must not be claimed (B1).
 fn finish(
     legacy_root: &Path,
     target: &Path,
     legacy_sessions: &Path,
     legacy_artifacts: &Path,
-) -> Result<(), SessionError> {
+) -> Result<bool, SessionError> {
     write_atomically(
         &legacy_root.join(MIGRATED_MARKER_FILE),
         format!("{}\n", target.display()).as_bytes(),
         legacy_root,
     )?;
     write_tombstone(legacy_root, target)?;
-    // Only ever empty at this point: a leftover means verification was too
-    // generous, and keeping it costs nothing but disk.
+    let mut retired = true;
     for directory in [legacy_sessions, legacy_artifacts] {
-        if directory.is_dir() && directory_is_empty(directory) {
-            let _ = fs::remove_dir(directory);
+        if !directory.is_dir() {
+            continue;
+        }
+        if directory_is_empty(directory)? {
+            match fs::remove_dir(directory) {
+                Ok(()) => {}
+                // A racing removal is the outcome we wanted; anything else is not.
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    retired = false;
+                }
+                Err(_) => {}
+            }
+        } else {
+            retired = false;
         }
     }
-    fsync_directory(legacy_root).map_err(SessionError::Event)
+    fsync_directory(legacy_root).map_err(SessionError::Event)?;
+    Ok(retired)
 }
 
 fn ensure_tombstone(legacy_root: &Path, target: &Path) -> Result<(), SessionError> {
@@ -461,6 +739,30 @@ impl Plan {
             .iter()
             .filter(|(child, _)| self.pending.contains(child))
             .map(|(child, root)| (*child, *root))
+    }
+
+    /// Where every planned session belongs in the v2 layout, whether or not it
+    /// has already moved.
+    fn placements(&self, target: &Path) -> Vec<(SessionId, PathBuf)> {
+        self.roots
+            .iter()
+            .map(|root| (*root, target.join(root.to_string())))
+            .chain(self.children.iter().map(|(child, root)| {
+                (
+                    *child,
+                    target
+                        .join(root.to_string())
+                        .join(SUBAGENTS_DIR)
+                        .join(child.to_string()),
+                )
+            }))
+            .collect()
+    }
+
+    /// Every planned child, pending or already moved: `move_session` reconciles
+    /// components a crash left half-moved, so it must run for all of them.
+    fn all_children(&self) -> impl Iterator<Item = (SessionId, SessionId)> + '_ {
+        self.children.iter().map(|(child, root)| (*child, *root))
     }
 
     fn children_of(&self, root: SessionId) -> impl Iterator<Item = SessionId> + '_ {
@@ -556,43 +858,206 @@ fn resolve_root(
     candidate
 }
 
-/// Journal state: `{phase, done: [session ids]}`, fsynced after every move.
-#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+/// Journal state: one plan record followed by one line per moved session, each
+/// fsynced before the next step starts.
+#[derive(Debug, Default)]
 struct Journal {
-    phase: String,
-    done: BTreeSet<String>,
+    legacy_root: PathBuf,
+    plan: Option<PlanRecord>,
+    moved: BTreeSet<String>,
+}
+
+/// What the store looked like before the first rename, recorded durably so a
+/// resumed run can reconcile and verify against the *original* state (B3, W3).
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct PlanRecord {
+    /// Every legacy session directory, by id.
+    #[serde(default)]
+    roots: Vec<String>,
+    /// `(child, root)` placements as discovered before any move.
+    #[serde(default)]
+    children: Vec<(String, String)>,
+    /// Sessions whose metadata cache was already unreadable (W3).
+    #[serde(default)]
+    opaque: Vec<String>,
+    /// Every file name in the flat artifact store (B3).
+    #[serde(default)]
+    artifacts: Vec<String>,
+}
+
+/// One journal line.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "t", rename_all = "kebab-case")]
+enum Record {
+    Plan(PlanRecord),
+    Moved { phase: String, id: String },
 }
 
 impl Journal {
     fn load(legacy_root: &Path) -> Self {
-        match fs::read(legacy_root.join(JOURNAL_FILE)) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => Self::default(),
+        let mut journal = Self {
+            legacy_root: legacy_root.to_path_buf(),
+            ..Self::default()
+        };
+        let Ok(bytes) = fs::read(legacy_root.join(JOURNAL_FILE)) else {
+            return journal;
+        };
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            // A torn final line is a crash mid-append: the record it describes
+            // never completed, so skipping it is the resume.
+            let Ok(record) = serde_json::from_str::<Record>(line) else {
+                continue;
+            };
+            match record {
+                Record::Plan(plan) => journal.plan = Some(plan),
+                Record::Moved { phase, id } => {
+                    journal.moved.insert(format!("{phase}:{id}"));
+                }
+            }
         }
+        journal
     }
 
-    fn done(&mut self, legacy_root: &Path, phase: &str, id: SessionId) -> Result<(), SessionError> {
-        self.phase = phase.to_owned();
-        self.done.insert(id.to_string());
-        self.store(legacy_root)
+    /// Whether a previous, interrupted run left a plan behind.
+    fn is_resumed(&self) -> bool {
+        self.plan.is_some()
     }
 
-    fn store(&self, legacy_root: &Path) -> Result<(), SessionError> {
-        let bytes = serde_json::to_vec_pretty(self).map_err(|source| SessionError::Json {
-            path: legacy_root.join(JOURNAL_FILE),
+    /// Append the pre-move snapshot once, durably, before anything moves.
+    fn ensure_plan(&mut self, plan: &Plan, legacy_artifacts: &Path) -> Result<(), SessionError> {
+        if self.plan.is_some() {
+            return Ok(());
+        }
+        let record = PlanRecord {
+            roots: plan.roots.iter().map(ToString::to_string).collect(),
+            children: plan
+                .children
+                .iter()
+                .map(|(child, root)| (child.to_string(), root.to_string()))
+                .collect(),
+            opaque: plan.opaque.iter().map(ToString::to_string).collect(),
+            artifacts: file_names(legacy_artifacts)?,
+        };
+        self.append(&Record::Plan(record.clone()))?;
+        self.plan = Some(record);
+        Ok(())
+    }
+
+    /// The original flat artifact inventory.
+    fn artifact_inventory(&self) -> Result<BTreeSet<String>, SessionError> {
+        Ok(self
+            .plan
+            .as_ref()
+            .map(|record| record.artifacts.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    /// Sessions recorded as having unreadable metadata before any move.
+    fn opaque(&self) -> BTreeSet<SessionId> {
+        self.plan
+            .as_ref()
+            .map(|record| {
+                record
+                    .opaque
+                    .iter()
+                    .filter_map(|name| name.parse::<SessionId>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Rewind to the recorded plan: keep the plan, drop every move record.
+    ///
+    /// Verification clears the journal, so a surviving record describes a phase
+    /// that did not finish. Once that phase's work has landed the record is stale,
+    /// and `reconcile_move` has nothing left to trust: the phase has to run again
+    /// because something put the directory back where the plan says it already
+    /// moved (an interrupted `rename_metadata`, a file an old binary dropped into
+    /// the retired flat store). Rewinding makes a correction after the move
+    /// resumable instead of a permanent refusal — `move_session` is idempotent and
+    /// the durable plan still backs the artifact check. Returns how many records
+    /// were dropped.
+    fn forget_moves(&mut self) -> Result<usize, SessionError> {
+        let path = self.legacy_root.join(JOURNAL_FILE);
+        let Ok(text) = fs::read_to_string(&path) else {
+            self.moved.clear();
+            return Ok(0);
+        };
+        let mut kept = String::new();
+        let mut dropped = 0;
+        for line in text.lines() {
+            let parsed = serde_json::from_str::<serde_json::Value>(line).ok();
+            if matches!(&parsed, Some(value) if value["t"] == "moved") {
+                dropped += 1;
+                continue;
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        if dropped > 0 {
+            write_atomically(&path, kept.as_bytes(), &self.legacy_root)?;
+            self.moved.clear();
+        }
+        Ok(dropped)
+    }
+
+    /// Whether the journal's own record of a move contradicts the store.
+    fn contradicts(&self, source: &Path, phase: &str, id: SessionId) -> bool {
+        self.moved.contains(&format!("{phase}:{id}")) && source.is_dir()
+    }
+
+    fn done(&mut self, phase: &str, id: SessionId) -> Result<(), SessionError> {
+        self.append(&Record::Moved {
+            phase: phase.to_owned(),
+            id: id.to_string(),
+        })?;
+        self.moved.insert(format!("{phase}:{id}"));
+        Ok(())
+    }
+
+    fn append(&self, record: &Record) -> Result<(), SessionError> {
+        let path = self.legacy_root.join(JOURNAL_FILE);
+        let mut line = serde_json::to_vec(record).map_err(|source| SessionError::Json {
+            path: path.clone(),
             source,
         })?;
-        write_atomically(&legacy_root.join(JOURNAL_FILE), &bytes, legacy_root)
+        line.push(b'\n');
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .map_err(|source| SessionError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        file.write_all(&line)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| SessionError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        drop(file);
+        fsync_directory(&self.legacy_root)?;
+        Ok(())
     }
 
     /// A resume must not find a session the journal already finished still
     /// sitting in the flat layout: that means two migrations raced.
-    fn consistent(&self, source: &Path, id: SessionId) -> Result<(), SessionError> {
-        if self.done.contains(&id.to_string()) && source.is_dir() {
-            return Err(SessionError::Migration(format!(
-                "journal records {id} as moved, but {} still exists",
-                source.display()
-            )));
+    fn consistent(
+        &mut self,
+        source: &Path,
+        phase: &str,
+        id: SessionId,
+    ) -> Result<(), SessionError> {
+        if self.contradicts(source, phase, id) {
+            // The move record is history that stopped being true; rewind to the
+            // plan and let this phase run again over what is really there.
+            if self.forget_moves()? == 0 || self.contradicts(source, phase, id) {
+                return Err(SessionError::Migration(format!(
+                    "journal records {id} as moved, but {} still exists",
+                    source.display()
+                )));
+            }
         }
         Ok(())
     }
@@ -609,39 +1074,108 @@ impl Journal {
     }
 }
 
+/// Every legacy session's owner lock, held from the first rename until the last
+/// session directory has landed, so no live process can slip in behind the probe
+/// (§6.3 step 0, M1).
+struct OwnerLocks {
+    held: Vec<HeldLock>,
+    /// Windows files `owner.lock` *beside* its session directory; the rename
+    /// cannot happen while the lock is held, so it is deferred to `release`.
+    sidecars: Vec<(PathBuf, PathBuf)>,
+}
+
+impl OwnerLocks {
+    fn acquire(plan: &Plan, legacy_sessions: &Path, target: &Path) -> Result<Self, SessionError> {
+        let mut locks = Self {
+            held: Vec::new(),
+            sidecars: Vec::new(),
+        };
+        for (id, destination) in plan.placements(target) {
+            let flat = legacy_sessions.join(id.to_string());
+            let directory = if flat.is_dir() { &flat } else { &destination };
+            match try_acquire(directory) {
+                // A stale lock is ours to take; it moves with its session.
+                Ok(SessionOwnership::Owned(held)) => {
+                    locks.held.push(held);
+                    let source_lock = owner_lock_path(directory);
+                    if source_lock.parent() != Some(directory.as_ref()) && source_lock.is_file() {
+                        locks
+                            .sidecars
+                            .push((source_lock, owner_lock_path(&destination)));
+                    }
+                }
+                Ok(SessionOwnership::Foreign) => {
+                    return Err(SessionError::Migration(format!(
+                        "session {id} is owned by a live process; quit cookie and retry"
+                    )));
+                }
+                Err(source) => {
+                    return Err(SessionError::Io {
+                        path: owner_lock_path(directory),
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(locks)
+    }
+
+    /// Drop every lock, then move the sidecar files that could not move with it.
+    fn release(self) -> Result<(), SessionError> {
+        let Self { held, sidecars, .. } = self;
+        drop(held);
+        for (source, destination) in sidecars {
+            if source.is_file() && !destination.is_file() {
+                rename(&source, &destination)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Test seam: abort the migration right after `phase` completes, leaving the
 /// disk and journal exactly as a crash would (§8.2 test 2).
+/// `item` names the individual rename, capture or finalization step so a test can
+/// stop anywhere, not only at phase boundaries (W2).
 #[cfg(test)]
-fn crash_after(phase: &str) -> Result<(), SessionError> {
-    if injected_crash_matches(phase) {
+fn crash_after(phase: &str, item: Option<&str>) -> Result<(), SessionError> {
+    if injected_crash_matches(phase, item) {
+        let suffix = item.unwrap_or("");
         return Err(SessionError::Migration(format!(
-            "injected crash after {phase}"
+            "injected crash after {phase}{suffix}"
         )));
     }
     Ok(())
 }
 
 #[cfg(test)]
-pub(crate) fn set_crash_after(phase: Option<&'static str>) {
+pub(crate) fn set_crash_after(phase: Option<&str>, item: Option<&str>) {
     let mut slot = CRASH_AFTER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *slot = phase;
+    *slot = phase.map(|phase| (phase.to_owned(), item.map(str::to_owned)));
 }
 
 #[cfg(test)]
-fn injected_crash_matches(phase: &str) -> bool {
+fn injected_crash_matches(phase: &str, item: Option<&str>) -> bool {
     let slot = CRASH_AFTER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    slot.is_some_and(|crash| crash == phase)
+    let Some((crash, crash_item)) = slot.as_ref() else {
+        return false;
+    };
+    crash == phase
+        && crash_item
+            .as_deref()
+            .is_none_or(|want| want == item.unwrap_or(""))
 }
 
 #[cfg(test)]
-static CRASH_AFTER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+static CRASH_AFTER: std::sync::Mutex<Option<(String, Option<String>)>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(not(test))]
-fn crash_after(_phase: &str) -> Result<(), SessionError> {
+fn crash_after(_phase: &str, _item: Option<&str>) -> Result<(), SessionError> {
     Ok(())
 }
 
@@ -681,72 +1215,85 @@ impl Drop for MigrationLock {
     }
 }
 
-/// Migration only runs with no live owner anywhere in the store (§6.3 step 0),
-/// which is also what guarantees there are no in-flight appends.
-fn reject_live_owners(legacy_sessions: &Path) -> Result<(), SessionError> {
-    for name in directory_names(legacy_sessions)? {
-        let Ok(id) = name.parse::<SessionId>() else {
-            continue;
-        };
-        let directory = legacy_sessions.join(&name);
-        match try_acquire(&directory) {
-            // A stale lock is ours to take and drop; it moves with its session.
-            Ok(SessionOwnership::Owned(_held)) => {}
-            Ok(SessionOwnership::Foreign) => {
-                return Err(SessionError::Migration(format!(
-                    "session {id} is owned by a live process; quit cookie and retry"
-                )));
-            }
-            Err(source) => {
-                return Err(SessionError::Io {
-                    path: owner_lock_path(&directory),
-                    source,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Move one session directory and rename its metadata cache. Existence-checked,
-/// so re-running a completed item is a no-op.
+/// Move one session directory, then reconcile each of its components
+/// independently. A crash can land between the directory rename and the metadata
+/// rename, so re-running this repairs whatever the destination is missing (B2).
 fn move_session(source: &Path, destination: &Path) -> Result<(), SessionError> {
-    if destination.is_dir() || !source.is_dir() {
-        // Already moved. Nothing left to do for this id.
-        if !destination.is_dir() && !source.is_dir() {
+    if !destination.is_dir() {
+        if !source.is_dir() {
             return Err(SessionError::Migration(format!(
                 "session directory {} vanished mid-migration",
                 source.display()
             )));
         }
-        return Ok(());
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(destination);
+        ensure_private_dir(parent)?;
+        rename(source, destination)?;
     }
+    rename_metadata(destination)?;
+    // Windows keeps the ownership lock beside the directory; unix moves it along
+    // inside it. `OwnerLocks::release` relocates the sidecars once held.
     let source_lock = owner_lock_path(source);
-    let parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(destination);
-    ensure_private_dir(parent)?;
-    rename(source, destination, parent)?;
-    let legacy_meta = destination.join(LEGACY_SESSION_META_FILE);
-    if legacy_meta.is_file() {
-        rename(
-            &legacy_meta,
-            &destination.join(SESSION_META_FILE),
-            destination,
-        )?;
-    }
-    // Windows keeps the ownership lock beside the directory; unix moves it along.
-    if source_lock.is_file() {
-        rename(&source_lock, &owner_lock_path(destination), parent)?;
+    if source_lock.parent() != Some(source) && source_lock.is_file() {
+        rename(&source_lock, &owner_lock_path(destination))?;
     }
     Ok(())
 }
 
-fn rename(source: &Path, destination: &Path, sync_dir: &Path) -> Result<(), SessionError> {
+/// `meta.json` → `metadata`, in either layout position, without ever losing a
+/// cache: two copies are only acceptable when they are the same bytes.
+fn rename_metadata(directory: &Path) -> Result<(), SessionError> {
+    let legacy = directory.join(LEGACY_SESSION_META_FILE);
+    if !legacy.is_file() {
+        return Ok(());
+    }
+    let current = directory.join(SESSION_META_FILE);
+    if current.is_file() {
+        if read_digest(&legacy)? != read_digest(&current)? {
+            return Err(SessionError::Migration(format!(
+                "{} has two different metadata caches",
+                directory.display()
+            )));
+        }
+        return remove_file(&legacy);
+    }
+    rename(&legacy, &current)
+}
+
+fn remove_file(path: &Path) -> Result<(), SessionError> {
+    match fs::remove_file(path) {
+        Ok(()) => {
+            fsync_directory(&parent_of(path))?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(SessionError::Io {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn parent_of(path: &Path) -> PathBuf {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+/// Rename and make *both* parents durable: syncing only the destination can roll
+/// the removal of the source entry back, leaving the item in neither place (M2).
+fn rename(source: &Path, destination: &Path) -> Result<(), SessionError> {
     match fs::rename(source, destination) {
         Ok(()) => {
-            fsync_directory(sync_dir)?;
+            fsync_directory(&parent_of(destination))?;
+            let source_parent = parent_of(source);
+            if source_parent != parent_of(destination) {
+                fsync_directory_tolerant(&source_parent)?;
+            }
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -755,6 +1302,37 @@ fn rename(source: &Path, destination: &Path, sync_dir: &Path) -> Result<(), Sess
             source: source_error,
         }),
     }
+}
+
+/// A parent that no longer exists has nothing left to sync.
+fn fsync_directory_tolerant(directory: &Path) -> Result<(), SessionError> {
+    match fsync_directory(directory) {
+        Ok(()) => Ok(()),
+        // A parent that no longer exists has nothing left to sync.
+        Err(crate::events::EventLogError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(source) => Err(source.into()),
+    }
+}
+
+/// The sha256 of a file's bytes, which for a placed artifact is its name.
+fn read_digest(path: &Path) -> Result<String, SessionError> {
+    let bytes = fs::read(path).map_err(|source| SessionError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    Ok(digest_of(&bytes))
+}
+
+/// Content hash, matching the `artifact://sha256/<hex>` naming.
+fn digest_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// `{"version":2,"migration":"<state>"}`; written atomically and never clobbered
@@ -786,8 +1364,19 @@ fn migration_state(target: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Write `path` through a temporary in its own directory, then fsync.
+///
+/// The temporary name is unique per call and stale temporaries for this target
+/// are removed first: a crash between the sync and the rename used to leave a
+/// fixed-name temporary behind, whose `create_new` then failed for every later
+/// attempt, wedging the migration permanently.
 fn write_atomically(path: &Path, bytes: &[u8], parent: &Path) -> Result<(), SessionError> {
-    let temporary = path.with_extension("migration-tmp");
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = parent.join(format!(".{name}.{}.migration-tmp", Uuid::now_v7()));
+    remove_stale_temparies(parent, &name)?;
     let mut file = fs::File::options()
         .write(true)
         .create_new(true)
@@ -796,13 +1385,18 @@ fn write_atomically(path: &Path, bytes: &[u8], parent: &Path) -> Result<(), Sess
             path: temporary.clone(),
             source,
         })?;
-    file.write_all(bytes)
+    let written = file
+        .write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|source| SessionError::Io {
             path: temporary.clone(),
             source,
-        })?;
+        });
     drop(file);
+    if let Err(failure) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(failure);
+    }
     match fs::rename(&temporary, path) {
         Ok(()) => {}
         Err(source) => {
@@ -814,6 +1408,52 @@ fn write_atomically(path: &Path, bytes: &[u8], parent: &Path) -> Result<(), Sess
         }
     }
     fsync_directory(parent)?;
+    Ok(())
+}
+
+/// Sweep every atomic-write temporary the migration procedure can leave in the
+/// legacy project directory or beside the v2 layout marker.
+///
+/// A crash between [`write_atomically`]'s sync and its rename leaves a
+/// `.<name>.<uuid>.migration-tmp` behind; the uuid makes the name one no other
+/// writer can hold, so a temporary that outlived its process cannot belong to a
+/// live write. Left in place it counts as a remnant of the flat project, and the
+/// store never gets to claim its migration is done.
+fn sweep_litter(legacy_root: &Path, target: &Path) -> Result<(), SessionError> {
+    remove_stale_temparies(legacy_root, JOURNAL_FILE)?;
+    remove_stale_temparies(legacy_root, MIGRATED_MARKER_FILE)?;
+    remove_stale_temparies(legacy_root, TOMBSTONE_FILE)?;
+    remove_stale_temparies(target, LAYOUT_MARKER_FILE)?;
+    Ok(())
+}
+
+/// Drop temporaries an interrupted write left behind for this same target.
+fn remove_stale_temparies(parent: &Path, name: &str) -> Result<(), SessionError> {
+    let prefix = format!(".{name}.");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            // An unlistable entry is not a temporary we can reason about; the
+            // write below does not depend on it.
+            Err(_) => continue,
+        };
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if file_name.starts_with(&prefix) && file_name.ends_with(".migration-tmp") {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(SessionError::Io {
+                        path: entry.path(),
+                        source,
+                    });
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -872,10 +1512,26 @@ fn named(directory: &Path, want_directory: bool) -> Result<Vec<String>, SessionE
     Ok(names)
 }
 
-fn directory_is_empty(directory: &Path) -> bool {
-    match fs::read_dir(directory) {
-        Ok(mut entries) => entries.next().is_none(),
-        Err(_) => true,
+fn directory_is_empty(directory: &Path) -> Result<bool, SessionError> {
+    let mut entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(source) => {
+            return Err(SessionError::Io {
+                path: directory.to_owned(),
+                source,
+            });
+        }
+    };
+    // An entry that cannot be read means emptiness is unprovable, which is not
+    // the same as empty: claiming otherwise would finalize an unknown state.
+    match entries.next() {
+        None => Ok(true),
+        Some(Ok(_)) => Ok(false),
+        Some(Err(source)) => Err(SessionError::Io {
+            path: directory.to_owned(),
+            source,
+        }),
     }
 }
 
@@ -888,8 +1544,6 @@ mod tests {
         ModelRevision, ProviderStateRevision, RecipeRegistryRevision, RunId, RuntimeRevision,
         SessionId, SessionOrigin, ToolCallId,
     };
-    use sha2::{Digest as _, Sha256};
-
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -1324,16 +1978,32 @@ mod tests {
         );
     }
 
+    /// §8.2 test 2, at every injected point: crash, forget what the journal
+    /// claims it finished, and require an idempotent completion in the identical
+    /// final state. `before_verify`, `retire` and `complete` cover the finishing
+    /// window, where the journal is already gone and the marker has not landed.
     #[test]
     fn migration_resumes_from_the_journal_after_any_phase() {
-        for phase in ["scaffold", "roots", "children", "artifacts"] {
+        for phase in [
+            "project-file",
+            "scaffold",
+            "root",
+            "roots",
+            "child",
+            "children",
+            "artifact",
+            "artifacts",
+            "before_verify",
+            "retire",
+            "complete",
+        ] {
             let _serial = SERIAL
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let scenario = scenario();
-            set_crash_after(Some(phase));
+            set_crash_after(Some(phase), None);
             let aborted = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd);
-            set_crash_after(None);
+            set_crash_after(None, None);
             let error = match aborted {
                 Ok(_) => panic!("migration must stop after {phase}"),
                 Err(error) => error,
@@ -1342,26 +2012,365 @@ mod tests {
                 matches!(&error, SessionError::Migration(message) if message.contains("injected crash")),
                 "unexpected abort for {phase}: {error}"
             );
-            assert!(
-                scenario.fixture.legacy().join(JOURNAL_FILE).is_file(),
-                "no journal to resume from after {phase}"
+            let journal_path = scenario.fixture.legacy().join(JOURNAL_FILE);
+            // Verification clears the journal, so only the crashes after it
+            // resume without one.
+            assert_eq!(
+                journal_path.is_file(),
+                !matches!(phase, "retire" | "complete"),
+                "journal presence after a crash at {phase}"
             );
 
-            // Forget the journal's progress: every move is existence-checked, so
-            // the resume still completes without touching what already moved.
-            let journal_path = scenario.fixture.legacy().join(JOURNAL_FILE);
-            let mut journal = Journal::load(&scenario.fixture.legacy());
-            let moved = journal.done.len();
-            journal.done.clear();
-            journal
-                .store(&scenario.fixture.legacy())
-                .expect("rewrite journal");
+            // Forget the journal's progress: every move is existence-checked and
+            // the durable plan record stays, so the resume still completes and
+            // still verifies the original artifact inventory.
+            let forgotten = Journal::load(&scenario.fixture.legacy())
+                .forget_moves()
+                .expect("rewinding the journal is durable");
+            assert!(
+                forgotten > 0
+                    || matches!(phase, "project-file" | "scaffold" | "retire" | "complete"),
+                "no progress to forget after {phase}"
+            );
             let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
                 .expect("resumed migration");
-            assert!(moved > 0 || phase == "scaffold", "no progress to forget");
             assert!(!journal_path.exists(), "journal outlived the migration");
             assert_migrated(&scenario, &store);
         }
+    }
+
+    /// §6.3: the marker, journal and tombstone writes go through one temporary
+    /// file. A crash between its sync and its rename must not wedge every later
+    /// resume with `AlreadyExists`.
+    #[test]
+    fn a_stale_migration_temporary_does_not_wedge_the_resume() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        set_crash_after(Some("roots"), None);
+        let aborted = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd);
+        set_crash_after(None, None);
+        assert!(aborted.is_err(), "injected crash after roots");
+
+        // The exact litter a crash leaves: every marker helper has a temporary
+        // synced next to its target but never renamed.
+        let legacy = scenario.fixture.legacy();
+        let v2 = scenario.fixture.v2();
+        let stale = [
+            legacy.join(format!(".{JOURNAL_FILE}.stale.migration-tmp")),
+            legacy.join(format!(".{MIGRATED_MARKER_FILE}.stale.migration-tmp")),
+            legacy.join(format!(".{TOMBSTONE_FILE}.stale.migration-tmp")),
+            v2.join(format!(".{LAYOUT_MARKER_FILE}.stale.migration-tmp")),
+        ];
+        for path in &stale {
+            fs::write(path, b"half-written marker").expect("drop stale temporary");
+        }
+
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("the resume must survive a stale temporary");
+        assert_migrated(&scenario, &store);
+        for path in &stale {
+            assert!(!path.exists(), "{} outlived the resume", path.display());
+        }
+    }
+
+    /// §6.3 step 3/4: one session move is a sequence of renames. A crash between
+    /// the directory rename and the `meta.json` → `metadata` rename leaves a
+    /// destination that the resume has to finish, not just accept.
+    #[test]
+    fn a_half_moved_session_is_repaired_by_the_resume() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        let legacy_sessions = scenario.fixture.legacy_sessions();
+        let v2 = scenario.fixture.v2();
+        let (child, root) = (scenario.children[0], scenario.roots[0]);
+        let (other_child, other_root) = (scenario.children[2], scenario.roots[1]);
+
+        // Stop the first run right after the roots landed, so a hand-made
+        // half-move below is the interleaving a crash really produces.
+        set_crash_after(Some("roots"), None);
+        let aborted = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd);
+        set_crash_after(None, None);
+        assert!(aborted.is_err(), "injected crash after roots");
+
+        // Crash between the directory rename and the metadata rename of a child.
+        let destination = v2
+            .join(root.to_string())
+            .join(SUBAGENTS_DIR)
+            .join(child.to_string());
+        fs::create_dir_all(destination.parent().expect("subagents")).expect("subagents");
+        fs::rename(legacy_sessions.join(child.to_string()), &destination).expect("move directory");
+        assert!(destination.join(LEGACY_SESSION_META_FILE).is_file());
+        assert!(!destination.join(SESSION_META_FILE).is_file());
+        // And a root whose destination exists but never got its scaffold.
+        fs::remove_dir_all(v2.join(other_root.to_string()).join(ARTIFACTS_DIR))
+            .expect("drop the artifact store");
+        fs::remove_dir_all(v2.join(other_root.to_string()).join(SUBAGENTS_DIR))
+            .expect("drop the subagents store");
+
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("migration repairs the half-finished moves");
+        assert!(
+            destination.join(SESSION_META_FILE).is_file(),
+            "the metadata rename was never completed"
+        );
+        assert!(
+            !destination.join(LEGACY_SESSION_META_FILE).exists(),
+            "the legacy cache name survived the move"
+        );
+        assert!(
+            v2.join(other_root.to_string()).join(ARTIFACTS_DIR).is_dir(),
+            "the destination that already existed was never reconciled"
+        );
+        assert!(
+            v2.join(other_root.to_string()).join(SUBAGENTS_DIR).is_dir(),
+            "the destination that already existed was never reconciled"
+        );
+        assert_eq!(
+            store
+                .summary(child)
+                .expect("child is reachable")
+                .meta
+                .session_id,
+            child
+        );
+        assert_eq!(
+            store
+                .summary(other_child)
+                .expect("other child is reachable")
+                .meta
+                .session_id,
+            other_child
+        );
+        assert_migrated(&scenario, &store);
+    }
+
+    /// §6.6 check 4: verification compares against the inventory the plan
+    /// recorded, so a blob that a previous invocation moved and that then goes
+    /// missing cannot pass a resume by counting this invocation's moves.
+    #[test]
+    fn resume_fails_loudly_when_a_previously_moved_artifact_is_lost() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        set_crash_after(Some("artifacts"), None);
+        let aborted = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd);
+        set_crash_after(None, None);
+        assert!(aborted.is_err(), "injected crash after artifacts");
+
+        // A blob already out of the flat store, deleted before the resume: the
+        // only evidence it existed is the durable inventory.
+        let moved = scenario
+            .fixture
+            .v2()
+            .join(scenario.roots[0].to_string())
+            .join(ARTIFACTS_DIR)
+            .join(&scenario.only_first);
+        assert!(moved.is_file(), "fixture placed the blob");
+        fs::remove_file(&moved).expect("lose a placed blob");
+
+        let error = match SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd) {
+            Ok(_) => panic!("a lost artifact must not verify"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, SessionError::Migration(message)
+                if message.contains("vanished from both")),
+            "unexpected refusal: {error}"
+        );
+        // A lost blob leaves the store resumable, never claimed-complete.
+        assert_ne!(
+            migration_state(&scenario.fixture.v2()).as_deref(),
+            Some(MIGRATION_COMPLETE),
+            "a lost artifact must not end in a completed migration"
+        );
+        // The store is still resumable: put the bytes back and nothing was lost.
+        fs::write(&moved, b"referenced by the first tree only").expect("restore blob");
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("the migration resumes after the repair");
+        assert_migrated(&scenario, &store);
+    }
+
+    /// §6.6 check 2, with no exemption for a cache that was already unreadable:
+    /// the event log is authoritative, so an unusable cache is rebuilt from it
+    /// and validated before the store may be called migrated.
+    #[test]
+    fn an_unreadable_metadata_cache_is_rebuilt_from_the_event_log() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        let child = scenario.children[0];
+        let directory = scenario.fixture.legacy_sessions().join(child.to_string());
+        fs::write(
+            directory.join(LEGACY_SESSION_META_FILE),
+            b"{\"truncated\":\"by a lost writ",
+        )
+        .expect("corrupt the cache");
+
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("the log rebuilds the cache");
+        // An unreadable origin cannot name a parent, so the session is placed as
+        // a root; what matters is that it is not carried along as a hole.
+        let placed = scenario.fixture.v2().join(child.to_string());
+        assert!(placed.is_dir(), "promoted to a root, as planned");
+        let cache = placed.join(SESSION_META_FILE);
+        let rebuilt: SessionMeta =
+            serde_json::from_str(&fs::read_to_string(&cache).expect("rebuilt cache"))
+                .expect("rebuilt cache parses");
+        assert_eq!(rebuilt.session_id, child, "cache names its directory");
+        assert!(
+            !placed.join(LEGACY_SESSION_META_FILE).exists(),
+            "the unreadable legacy cache survived"
+        );
+        assert!(placed.join(EVENTS_FILE).is_file(), "transcript intact");
+        assert_eq!(
+            store.summary(child).expect("summary").meta.session_id,
+            child,
+            "the session is reachable after the rebuild"
+        );
+        // Every other session of the store landed exactly as the round trip does.
+        for id in [
+            scenario.roots[0],
+            scenario.roots[1],
+            scenario.children[1],
+            scenario.children[2],
+        ] {
+            assert_eq!(store.summary(id).expect("summary").meta.session_id, id);
+        }
+        assert!(
+            !scenario.fixture.legacy_sessions().exists(),
+            "the flat project was retired"
+        );
+        assert_eq!(
+            migration_state(&scenario.fixture.v2()).as_deref(),
+            Some(MIGRATION_COMPLETE),
+            "a rebuilt cache is a verified cache"
+        );
+    }
+
+    /// The same session with an unusable log too is damage, not a state to
+    /// declare migrated.
+    #[test]
+    fn a_session_with_no_cache_and_no_usable_log_aborts_the_migration() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        // A session that references no artifact: damaging it cannot shift any
+        // placement decision, so the repair below is a byte-for-byte undo.
+        let damaged = {
+            let store = SessionStore::open_flat_for_test(
+                &scenario.fixture.data_root,
+                &scenario.fixture.cwd,
+            )
+            .expect("legacy store");
+            session(&store, SessionOrigin::Root)
+        };
+        let directory = scenario.fixture.legacy_sessions().join(damaged.to_string());
+        let original_cache =
+            fs::read(directory.join(LEGACY_SESSION_META_FILE)).expect("fixture cache");
+        let original_log = fs::read(directory.join(EVENTS_FILE)).expect("fixture log");
+        fs::write(directory.join(LEGACY_SESSION_META_FILE), b"not json at all")
+            .expect("corrupt the cache");
+        fs::remove_file(directory.join(EVENTS_FILE)).expect("lose the log");
+
+        let error = match SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd) {
+            Ok(_) => panic!("a session that cannot be rebuilt must abort the migration"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, SessionError::Migration(message)
+                if message.contains("no events.jsonl to rebuild one from")),
+            "unexpected refusal: {error}"
+        );
+        // Not half-migrated-and-served: the v2 marker never claimed completion,
+        // and the journal is kept so a corrected resume can finish.
+        assert_ne!(
+            migration_state(&scenario.fixture.v2()).as_deref(),
+            Some(MIGRATION_COMPLETE),
+            "an unrebuildable session was declared migrated"
+        );
+        assert!(
+            scenario.fixture.legacy().join(JOURNAL_FILE).is_file(),
+            "the resume journal was dropped on a refusal"
+        );
+
+        // Repair the damage the refusal reports.
+        let placed = scenario.fixture.v2().join(damaged.to_string());
+        fs::write(placed.join(SESSION_META_FILE), &original_cache).expect("restore the cache");
+        fs::write(placed.join(EVENTS_FILE), &original_log).expect("restore the log");
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("the migration resumes after the repair");
+        assert_eq!(
+            store
+                .summary(damaged)
+                .expect("repaired session")
+                .meta
+                .session_id,
+            damaged
+        );
+        assert_migrated(&scenario, &store);
+    }
+
+    /// §6.3 step 5: a log that cannot be scanned cannot silently send its blobs
+    /// to the shared store while the migration reports success.
+    #[test]
+    fn an_unscannable_event_log_aborts_the_migration() {
+        let _serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scenario = scenario();
+        let root = scenario.roots[0];
+        let log = scenario
+            .fixture
+            .v2()
+            .join(root.to_string())
+            .join(EVENTS_FILE);
+
+        // Move every session first, then damage one transcript: a scan that
+        // cannot run must not be scanned as an empty one.
+        set_crash_after(Some("children"), None);
+        let aborted = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd);
+        set_crash_after(None, None);
+        assert!(aborted.is_err(), "injected crash after children");
+        let held = log.with_extension("hold");
+        fs::rename(&log, &held).expect("hide the log");
+        fs::create_dir_all(&log).expect("the log path becomes a directory");
+
+        let error = match SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd) {
+            Ok(_) => panic!("an unreadable log must not be scanned as an empty one"),
+            Err(error) => error,
+        };
+        assert!(
+            !matches!(&error, SessionError::Migration(message)
+                if message.contains("injected crash")),
+            "unexpected abort: {error}"
+        );
+        assert_ne!(
+            migration_state(&scenario.fixture.v2()).as_deref(),
+            Some(MIGRATION_COMPLETE),
+            "a failed scan must never end in a completed migration"
+        );
+        // Every blob is still findable: nothing was placed on the strength of a
+        // scan that reported nothing.
+        assert!(
+            scenario
+                .fixture
+                .legacy_artifacts()
+                .join(&scenario.shared_between_trees)
+                .is_file()
+        );
+
+        fs::remove_dir_all(&log).expect("remove the fake log");
+        fs::rename(&held, &log).expect("restore the log");
+        let store = SessionStore::open(&scenario.fixture.data_root, &scenario.fixture.cwd)
+            .expect("migration completes once the log is readable");
+        assert_migrated(&scenario, &store);
     }
 
     /// End-to-end check against a copy of a real store (§8.2 #1 at scale). Run
@@ -1404,6 +2413,28 @@ mod tests {
                 .values()
                 .filter(|summary| matches!(summary.meta.origin, SessionOrigin::Root))
                 .count()
+        );
+        // §8.2: the delegation registry and the tree approval store are both
+        // folded from session logs (`DelegationEventStore::open` over root logs,
+        // `rebuild_approvals` over the same snapshots). Those folds are what a
+        // migration must leave untouched, so compare their complete input.
+        let flat_logs: BTreeMap<SessionId, PathBuf> = summaries
+            .keys()
+            .map(|id| {
+                (
+                    *id,
+                    fixture
+                        .legacy_sessions()
+                        .join(id.to_string())
+                        .join(EVENTS_FILE),
+                )
+            })
+            .collect();
+        let before_fold = fold_inputs(&flat_logs);
+        eprintln!(
+            "smoke pre-state: {} grant payloads across {} logs",
+            before_fold.1.len(),
+            before_fold.0.len()
         );
         drop(before);
 
@@ -1473,6 +2504,35 @@ mod tests {
             );
         }
 
+        // The flat project keeps a pointer for builds that predate the tree.
+        let legacy = fixture.legacy();
+        assert!(
+            legacy.join(MIGRATED_MARKER_FILE).is_file(),
+            "the flat project was never marked migrated"
+        );
+        assert!(
+            fs::read_to_string(legacy.join(TOMBSTONE_FILE))
+                .expect("tombstone")
+                .contains(&v2.display().to_string()),
+            "the tombstone does not name the v2 work dir"
+        );
+
+        // The registry and approval folds see exactly what they saw before: same
+        // payloads, same order, same restart-stable grants, session by session.
+        let mut v2_logs = BTreeMap::new();
+        for root in &placed_roots {
+            v2_logs.insert(*root, v2.join(root.to_string()).join(EVENTS_FILE));
+            let children = v2.join(root.to_string()).join(SUBAGENTS_DIR);
+            for child in session_ids_in(&children) {
+                v2_logs.insert(child, children.join(child.to_string()).join(EVENTS_FILE));
+            }
+        }
+        assert_eq!(
+            fold_inputs(&v2_logs),
+            before_fold,
+            "a migrated log folds differently"
+        );
+
         // Every moved blob still hashes to its own name through the router.
         let router = ArtifactRouter::open(v2.clone()).expect("router");
         let mut verified = 0;
@@ -1493,7 +2553,32 @@ mod tests {
         );
     }
 
-    /// The session ids whose directories sit directly in `directory`.
+    /// Everything the startup passes fold from, per session: its durable payloads
+    /// in log order, plus the store-wide set of restart-stable tree grants the
+    /// approval store re-installs (§4.3). Comparing the two before and after a
+    /// move is the registry/approval equivalence §8.2 asks for: a migration
+    /// renames log files and may not change what they mean.
+    fn fold_inputs(
+        logs: &BTreeMap<SessionId, PathBuf>,
+    ) -> (BTreeMap<SessionId, Vec<String>>, BTreeSet<String>) {
+        let mut payloads = BTreeMap::new();
+        let mut grants = BTreeSet::new();
+        for (id, path) in logs {
+            let log = EventLog::open_read_only(path.clone(), *id).expect("log reads");
+            let mut ordered = Vec::new();
+            for event in log.event_snapshot().iter() {
+                ordered.push(serde_json::to_string(&event.payload).expect("payload serializes"));
+                if let EventPayload::TreeApprovalGrantCommitted { grant } = &event.payload
+                    && crate::session::restart_stable_grant(grant)
+                {
+                    grants.insert(serde_json::to_string(grant).expect("grant serializes"));
+                }
+            }
+            payloads.insert(*id, ordered);
+        }
+        (payloads, grants)
+    }
+
     fn session_ids_in(directory: &Path) -> BTreeSet<SessionId> {
         directory_names(directory)
             .expect("session directories")

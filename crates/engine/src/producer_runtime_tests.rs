@@ -2747,6 +2747,7 @@ async fn paused_goal_survives_fork_and_revert_but_not_delegated_session_boundari
     let child_id = delegation_fixture
         .engine
         .children(parent.session_id)
+        .expect("children")
         .first()
         .expect("delegated child")
         .session_id;

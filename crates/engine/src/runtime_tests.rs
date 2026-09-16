@@ -295,6 +295,7 @@ async fn await_child(
     await_session_change(engine, parent_session_id, description, || {
         engine
             .children(parent_session_id)
+            .expect("children")
             .into_iter()
             .find(&predicate)
     })
@@ -1395,7 +1396,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
         "a grant living in a child log cannot be restored at startup"
     );
 
-    let _ = reopened.children(root.session_id);
+    let _ = reopened.children(root.session_id).expect("children");
     let granted = reopened.inner.approvals.for_root(root.session_id);
     assert_eq!(
         granted
@@ -1409,7 +1410,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
 
     // A second pass over the same tree must not duplicate the grant.
     let reopened = reopen_engine(&fixture);
-    let _ = reopened.children(root.session_id);
+    let _ = reopened.children(root.session_id).expect("children");
     let _ = reopened.tree(root.session_id).expect("root tree");
     assert_eq!(
         reopened
@@ -4477,7 +4478,11 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
     )
     .await;
 
-    let child = fixture.engine.children(parent.session_id)[0].session_id;
+    let child = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")[0]
+        .session_id;
     let requests = captured.await.unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(
@@ -4586,7 +4591,14 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
     let child_prompt = request_body(&requests[1]).to_string();
     assert!(!child_prompt.contains("Available subagents:"));
     assert!(!child_prompt.contains("tool_instructions"));
-    assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -17788,8 +17800,8 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .await
         .expect("tree root run");
     wait_for_session_not_running(&fixture.engine, root.session_id).await;
-    let child_id = fixture.engine.children(root.session_id)[0].session_id;
-    let grandchild_id = fixture.engine.children(child_id)[0].session_id;
+    let child_id = fixture.engine.children(root.session_id).expect("children")[0].session_id;
+    let grandchild_id = fixture.engine.children(child_id).expect("children")[0].session_id;
 
     let unrelated = fixture
         .engine
@@ -17925,7 +17937,10 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
     .await;
     let requests = captured.await.expect("delegation server task");
     assert_eq!(requests.len(), 3);
-    let children = fixture.engine.children(parent.session_id);
+    let children = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children");
     assert_eq!(children.len(), 1);
     let child = fixture
         .engine
@@ -18352,6 +18367,7 @@ async fn delegated_child_uses_description_title_without_title_agent() {
             (fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .is_some_and(|child| child.status == SessionStatus::Completed)
                 && fixture
@@ -18362,7 +18378,11 @@ async fn delegated_child_uses_description_title_without_title_agent() {
         },
     )
     .await;
-    let child_id = fixture.engine.children(parent.session_id)[0].session_id;
+    let child_id = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")[0]
+        .session_id;
     let child = fixture
         .engine
         .inner
@@ -18704,6 +18724,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
             if let Some(child) = fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .into_iter()
                 .find(|child| child.status == SessionStatus::Completed)
                 && !fixture.engine.inner.store.is_resident(child.session_id)
@@ -18812,6 +18833,7 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             (fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .is_some_and(|child| child.status == SessionStatus::Completed)
                 && fixture
@@ -18822,7 +18844,11 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         },
     )
     .await;
-    let child_session_id = fixture.engine.children(parent.session_id)[0].session_id;
+    let child_session_id = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")[0]
+        .session_id;
     let original_title = fixture
         .engine
         .get_session(child_session_id)
@@ -18937,7 +18963,14 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         },
     )
     .await;
-    assert_eq!(fixture.engine.children(parent.session_id).len(), 1);
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .len(),
+        1
+    );
     assert_eq!(
         fixture
             .engine
@@ -19129,7 +19162,11 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .await
         .expect("create capped child run");
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
-    let child = fixture.engine.children(parent.session_id)[0].session_id;
+    let child = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")[0]
+        .session_id;
     wait_for_session_not_running(&fixture.engine, child).await;
     let child_selection = fixture
         .engine
@@ -19264,7 +19301,10 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             parent.session_id,
             "paging child completion and teaser",
             || {
-                let known = fixture.engine.children(parent.session_id);
+                let known = fixture
+                    .engine
+                    .children(parent.session_id)
+                    .expect("children");
                 if let Some(child) = known.iter().find(|child| {
                     child.status == SessionStatus::Completed
                         && !children.contains(&child.session_id)
@@ -19343,7 +19383,9 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     let children_engine = fixture.engine.clone();
     let children_task = tokio::task::spawn_blocking(move || {
         let _ = children_ready.send(());
-        children_engine.children(parent_session_id)
+        children_engine
+            .children(parent_session_id)
+            .expect("children")
     });
     let (tree_ready, tree_started) = tokio::sync::oneshot::channel();
     let tree_engine = fixture.engine.clone();
@@ -19416,7 +19458,14 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     assert!(!fixture.engine.actor_resident_for_test(children[0]));
     assert!(fixture.engine.inner.store.is_resident(parent.session_id));
     assert_eq!(fixture.engine.list_sessions().len(), 1);
-    assert_eq!(fixture.engine.children(parent.session_id).len(), 3);
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .len(),
+        3
+    );
 
     let result = fixture
         .engine
@@ -19883,6 +19932,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Completed
@@ -19967,6 +20017,7 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
         fixture
             .engine
             .children(parent.session_id)
+            .expect("children")
             .iter()
             .filter(|child| child.status == SessionStatus::Running)
             .count(),
@@ -20065,6 +20116,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Completed
@@ -20387,7 +20439,13 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         .expect("accepted approval-gated run");
 
     let approval = wait_for_escalated_approval(&fixture.engine, parent.session_id).await;
-    assert!(fixture.engine.children(parent.session_id).is_empty());
+    assert!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .is_empty()
+    );
     approve_once(&fixture.engine, &approval, "background-delegate-approval").await;
     await_child(
         &fixture.engine,
@@ -20810,6 +20868,7 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Running
@@ -21100,6 +21159,7 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Running
@@ -21216,6 +21276,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Running
@@ -21452,6 +21513,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Running
@@ -21567,6 +21629,7 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
             fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .first()
                 .filter(|child| {
                     child.status == SessionStatus::Running
@@ -21834,7 +21897,10 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
         parent.session_id,
         "startup failure completion",
         |parent_projection| {
-            let children = fixture.engine.children(parent.session_id);
+            let children = fixture
+                .engine
+                .children(parent.session_id)
+                .expect("children");
             let completed = children
                 .iter()
                 .filter(|child| child.status == SessionStatus::Completed)
@@ -21856,6 +21922,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
     let failed = fixture
         .engine
         .children(parent.session_id)
+        .expect("children")
         .into_iter()
         .find(|child| child.status == SessionStatus::Failed)
         .expect("failed startup child");
@@ -21921,6 +21988,7 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
             let completed_children = fixture
                 .engine
                 .children(parent.session_id)
+                .expect("children")
                 .iter()
                 .filter(|child| child.status == SessionStatus::Completed)
                 .count();
@@ -21928,7 +21996,14 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
         },
     )
     .await;
-    assert_eq!(fixture.engine.children(parent.session_id).len(), 5);
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .len(),
+        5
+    );
     server.await.expect("queued delegation server");
     fixture.engine.shutdown().await;
 }
@@ -21968,7 +22043,14 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    assert_eq!(fixture.engine.children(parent.session_id).len(), 20);
+    assert_eq!(
+        fixture
+            .engine
+            .children(parent.session_id)
+            .expect("children")
+            .len(),
+        20
+    );
     assert_eq!(
         projection
             .log
@@ -22100,6 +22182,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
     let running_id = fixture
         .engine
         .children(parent.session_id)
+        .expect("children")
         .into_iter()
         .find(|child| child.status == SessionStatus::Running)
         .expect("running child")

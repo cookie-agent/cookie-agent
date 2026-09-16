@@ -143,6 +143,7 @@ pub(super) enum ProducerCommand {
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
     Reconcile {
+        projection: Option<GoalProducerProjection>,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
     Wake {
@@ -435,8 +436,8 @@ impl Engine {
                 let _ =
                     reply.send(self.release_producer_claim_direct(session, run, claim_seq, false));
             }
-            ProducerCommand::Reconcile { reply } => {
-                let _ = reply.send(self.reconcile_producers_direct(session));
+            ProducerCommand::Reconcile { projection, reply } => {
+                let _ = reply.send(self.reconcile_producers_direct(session, projection));
             }
             ProducerCommand::CommitStart { run, event, reply } => {
                 let _ = reply.send(self.commit_producer_start(session, run, *event));
@@ -460,7 +461,7 @@ impl Engine {
                     preempted
                 };
                 let _ = reply.send(if successful || preempted {
-                    self.reconcile_producers_direct(session)
+                    self.reconcile_producers_direct(session, None)
                 } else {
                     Ok(())
                 });
@@ -468,12 +469,16 @@ impl Engine {
         }
     }
 
-    pub(super) fn reconcile_producers_direct(&self, session: SessionId) -> Result<(), EngineError> {
+    pub(super) fn reconcile_producers_direct(
+        &self,
+        session: SessionId,
+        harvested: Option<GoalProducerProjection>,
+    ) -> Result<(), EngineError> {
         if self.ensure_not_shutting_down().is_err() || !self.inner.store.is_owned(session) {
             return Ok(());
         }
-        self.reconcile_consumed_producers(session, false)?;
-        self.repair_goal_completion(session, false)?;
+        self.reconcile_consumed_producers(session, false, harvested.as_ref())?;
+        self.repair_goal_completion(session, false, harvested.as_ref())?;
         {
             let mut registry = self
                 .inner
@@ -499,7 +504,7 @@ impl Engine {
                     _ => true,
                 });
         }
-        self.reconcile_goal_registration(session)?;
+        self.reconcile_goal_registration(session, harvested.as_ref())?;
         self.record_recovery_diagnostics(session)?;
         if self
             .inner
@@ -753,7 +758,7 @@ impl Engine {
         run: RunId,
         event: Event,
     ) -> Result<(), EngineError> {
-        self.reconcile_goal_registration(session)?;
+        self.reconcile_goal_registration(session, None)?;
         if self
             .inner
             .producers
@@ -1091,7 +1096,7 @@ impl Engine {
         if notify_root {
             self.accept_goal_control_direct(session, &goal, status, revision)?;
         }
-        self.reconcile_goal_registration(session)?;
+        self.reconcile_goal_registration(session, None)?;
         Ok(SessionGoalLifecycleResult {
             goal: self
                 .goal_producer_projection(session)?
@@ -1257,7 +1262,7 @@ impl Engine {
             )?;
         }
         self.invalidate_pending_goal_admission(session);
-        self.reconcile_goal_registration(session)?;
+        self.reconcile_goal_registration(session, None)?;
         Ok(GoalUpdateResult {
             goal: self
                 .goal_producer_projection(session)?
@@ -1613,8 +1618,12 @@ impl Engine {
         &self,
         session: SessionId,
         recovery: bool,
+        harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
-        for message in self.goal_producer_projection(session)?.messages {
+        let projection = harvested
+            .cloned()
+            .unwrap_or(self.goal_producer_projection(session)?);
+        for message in projection.messages {
             if let Some(run_id) = message
                 .consumed_run
                 .filter(|_| !message.consumption_recorded)
@@ -1647,6 +1656,7 @@ impl Engine {
         &self,
         session: SessionId,
         recovery: bool,
+        harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
         if !matches!(
             self.inner.store.get(session)?.meta.origin,
@@ -1654,7 +1664,10 @@ impl Engine {
         ) {
             return Ok(());
         }
-        if let Some(goal) = self.goal_producer_projection(session)?.goal.filter(|goal| {
+        let projection = harvested
+            .cloned()
+            .unwrap_or(self.goal_producer_projection(session)?);
+        if let Some(goal) = projection.goal.filter(|goal| {
             matches!(goal.status, GoalStatus::Active | GoalStatus::Paused)
                 && !goal.items.is_empty()
                 && goal.items.iter().all(|item| item.finished)
@@ -1685,12 +1698,15 @@ impl Engine {
     pub(super) fn reconcile_goal_registration(
         &self,
         session: SessionId,
+        harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
         let is_root = matches!(
             self.inner.store.get(session)?.meta.origin,
             SessionOrigin::Root
         );
-        let projection = self.goal_producer_projection(session)?;
+        let projection = harvested
+            .cloned()
+            .unwrap_or(self.goal_producer_projection(session)?);
         let active = projection.goal.as_ref().filter(|goal| {
             is_root && goal.status == GoalStatus::Active && self.plugin_goals_ready()
         });
@@ -1792,7 +1808,10 @@ impl Engine {
 
     pub(super) async fn reconcile_producers(&self, session: SessionId) -> Result<(), EngineError> {
         self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Reconcile { reply })
+            SessionCommand::Producer(ProducerCommand::Reconcile {
+                projection: None,
+                reply,
+            })
         })
         .await
     }
@@ -1915,7 +1934,7 @@ impl Engine {
                     _ => true,
                 });
         }
-        self.reconcile_goal_registration(session)
+        self.reconcile_goal_registration(session, None)
     }
 }
 

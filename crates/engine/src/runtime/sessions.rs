@@ -195,28 +195,24 @@ impl Engine {
         }
     }
     pub fn session_tree_usage(&self, id: SessionId) -> Result<SessionTreeUsageResult, EngineError> {
-        self.inner.store.summary(id)?;
+        // A cold root's index is only a cache. Complete the tree before using
+        // its summaries, otherwise a missing or stale index can produce a
+        // plausible but incomplete rollup.
+        self.inner.store.ensure_tree_for(id)?;
         let summaries = self.inner.store.all_summaries();
-        let known: HashSet<_> = self
-            .inner
-            .delegation_events
-            .entries()
-            .into_iter()
-            .map(|entry| {
-                (
-                    entry.reservation.invocation_id,
-                    entry.reservation.parent_session_id,
-                    entry.reservation.child_session_id,
-                )
-            })
-            .collect();
         let mut children: HashMap<SessionId, Vec<(SessionId, InvocationId)>> = HashMap::new();
         let mut rollups = HashMap::new();
         for summary in summaries {
             let session_id = summary.meta.session_id;
-            if let Some((parent_session_id, edge)) =
-                validated_tree_usage_edge(&summary.meta.origin, session_id, &known)
+            if let SessionOrigin::Delegated {
+                root_session_id,
+                parent_session_id,
+                invocation_id,
+                ..
+            } = summary.meta.origin
+                && root_session_id == id
             {
+                let edge = (session_id, invocation_id);
                 children.entry(parent_session_id).or_default().push(edge);
             }
             rollups.insert(session_id, summary.usage_rollup);
@@ -268,12 +264,14 @@ impl Engine {
         let depth = session_depth(&session.meta.origin);
         Ok(active.policy.delegate_targets(depth))
     }
-    #[must_use]
-    pub fn children(&self, id: SessionId) -> Vec<cookie_agent_protocol::ChildSummary> {
+    pub fn children(
+        &self,
+        id: SessionId,
+    ) -> Result<Vec<cookie_agent_protocol::ChildSummary>, EngineError> {
         // Listing is a use of the tree: complete it first so nested delegations
-        // and their summaries are in view (§3.2.2). A rejected load leaves the
-        // listing empty; the access that needs the child fails closed.
-        let _ = self.ensure_tree_loaded(id);
+        // and their summaries are in view (§3.2.2). An incomplete tree is
+        // reported, never papered over with the pre-load cache (review L14).
+        self.ensure_tree_loaded(id)?;
         let known: HashSet<_> = self
             .inner
             .delegation_events
@@ -287,7 +285,8 @@ impl Engine {
                 )
             })
             .collect();
-        self.inner
+        Ok(self
+            .inner
             .store
             .all_summaries()
             .into_iter()
@@ -314,8 +313,9 @@ impl Engine {
                 }
                 _ => None,
             })
-            .collect()
+            .collect())
     }
+
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
         self.ensure_tree_loaded(id)?;
         self.inner.store.get(id)?;
@@ -329,7 +329,7 @@ impl Engine {
         Ok(cookie_agent_protocol::SessionTree {
             session: self.inner.store.summary(id)?.meta,
             children: self
-                .children(id)
+                .children(id)?
                 .into_iter()
                 .map(|child| self.tree_summary(child.session_id))
                 .collect::<Result<Vec<_>, _>>()?,
@@ -536,6 +536,7 @@ impl Engine {
     }
 }
 
+#[cfg(test)]
 fn validated_tree_usage_edge(
     origin: &SessionOrigin,
     child_session_id: SessionId,

@@ -472,6 +472,52 @@ fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
     )
 }
 
+/// Every blob the engine retained, whichever artifact layout the fixture
+/// produced. A fresh store is v2 — one `artifacts/` per root tree plus
+/// `artifacts.shared/` inside `<data>/sessions/<workdir-key>/` — while a legacy
+/// flat store keeps `projects/<hash>/artifacts/`. Walking the data root keeps
+/// the assertion about retained *content* rather than about a directory layout,
+/// which is what this test cares about.
+fn artifact_blobs(data_root: &Path) -> Vec<String> {
+    fn is_artifact_store(name: &str) -> bool {
+        name == "artifacts" || name == "artifacts.shared"
+    }
+
+    fn walk(directory: &Path, found: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            if is_artifact_store(&name) {
+                let Ok(blobs) = fs::read_dir(&path) else {
+                    continue;
+                };
+                found.extend(
+                    blobs
+                        .flatten()
+                        .filter(|blob| blob.path().is_file())
+                        .map(|blob| blob.file_name().to_string_lossy().into_owned()),
+                );
+                continue;
+            }
+            walk(&path, found);
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(data_root, &mut found);
+    found.sort();
+    found
+}
+
 #[tokio::test]
 async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
     for artifact_read in [true, false] {
@@ -557,22 +603,8 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             fs::write(&path, "zero\none\ntwo\n").unwrap();
             path.to_str().unwrap().to_owned()
         };
-        let project = fs::read_dir(fixture._root.path().join("data/projects"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let artifacts = project.join("artifacts");
-        let artifact_files = || {
-            let mut files = fs::read_dir(&artifacts)
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name())
-                .collect::<Vec<_>>();
-            files.sort();
-            files
-        };
-        let before = artifact_files();
+        let data_root = fixture._root.path().join("data");
+        let before = artifact_blobs(&data_root);
         fixture.server.enqueue(MockResponse::Sse(tool_response(
             "read",
             &serde_json::json!({"filePath":path,"offset":1,"limit":1}).to_string(),
@@ -704,7 +736,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                 .contains("Tool cancelled; output is incomplete.")
         );
         assert_eq!(
-            artifact_files(),
+            artifact_blobs(&data_root),
             before,
             "opt-out read must not create artifacts"
         );
@@ -1221,6 +1253,7 @@ async fn fork_skill_uses_delegate_approval_and_installs_only_in_child() {
     let child = fixture
         .engine
         .children(parent)
+        .expect("children")
         .into_iter()
         .next()
         .unwrap_or_else(|| {
@@ -1298,6 +1331,7 @@ async fn direct_fork_skill_uses_prepared_delegate_path() {
     let child = fixture
         .engine
         .children(parent)
+        .expect("children")
         .into_iter()
         .next()
         .expect("direct fork child");

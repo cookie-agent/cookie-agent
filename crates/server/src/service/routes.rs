@@ -132,7 +132,10 @@ impl ServerProtocol for Server {
         params: SessionChildrenParams,
     ) -> Result<SessionChildrenResult> {
         Ok(SessionChildrenResult {
-            children: self.engine.children(params.session_id),
+            children: self
+                .engine
+                .children(params.session_id)
+                .map_err(protocol_fault)?,
         })
     }
 

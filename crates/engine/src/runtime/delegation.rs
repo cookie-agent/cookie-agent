@@ -2607,55 +2607,44 @@ impl Engine {
             if !self.inner.store.session_exists(child_id) {
                 continue;
             }
-            let parent = self
+            // Facts about the parent as a delegation *parent*, taken from the
+            // parent's own log the one time it was read: by this load pass for a
+            // child, by the startup fold for a root. Reopening a child log here
+            // would fold a second time what the bulk pass already produced
+            // (§4.1.3).
+            //
+            // `None` means the parent is a child whose tree is still unloaded.
+            // Registering it on guesses would be the wrong direction to be wrong
+            // in, so the entry is left out and this rebuild runs again when that
+            // tree's load delivers its `parent_facts`: the registry is a fold
+            // over all known entries that preserves each matching record's
+            // producer and monitor state, so a later pass resolves this entry
+            // without disturbing any other one.
+            let Some(facts) = self
                 .inner
                 .store
-                .get_log_only(entry.reservation.parent_session_id)?;
-            let root_session_id = match parent.meta.origin {
-                SessionOrigin::Delegated {
-                    root_session_id, ..
-                } => root_session_id,
-                _ => parent.meta.session_id,
+                .parent_run_facts(entry.reservation.parent_session_id)?
+            else {
+                continue;
             };
-            let parent_events = parent.log.event_snapshot();
-            let mut queued_event = false;
-            let mut notification_sent = false;
-            for event in parent_events.iter() {
-                match &event.payload {
-                    Event::DelegateQueued { session_id, .. }
-                        if event.run_id == Some(entry.reservation.parent_run_id)
-                            && *session_id == child_id =>
-                    {
-                        queued_event = true;
-                    }
-                    Event::DelegateFinishedV2 {
-                        invocation_id,
-                        session_id,
-                        ..
-                    } if *invocation_id == entry.reservation.invocation_id
-                        && *session_id == child_id =>
-                    {
-                        notification_sent = true;
-                    }
-                    Event::ProducerMessageAccepted {
-                        producer_owner: ProducerOwner::Delegation { invocation_id },
-                        ..
-                    } if *invocation_id == entry.reservation.invocation_id => {
-                        notification_sent = true;
-                    }
-                    _ => {}
-                }
-            }
+            let root_session_id = facts.root_session_id;
+            let queued_event = facts.queued.iter().any(|(run_id, session)| {
+                *run_id == entry.reservation.parent_run_id && *session == child_id
+            });
+            let notification_sent = facts.notified.iter().any(|(invocation_id, session)| {
+                *invocation_id == entry.reservation.invocation_id && *session == child_id
+            }) || facts
+                .producer_accepted
+                .contains(&entry.reservation.invocation_id);
             let background = entry.request.background;
             // A cache miss means "not terminal", the conservative reading that
             // startup recovery then corrects — never the other way round.
             let exact_run_status = entry
                 .child_run_id
                 .and_then(|run_id| self.inner.store.terminal_run_status(child_id, run_id));
-            let parent_interrupted = parent
-                .runs
-                .get(&entry.reservation.parent_run_id)
-                .is_some_and(|run| run.status == SessionStatus::Interrupted);
+            let parent_interrupted = facts
+                .interrupted_runs
+                .contains(&entry.reservation.parent_run_id);
             let state = if let Some(status) = entry.terminal_status {
                 DelegationState::Finished(status)
             } else if entry.child_run_id.is_none() && queued_event {
@@ -2675,8 +2664,7 @@ impl Engine {
             } else {
                 DelegationState::Running
             };
-            let counts_slot =
-                background && !matches!(parent.meta.origin, SessionOrigin::Delegated { .. });
+            let counts_slot = background && !facts.delegated;
             let (producer_id, monitor_started) = self
                 .inner
                 .delegations_by_session
