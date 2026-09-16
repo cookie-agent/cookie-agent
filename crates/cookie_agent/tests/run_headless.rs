@@ -286,6 +286,7 @@ impl Fixture {
             config: configuration,
             model_manager,
             tools: vec![Arc::new(BuiltinTools::new(&workspace))],
+            model_snapshot_directory: Some(root.path().join("model-snapshots")),
         };
         let engine = Engine::open(options.clone()).expect("engine");
         engine

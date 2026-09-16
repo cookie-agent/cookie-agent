@@ -390,6 +390,7 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
         config: configuration,
         model_manager,
         tools: vec![Arc::new(BuiltinTools::new(workspace))],
+        model_snapshot_directory: None,
     })
     .context("open manifests, rehydrate project state, and reconcile engine")?;
     if let Err(error) = engine

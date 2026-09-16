@@ -259,6 +259,7 @@ mod tests {
             config,
             model_manager: Arc::clone(&model_manager),
             tools: Vec::new(),
+            model_snapshot_directory: Some(directory.path().join("model-snapshots")),
         })
         .expect("open engine");
         if with_skills {
