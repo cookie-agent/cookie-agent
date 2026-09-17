@@ -137,7 +137,7 @@ pub(crate) fn persist_turn(
             serde_json::Value::String(source.as_str().into()),
         );
     }
-    let warnings = turn
+    let mut warnings = turn
         .warnings
         .iter()
         .map(|warning| {
@@ -145,14 +145,15 @@ pub(crate) fn persist_turn(
                 .map_err(|error| HistoryError::Corrupt(error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let content = turn
+        .message
+        .content
+        .into_iter()
+        .map(|part| persist_assistant_part(part, store, session, &mut warnings))
+        .collect::<Result<_, _>>()?;
     Ok((
         PersistedModelTurn {
-            content: turn
-                .message
-                .content
-                .into_iter()
-                .map(|part| persist_assistant_part(part, store, session))
-                .collect::<Result<_, _>>()?,
+            content,
             provider_options: turn.message.provider_options,
             finish_reason: persist_finish_reason(turn.finish.finish_reason),
             usage: persist_usage(turn.finish.usage),
@@ -164,7 +165,7 @@ pub(crate) fn persist_turn(
                 .map(|artifact| persist_replay(artifact, binding))
                 .transpose()?,
         },
-        warnings,
+        coalesce_warnings(warnings),
     ))
 }
 
@@ -1428,6 +1429,7 @@ fn persist_assistant_part(
     part: AssistantPart,
     store: &ArtifactRouter,
     session: SessionId,
+    warnings: &mut Vec<SafeErrorMessage>,
 ) -> Result<PersistedAssistantPart, HistoryError> {
     Ok(match part {
         AssistantPart::Text(part) => PersistedAssistantPart::Text {
@@ -1446,8 +1448,7 @@ fn persist_assistant_part(
                 .map(cookie_agent_protocol::ProviderItemId::new)
                 .transpose()
                 .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
-            name: cookie_agent_protocol::SafeCode::new(part.name)
-                .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
+            name: normalize_safe_code(part.name, "tool call name", warnings),
             input: part.input,
             raw_input: part.raw_input,
             metadata: part.metadata,
@@ -1477,8 +1478,7 @@ fn persist_assistant_part(
             metadata: part.metadata,
         },
         AssistantPart::Custom(part) => PersistedAssistantPart::Custom {
-            kind: cookie_agent_protocol::SafeCode::new(part.kind)
-                .map_err(|error| HistoryError::Corrupt(error.to_string()))?,
+            kind: normalize_safe_code(part.kind, "custom part kind", warnings),
             data: part.data,
             metadata: part.metadata,
         },
@@ -2059,6 +2059,91 @@ fn sanitize_control_free(value: &str, maximum: usize) -> String {
     }
 }
 
+/// Normalize a model-supplied identifier into a valid [`SafeCode`].
+///
+/// Providers can emit tool-call names and custom part kinds that are not valid
+/// `SafeCode` values. Stored history cannot represent those, so coerce them to a
+/// valid placeholder and record a user-visible warning instead of failing the run.
+fn normalize_safe_code(
+    value: String,
+    label: &str,
+    warnings: &mut Vec<SafeErrorMessage>,
+) -> SafeCode {
+    if is_valid_safe_code(&value) {
+        return SafeCode::new(value).expect("validated model identifier");
+    }
+    let normalized = normalized_code(&value);
+    let original = sanitize_control_free(&value, SafeErrorMessage::MAX_BYTES);
+    warnings.push(
+        SafeErrorMessage::new(sanitize_control_free(
+            &format!(
+                "model {label} \"{original}\" was normalized to \"{normalized}\" because it is not a valid identifier"
+            ),
+            SafeErrorMessage::MAX_BYTES,
+        ))
+        .expect("sanitized normalization warning is valid"),
+    );
+    SafeCode::new(normalized).expect("normalized model identifier is valid")
+}
+
+/// Mirrors [`SafeCode::new`] without consuming the caller's string, so valid
+/// identifiers move into the [`SafeCode`] without an extra allocation.
+fn is_valid_safe_code(value: &str) -> bool {
+    (1..=SafeCode::MAX_BYTES).contains(&value.len())
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (index > 0 && matches!(byte, b'.' | b'_' | b'-'))
+        })
+}
+
+/// Deduplicate and bound warnings so the persisted [`PersistedModelTurn`] event
+/// satisfies `ModelTurnCommitted`'s 256-warning limit. Identical warnings
+/// collapse first; if the remainder still exceeds the cap, keep the earliest
+/// warnings and append one deterministic truncation summary.
+fn coalesce_warnings(warnings: Vec<SafeErrorMessage>) -> Vec<SafeErrorMessage> {
+    const MAX_WARNINGS: usize = 256;
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(warnings.len());
+    for warning in warnings {
+        if seen.insert(warning.clone()) {
+            deduped.push(warning);
+        }
+    }
+    if deduped.len() <= MAX_WARNINGS {
+        return deduped;
+    }
+    let omitted = deduped.len() - (MAX_WARNINGS - 1);
+    deduped.truncate(MAX_WARNINGS - 1);
+    deduped.push(
+        SafeErrorMessage::new(format!("additional warnings truncated ({omitted} omitted)"))
+            .expect("bounded truncation summary is valid"),
+    );
+    deduped
+}
+
+fn normalized_code(value: &str) -> String {
+    let mut code = value
+        .bytes()
+        .take(SafeCode::MAX_BYTES)
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte.to_ascii_lowercase())
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if code.is_empty() {
+        code.push_str("unnamed-tool");
+    }
+    if !code.as_bytes()[0].is_ascii_lowercase() && !code.as_bytes()[0].is_ascii_digit() {
+        code.insert(0, 'x');
+    }
+    code.truncate(SafeCode::MAX_BYTES);
+    code
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashSet};
@@ -2186,6 +2271,178 @@ mod tests {
         assert!(oven_sdk::replay::has_required_vertex_signature(
             &restored.message.content
         ));
+    }
+
+    #[test]
+    fn invalid_model_identifiers_are_normalized_and_warned() {
+        let binding = binding();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(vec![
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-empty",
+                    "",
+                    serde_json::json!({}),
+                )),
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-invalid",
+                    "Bad Name",
+                    serde_json::json!({}),
+                )),
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-prefixed",
+                    " Bad Name",
+                    serde_json::json!({}),
+                )),
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-valid",
+                    "inspect",
+                    serde_json::json!({}),
+                )),
+                oven_sdk::AssistantPart::Custom(oven_sdk::CustomPart::new(
+                    "Bad Kind",
+                    serde_json::json!({}),
+                )),
+            ]),
+            oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
+        );
+
+        let (persisted, warnings) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
+
+        let identifiers = persisted
+            .content
+            .iter()
+            .map(|part| match part {
+                PersistedAssistantPart::ToolCall { name, .. } => name.as_str().to_owned(),
+                PersistedAssistantPart::Custom { kind, .. } => kind.as_str().to_owned(),
+                other => panic!("unexpected persisted part: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identifiers,
+            vec![
+                "unnamed-tool",
+                "bad_name",
+                "x_bad_name",
+                "inspect",
+                "bad_kind"
+            ]
+        );
+        assert_eq!(warnings.len(), 4);
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| warning.as_str().contains("was normalized to"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.as_str().contains("\"Bad Name\""))
+        );
+    }
+
+    #[test]
+    fn normalize_safe_code_truncates_long_and_multibyte_identifiers() {
+        let binding = binding();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let long = "a".repeat(SafeCode::MAX_BYTES + 1);
+        let multibyte = "工具Name";
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(vec![
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-long",
+                    long.clone(),
+                    serde_json::json!({}),
+                )),
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    "call-multibyte",
+                    multibyte,
+                    serde_json::json!({}),
+                )),
+            ]),
+            oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
+        );
+
+        let (persisted, warnings) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
+
+        let names = persisted
+            .content
+            .iter()
+            .map(|part| match part {
+                PersistedAssistantPart::ToolCall { name, .. } => name.as_str().to_owned(),
+                other => panic!("unexpected persisted part: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names[0].len(), SafeCode::MAX_BYTES);
+        assert!(names[0].bytes().all(|byte| byte == b'a'));
+        assert_eq!(names[1], "x______name");
+        assert!(
+            warnings[0].as_str().contains(&format!("\"{long}\"")),
+            "the original provider name must stay quoted in the warning"
+        );
+        assert!(
+            warnings[1].as_str().contains(&format!("\"{multibyte}\"")),
+            "multibyte provider names must stay quoted in the warning"
+        );
+    }
+
+    #[test]
+    fn excessive_normalization_warnings_are_deduplicated_and_capped() {
+        let binding = binding();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let content = (0..300)
+            .map(|index| {
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    format!("call-{index}"),
+                    format!("Bad Name {index}"),
+                    serde_json::json!({}),
+                ))
+            })
+            .collect();
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(content),
+            oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
+        );
+
+        let (_, warnings) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
+
+        assert_eq!(warnings.len(), 256);
+        assert_eq!(
+            warnings.last().unwrap().as_str(),
+            "additional warnings truncated (45 omitted)"
+        );
+    }
+
+    #[test]
+    fn duplicate_normalization_warnings_collapse_before_capping() {
+        let binding = binding();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).unwrap();
+        let content = (0..300)
+            .map(|index| {
+                oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
+                    format!("call-{index}"),
+                    "",
+                    serde_json::json!({}),
+                ))
+            })
+            .collect();
+        let turn = oven_sdk::CompletedTurn::new(
+            oven_sdk::AssistantMessage::new(content),
+            oven_sdk::Finish::new(Default::default(), oven_sdk::FinishReason::ToolCalls),
+        );
+
+        let (_, warnings) =
+            super::persist_turn(turn, &store, crate::test_session_id(), &binding).unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].as_str().contains("unnamed-tool"));
     }
 
     #[test]
