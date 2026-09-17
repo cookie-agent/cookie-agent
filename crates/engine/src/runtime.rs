@@ -81,6 +81,7 @@ mod skills;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
+mod working_directory;
 
 use admission::InflightDelegation;
 pub use artifact_reads::ArtifactReadPage;

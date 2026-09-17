@@ -5087,10 +5087,14 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .agent
         .composed_prompt;
     let agent = prompt.find("Test prompt.").unwrap();
+    let cwd = fixture.engine.inner.store.cwd().display().to_string();
+    let working_directory = prompt.find("<working_directory>").unwrap();
+    assert!(prompt.contains(&format!("<working_directory>{cwd}</working_directory>")));
     let provider = prompt.find("Provider section.").unwrap();
     let skills = prompt.find("<available_skills>").unwrap();
     let plugin = prompt.find("Plugin tail.").unwrap();
-    assert!(agent < provider && provider < skills && skills < plugin);
+    assert!(agent < working_directory);
+    assert!(working_directory < provider && provider < skills && skills < plugin);
     assert_eq!(
         Sha256Digest::of_bytes(prompt.as_bytes()),
         projection
@@ -5102,6 +5106,60 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
             .prompt_fingerprint
     );
     captured.await.expect("captured ordered request");
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn working_directory_section_reports_session_cwd() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let fixture = synthetic_default_fixture_with_config(None, &endpoint, "");
+    let descriptor = fixture
+        .engine
+        .runtime_snapshot()
+        .expect("runtime")
+        .snapshot
+        .agents
+        .into_iter()
+        .find(|agent| agent.id.as_str() == "default")
+        .expect("default agent");
+    let selection = RunSelection {
+        agent: descriptor.id,
+        model: descriptor.resolved_fallback[0].clone(),
+        preset: None,
+    };
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("working-directory").unwrap(),
+                selection,
+                input: "report the working directory".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("working-directory run");
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let run = projection
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "working-directory")
+        .expect("working-directory run");
+    let cwd = fixture.engine.inner.store.cwd().display().to_string();
+    assert!(
+        run.agent
+            .composed_prompt
+            .contains(&format!("<working_directory>{cwd}</working_directory>"))
+    );
+    assert_eq!(
+        Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
+        run.agent.prompt_fingerprint
+    );
+    captured.await.expect("captured working-directory request");
     fixture.engine.shutdown().await;
 }
 
@@ -10822,8 +10880,20 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             .await
             .expect("start compaction run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
-        let owner_policy = frozen_root_policy(&fixture, &selection);
+        let mut owner_policy = frozen_root_policy(&fixture, &selection);
         let binding = owner_policy.selected_suffix.first().expect("binding");
+        owner_policy.agent.composed_prompt = fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .expect("compaction session")
+            .runs
+            .get(&run.run_id)
+            .expect("admitted compaction run")
+            .agent
+            .composed_prompt
+            .clone();
         let output = format!("{RAW_MARKER}{}", "x".repeat(80 * 1024 - RAW_MARKER.len()));
         let full_output = format!("{output}\n{FULL_OUTPUT_MARKER}\n");
         let (full_output_reference, _) = fixture
@@ -11505,8 +11575,21 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
     }
 
-    let owner_policy = frozen_root_policy(&fixture, &selection);
+    let mut owner_policy = frozen_root_policy(&fixture, &selection);
     let binding = owner_policy.selected_suffix.first().unwrap();
+    owner_policy.agent.composed_prompt = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "recent-tail")
+        .expect("admitted recent-tail run")
+        .agent
+        .composed_prompt
+        .clone();
     let before_events = fixture
         .engine
         .inner
