@@ -4142,7 +4142,8 @@ fn role_block_lines(
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
         Role::Debug => ("DEBUG [D]", "··", "· ", theme.muted()),
-        Role::Warning => ("WARNING [W]", "⚠─", "│ ", theme.warning()),
+        // VS16 makes emoji terminals and the width table agree on U+26A0: two cells.
+        Role::Warning => ("WARNING [W]", "⚠️─", "│ ", theme.warning()),
         Role::Error => ("ERROR [E]", "!!", "! ", theme.error()),
         Role::Internal => ("EVENT [I]", "--", "· ", theme.internal()),
     };
@@ -8235,11 +8236,46 @@ mod tests {
             (Role::ToolSuccess, "┏✓ TOOL SUCCESS"),
             (Role::ToolFailure, "┏! TOOL FAILURE"),
             (Role::Debug, "·· DEBUG [D]"),
-            (Role::Warning, "⚠─ WARNING [W]"),
+            (Role::Warning, "⚠️─ WARNING [W]"),
             (Role::Error, "!! ERROR [E]"),
         ] {
             let rendered = snapshot_lines(&role_block(role, vec![Line::from("row")], 80, &theme));
             assert_eq!(rendered.lines().next(), Some(header));
+        }
+    }
+
+    #[test]
+    fn warning_marker_carries_emoji_presentation_so_width_matches_terminals() {
+        // U+26A0 alone is East_Asian_Width=Ambiguous: the width table counts 1
+        // while emoji-capable terminals paint 2, so the header overran its
+        // wrap budget by one cell and the marker's second cell landed on the
+        // block boundary. VS16 (U+FE0F) selects emoji presentation, making the
+        // width table agree with the terminal.
+        let marker = "\u{26A0}\u{FE0F}";
+        assert_eq!(marker.graphemes(true).count(), 1, "VS16 joins the marker");
+        assert_eq!(
+            UnicodeWidthStr::width(marker),
+            2,
+            "emoji marker is two cells"
+        );
+
+        let theme = Theme::default();
+        for width in 8..=80u16 {
+            let lines = role_block(Role::Warning, vec![Line::from("row")], width, &theme);
+            let header = lines.first().expect("warning header");
+            let text: String = header
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert!(
+                text.contains('\u{FE0F}'),
+                "width {width}: warning header keeps VS16: {text:?}"
+            );
+            assert!(
+                header.width() <= usize::from(width),
+                "width {width}: warning header {text:?} fits its budget"
+            );
         }
     }
 
