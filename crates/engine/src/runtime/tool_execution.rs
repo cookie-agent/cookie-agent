@@ -3,9 +3,8 @@ use std::{collections::HashSet, path::Path, sync::Arc};
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalId, ApprovalRequest, ApprovalTrigger,
     BoundedDisplayText, ExtensionToolBeforeCallAction, ExtensionToolBeforeCallParams,
-    InternalAgentKind, OperationFingerprint, PersistedToolResult as ToolResult,
-    PluginDiagnosticKind, PreparedOperationIdentity, RunId, SessionId, Sha256Digest,
-    ToolCallPresentation,
+    OperationFingerprint, PersistedToolResult as ToolResult, PluginDiagnosticKind,
+    PreparedOperationIdentity, RunId, SessionId, Sha256Digest, ToolCallPresentation,
 };
 use futures_util::FutureExt as _;
 use oven_sdk::{JsonSchema, ToolDefinition};
@@ -155,13 +154,6 @@ impl Engine {
                                 | cookie_agent_protocol::PermissionAction::Write
                         )
                 });
-                let approval_policy = self
-                    .active_internal_policy(active, InternalAgentKind::Approval)
-                    .map_err(|error| ToolFailure {
-                        partial_output: None,
-                        code: ToolCallFailureCode::ExecutionFailed,
-                        message: error.to_string(),
-                    })?;
                 let request = ApprovalRequest::new(
                     ApprovalId::new_v7(),
                     1,
@@ -172,7 +164,10 @@ impl Engine {
                         allow_once: true,
                         allow_tree_grant,
                         cancellable: true,
-                        expires_at: approval_expiry(approval_policy.limits.timeout_ms),
+                        // The user-facing approval window comes from
+                        // `[approval].timeout_ms`, not the internal approval
+                        // agent's classifier model-call budget.
+                        expires_at: approval_expiry(self.inner.config.runtime.approval.timeout_ms),
                     },
                 )
                 .map_err(|error| ToolFailure {

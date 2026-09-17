@@ -420,7 +420,9 @@ is `deny`.
 `${workspace_dir}` is allowed only in `read` and `write` patterns and expands
 against the engine workspace root during evaluation. Ordinary absolute patterns
 such as `/etc/*` control outside-workspace paths. Permission patterns do not
-expand environment variables.
+expand environment variables. A `*` matches across directory separators, so
+`"${workspace_dir}/*"` already covers nested paths such as
+`${workspace_dir}/crates/engine/src/lib.rs`; no `**` pattern is needed.
 
 Permission evaluation has no implicit filename or resource-name exceptions.
 Credential files, `.env` and `.env.*`, and non-file resource labels all use the

@@ -14902,6 +14902,72 @@ async fn ask_permission_mode_escalates_without_starting_internal_approval_agent(
 }
 
 #[tokio::test]
+async fn approval_request_window_uses_the_configured_timeout() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"ask"}"#).await;
+    let (mut fixture, selection) = approval_fixture_with_endpoint(&endpoint);
+    fixture.engine.shutdown().await;
+    fixture.config.runtime.approval.timeout_ms = 120_000;
+    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("approval-window").expect("run ID"),
+                selection,
+                input: "request the write tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+
+    let approval = wait_for_escalated_approval(&fixture.engine, session.session_id).await;
+    let approval_id = approval.request.approval_id();
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .events();
+    let requested = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ApprovalRequested { request } if request.approval_id() == approval_id => {
+                Some(request)
+            }
+            _ => None,
+        })
+        .expect("approval requested event");
+    let constraints: cookie_agent_protocol::ApprovalConstraints = serde_json::from_value(
+        serde_json::to_value(requested).expect("request JSON")["constraints"].clone(),
+    )
+    .expect("request constraints");
+    let expires_at = constraints
+        .expires_at
+        .expect("configured window must set an expiry");
+    let remaining = expires_at.duration_since(Timestamp::now()).unsigned_abs();
+    assert!(
+        remaining > std::time::Duration::from_secs(100),
+        "the configured 120s window must not collapse to the internal classifier budget, got {remaining:?}"
+    );
+    captured.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn yolo_permission_mode_durably_approves_and_executes_without_escalation() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"deny"}"#).await;
     let (fixture, selection) = approval_fixture_with_endpoint(&endpoint);

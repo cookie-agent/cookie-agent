@@ -29,7 +29,6 @@ impl Engine {
         run: RunId,
         input: ModelApprovalInput<'_>,
     ) -> Result<ApprovalOutcome, EngineError> {
-        let approval_policy = self.active_internal_policy(active, InternalAgentKind::Approval)?;
         let request = approval_request_for_operation(
             ApprovalTrigger::ModelToolApproval,
             input.operation.clone(),
@@ -52,7 +51,10 @@ impl Engine {
                 })
                 .collect(),
             false,
-            approval_expiry(approval_policy.limits.timeout_ms),
+            // The user-facing approval window comes from `[approval].timeout_ms`.
+            // The internal approval agent's own `limits.timeout_ms` is only the
+            // classifier model-call budget (see `run_internal_history_agent`).
+            approval_expiry(self.inner.config.runtime.approval.timeout_ms),
         );
         self.await_user_approval(active, run, request, input.executor, false, input.tool)
             .await
@@ -635,5 +637,21 @@ mod tests {
             Some("request"),
         );
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn approval_expiry_uses_the_requested_window() {
+        let before = jiff::Timestamp::now();
+        let expires_at = super::approval_expiry(120_000).expect("expiry");
+        let remaining = expires_at.duration_since(before).unsigned_abs();
+        assert!(remaining >= std::time::Duration::from_secs(119));
+        assert!(remaining <= std::time::Duration::from_secs(121));
+    }
+
+    #[test]
+    fn approval_expiry_wait_tracks_the_remaining_window() {
+        let wait = super::approval_expiry_wait(super::approval_expiry(120_000));
+        assert!(wait >= std::time::Duration::from_secs(119));
+        assert!(wait <= std::time::Duration::from_secs(121));
     }
 }

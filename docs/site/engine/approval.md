@@ -9,9 +9,10 @@ timeout_ms = 30000
 
 This does not select a permission mode or grant tools; those decisions belong to
 [Agent permissions](../guide/agents.md#permissions). Expiry leaves an unattended
-request unapproved. An omitted table inherits; an authored table replaces the
-lower table and uses defaults for omitted fields. Unknown fields fail; see
-[config.toml](../guide/configuration.md).
+request unapproved. The internal approval evaluator's own model-call budget is
+independent of this user-response window. An omitted table inherits; an authored
+table replaces the lower table and uses defaults for omitted fields. Unknown
+fields fail; see [config.toml](../guide/configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
