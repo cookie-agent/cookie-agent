@@ -261,7 +261,8 @@ fn adapter_config(
                 }
             },
             "options": {
-                "parallel_tool_calls": model.capabilities.parallel_tool_calls
+                "parallel_tool_calls": model.capabilities.parallel_tool_calls,
+                "reasoning_summary": model.capabilities.reasoning.then_some("auto")
             }
         }),
         OvenAdapterFamily::OpenaiCompatible => json!({
@@ -665,5 +666,54 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, ou
             resolved.model().descriptor().identity.model_id.as_str(),
             "test"
         );
+    }
+
+    fn openai_responses_options(
+        reasoning: bool,
+    ) -> crate::adapters::oven::OpenAiResponsesOptionsConfig {
+        let temporary = TempDir::new().expect("temporary directory");
+        let provider_id = ProviderId::new("openai").expect("provider ID");
+        let definition = toml::from_str::<ProviderDefinition>(&format!(
+            r#"source = "custom"
+endpoint = "http://127.0.0.1:9/v1"
+adaptor = "openai-responses"
+auth = {{ method = "bearer-api-key-v1", values = {{ api_key = "test-key" }} }}
+
+[models.test]
+display_name = "Test Responses"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 32768, output_tokens = 4096, tool_calling = true, parallel_tool_calls = true, structured_output = true, reasoning = {reasoning}, temperature = false, top_p = false, seed = false, native_replay = "{replay}", media = {{}} }}
+"#,
+            replay = if reasoning { "optional" } else { "unsupported" },
+        ))
+        .expect("custom Responses provider");
+        let authored = BTreeMap::from([(provider_id, definition)]);
+        let provider_store =
+            ProviderStore::open(temporary.path().join("providers")).expect("provider store");
+        let manager =
+            ModelManager::new(authored, empty_catalog(), provider_store).expect("model manager");
+        let runtime = manager.current();
+        let compiled = &runtime
+            .models()
+            .values()
+            .next()
+            .expect("compiled model")
+            .model;
+        match super::adapter_config(compiled, &compiled.options, None).expect("adapter config") {
+            crate::adapters::oven::AdapterConfig::OpenaiResponses { options, .. } => options,
+            other => panic!("expected openai-responses adapter config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_responses_requests_automatic_reasoning_summaries() {
+        assert_eq!(
+            openai_responses_options(true).reasoning_summary.as_deref(),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn openai_responses_omits_reasoning_summaries_without_reasoning() {
+        assert_eq!(openai_responses_options(false).reasoning_summary, None);
     }
 }

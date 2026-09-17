@@ -811,6 +811,82 @@ async fn custom_openai_responses_no_auth_uses_responses_wire_without_auth() {
     assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
     assert!(!request.to_ascii_lowercase().contains("authorization:"));
     assert!(!request.contains("no-auth"));
+    assert!(http_body(&request).get("reasoning").is_none());
+}
+
+// Uses a custom provider with bearer auth (official arm) and the real
+// gpt-6-astra model id: the official OpenAI Responses profile is selected by
+// the auth method, not the provider source, and this guards summary requests
+// for that production model.
+async fn official_responses_request(
+    reasoning: bool,
+    variant_effort: Option<&str>,
+) -> serde_json::Value {
+    const RESPONSE: &str = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"out\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+    let (endpoint, captured) = server(RESPONSE).await;
+    let temporary = TempDir::new().unwrap();
+    let provider_id = ProviderId::new("official.openai").unwrap();
+    let variants = variant_effort.map_or_else(String::new, |effort| {
+        format!(
+            "\nvariants = {{ high = {{ reasoning = {{ type = \"effort\", value = \"{effort}\" }} }} }}"
+        )
+    });
+    let definition = toml::from_str::<ProviderDefinition>(&format!(
+        r#"source = "custom"
+endpoint = "{endpoint}"
+adaptor = "openai-responses"
+auth = {{ method = "bearer-api-key-v1", values = {{ api_key = "test-key" }} }}
+
+[models.test]
+display_name = "Test"
+model_id = "gpt-6-astra"
+capabilities = {{ input = ["text"], output = ["text"], context_tokens = 8192, output_tokens = 2048, tool_calling = true, parallel_tool_calls = false, structured_output = false, reasoning = {reasoning}, temperature = false, top_p = false, seed = false, native_replay = "{replay}", media = {{}} }}{variants}
+"#,
+        replay = if reasoning { "optional" } else { "unsupported" },
+    ))
+    .unwrap();
+    let manager = ModelManager::new(
+        BTreeMap::from([(provider_id.clone(), definition)]),
+        empty_catalog(),
+        store(&temporary),
+    )
+    .unwrap();
+    let selection = ModelSelection {
+        model: ModelKey::new(provider_id, ProviderModelId::new("test").unwrap()).unwrap(),
+        variant: variant_effort.map(|_| VariantId::new("high").unwrap()),
+    };
+    let resolved = manager.current().resolve(&selection).unwrap();
+    let mut stream = resolved
+        .model()
+        .stream(
+            resolved.prepare_request(Request::new(vec![HistoryTurn::user(UserMessage::new(
+                vec![InputPart::Text(TextPart::new("hello"))],
+            ))])),
+            AbortSignal::default(),
+        )
+        .await
+        .unwrap();
+    while let Some(part) = stream.stream.next().await {
+        part.unwrap();
+    }
+    http_body(&captured.await.unwrap())
+}
+
+#[tokio::test]
+async fn official_responses_requests_automatic_reasoning_summaries() {
+    let body = official_responses_request(true, None).await;
+    assert_eq!(body["reasoning"]["summary"], "auto");
+    assert!(body["reasoning"].get("effort").is_none());
+
+    let body = official_responses_request(true, Some("high")).await;
+    assert_eq!(body["reasoning"]["summary"], "auto");
+    assert_eq!(body["reasoning"]["effort"], "high");
+}
+
+#[tokio::test]
+async fn official_responses_omits_reasoning_without_capability() {
+    let body = official_responses_request(false, None).await;
+    assert!(body.get("reasoning").is_none());
 }
 
 #[tokio::test]
@@ -887,6 +963,7 @@ reasoning = { type = "effort", value = "high" }
         serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert_eq!(body["reasoning"]["effort"], "high");
     assert!(body["reasoning"].get("mode").is_none());
+    assert!(body["reasoning"].get("summary").is_none());
     assert_eq!(body["store"], false);
     assert!(body.get("messages").is_none());
 }
