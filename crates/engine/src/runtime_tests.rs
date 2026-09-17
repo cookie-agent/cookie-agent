@@ -7916,8 +7916,36 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
         .await
         .expect("both child model requests started before either completed")
         .expect("child request signal");
+    let in_flight_producers = fixture
+        .engine
+        .session_producers(cookie_agent_protocol::SessionProducersParams {
+            session_id: parent.session_id,
+        })
+        .await
+        .expect("in-flight producers");
+    assert!(
+        !in_flight_producers.producers.iter().any(|entry| matches!(
+            entry.producer_owner,
+            cookie_agent_protocol::ProducerOwner::Delegation { .. }
+        )),
+        "foreground delegates must not register producers while in flight"
+    );
     release_children.notify_one();
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+    let completed_producers = fixture
+        .engine
+        .session_producers(cookie_agent_protocol::SessionProducersParams {
+            session_id: parent.session_id,
+        })
+        .await
+        .expect("completed producers");
+    assert!(
+        !completed_producers.producers.iter().any(|entry| matches!(
+            entry.producer_owner,
+            cookie_agent_protocol::ProducerOwner::Delegation { .. }
+        )),
+        "foreground delegates must not register producers after completion"
+    );
 
     let entries = fixture.engine.inner.delegation_events.entries();
     assert_eq!(entries.len(), 2);
@@ -7989,6 +8017,121 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             .iter()
             .any(|request| request.contains("parallel child two"))
     );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn rebuilding_registry_strips_foreground_delegation_producer() {
+    let (endpoint, children_reached, release_children, server) = parallel_delegate_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("rebuild producer parent");
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("rebuild-foreground-producer")
+                    .expect("client run ID"),
+                selection,
+                input: "start both children".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("rebuild producer run")
+        .run_id;
+    tokio::time::timeout(test_timeout(5), children_reached)
+        .await
+        .expect("child requests started")
+        .expect("child request signal");
+    let child_session_id = fixture
+        .engine
+        .children(parent.session_id)
+        .expect("children")
+        .first()
+        .expect("a running child")
+        .session_id;
+
+    // Simulate the stale/corrupt shape the rebuild must harden against: a
+    // foreground record carrying a live delegation producer registration.
+    let planted = fixture
+        .engine
+        .plant_foreground_delegation_producer_for_test(child_session_id)
+        .await
+        .expect("planted foreground producer");
+    assert_eq!(
+        fixture
+            .engine
+            .delegation_producer_ownership_for_test(child_session_id)
+            .expect("planted ownership"),
+        (false, Some(planted))
+    );
+    assert!(
+        fixture
+            .engine
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: parent.session_id,
+            })
+            .await
+            .expect("planted producers")
+            .producers
+            .iter()
+            .any(|entry| matches!(
+                entry.producer_owner,
+                cookie_agent_protocol::ProducerOwner::Delegation { .. }
+            )),
+        "the planted registration must be visible before the rebuild"
+    );
+
+    fixture
+        .engine
+        .rebuild_delegation_registry_for_test()
+        .expect("registry rebuild");
+    tokio::time::timeout(
+        test_timeout(5),
+        fixture.engine.wait_for_delegation_reconciliation_for_test(),
+    )
+    .await
+    .expect("delegation reconciliation finished");
+
+    assert_eq!(
+        fixture
+            .engine
+            .delegation_producer_ownership_for_test(child_session_id)
+            .expect("rebuilt ownership"),
+        (false, None)
+    );
+    assert!(
+        !fixture
+            .engine
+            .session_producers(cookie_agent_protocol::SessionProducersParams {
+                session_id: parent.session_id,
+            })
+            .await
+            .expect("rebuilt producers")
+            .producers
+            .iter()
+            .any(|entry| matches!(
+                entry.producer_owner,
+                cookie_agent_protocol::ProducerOwner::Delegation { .. }
+            )),
+        "the rebuild must retire the orphaned delegation registration"
+    );
+
+    release_children.notify_one();
+    wait_for_session_not_running(&fixture.engine, parent.session_id).await;
+    wait_for_run_inactive(&fixture.engine, run).await;
+    let requests = server.await.expect("parallel delegate server");
+    assert_eq!(requests.len(), 4);
     fixture.engine.shutdown().await;
 }
 

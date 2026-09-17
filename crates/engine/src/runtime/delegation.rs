@@ -773,23 +773,22 @@ impl Engine {
             let registry_failed = {
                 match self.inner.delegations_by_session.lock() {
                     Ok(mut records) => {
-                        records.insert(
-                            child.session_id,
-                            DelegationRecord {
-                                parent_session_id: invocation.parent_session_id,
-                                parent_run_id: invocation.parent_run_id,
-                                parent_tool_call_id: invocation.parent_tool_call_id,
-                                invocation_id,
-                                root_session_id,
-                                child_run_id: Some(child_run_id),
-                                state: DelegationState::Running,
-                                background: invocation.background,
-                                counts_slot,
-                                notification_sent: false,
-                                producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
-                                monitor_started: monitor_release.is_some(),
-                            },
-                        );
+                        let record = DelegationRecord {
+                            parent_session_id: invocation.parent_session_id,
+                            parent_run_id: invocation.parent_run_id,
+                            parent_tool_call_id: invocation.parent_tool_call_id,
+                            invocation_id,
+                            root_session_id,
+                            child_run_id: Some(child_run_id),
+                            state: DelegationState::Running,
+                            background: invocation.background,
+                            counts_slot,
+                            notification_sent: false,
+                            producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
+                            monitor_started: monitor_release.is_some(),
+                        };
+                        debug_assert!(record.background || record.producer_id.is_none());
+                        records.insert(child.session_id, record);
                         false
                     }
                     Err(_) => true,
@@ -841,31 +840,30 @@ impl Engine {
             }
             return Ok(handle);
         }
+        let record = DelegationRecord {
+            parent_session_id: invocation.parent_session_id,
+            parent_run_id: invocation.parent_run_id,
+            parent_tool_call_id: invocation.parent_tool_call_id,
+            invocation_id,
+            root_session_id,
+            child_run_id: None,
+            state: if queued {
+                DelegationState::Queued
+            } else {
+                DelegationState::Starting
+            },
+            background: invocation.background,
+            counts_slot,
+            notification_sent: false,
+            producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
+            monitor_started: false,
+        };
+        debug_assert!(record.background || record.producer_id.is_none());
         self.inner
             .delegations_by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
-            .insert(
-                child.session_id,
-                DelegationRecord {
-                    parent_session_id: invocation.parent_session_id,
-                    parent_run_id: invocation.parent_run_id,
-                    parent_tool_call_id: invocation.parent_tool_call_id,
-                    invocation_id,
-                    root_session_id,
-                    child_run_id: None,
-                    state: if queued {
-                        DelegationState::Queued
-                    } else {
-                        DelegationState::Starting
-                    },
-                    background: invocation.background,
-                    counts_slot,
-                    notification_sent: false,
-                    producer_id: producer_guard.as_ref().map(|guard| guard.producer_id),
-                    monitor_started: false,
-                },
-            );
+            .insert(child.session_id, record);
         if let Some(guard) = producer_guard.as_mut() {
             guard.handoff();
         }
@@ -2605,6 +2603,67 @@ impl Engine {
         Ok(())
     }
 
+    /// Simulates a corrupted foreground record by registering a real delegation
+    /// producer and writing it onto the child's record. The registry rebuild is
+    /// expected to strip it again and retire the registration.
+    #[cfg(test)]
+    pub(crate) async fn plant_foreground_delegation_producer_for_test(
+        &self,
+        child_session_id: SessionId,
+    ) -> Result<ProducerId, EngineError> {
+        let (parent_session_id, invocation_id) = {
+            let records = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            let record = records.get(&child_session_id).ok_or_else(|| {
+                EngineError::ToolFailed("subagent registry entry is missing".into())
+            })?;
+            (record.parent_session_id, record.invocation_id)
+        };
+        let mut guard = self
+            .register_background_delegation_producer(parent_session_id, invocation_id)
+            .await?;
+        let producer_id = guard.producer_id;
+        {
+            let mut records = self
+                .inner
+                .delegations_by_session
+                .lock()
+                .map_err(|_| EngineError::ActorStopped)?;
+            let record = records
+                .get_mut(&child_session_id)
+                .filter(|record| record.invocation_id == invocation_id)
+                .ok_or_else(|| {
+                    EngineError::ToolFailed("subagent registry entry is missing".into())
+                })?;
+            record.background = false;
+            record.producer_id = Some(producer_id);
+        }
+        guard.handoff();
+        Ok(producer_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebuild_delegation_registry_for_test(&self) -> Result<(), EngineError> {
+        self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delegation_producer_ownership_for_test(
+        &self,
+        child_session_id: SessionId,
+    ) -> Result<(bool, Option<ProducerId>), EngineError> {
+        self.inner
+            .delegations_by_session
+            .lock()
+            .map_err(|_| EngineError::ActorStopped)?
+            .get(&child_session_id)
+            .map(|record| (record.background, record.producer_id))
+            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))
+    }
+
     pub(super) fn rebuild_delegation_registry(
         &self,
         entries: &[delegation_events::DelegationEntry],
@@ -2614,7 +2673,7 @@ impl Engine {
         for entry in entries {
             latest.insert(entry.reservation.child_session_id, entry);
         }
-        let stale_producers = {
+        let mut stale_producers = {
             let mut records = self
                 .inner
                 .delegations_by_session
@@ -2711,7 +2770,7 @@ impl Engine {
                 DelegationState::Running
             };
             let counts_slot = background && !facts.delegated;
-            let (producer_id, monitor_started) = self
+            let (mut producer_id, mut monitor_started) = self
                 .inner
                 .delegations_by_session
                 .lock()
@@ -2721,6 +2780,18 @@ impl Engine {
                 .map_or((None, false), |record| {
                     (record.producer_id, record.monitor_started)
                 });
+            // A foreground delegation must never own a background producer
+            // registration. If a preserved record carries one anyway, drop it and
+            // route the registration through the stale sweep so the normal
+            // unregister path retires it instead of leaving it orphaned.
+            let mut stale_foreground_producer = None;
+            if !background && let Some(stale) = producer_id {
+                stale_foreground_producer = Some(stale);
+                producer_id = None;
+                monitor_started = false;
+            }
+            let parent_session_id = entry.reservation.parent_session_id;
+            let invocation_id = entry.reservation.invocation_id;
             self.inner
                 .delegations_by_session
                 .lock()
@@ -2728,10 +2799,10 @@ impl Engine {
                 .insert(
                     child_id,
                     DelegationRecord {
-                        parent_session_id: entry.reservation.parent_session_id,
+                        parent_session_id,
                         parent_run_id: entry.reservation.parent_run_id,
                         parent_tool_call_id: entry.reservation.parent_tool_call_id,
-                        invocation_id: entry.reservation.invocation_id,
+                        invocation_id,
                         root_session_id,
                         child_run_id: entry.child_run_id,
                         state,
@@ -2742,6 +2813,9 @@ impl Engine {
                         monitor_started,
                     },
                 );
+            if let Some(stale) = stale_foreground_producer {
+                stale_producers.push((parent_session_id, invocation_id, stale));
+            }
             if state == DelegationState::Queued {
                 let mut queue = self
                     .inner
