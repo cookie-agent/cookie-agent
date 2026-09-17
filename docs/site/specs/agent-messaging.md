@@ -103,7 +103,7 @@ Failures are explicit tool errors with stable codes in the `send_message:`
 namespace, one per case, so the sending model can react predictably (retry,
 give up, or report to its parent):
 
-- `send_message:disabled` — `[runtime.messaging] enabled = false`, even when
+- `send_message:disabled` — `[messaging] enabled = false`, even when
   permission rules allow the send,
 - `send_message:invalid_arguments` — missing, unknown, or wrongly typed
   arguments, including the removed `recipient_session_id` spelling,
@@ -187,7 +187,7 @@ Two loop-safety guards reject sends at send time; both are opt-out:
 
 - **Hop guard.** The engine tracks an internal hop count per message chain,
   carried in producer metadata and never rendered in the agent-visible
-  envelope. A send that would exceed `runtime.messaging.max_hops` fails with
+  envelope. A send that would exceed `messaging.max_hops` fails with
   `send_message:max_hops_exceeded`. The default is unlimited: `max_hops <= 0`
   disables the guard.
 - **Per-pair in-flight window.** At most `max_inflight_per_pair`
@@ -231,7 +231,7 @@ permissions:
 ## Configuration
 
 ```toml
-[runtime.messaging]
+[messaging]
 enabled = true
 max_hops = 0                  # <= 0 disables the hop guard (default); hop counting is internal metadata
 max_body_bytes = 32768        # tighter than the 256 KiB plugin cap; agent mail should be terse

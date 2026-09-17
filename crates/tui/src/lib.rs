@@ -27,7 +27,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, ApprovalConfig,
-        ContextCompactionConfig, LoadedConfiguration, RuntimeConfig, ServerConfig,
+        ContextCompactionConfig, EngineConfig, LoadedConfiguration, ServerConfig,
         SessionTitleConfig, ToolOutputConfig,
     };
     use cookie_agent_engine::{Engine, EngineOptions};
@@ -230,7 +230,7 @@ mod tests {
             );
         }
         let config = LoadedConfiguration {
-            runtime: RuntimeConfig {
+            runtime: EngineConfig {
                 server: ServerConfig::default(),
                 tool_output: ToolOutputConfig::default(),
                 agent_md: cookie_agent_config::AgentMdConfig::default(),

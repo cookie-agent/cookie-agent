@@ -14,9 +14,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
-    ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, LoadedMcpServer, McpServerConfig,
-    McpServerSource, ModelPricing, ModelRetryConfig, PicoUsdPerMillion, PluginConfig,
-    RuntimeConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig, load_from_roots,
+    ApprovalConfig, ContextCompactionConfig, EngineConfig, LoadedConfiguration, LoadedMcpServer,
+    McpServerConfig, McpServerSource, ModelPricing, ModelRetryConfig, PicoUsdPerMillion,
+    PluginConfig, ServerConfig, SessionTitleConfig, ToolOutputConfig, load_from_roots,
 };
 use cookie_agent_models::{
     ModelManager, ProviderDefinition,
@@ -3153,7 +3153,7 @@ fn fixture() -> Fixture {
         .expect("empty manager"),
     );
     let config = LoadedConfiguration {
-        runtime: RuntimeConfig {
+        runtime: EngineConfig {
             server: ServerConfig::default(),
             tool_output: ToolOutputConfig::default(),
             agent_md: cookie_agent_config::AgentMdConfig::default(),

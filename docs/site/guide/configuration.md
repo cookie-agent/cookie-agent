@@ -49,6 +49,11 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `mcp` | [MCP](mcp.md) |
 | `plugins` | [Plugins](plugins.md) |
 
+Every key above is a **top-level** table: write `[messaging]`, `[delegation]`,
+and so on, never `[runtime.messaging]` or another nested spelling. Older docs
+used the `[runtime.messaging]` form; a nested table such as that is an unknown
+top-level field and fails strict validation.
+
 ## Strictness and limits
 
 Every authored file is parsed strictly. Unknown keys, leftover `schema` or

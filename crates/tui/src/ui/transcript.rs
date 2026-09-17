@@ -4801,7 +4801,7 @@ mod tests {
 
     use super::*;
     use cookie_agent_config::{
-        ApprovalConfig, ContextCompactionConfig, LoadedConfiguration, RuntimeConfig, ServerConfig,
+        ApprovalConfig, ContextCompactionConfig, EngineConfig, LoadedConfiguration, ServerConfig,
         SessionTitleConfig, ToolOutputConfig,
     };
     use cookie_agent_engine::{Engine, EngineOptions};
@@ -4895,7 +4895,7 @@ mod tests {
             ModelManager::new(BTreeMap::new(), catalog, store).expect("production model manager"),
         );
         let config = LoadedConfiguration {
-            runtime: RuntimeConfig {
+            runtime: EngineConfig {
                 server: ServerConfig::default(),
                 tool_output: ToolOutputConfig::default(),
                 agent_md: cookie_agent_config::AgentMdConfig::default(),

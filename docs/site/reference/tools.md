@@ -324,7 +324,7 @@ Failures are explicit tool errors with stable codes:
 
 | Code | Meaning |
 |---|---|
-| `send_message:disabled` | `[runtime.messaging] enabled = false` |
+| `send_message:disabled` | `[messaging] enabled = false` |
 | `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling |
 | `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
 | `send_message:unknown_session` | Malformed or nonexistent recipient session ID |
