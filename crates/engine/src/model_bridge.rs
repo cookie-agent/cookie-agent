@@ -253,21 +253,56 @@ impl TurnAccumulator {
                         ));
                     }
                     if !block.arguments.is_empty() {
-                        let input: serde_json::Value = serde_json::from_str(&block.arguments)
-                            .map_err(|_| invalid("tool-call argument stream is not valid JSON"))?;
-                        if input != tool_call.input {
-                            return Err(invalid(
-                                "finalized tool call input does not match streamed arguments",
-                            ));
-                        }
-                        if tool_call
-                            .raw_input
-                            .as_ref()
-                            .is_some_and(|raw| raw != &block.arguments)
+                        let parsed = serde_json::from_str::<serde_json::Value>(&block.arguments);
+                        let parsed_object = parsed.as_ref().ok().filter(|value| value.is_object());
+                        if let Some(input) = parsed_object {
+                            if input != &tool_call.input {
+                                return Err(invalid(
+                                    "finalized tool call input does not match streamed arguments",
+                                ));
+                            }
+                            if tool_call
+                                .raw_input
+                                .as_ref()
+                                .is_some_and(|raw| raw != &block.arguments)
+                            {
+                                return Err(invalid(
+                                    "finalized tool call raw input does not match streamed arguments",
+                                ));
+                            }
+                        } else if tool_call.input.is_null()
+                            && tool_call.raw_input.as_deref() == Some(block.arguments.as_str())
                         {
-                            return Err(invalid(
-                                "finalized tool call raw input does not match streamed arguments",
+                            // Adapters mark argument text that is not a JSON
+                            // object (unparseable, or a bare
+                            // array/number/string/null) with `input: null` plus
+                            // the verbatim raw bytes. Mirror the Oven collector:
+                            // tolerate the marker, surface a warning, and keep
+                            // the raw bytes; anything else is still a hard error.
+                            self.warnings.push(format!(
+                                "tool call `{}` finalized with arguments that are not a valid JSON object; input surfaced as null",
+                                tool_call.id
                             ));
+                        } else if let Ok(input) = &parsed {
+                            // Preserve the pre-existing acceptance of a valid
+                            // non-object value that exactly matches the finalized
+                            // input (unmarked legacy shape).
+                            if input != &tool_call.input {
+                                return Err(invalid(
+                                    "finalized tool call input does not match streamed arguments",
+                                ));
+                            }
+                            if tool_call
+                                .raw_input
+                                .as_ref()
+                                .is_some_and(|raw| raw != &block.arguments)
+                            {
+                                return Err(invalid(
+                                    "finalized tool call raw input does not match streamed arguments",
+                                ));
+                            }
+                        } else {
+                            return Err(invalid("tool-call argument stream is not valid JSON"));
                         }
                         tool_call.raw_input = Some(block.arguments);
                     }
@@ -473,6 +508,188 @@ mod tests {
             accumulator.push(part.expect("part")).expect("accumulate");
         }
         assert_eq!(accumulator.finish().expect("finish"), expected);
+    }
+
+    #[test]
+    fn marked_invalid_tool_arguments_are_accepted_with_warning() {
+        use oven_sdk::{AssistantPart, ToolCallPart};
+
+        let mut call = ToolCallPart::new("call", "read", serde_json::Value::Null);
+        call.raw_input = Some("[".into());
+        let mut accumulator = TurnAccumulator::default();
+        for part in [
+            StreamPart::StreamStart { warnings: vec![] },
+            StreamPart::ToolCallStart {
+                id: "call".into(),
+                name: "read".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallDelta {
+                id: "call".into(),
+                delta: "[".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallEnd {
+                id: "call".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCall { tool_call: call },
+            StreamPart::Finish {
+                finish: Finish::new(Usage::default(), FinishReason::ToolCalls),
+            },
+        ] {
+            accumulator.push(part).expect("part");
+        }
+        let turn = accumulator
+            .finish()
+            .expect("marked-invalid call is accepted");
+        assert_eq!(
+            turn.warnings,
+            vec![
+                "tool call `call` finalized with arguments that are not a valid JSON object; input surfaced as null"
+            ]
+        );
+        assert!(matches!(
+            &turn.message.content[0],
+            AssistantPart::ToolCall(ToolCallPart {
+                input: serde_json::Value::Null,
+                raw_input: Some(raw),
+                ..
+            }) if raw == "["
+        ));
+    }
+
+    #[test]
+    fn marked_invalid_non_object_tool_arguments_are_accepted_with_warning() {
+        use oven_sdk::{AssistantPart, ToolCallPart};
+
+        for arguments in ["[]", "123", "\"x\"", "null"] {
+            let mut call = ToolCallPart::new("call", "read", serde_json::Value::Null);
+            call.raw_input = Some(arguments.into());
+            let mut accumulator = TurnAccumulator::default();
+            for part in [
+                StreamPart::StreamStart { warnings: vec![] },
+                StreamPart::ToolCallStart {
+                    id: "call".into(),
+                    name: "read".into(),
+                    metadata: None,
+                },
+                StreamPart::ToolCallDelta {
+                    id: "call".into(),
+                    delta: arguments.into(),
+                    metadata: None,
+                },
+                StreamPart::ToolCallEnd {
+                    id: "call".into(),
+                    metadata: None,
+                },
+                StreamPart::ToolCall { tool_call: call },
+                StreamPart::Finish {
+                    finish: Finish::new(Usage::default(), FinishReason::ToolCalls),
+                },
+            ] {
+                accumulator.push(part).expect("part");
+            }
+            let turn = accumulator
+                .finish()
+                .unwrap_or_else(|error| panic!("{arguments} must be accepted: {error:?}"));
+            assert_eq!(
+                turn.warnings,
+                vec![
+                    "tool call `call` finalized with arguments that are not a valid JSON object; input surfaced as null"
+                ],
+                "{arguments} must carry the marked-invalid warning"
+            );
+            assert!(matches!(
+                &turn.message.content[0],
+                AssistantPart::ToolCall(ToolCallPart {
+                    input: serde_json::Value::Null,
+                    raw_input: Some(raw),
+                    ..
+                }) if raw == arguments
+            ));
+        }
+    }
+
+    #[test]
+    fn unmarked_equal_non_object_tool_arguments_are_accepted() {
+        use oven_sdk::{AssistantPart, ToolCallPart};
+
+        let mut accumulator = TurnAccumulator::default();
+        for part in [
+            StreamPart::StreamStart { warnings: vec![] },
+            StreamPart::ToolCallStart {
+                id: "call".into(),
+                name: "read".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallDelta {
+                id: "call".into(),
+                delta: "[]".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallEnd {
+                id: "call".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCall {
+                tool_call: ToolCallPart::new("call", "read", serde_json::json!([])),
+            },
+            StreamPart::Finish {
+                finish: Finish::new(Usage::default(), FinishReason::ToolCalls),
+            },
+        ] {
+            accumulator.push(part).expect("part");
+        }
+        let turn = accumulator
+            .finish()
+            .expect("unmarked non-object equal to finalized input is accepted");
+        assert!(turn.warnings.is_empty());
+        assert!(matches!(
+            &turn.message.content[0],
+            AssistantPart::ToolCall(ToolCallPart {
+                input: serde_json::Value::Array(values),
+                raw_input: Some(raw),
+                ..
+            }) if values.is_empty() && raw == "[]"
+        ));
+    }
+
+    #[test]
+    fn unmarked_unparseable_tool_arguments_error() {
+        use oven_sdk::ToolCallPart;
+
+        let mut accumulator = TurnAccumulator::default();
+        let mut error = None;
+        for part in [
+            StreamPart::StreamStart { warnings: vec![] },
+            StreamPart::ToolCallStart {
+                id: "call".into(),
+                name: "read".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallDelta {
+                id: "call".into(),
+                delta: "[".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallEnd {
+                id: "call".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCall {
+                tool_call: ToolCallPart::new("call", "read", serde_json::Value::Null),
+            },
+        ] {
+            if let Err(pushed) = accumulator.push(part) {
+                error = Some(pushed);
+                break;
+            }
+        }
+        assert!(
+            error.is_some_and(|error| error.message.contains("not valid JSON")),
+            "unmarked garbage must still fail strict collection"
+        );
     }
 
     #[test]

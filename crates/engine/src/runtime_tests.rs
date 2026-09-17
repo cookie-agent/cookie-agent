@@ -2394,6 +2394,126 @@ impl PreparedExecutor for TestWriteExecutor {
     }
 }
 
+/// A published tool whose name matches the persist-time normalization of an
+/// invalid provider tool name (`"Bad Name"` -> `"bad_name"`). Its executor
+/// records execution so a test can prove the normalized alias never ran.
+struct TestAliasProvider {
+    executed: Arc<TestFlag>,
+}
+
+struct TestAliasExecutor {
+    executed: Arc<TestFlag>,
+}
+
+#[async_trait]
+impl ToolProvider for TestAliasProvider {
+    fn provider_id(&self) -> &'static str {
+        "test.alias"
+    }
+
+    fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
+        Ok(vec![ToolSpec {
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            name: "bad_name".to_owned(),
+            permission_name: "write".to_owned(),
+            description: "Aliased tool that must never execute".to_owned(),
+            parameters: serde_json::json!({"type":"object","additionalProperties":true}),
+        }])
+    }
+
+    fn get_permission_name(tool_name: &str) -> Result<&'static str, ToolError> {
+        match tool_name {
+            "bad_name" => Ok("write"),
+            _ => Err(ToolError::execution("alias provider received another tool")),
+        }
+    }
+
+    fn get_permission_resource(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), ToolError> {
+        Ok((Self::get_permission_name(name)?, Some("alias-test".into())))
+    }
+
+    fn get_display_argument(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, ToolError> {
+        Ok(self
+            .get_permission_resource(name, arguments)?
+            .1
+            .unwrap_or_default())
+    }
+
+    async fn prepare(
+        &self,
+        _ctx: ToolPreparationContext,
+        call: ToolCall,
+    ) -> Result<PreparedTool, ToolError> {
+        let label = "alias-test";
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(b"alias test arguments"),
+            vec![ApprovalCapability {
+                action: PermissionAction::Write,
+                operation: PreparedCapabilityOperation::new("alias:execute")
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+            }],
+            vec![PreparedApprovalResource {
+                capability: PermissionAction::Write,
+                canonical: PreparedResourceIdentity::new(label)
+                    .map_err(|error| ToolError::execution(error.to_string()))?,
+                binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                    label.as_bytes(),
+                ),
+                binding_lifetime: PreparedBindingLifetime::RestartStable,
+                boundary: ApprovalBoundary::Exact,
+                source: ApprovalResourceSource::PrimaryOperation,
+            }],
+            Sha256Digest::of_bytes(b"alias test execution context"),
+        )
+        .map_err(|error| ToolError::execution(error.to_string()))?;
+        PreparedTool::new(
+            operation,
+            call.arguments,
+            None,
+            Box::new(TestAliasExecutor {
+                executed: Arc::clone(&self.executed),
+            }),
+        )
+    }
+}
+
+#[async_trait]
+impl PreparedExecutor for TestAliasExecutor {
+    async fn revalidate(&self) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        _context: ToolExecutionContext,
+    ) -> Result<crate::ToolCompletion, ToolError> {
+        self.executed.set();
+        Ok(crate::ToolCompletion::single(
+            cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
+                title: cookie_agent_protocol::SafeDisplayText::new("aliased tool result")
+                    .expect("result title"),
+                output: "aliased tool executed".to_owned(),
+                metadata: serde_json::Value::Null,
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            },
+        ))
+    }
+}
+
 #[derive(Clone)]
 struct TestMediaReadProvider;
 
@@ -2747,9 +2867,9 @@ impl ToolProvider for TestToolDefinitionProvider {
     }
 }
 
-struct Fixture {
+pub(crate) struct Fixture {
     _directory: PanicResistantTempDir,
-    engine: Engine,
+    pub(crate) engine: Engine,
     config: LoadedConfiguration,
     manager: Arc<ModelManager>,
 }
@@ -3201,7 +3321,7 @@ fn open_workspace_engine(
     (engine, manager)
 }
 
-fn custom_fixture() -> (Fixture, RunSelection) {
+pub(crate) fn custom_fixture() -> (Fixture, RunSelection) {
     custom_fixture_with_endpoint("http://127.0.0.1:9/v1")
 }
 
@@ -4146,7 +4266,7 @@ __MODEL_CAPABILITIES__
     )
 }
 
-fn frozen_root_policy(
+pub(crate) fn frozen_root_policy(
     fixture: &Fixture,
     selection: &RunSelection,
 ) -> crate::policy::FrozenRunPolicy {
@@ -4605,6 +4725,105 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
             .expect("children")
             .len(),
         1
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn normalized_tool_call_name_is_refused_before_execution() {
+    let (endpoint, responses, server) = scripted_channel_server(2).await;
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_tool_body("alias-call", "Bad Name", serde_json::json!({})),
+        ))
+        .expect("normalized alias response");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("normalized alias refused"),
+        ))
+        .expect("follow-up response");
+    let primary = "---\ndescription: Alias test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nAlias test prompt.\n";
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(&endpoint, primary);
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestAliasProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("alias session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("normalized-alias").expect("client run id"),
+                selection,
+                input: "call the aliased tool".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("alias run started");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "normalized alias refusal completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+
+    let requests = server.await.expect("alias server");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the failure must be fed back to the model"
+    );
+    assert!(requests[1].contains("\"role\":\"tool\""));
+
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("alias projection");
+    let events = projection.log.events();
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ModelTurnCommitted { warnings, .. }
+                if warnings.iter().any(|warning| {
+                    warning.as_str().contains("Bad Name")
+                        && warning.as_str().contains("bad_name")
+                })
+        )),
+        "the committed turn must carry the normalization warning"
+    );
+    let termination = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallTerminated { termination }
+                if termination.owner.model_call_id.as_str() == "alias-call" =>
+            {
+                Some(termination)
+            }
+            _ => None,
+        })
+        .expect("alias tool termination");
+    assert_eq!(termination.outcome, ToolTerminationOutcome::Failed);
+    let error = termination.error.as_ref().expect("alias tool error");
+    assert_eq!(
+        error.message.as_str(),
+        "tool call name was normalized from invalid provider output"
+    );
+    assert!(
+        !executed.is_set(),
+        "the real tool behind the normalized alias must never execute"
     );
     fixture.engine.shutdown().await;
 }
