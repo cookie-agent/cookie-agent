@@ -280,9 +280,13 @@ impl McpServerConfig {
     }
 }
 
+/// The decoded settings tables of `config.toml`: one field per settings table
+/// (for example `[messaging]` → [`EngineConfig::messaging`]). `[mcp]` and
+/// `[plugins]` decode separately onto [`crate::LoadedConfiguration`]. Exposed
+/// on [`crate::LoadedConfiguration::runtime`].
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RuntimeConfig {
+pub struct EngineConfig {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
@@ -678,7 +682,7 @@ const fn yes() -> bool {
     true
 }
 
-pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLayer) {
+pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer) {
     if let Some(value) = &layer.server {
         runtime.server = value.clone();
     }
@@ -717,7 +721,7 @@ pub(crate) fn apply_settings(runtime: &mut RuntimeConfig, layer: &RawRuntimeLaye
     }
 }
 
-pub(crate) fn validate_runtime(runtime: &RuntimeConfig) -> Result<(), ConfigError> {
+pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError> {
     validate_header_ownership(&runtime.headers, "global").map_err(ConfigError::HeaderOwnership)?;
     validate_header_limits(&runtime.headers).map_err(|_| {
         ConfigError::InvalidRuntime("headers exceed the header count or size limits")

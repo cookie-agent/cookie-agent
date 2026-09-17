@@ -13,7 +13,7 @@ use serde::Deserialize as _;
 
 use crate::{
     AgentDocument, AgentDocumentSource, AgentMdConfig, AgentRegistry, ApprovalConfig, ConfigError,
-    ContextCompactionConfig, DelegationConfig, MessagingConfig, ModelRetryConfig, RuntimeConfig,
+    ContextCompactionConfig, DelegationConfig, EngineConfig, MessagingConfig, ModelRetryConfig,
     ServerConfig, SessionTitleConfig, ToolOutputConfig,
     agent_document::parse_agent,
     runtime::{RawRuntimeLayer, apply_settings, validate_runtime},
@@ -33,7 +33,12 @@ const BUILT_IN_CONFIG: &str = include_str!("defaults.toml");
 
 #[derive(Clone, Debug)]
 pub struct LoadedConfiguration {
-    pub runtime: RuntimeConfig,
+    /// The settings tables of the authored `config.toml`; `[mcp]` and
+    /// `[plugins]` decode onto the sibling fields instead. The field name
+    /// reflects that the config file *is* the runtime settings. Keys are
+    /// top-level, so `[messaging]` maps to `runtime.messaging`, not
+    /// `[runtime.messaging]`.
+    pub runtime: EngineConfig,
     pub agents: BTreeMap<AgentId, AgentDocument>,
     pub agent_presets: BTreeMap<String, BTreeMap<AgentId, AgentDocument>>,
     pub mcp_servers: BTreeMap<String, LoadedMcpServer>,
@@ -100,7 +105,7 @@ pub fn load_from_roots(
         .map(|path| open_layer_root(path, AgentDocumentSource::Workspace))
         .transpose()?
         .flatten();
-    let mut runtime = RuntimeConfig {
+    let mut runtime = EngineConfig {
         server: ServerConfig::default(),
         tool_output: ToolOutputConfig::default(),
         agent_md: AgentMdConfig::default(),

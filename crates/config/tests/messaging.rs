@@ -25,6 +25,18 @@ fn messaging_defaults_apply_when_the_section_is_absent() {
 }
 
 #[test]
+fn messaging_is_top_level_not_nested_under_runtime() {
+    // The canonical spelling parses.
+    let top_level = root("[messaging]\nenabled = false\n");
+    assert!(load_from_roots(Some(top_level.path()), None).is_ok());
+
+    // The `[runtime.messaging]` spelling used in older docs is an unknown
+    // top-level field `runtime` and must hard-fail strict validation.
+    let nested = root("[runtime.messaging]\nenabled = false\n");
+    assert!(load_from_roots(Some(nested.path()), None).is_err());
+}
+
+#[test]
 fn messaging_is_strict_about_unknown_keys_and_wrong_types() {
     let unknown = root("[messaging]\nunknown = 1\n");
     assert!(load_from_roots(Some(unknown.path()), None).is_err());
