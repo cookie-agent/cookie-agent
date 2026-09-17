@@ -5095,6 +5095,12 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
     let plugin = prompt.find("Plugin tail.").unwrap();
     assert!(agent < working_directory);
     assert!(working_directory < provider && provider < skills && skills < plugin);
+    // Every appended block is introduced by the markdown horizontal-rule
+    // separator, so block boundaries are visible in the assembled prompt.
+    assert!(prompt.contains("---\n\n<working_directory>"));
+    assert!(prompt.contains("---\n\n<tool_instructions provider=\"test.order\">"));
+    assert!(prompt.contains("---\n\n<available_skills>"));
+    assert!(prompt.contains("---\n\nPlugin tail."));
     assert_eq!(
         Sha256Digest::of_bytes(prompt.as_bytes()),
         projection

@@ -25,6 +25,7 @@ use super::{
     compaction::{CompactionInput, resolve_compaction_trigger},
     event_origin,
     helpers::safe_error,
+    prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
     should_run_predictive_compaction,
     tool_execution::fallback_operation_fingerprint,
 };
@@ -323,7 +324,10 @@ impl Engine {
                         .or(result.addendum)
                         .filter(|value| !value.is_empty())
                     {
-                        if run_policy.agent.composed_prompt.len() + 1 + addendum.len() > 128 * 1024
+                        if run_policy.agent.composed_prompt.len()
+                            + PROMPT_BLOCK_SEPARATOR.len()
+                            + addendum.len()
+                            > 128 * 1024
                         {
                             self.record_plugin_diagnostic(
                                 params.session_id,
@@ -332,8 +336,7 @@ impl Engine {
                                 "plugin agent addendum exceeds the system prompt byte limit".into(),
                             );
                         } else {
-                            run_policy.agent.composed_prompt.push('\n');
-                            run_policy.agent.composed_prompt.push_str(&addendum);
+                            push_prompt_block(&mut run_policy.agent.composed_prompt, &addendum);
                             run_policy.agent.prompt_fingerprint =
                                 Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
                         }

@@ -7,7 +7,7 @@ use cookie_agent_protocol::{
     ToolCallId,
 };
 
-use super::{ActiveRun, Engine, EngineError};
+use super::{ActiveRun, Engine, EngineError, prompt_blocks::push_prompt_block};
 use crate::{ToolCall, TurnAgentContext};
 use crate::{permissions, policy::FrozenRunPolicy};
 pub const RESERVED_STAGED_SKILL_PREFIX: &str = "\0cookie-staged-skill:";
@@ -636,9 +636,7 @@ impl Engine {
             .unwrap_or(8_192);
         let listing = cookie_agent_config::render_available_skills(visible, context_tokens)
             .map_err(|error| EngineError::Config(Box::new(error)))?;
-        policy.agent.composed_prompt.push('\n');
-        policy.agent.composed_prompt.push_str(&listing);
-        policy.agent.composed_prompt.push('\n');
+        push_prompt_block(&mut policy.agent.composed_prompt, &listing);
         policy.agent.prompt_fingerprint =
             Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
         let mut document_fingerprint = policy

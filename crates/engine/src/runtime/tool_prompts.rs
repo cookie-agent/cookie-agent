@@ -1,8 +1,10 @@
 use cookie_agent_protocol::{AgentSnapshot, SessionId, Sha256Digest};
 
 use crate::{
-    Engine, EngineError, PromptSection, SessionToolContext, policy::FrozenRunPolicy,
+    Engine, EngineError, PromptSection, SessionToolContext,
+    policy::FrozenRunPolicy,
     runtime::helpers::session_depth,
+    runtime::prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
 };
 
 const MAX_SECTION_BODY_BYTES: usize = 8 * 1024;
@@ -93,7 +95,7 @@ impl Engine {
             .agent
             .composed_prompt
             .len()
-            .checked_add(block.len() + 2)
+            .checked_add(block.len() + PROMPT_BLOCK_SEPARATOR.len())
             .ok_or_else(|| {
                 EngineError::ToolPrompt("composed prompt byte count overflowed".into())
             })?;
@@ -104,9 +106,7 @@ impl Engine {
             )));
         }
 
-        policy.agent.composed_prompt.push('\n');
-        policy.agent.composed_prompt.push_str(&block);
-        policy.agent.composed_prompt.push('\n');
+        push_prompt_block(&mut policy.agent.composed_prompt, &block);
         policy.agent.prompt_fingerprint =
             Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
         let mut document_fingerprint = policy

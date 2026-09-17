@@ -27,6 +27,12 @@ For a root or delegated run, the engine composes the model request in this order
    user turn. Loaded skill bodies follow as user turns, followed by normal
    session history.
 
+Appended blocks are joined by a markdown horizontal rule (`\n\n---\n\n`) so the
+boundaries between the authored body, the working-directory block, tool-provider
+sections, the skills listing, and a plugin addendum are visible. The authored
+body is first and carries no leading separator; a plugin `replace_system_prompt`
+replaces the whole prompt instead of appending to it.
+
 The resulting agent snapshot is frozen in `run_started`. Model retries and
 fallbacks reuse that run policy and prompt fingerprint; configuration refreshes
 cannot alter an admitted run. Request assembly reuses the first event snapshot

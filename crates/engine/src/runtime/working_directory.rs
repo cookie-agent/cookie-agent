@@ -1,6 +1,10 @@
 use cookie_agent_protocol::{AgentSnapshot, Sha256Digest};
 
-use crate::{Engine, policy::FrozenRunPolicy};
+use crate::{
+    Engine,
+    policy::FrozenRunPolicy,
+    runtime::prompt_blocks::{PROMPT_BLOCK_SEPARATOR, push_prompt_block},
+};
 
 impl Engine {
     pub(crate) fn compose_working_directory_section(&self, policy: &mut FrozenRunPolicy) {
@@ -13,7 +17,7 @@ impl Engine {
             .agent
             .composed_prompt
             .len()
-            .checked_add(block.len() + 2)
+            .checked_add(block.len() + PROMPT_BLOCK_SEPARATOR.len())
         else {
             eprintln!(
                 "cookie-agent: skipping working-directory prompt section: composed prompt byte count overflowed"
@@ -28,9 +32,7 @@ impl Engine {
             return;
         }
 
-        policy.agent.composed_prompt.push('\n');
-        policy.agent.composed_prompt.push_str(&block);
-        policy.agent.composed_prompt.push('\n');
+        push_prompt_block(&mut policy.agent.composed_prompt, &block);
         policy.agent.prompt_fingerprint =
             Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
         let mut document_fingerprint = policy

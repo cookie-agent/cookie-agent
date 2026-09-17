@@ -73,6 +73,7 @@ mod model_loop;
 mod output_capture;
 mod producer_claims;
 pub(crate) mod producers;
+mod prompt_blocks;
 mod recovery;
 mod residency;
 mod runs;
