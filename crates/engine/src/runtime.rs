@@ -1315,12 +1315,10 @@ impl Engine {
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
-        let manifest_store = options
-            .model_snapshot_directory
-            .as_ref()
-            .map(ModelSnapshotManifestStore::open_directory)
-            .transpose()?
-            .unwrap_or(ModelSnapshotManifestStore::open()?);
+        let manifest_store = match options.model_snapshot_directory.as_deref() {
+            Some(directory) => ModelSnapshotManifestStore::open_directory(directory)?,
+            None => ModelSnapshotManifestStore::open()?,
+        };
         let prepared_manifest = prepare_runtime_manifest(&manifest_store, &current_models)?;
         let snapshot = build_runtime_snapshot(&current_models, &agents, &agent_presets)?;
         let published_runtime = Arc::new(PublishedRuntime {

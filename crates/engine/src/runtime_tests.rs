@@ -12605,7 +12605,8 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     reopened.shutdown().await;
 }
 
-// This regression asserts exact POSIX mode bits for the shared user store.
+// This regression asserts exact POSIX mode bits for the private manifest store,
+// which the test isolates from the real shared user store.
 #[cfg(unix)]
 #[test]
 fn shared_project_cwd_creates_and_reopens_model_manifests() {
@@ -12615,6 +12616,7 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o775))
         .expect("shared workspace mode");
     let data_dir = fixture._directory.path().join("shared-data");
+    let snapshots = fixture._directory.path().join("model-snapshots");
 
     let engine = Engine::open(EngineOptions {
         data_dir: data_dir.clone(),
@@ -12622,7 +12624,7 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
+        model_snapshot_directory: Some(snapshots.clone()),
     })
     .expect("engine in shared workspace");
     let revision = engine
@@ -12632,9 +12634,6 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         .model_revision;
     drop(engine);
 
-    let snapshots = cookie_agent_protocol::paths::user_data_root()
-        .unwrap()
-        .join("model-snapshots");
     assert_eq!(
         fs::metadata(&snapshots).unwrap().permissions().mode() & 0o777,
         0o700
@@ -12653,7 +12652,7 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
+        model_snapshot_directory: Some(snapshots),
     })
     .expect("reopened engine in shared workspace");
     assert_eq!(
