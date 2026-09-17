@@ -1095,7 +1095,20 @@ impl Engine {
                     .entry(*id)
                     .or_insert_with(|| OutputHub::new(*id, 64 * 1024))
                     .declare(&output_declaration);
-                let prepared_call = batch_prepared.next().expect("batch preparation count");
+                let mut prepared_call = batch_prepared.next().expect("batch preparation count");
+                if attempt
+                    .normalized_tool_calls
+                    .contains(model_call_id.as_str())
+                {
+                    // Refuse the alias rather than executing a tool whose
+                    // published name coincidentally matches the coerced name.
+                    prepared_call.prepared = Err(ToolFailure {
+                        partial_output: None,
+                        code: ToolCallFailureCode::ExecutionFailed,
+                        message: "tool call name was normalized from invalid provider output"
+                            .to_owned(),
+                    });
+                }
                 let operation_fingerprint = prepared_call.prepared.as_ref().map_or_else(
                     |_| {
                         fallback_operation_fingerprint(
@@ -1886,8 +1899,34 @@ impl Engine {
                 }
                 match result {
                     Ok(turn) => {
+                        // Provider tool-call names that persist-time
+                        // normalization rewrites are tracked by model call ID so
+                        // dispatch can refuse a normalized alias instead of
+                        // executing a real tool with the coerced name.
+                        let raw_tool_names = turn
+                            .message
+                            .content
+                            .iter()
+                            .filter_map(|part| match part {
+                                oven_sdk::AssistantPart::ToolCall(call) => {
+                                    Some((call.id.clone(), call.name.clone()))
+                                }
+                                _ => None,
+                            })
+                            .collect::<HashMap<_, _>>();
                         let (mut turn, warnings) =
                             persist_turn(turn, &self.inner.artifacts, session, binding)?;
+                        let normalized_names = turn
+                            .content
+                            .iter()
+                            .filter_map(|part| match part {
+                                PersistedAssistantPart::ToolCall { id, name, .. } => raw_tool_names
+                                    .get(id.as_str())
+                                    .filter(|raw| raw.as_str() != name.as_str())
+                                    .map(|_| (id.as_str().to_owned(), name.as_str().to_owned())),
+                                _ => None,
+                            })
+                            .collect::<HashMap<_, _>>();
                         for plugin in self.inner.plugins.interception_plugins(
                             cookie_agent_protocol::ExtensionInterceptionHook::MessageEnd,
                         ) {
@@ -1918,6 +1957,22 @@ impl Engine {
                                 Err(error) => self.record_interception_error(session, plugin, error),
                             }
                         }
+                        // Only flag calls whose final persisted name is still the
+                        // normalization output; a plugin that rewrites the name
+                        // takes responsibility for it.
+                        let normalized_tool_calls = turn
+                            .content
+                            .iter()
+                            .filter_map(|part| match part {
+                                PersistedAssistantPart::ToolCall { id, name, .. } => {
+                                    normalized_names
+                                        .get(id.as_str())
+                                        .filter(|normalized| normalized.as_str() == name.as_str())
+                                        .map(|_| id.as_str().to_owned())
+                                }
+                                _ => None,
+                            })
+                            .collect::<HashSet<_>>();
                         let resolved_model = wire_model(binding);
                         let estimated_cost_pico_usd = crate::usage::estimated_cost_pico_usd(
                             &resolved_model,
@@ -1986,6 +2041,7 @@ impl Engine {
                             turn,
                             model_turn_seq,
                             turn_context,
+                            normalized_tool_calls,
                         });
                     }
                     Err(error)

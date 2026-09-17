@@ -284,6 +284,10 @@ struct AttemptTurn {
     turn: PersistedModelTurn,
     model_turn_seq: u64,
     turn_context: Arc<TurnAgentContext>,
+    /// Persisted model call IDs whose tool-call name was normalized away from
+    /// invalid provider output. Dispatch must fail these instead of executing a
+    /// possibly-aliased tool.
+    normalized_tool_calls: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

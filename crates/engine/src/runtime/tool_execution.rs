@@ -317,6 +317,25 @@ impl Engine {
         prepared_override: Option<Result<PreparedTool, ToolError>>,
     ) -> PreparedToolCall {
         let fallback_presentation = tool_title_only(&call.name);
+        if call.arguments.is_null() {
+            // A null argument object is the marked-invalid convention for
+            // provider argument text that could not be parsed. Refuse before
+            // schema validation so a permissive published tool can never run
+            // with unsalvageable input.
+            return PreparedToolCall {
+                intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
+                call,
+                permission_name: None,
+                presentation: fallback_presentation,
+                prepared: Err(ToolFailure {
+                    partial_output: None,
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message: "tool call arguments are invalid or unsalvageable; refusing to execute with null input"
+                        .to_owned(),
+                }),
+                interception: None,
+            };
+        }
         let session = match self.inner.store.get(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -1254,5 +1273,59 @@ mod tests {
         for declared in ["video/mpg", "video/mpeg"] {
             validate_attachment(declared, Path::new("clip.mpg"), &mpeg).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn null_tool_arguments_are_rejected_before_schema_validation() {
+        use std::sync::Arc;
+
+        use cookie_agent_protocol::RunId;
+
+        use crate::tool_api::{ToolCall, TurnAgentContext};
+
+        use super::ToolCallFailureCode;
+
+        let (fixture, selection) = crate::runtime_tests::custom_fixture();
+        let policy = crate::runtime_tests::frozen_root_policy(&fixture, &selection);
+        let binding = policy
+            .selected_suffix
+            .first()
+            .expect("frozen binding")
+            .clone();
+        let turn_context = Arc::new(TurnAgentContext {
+            agent: policy.agent.agent.clone(),
+            model: binding.selection.model.clone(),
+            adapter: crate::policy::wire_adapter(binding.descriptor.adapter_id.as_str()),
+            adapter_family: crate::policy::adapter_family(binding.descriptor.adapter_id.as_str()),
+            capabilities: policy
+                .model_capabilities(&binding)
+                .expect("model capabilities"),
+        });
+        let prepared = fixture
+            .engine
+            .prepare_tool_call_with_publication(
+                crate::runtime::test_session_id(),
+                RunId::new_v7(),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "permissive".into(),
+                    arguments: serde_json::Value::Null,
+                },
+                &policy,
+                turn_context,
+                None,
+                None,
+            )
+            .await;
+        let failure = match prepared.prepared {
+            Ok(_) => panic!("null arguments must fail before schema validation"),
+            Err(failure) => failure,
+        };
+        assert!(matches!(failure.code, ToolCallFailureCode::ExecutionFailed));
+        assert_eq!(
+            failure.message,
+            "tool call arguments are invalid or unsalvageable; refusing to execute with null input"
+        );
+        fixture.engine.shutdown().await;
     }
 }
