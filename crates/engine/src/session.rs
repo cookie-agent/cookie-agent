@@ -8114,6 +8114,7 @@ mod windows_tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
+                    short_id: None,
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
                     creation_selection: selection.clone(),
