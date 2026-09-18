@@ -97,7 +97,8 @@ jobs:
           components: clippy
       - run: cargo check --locked --workspace
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      # Print panics immediately so a later hung test cannot hide the failure.
+      - run: cargo test --locked --workspace -- --nocapture
 
   release-targets:
     name: Release target check (${{ matrix.target }})
