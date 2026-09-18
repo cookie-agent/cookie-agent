@@ -112,6 +112,43 @@ impl SecureDirectory {
         }
     }
 
+    /// Durably replaces one private file using an exclusive sibling temporary.
+    ///
+    /// This is the lock-free half of [`SecureDirectoryLock::atomic_replace`]: it
+    /// grants the same exclusive-create temporary plus atomic rename semantics
+    /// without acquiring or holding any cross-process lock.
+    pub(crate) fn atomic_replace(&self, name: &str, bytes: &[u8]) -> Result<(), SecureStoreError> {
+        validate_name(name)?;
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+
+            let temporary = format!(".{name}.tmp-{}", Uuid::now_v7());
+            let mut file = create_file(&self.directory, &temporary)?;
+            let result = (|| {
+                file.write_all(bytes).map_err(SecureStoreError::Io)?;
+                file.sync_all().map_err(SecureStoreError::Io)?;
+                rustix::fs::renameat(&self.directory, temporary.as_str(), &self.directory, name)
+                    .map_err(io_error)?;
+                rustix::fs::fsync(&self.directory).map_err(io_error)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = rustix::fs::unlinkat(
+                    &self.directory,
+                    temporary.as_str(),
+                    rustix::fs::AtFlags::empty(),
+                );
+            }
+            result
+        }
+        #[cfg(windows)]
+        {
+            windows::validate_leaf_name(name)?;
+            windows::atomic_replace(self, name, bytes)
+        }
+    }
+
     /// Acquires a cross-process exclusive lock file.
     pub fn lock(&self, name: &str) -> Result<SecureDirectoryLock<'_>, SecureStoreError> {
         validate_name(name)?;
@@ -235,39 +272,7 @@ impl SecureDirectoryLock<'_> {
         if name == self.lock_name {
             return Err(SecureStoreError::UnsafePath);
         }
-        #[cfg(unix)]
-        {
-            use std::io::Write as _;
-
-            let temporary = format!(".{name}.tmp-{}", Uuid::now_v7());
-            let mut file = create_file(&self.directory.directory, &temporary)?;
-            let result = (|| {
-                file.write_all(bytes).map_err(SecureStoreError::Io)?;
-                file.sync_all().map_err(SecureStoreError::Io)?;
-                rustix::fs::renameat(
-                    &self.directory.directory,
-                    temporary.as_str(),
-                    &self.directory.directory,
-                    name,
-                )
-                .map_err(io_error)?;
-                rustix::fs::fsync(&self.directory.directory).map_err(io_error)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = rustix::fs::unlinkat(
-                    &self.directory.directory,
-                    temporary.as_str(),
-                    rustix::fs::AtFlags::empty(),
-                );
-            }
-            result
-        }
-        #[cfg(windows)]
-        {
-            windows::validate_leaf_name(name)?;
-            windows::atomic_replace(self, name, bytes)
-        }
+        self.directory.atomic_replace(name, bytes)
     }
 
     /// Removes an optional private file and fsyncs the directory.

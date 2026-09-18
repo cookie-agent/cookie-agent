@@ -703,13 +703,13 @@ pub(super) fn clear_journal(lock: &SecureDirectoryLock<'_>) -> Result<(), Secure
 }
 
 pub(super) fn atomic_replace(
-    lock: &SecureDirectoryLock<'_>,
+    directory: &SecureDirectory,
     name: &str,
     bytes: &[u8],
 ) -> Result<(), SecureStoreError> {
     let temporary_name = format!(".{name}.tmp-{}", Uuid::now_v7());
-    let temporary = lock.directory.path.join(&temporary_name);
-    let target = lock.directory.path.join(name);
+    let temporary = directory.path.join(&temporary_name);
+    let target = directory.path.join(name);
     let mut file = create_file(&temporary)?;
     let result = (|| {
         file.write_all(bytes).map_err(SecureStoreError::Io)?;

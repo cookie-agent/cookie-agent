@@ -182,6 +182,49 @@ fn floats_unsafe_integers_duplicates_and_old_names_are_current_only() {
 }
 
 #[test]
+fn concurrent_same_digest_writes_converge_to_one_manifest() {
+    let temporary = TempDir::new().unwrap();
+    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let directory = temporary.path().join("model-snapshots");
+    // Start from an empty directory so both writers race through the real
+    // install path (validate, collision check, temp + atomic rename) instead
+    // of short-circuiting on an already-installed manifest.
+    let stores = (0..2)
+        .map(|_| ModelSnapshotManifestStore::open_directory(&directory).unwrap())
+        .collect::<Vec<_>>();
+    let barrier = std::sync::Barrier::new(2);
+    let barrier = &barrier;
+    let installed = std::thread::scope(|scope| {
+        let handles = stores
+            .iter()
+            .map(|store| {
+                scope.spawn(move || {
+                    barrier.wait();
+                    store.write(payload()).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let expected = &installed[0];
+    for manifest in &installed[1..] {
+        assert_eq!(manifest.as_ref(), expected.as_ref());
+    }
+    let index = ModelSnapshotManifestStore::open_directory(&directory)
+        .unwrap()
+        .scan()
+        .unwrap();
+    assert_eq!(index.len(), 1);
+    assert_eq!(
+        index.get(&expected.revision).unwrap().as_ref(),
+        expected.as_ref()
+    );
+}
+
+#[test]
 fn preparation_validates_existing_index_before_write_and_returns_resulting_index() {
     let temporary = TempDir::new().unwrap();
     let store = private_store(&temporary);

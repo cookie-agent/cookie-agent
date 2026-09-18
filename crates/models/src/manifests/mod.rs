@@ -15,7 +15,7 @@ use thiserror::Error;
 use crate::{
     ProviderDefinition,
     provider_store::ProviderStoreSnapshot,
-    secure_store::{SecureDirectory, SecureDirectoryLock, SecureStoreError},
+    secure_store::{SecureDirectory, SecureStoreError},
 };
 
 pub use cookie_agent_protocol::{
@@ -29,8 +29,6 @@ pub use cookie_agent_protocol::{
 
 /// Fixed user manifest directory below `~/.cookie-agent`.
 pub const MODEL_SNAPSHOT_DIRECTORY: &str = "model-snapshots";
-/// Fixed cross-process manifest lock.
-pub const MODEL_SNAPSHOT_LOCK_FILE: &str = "model-snapshots-v1.lock";
 /// Hard per-manifest byte limit.
 pub const MODEL_SNAPSHOT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// Hard direct matching-file limit.
@@ -68,8 +66,7 @@ impl ModelSnapshotManifestStore {
 
     /// Scans all direct schema-1 manifest filenames in sorted byte order.
     pub fn scan(&self) -> Result<ModelSnapshotManifestIndex, ManifestError> {
-        let lock = self.directory.lock(MODEL_SNAPSHOT_LOCK_FILE)?;
-        scan_locked(&self.directory, &lock)
+        scan_directory(&self.directory)
     }
 
     /// Canonicalizes, validates, and durably installs a payload before returning its reference.
@@ -105,8 +102,7 @@ impl ModelSnapshotManifestStore {
             return Err(ManifestError::InvalidModelSnapshotManifest);
         }
         let name = format!("{digest}.json");
-        let lock = self.directory.lock(MODEL_SNAPSHOT_LOCK_FILE)?;
-        let mut index = scan_locked(&self.directory, &lock)?;
+        let mut index = scan_directory(&self.directory)?;
         if let Some(existing) = index.get(&manifest.revision).cloned() {
             if existing.as_ref() != manifest.as_ref() {
                 return Err(ManifestError::ModelSnapshotDigestMismatch);
@@ -119,7 +115,7 @@ impl ModelSnapshotManifestStore {
         if index.len() >= MODEL_SNAPSHOT_MAX_FILES {
             return Err(ManifestError::InvalidModelSnapshotManifest);
         }
-        lock.atomic_replace(&name, &bytes)?;
+        self.directory.atomic_replace(&name, &bytes)?;
         index
             .manifests
             .insert(manifest.revision.clone(), Arc::clone(&manifest));
@@ -133,9 +129,8 @@ pub struct PreparedModelSnapshotManifest {
     pub index: ModelSnapshotManifestIndex,
 }
 
-fn scan_locked(
+fn scan_directory(
     directory: &SecureDirectory,
-    lock: &SecureDirectoryLock<'_>,
 ) -> Result<ModelSnapshotManifestIndex, ManifestError> {
     let mut names = direct_manifest_names(directory)?;
     if names.len() > MODEL_SNAPSHOT_MAX_FILES {
@@ -144,7 +139,7 @@ fn scan_locked(
     names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
     let mut manifests = BTreeMap::new();
     for name in names {
-        let bytes = lock
+        let bytes = directory
             .read(&name, MODEL_SNAPSHOT_MAX_BYTES)?
             .ok_or(ManifestError::InvalidModelSnapshotManifest)?;
         let manifest = Arc::new(decode_and_verify(&name, &bytes)?);
