@@ -2347,10 +2347,7 @@ impl App {
                     // keep their historical bottom-of-transcript position by
                     // sorting after every anchored item.
                     let time = state.item_time(item.id()).unwrap_or(jiff::Timestamp::MAX);
-                    warnings.push((
-                        time,
-                        format!("from {source} ({}): {text}", short_id(meta.session_id)),
-                    ));
+                    warnings.push((time, format!("from {source} ({}): {text}", short_id(&meta))));
                 }
             }
         }

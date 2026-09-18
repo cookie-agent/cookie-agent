@@ -231,6 +231,7 @@ impl Engine {
                     ToolTerminationOutcome::Failed,
                     Some(delegate_failure_result(
                         Some(entry.reservation.child_session_id),
+                        None,
                         "delegate child session was never created",
                     )),
                     Some(SafeToolError {
@@ -316,6 +317,7 @@ impl Engine {
                             ToolTerminationOutcome::Interrupted,
                             Some(delegate_failure_result(
                                 None,
+                                None,
                                 "delegate interrupted by daemon restart: no durable reservation",
                             )),
                             Some(SafeToolError {
@@ -331,6 +333,7 @@ impl Engine {
                     if run.status == SessionStatus::Cancelled {
                         let result = cancelled_delegate_result_with_reason(
                             Some(child_id),
+                            None,
                             "parent delegate run was cancelled",
                         );
                         self.terminate_tool_direct(
@@ -363,6 +366,7 @@ impl Engine {
                                 ToolTerminationOutcome::Failed,
                                 Some(delegate_failure_result(
                                     Some(child_id),
+                                    None,
                                     "delegate child session is missing",
                                 )),
                                 Some(SafeToolError {
@@ -390,7 +394,11 @@ impl Engine {
                         self.inner
                             .delegation_events
                             .mark_finished(invocation, SessionStatus::Cancelled)?;
-                        let result = cancelled_delegate_result(child_id, None);
+                        let result = cancelled_delegate_result(
+                            child_id,
+                            child.meta.short_id.as_deref(),
+                            None,
+                        );
                         self.terminate_tool_direct(
                             session_id,
                             run.id,
@@ -423,6 +431,7 @@ impl Engine {
                                         *call,
                                         delegate_failure_result(
                                             Some(child_id),
+                                            child.meta.short_id.as_deref(),
                                             "delegate run event confirmation failed",
                                         ),
                                     );
@@ -469,6 +478,7 @@ impl Engine {
                             ToolTerminationOutcome::Interrupted,
                             Some(delegate_failure_result(
                                 Some(child_id),
+                                child.meta.short_id.as_deref(),
                                 "delegate child interrupted by daemon restart",
                             )),
                             Some(SafeToolError {

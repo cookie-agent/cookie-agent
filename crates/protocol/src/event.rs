@@ -273,6 +273,10 @@ impl DelegateRequestPayload {
 pub struct SessionMeta {
     pub session_id: SessionId,
     pub origin: SessionOrigin,
+    /// Short, tree-unique model-facing handle, absent for pre-handle sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub short_id: Option<String>,
     pub cwd_identity: CwdIdentity,
     pub creation_selection: RunSelection,
     #[ts(type = "RuntimeRevision")]
@@ -322,6 +326,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
         struct Wire {
             session_id: SessionId,
             origin: SessionOrigin,
+            #[serde(default)]
+            short_id: Option<String>,
             cwd_identity: CwdIdentity,
             creation_selection: RunSelection,
             runtime_revision: RuntimeRevision,
@@ -344,6 +350,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
         let value = Self {
             session_id: w.session_id,
             origin: w.origin,
+            short_id: w.short_id,
             cwd_identity: w.cwd_identity,
             creation_selection: w.creation_selection,
             runtime_revision: w.runtime_revision,
@@ -1823,6 +1830,12 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
 pub enum EventPayload {
     SessionCreated {
         origin: SessionOrigin,
+        /// Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).
+        /// Optional and additive: sessions created before handles existed carry
+        /// no value and resolve by full UUID only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        short_id: Option<String>,
         cwd_identity: CwdIdentity,
         creation_selection: RunSelection,
         creation_agent: Box<AgentSnapshot>,
@@ -2182,6 +2195,11 @@ pub enum EventPayload {
     },
     DelegateFinished {
         session_id: SessionId,
+        /// Handle rendered into the notification body. Additive and optional:
+        /// pre-handle logs render the UUID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        short_id: Option<String>,
         status: SessionStatus,
         #[schemars(length(max = 2048))]
         preview: String,
@@ -2190,6 +2208,11 @@ pub enum EventPayload {
     DelegateFinishedV2 {
         invocation_id: InvocationId,
         session_id: SessionId,
+        /// Handle rendered into the notification body. Additive and optional:
+        /// pre-handle logs render the UUID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        short_id: Option<String>,
         status: SessionStatus,
         #[schemars(length(max = 2048))]
         preview: String,

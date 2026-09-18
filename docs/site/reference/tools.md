@@ -189,9 +189,12 @@ declare an absolute truncation opt-out. Their requested page is returned in full
 without artifact retention or truncation metadata, regardless of
 `[tool_output]`. Callers bound these results with each tool's offset/limit
 arguments. A requested page above the event schema's 2 MiB output limit fails
-with a resource-limit tool error; it is never silently truncated. MCP and plugin
-tools remain subject to normal truncation. External opt-out would require a
-future extension-protocol capability and is not currently authorable.
+with a resource-limit tool error; it is never silently truncated. The
+`delegate_subagent` terminal result also opts out, because its teaser preview is
+already capped internally; the owner of the delegation flow is the only place it
+is bounded. MCP and plugin tools remain subject to normal truncation. External
+opt-out would require a future extension-protocol capability and is not currently
+authorable.
 
 Artifacts are content-addressed by SHA-256, deduplicated, and newly created with
 mode `0600` on Unix. Their digest is verified when content is first read. A
@@ -292,15 +295,33 @@ target IDs and agent descriptions into the run's system prompt under
 ceiling and enabled-target filtering as `delegate_subagent`; no section is added
 when no target is available.
 
+`delegate_subagent`, `get_subagent_result`, and `cancel_subagent` address
+subagents by a short tree-unique **handle** (`<agent_type>_<8 hex>`, e.g.
+`explore_1a2b3c4d`) or a full session UUID. A handle is generated when the
+session is created and resolves only within the caller's tree; a partial handle,
+another tree's handle, or a fabricated value is rejected with a self-repairing
+error that lists the live candidates as
+`handle — description — status` plus their UUIDs. Start and completion notices
+pre-wrap the handle, for example
+`Subagent started. [subagent session explore_1a2b3c4d]` and
+`[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]`.
+Terminal and lifecycle results keep the UUID under the unified `session_id`
+metadata key and add `handle`. `resume_session_id` accepts the same two forms,
+and a terminal child woken by `send_message` reports as running until its new
+turn ends.
+
 ## Agent messaging
 
 `send_message` delivers a durable message to another session in the same
 delegation tree. It replaces the removed `steer_subagent` tool; see the
 [migration notes](../specs/agent-messaging.md#migration-notes). Its argument
-object is strict: `to` is the recipient session ID, `body` is the markdown
-message text, and optional `mode` is `steer` (default) or `queue`. The
-recipient argument is named `to`; the earlier `recipient_session_id` spelling
-is not an alias and fails with `send_message:invalid_arguments`.
+object is strict: `to` is the recipient handle or full session UUID, `body` is
+the markdown message text, and optional `mode` is `steer` (default) or `queue`.
+The recipient argument is named `to`; the earlier `recipient_session_id`
+spelling is not an alias and fails with `send_message:invalid_arguments`. A
+non-UUID recipient is resolved as a handle in the sender's tree; if it matches
+no live peer the send fails with the self-repairing `unknown subagent reference`
+error rather than a `send_message:` code.
 
 Calls use the `message` permission action. The resource label is the
 recipient's relationship to the sender — `parent`, `child`, `sibling`, or `*`
@@ -327,8 +348,8 @@ Failures are explicit tool errors with stable codes:
 | `send_message:disabled` | `[messaging] enabled = false` |
 | `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling |
 | `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
-| `send_message:unknown_session` | Malformed or nonexistent recipient session ID |
-| `send_message:not_tree_peer` | Recipient exists but belongs to a different delegation tree |
+| `send_message:unknown_session` | Well-formed recipient UUID that names no session |
+| `send_message:not_tree_peer` | Well-formed recipient UUID in a different delegation tree |
 | `send_message:self_send` | Sender targeted its own session |
 | `send_message:inbox_full` | Recipient has `max_pending_per_session` pending agent messages; nothing was admitted |
 | `send_message:max_hops_exceeded` | The message chain exceeded `max_hops` |

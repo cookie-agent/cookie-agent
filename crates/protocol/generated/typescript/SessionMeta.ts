@@ -7,4 +7,8 @@ import type { SessionStatus } from "./SessionStatus.js";
 import type { SessionTitle } from "./SessionTitle.js";
 import type { SkippedEvent } from "./SkippedEvent.js";
 
-export type SessionMeta = { session_id: SessionId, origin: SessionOrigin, cwd_identity: CwdIdentity, creation_selection: RunSelection, runtime_revision: RuntimeRevision, catalog_revision: CatalogRevision, provider_state_revision: ProviderStateRevision, model_revision: ModelRevision, agent_revision: AgentRevision, recipe_registry_revision: RecipeRegistryRevision, manifest_revision: ModelSnapshotRevision, title: SessionTitle | null, title_updated_seq: number, last_event_seq: number, last_activity: string, status: SessionStatus, skipped_events: Array<SkippedEvent>, };
+export type SessionMeta = { session_id: SessionId, origin: SessionOrigin, 
+/**
+ * Short, tree-unique model-facing handle, absent for pre-handle sessions.
+ */
+short_id?: string | null, cwd_identity: CwdIdentity, creation_selection: RunSelection, runtime_revision: RuntimeRevision, catalog_revision: CatalogRevision, provider_state_revision: ProviderStateRevision, model_revision: ModelRevision, agent_revision: AgentRevision, recipe_registry_revision: RecipeRegistryRevision, manifest_revision: ModelSnapshotRevision, title: SessionTitle | null, title_updated_seq: number, last_event_seq: number, last_activity: string, status: SessionStatus, skipped_events: Array<SkippedEvent>, };

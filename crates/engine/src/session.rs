@@ -3800,6 +3800,7 @@ fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError
     let physical_tip = log.last_event().expect("creation checked by EventLog");
     let (
         origin,
+        short_id,
         cwd_identity,
         creation_selection,
         creation_agent,
@@ -3817,6 +3818,7 @@ fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError
     {
         EventPayload::SessionCreated {
             origin,
+            short_id,
             cwd_identity,
             creation_selection,
             creation_agent,
@@ -3829,6 +3831,7 @@ fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError
             manifest_revision,
         } => (
             origin.clone(),
+            short_id.clone(),
             cwd_identity.clone(),
             creation_selection.clone(),
             creation_agent.as_ref().clone(),
@@ -3845,6 +3848,7 @@ fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError
     let mut meta = SessionMeta {
         session_id: events[0].session_id,
         origin,
+        short_id,
         cwd_identity,
         creation_selection,
         runtime_revision,
@@ -4830,6 +4834,7 @@ mod tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
+                    short_id: None,
                     origin,
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
                         .unwrap(),
@@ -4892,6 +4897,7 @@ mod tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
+                    short_id: None,
                     origin: SessionOrigin::Root,
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
                         .unwrap(),
@@ -6350,6 +6356,7 @@ mod tests {
                 session_id,
                 test_origin(),
                 EventPayload::SessionCreated {
+                    short_id: None,
                     origin: delegated_origin(root, root, 1),
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
                         .expect("static identity is valid"),
@@ -7052,6 +7059,7 @@ mod tests {
             session_id,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                short_id: None,
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
                 creation_selection: selection.clone(),
@@ -7301,6 +7309,7 @@ mod tests {
             session_id,
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                short_id: None,
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
                 creation_selection: selection.clone(),

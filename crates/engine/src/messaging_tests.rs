@@ -19,6 +19,7 @@ fn tree_recipient(engine: &crate::Engine, sender: SessionId) -> SessionId {
             recipient,
             EventOrigin::new("engine:test").unwrap(),
             EventPayload::SessionCreated {
+                short_id: None,
                 origin: SessionOrigin::Delegated {
                     root_session_id: sender,
                     parent_session_id: sender,

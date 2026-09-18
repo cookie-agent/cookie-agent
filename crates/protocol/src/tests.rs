@@ -1148,6 +1148,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let meta = SessionMeta {
         session_id: SessionId::new_v7(),
         origin: SessionOrigin::Root,
+        short_id: None,
         cwd_identity: CwdIdentity::new("test-workspace").expect("cwd identity"),
         creation_selection: RunSelection {
             agent: AgentId::new("primary").expect("agent ID"),

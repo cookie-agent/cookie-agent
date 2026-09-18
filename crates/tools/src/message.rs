@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{
     AgentMessageInvocation, Engine, MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY,
-    PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolError,
-    ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
+    PreparedExecutor, PreparedTool, SessionToolContext, SubagentScope, ToolCall, ToolCompletion,
+    ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
 use cookie_agent_protocol::{
     PermissionAction, PersistedToolResult as ToolResult, ProducerDeliveryMode, SessionId,
@@ -18,7 +18,8 @@ fn default_mode() -> ProducerDeliveryMode {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
-    to: SessionId,
+    /// Handle or full UUID of the recipient.
+    to: String,
     body: String,
     #[serde(default = "default_mode")]
     mode: ProducerDeliveryMode,
@@ -45,11 +46,11 @@ impl MessageToolProvider {
             result_truncation: cookie_agent_engine::ToolResultTruncationPolicy::Bounded,
             name: "send_message".into(),
             permission_name: "message".into(),
-            description: "Send a message to an agent in the current delegation tree.".into(),
+            description: "Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{
-                    "to":{"type":"string"},
+                    "to":{"type":"string","description":"Handle or full UUID of the recipient agent."},
                     "body":{"type":"string","minLength":1},
                     "mode":{"type":"string","enum":["steer","queue"],"default":"steer"}
                 },"required":["to","body"]
@@ -66,6 +67,23 @@ impl MessageToolProvider {
             return Err(ToolError::execution(MESSAGE_INVALID_BODY));
         }
         Ok(value)
+    }
+
+    /// Resolves the recipient: a full UUID passes through unchanged (so the
+    /// engine's `not_tree_peer` / `self_send` guards keep their stable codes);
+    /// anything else is a handle resolved within the sender's tree, with the
+    /// self-repairing candidate-list error on failure.
+    fn resolve_recipient(
+        engine: &Engine,
+        sender: SessionId,
+        reference: &str,
+    ) -> Result<SessionId, ToolError> {
+        if let Ok(id) = reference.parse::<SessionId>() {
+            return Ok(id);
+        }
+        engine
+            .resolve_subagent_target(sender, reference, SubagentScope::TreePeers)
+            .map_err(|error| ToolError::execution(error.to_string()))
     }
 }
 
@@ -111,9 +129,10 @@ impl ToolProvider for MessageToolProvider {
             ));
         }
         let args = Self::parse(&call.arguments)?;
+        let recipient = Self::resolve_recipient(&self.engine, ctx.session, &args.to)?;
         let relationship = self
             .engine
-            .message_relationship(ctx.session, args.to)
+            .message_relationship(ctx.session, recipient)
             .map_err(|error| ToolError::execution(error.to_string()))?;
         let cwd = fs_cap::cwd_context_bytes(&ctx.cwd)?;
         let operation = prepared_operation(
@@ -161,13 +180,15 @@ impl PreparedExecutor for MessageExecutor {
         self: Box<Self>,
         context: ToolExecutionContext,
     ) -> Result<ToolCompletion, ToolError> {
+        let recipient =
+            MessageToolProvider::resolve_recipient(&self.engine, context.session, &self.args.to)?;
         let handle = self
             .engine
             .send_agent_message(AgentMessageInvocation {
                 sender_session_id: context.session,
                 sender_run_id: context.run,
                 sender_tool_call_id: self.call_id,
-                recipient_session_id: self.args.to,
+                recipient_session_id: recipient,
                 body: self.args.body,
                 mode: self.args.mode,
             })
@@ -225,7 +246,7 @@ mod tests {
             "body":"chain start"
         }))
         .expect("valid arguments");
-        assert_eq!(parsed.to, recipient);
+        assert_eq!(parsed.to, recipient.to_string());
         assert_eq!(parsed.body, "chain start");
         assert_eq!(
             parsed.mode,
@@ -263,7 +284,8 @@ mod tests {
             // The pre-rename argument name is unknown, not an alias.
             &serde_json::json!({"recipient_session_id": recipient.to_string(), "body":"mail"}),
             &serde_json::json!({"body":"missing recipient"}),
-            &serde_json::json!({"to":"not-a-session-id","body":"mail"}),
+            // A non-UUID string is a loose-typed reference the resolver rejects
+            // later, not a parse error.
             &serde_json::json!({"to":recipient.to_string(),"body":"mail","extra":true}),
             &serde_json::json!({"to":recipient.to_string(),"body":42}),
             &serde_json::json!({"to":recipient.to_string(),"body":"mail","mode":"later"}),
@@ -292,7 +314,7 @@ mod tests {
         // The executor forwards `to` as the engine's recipient field; the model
         // never sees that name.
         let normalized = serde_json::to_value(MessageArgs {
-            to: SessionId::new_v7(),
+            to: SessionId::new_v7().to_string(),
             body: "mail".into(),
             mode: cookie_agent_protocol::ProducerDeliveryMode::Queue,
         })

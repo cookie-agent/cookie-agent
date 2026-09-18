@@ -19,7 +19,9 @@ Declaration order determines rendering order; only truncated streams get read
 hints. Aggregate event bounds may further reduce previews with truthful hints.
 The limits apply only to tools using the normal bounded policy. The
 self-paginating `read` and `get_subagent_result` tools opt
-out absolutely; configuration cannot re-enable truncation for them.
+out absolutely; configuration cannot re-enable truncation for them. The
+`delegate_subagent` terminal result also opts out because its teaser preview is
+already capped internally.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

@@ -29,7 +29,9 @@ pub struct DelegateInvocation {
     pub description: String,
     pub prompt: String,
     pub background: bool,
-    pub resume_session_id: Option<SessionId>,
+    /// Handle or full UUID of an existing subagent to resume. Resolved against
+    /// the parent's tree at admission.
+    pub resume_session_id: Option<String>,
     pub inherit_context: bool,
 }
 

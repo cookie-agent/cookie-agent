@@ -25,7 +25,9 @@ but gaps are retained and reported rather than making the session unreadable.
 Each contiguous missing sequence range produces one bounded diagnostic. An
 unreadable initial `session_created` record is the exception: without creation
 identity the session cannot open, so the engine reports an unsupported-era or
-corrupt-log error.
+corrupt-log error. The initial `session_created` record carries an optional
+`short_id`, the tree-unique model-facing handle; sessions created before handles
+existed lack the field and resolve by full UUID only.
 
 Writers remain strict: every appended event passes validation. Event evolution
 is additive only. Existing variant tags and fields are never removed or renamed,
@@ -202,10 +204,11 @@ Current model-bound plugin sends must use an explicitly registered producer;
 `plugin/emit` cannot append model-visible session publications. Bus traffic is unchanged.
 
 Delegation persistence includes `delegate_queued` and `delegate_finished`. The completion event is
-written to the parent run and carries `{ session_id, status, preview,
-total_lines }`; `preview` is limited to the first 20 lines and 2 KiB. It becomes
-model-visible at the next turn boundary, while full output remains available
-through `get_subagent_result`.
+written to the parent run and carries `{ session_id, status, preview, short_id,
+total_lines }`; `short_id` is the optional child handle so replay can render the
+same teaser the runtime pushed, and `preview` is limited to the first 20 lines
+and 2 KiB. It becomes model-visible at the next turn boundary, while full output
+remains available through `get_subagent_result`.
 
 Later delegation records add `delegated_context_seeded` and `delegate_finished_v2`.
 `delegated_context_seeded` is a runless creation event containing the bounded,

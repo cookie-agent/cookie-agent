@@ -3448,6 +3448,7 @@ mod tests {
             seq: 1,
             timestamp: jiff::Timestamp::new(1, 0).expect("timestamp"),
             payload: EventPayload::SessionCreated {
+                short_id: None,
                 origin: SessionOrigin::Root,
                 cwd_identity: CwdIdentity::new("workspace:test").expect("cwd identity"),
                 creation_selection: run_selection("test"),

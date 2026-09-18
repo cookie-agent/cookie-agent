@@ -1683,6 +1683,7 @@ mod tests {
                 event_origin(),
                 EventPayload::SessionCreated {
                     origin,
+                    short_id: None,
                     cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test")
                         .expect("cwd identity"),
                     creation_selection: selection.clone(),

@@ -134,6 +134,13 @@
           "type": "string",
           "format": "uuid"
         },
+        "short_id": {
+          "description": "Short, tree-unique model-facing handle, absent for pre-handle sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skipped_events": {
           "type": "array",
           "items": {

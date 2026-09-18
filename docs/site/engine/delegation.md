@@ -20,6 +20,13 @@ defaults for omitted fields. Unknown fields fail; see
 followed by one supported unit, without spaces or compound units; `"0s"` is
 valid. Overflow is rejected. Residency is a soft threshold, not an admission cap.
 
+Each root and delegated session is assigned a short, tree-unique handle
+(`<agent_type>_<8 hex>`, e.g. `explore_1a2b3c4d`) when its creation event is
+written. The handle is carried on `session_created.short_id` and surfaces
+through the delegation tools as an alternative to the full session UUID; it is a
+presentation-and-resolution layer, not a storage identity. See the
+[delegation tool reference](../reference/tools.md#delegation-and-skills).
+
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `max_depth` | integer | `3` | Maximum delegation depth below a root session. Must be greater than zero. |

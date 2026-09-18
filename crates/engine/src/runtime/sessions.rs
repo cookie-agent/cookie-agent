@@ -75,8 +75,17 @@ impl Engine {
         )?;
         let id = SessionId::new_v7();
         let cwd_identity = cwd_identity(self.inner.store.cwd())?;
+        // A new root begins an empty tree, so its first handle is trivially
+        // unique; it still goes through the same generation path so every
+        // session carries a handle uniformly.
+        let short_id = super::handles::generate_handle(
+            selection.agent.as_str(),
+            &HashSet::new(),
+            super::handles::random_hex,
+        )?;
         let creation = Event::SessionCreated {
             origin: SessionOrigin::Root,
+            short_id: Some(short_id),
             cwd_identity: cwd_identity.clone(),
             creation_selection: selection.clone(),
             creation_agent: Box::new(policy.agent.clone()),

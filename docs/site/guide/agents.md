@@ -150,15 +150,19 @@ the [security guidance](security.md#agentsmd-context-files). Configure limits in
 `delegate_subagent` requires a short `description`, a self-contained `prompt`,
 an allowed `agent_type`, and accepts optional `background`, `resume_session_id`,
 and `inherit_context` arguments. Foreground calls block and return a concise
-result teaser. Background calls return immediately with only the child
-`session_id`; admission still waits for any required permission approval. For a
+result teaser. Background calls return immediately with the child's handle;
+admission still waits for any required permission approval. A child is
+addressed everywhere by its short tree-unique handle
+(`<agent_type>_<8 hex>`, e.g. `explore_1a2b3c4d`) or a full session UUID; a
+partial, foreign-tree, or fabricated reference is rejected with a
+self-repairing error listing the live candidates. For a
 new child, the description becomes the delegated session title. It is truncated
 to `session_title.max_chars` using the same Unicode-character limit as generated
 titles; invalid title text rejects the delegation.
 
-`resume_session_id` attaches an existing direct child that was previously
-created by this same parent session. Top-level, unknown, foreign, self, and
-ancestor sessions are rejected. A terminal child starts a new run with the new
+`resume_session_id` accepts the handle or full UUID of an existing direct child
+that was previously created by this same parent session. Top-level, unknown,
+foreign, self, and ancestor sessions are rejected. A terminal child starts a new run with the new
 prompt; an active child receives the prompt through its pending-input FIFO. The
 current delegation link is refreshed, so result, messaging, cancel, queue, slot,
 and completion-notification behavior applies to the resumed work. The existing
@@ -177,10 +181,13 @@ into the child agent's model context and must be appropriate for that child.
 
 Background sessions move through `queued`, `running`, and a terminal
 `completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
-parent event containing the session ID, status, first 20 result lines (at most 2
-KiB), and total line count. Use `get_subagent_result` with `session_id`, optional
-`wait`, and zero-based `offset`/`limit` to retrieve the full result in pages. Use
-`cancel_subagent` with the owned `session_id` and optional `reason` to cancel
+parent event containing the session ID and handle, status, first 20 result lines
+(at most 2 KiB), and total line count. Use `get_subagent_result` with the
+child's handle or UUID, optional `wait`, and zero-based `offset`/`limit` to
+retrieve the last assistant message of the child's most recent turn in pages; a
+running child (including one just woken by `send_message`) reports as running
+and returns no text, and `wait = true` blocks until its turn ends. Use
+`cancel_subagent` with the owned handle or UUID and optional `reason` to cancel
 it. Result and cancellation operations reject sessions that are not direct
 children of the caller.
 

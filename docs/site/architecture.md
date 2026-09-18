@@ -237,8 +237,11 @@ session and drive the run loop:
   mutations from overlapping. Terminal events commit as calls finish.
 - **Delegation.** The `delegate_subagent` tool reserves a child session by
   appending lifecycle events to the parent session, then runs the target
-  subagent with an inherited model suffix. Depth and concurrency limits come
-  from `delegation` configuration.
+  subagent with an inherited model suffix. Each session is assigned a short,
+  tree-unique handle (`<agent_type>_<8 hex>`) recorded on its creation event,
+  and the model-facing delegation tools accept that handle interchangeably with
+  the full session UUID. Depth and concurrency limits come from `delegation`
+  configuration.
 - **Internal agents.** The approval, context-compaction, and session-title
   agents run with no tools and a strict text-only output contract, normally on
   the parent run's model via `${parent_model}`. See

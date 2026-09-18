@@ -113,15 +113,17 @@ pub(super) fn render_agent_message_envelope(
     message_id: ProducerMessageId,
     sender_session_id: SessionId,
     sender_agent_type: &str,
+    sender_short_id: Option<&str>,
     body: &str,
 ) -> String {
     format!(
-        "<agent_message>\n{{\"message_id\":{},\"from\":{{\"session_id\":{},\"agent_type\":{}}},\"body\":{}}}\n</agent_message>",
+        "<agent_message>\n{{\"message_id\":{},\"from\":{{\"session_id\":{},\"agent_type\":{},\"handle\":{}}},\"body\":{}}}\n</agent_message>",
         serde_json::to_string(message_id.to_string().as_str())
             .expect("message id string serializes"),
         serde_json::to_string(sender_session_id.to_string().as_str())
             .expect("session id string serializes"),
         serde_json::to_string(sender_agent_type).expect("agent type string serializes"),
+        serde_json::to_string(&sender_short_id).expect("session handle serializes"),
         serde_json::to_string(body).expect("message body serializes"),
     )
 }

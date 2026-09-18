@@ -65,6 +65,7 @@ mod blocking_io;
 pub(crate) mod compaction;
 mod delegation;
 mod get_history;
+pub(crate) mod handles;
 mod helpers;
 mod internal_agents;
 mod mailbox;
@@ -88,6 +89,7 @@ use admission::InflightDelegation;
 pub use artifact_reads::ArtifactReadPage;
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::ArtifactRouter;
+pub(crate) use delegation::render_subagent_notification;
 
 /// Session id for artifact/capture tests that do not model tree placement.
 #[cfg(test)]
@@ -1271,6 +1273,8 @@ pub(crate) struct Inner {
     #[cfg(test)]
     skill_fork_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     #[cfg(test)]
+    producer_wake_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    #[cfg(test)]
     delegation_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
     #[cfg(test)]
     resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
@@ -1465,6 +1469,8 @@ impl Engine {
                 resume_attachment_hook: Mutex::new(None),
                 #[cfg(test)]
                 skill_fork_reservation_hook: Mutex::new(None),
+                #[cfg(test)]
+                producer_wake_hook: Mutex::new(None),
                 #[cfg(test)]
                 delegation_reservation_hook: Mutex::new(None),
                 #[cfg(test)]

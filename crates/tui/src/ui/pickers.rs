@@ -199,7 +199,7 @@ pub(crate) fn session_search_rows<'a>(
             label: format!(
                 "{title}{degraded}  ({} · {})",
                 session.creation_selection.agent,
-                short_id(session.session_id)
+                short_id(session)
             ),
         });
     }
@@ -216,9 +216,12 @@ fn session_day_label(date: Date, today: Date, yesterday: Option<Date>) -> String
     }
 }
 
-/// First eight characters of a session ID for subdued secondary display.
-pub(crate) fn short_id(session_id: SessionId) -> String {
-    session_id.to_string().chars().take(8).collect()
+/// The session's short handle for subdued secondary display, falling back to
+/// the first eight characters of the UUID for pre-handle sessions.
+pub(crate) fn short_id(meta: &SessionMeta) -> String {
+    meta.short_id
+        .clone()
+        .unwrap_or_else(|| meta.session_id.to_string().chars().take(8).collect())
 }
 
 /// A right-aligned, dimmed key hint on a picker panel's bottom border, so
@@ -488,6 +491,7 @@ mod tests {
         SessionMeta {
             session_id,
             origin: SessionOrigin::Root,
+            short_id: None,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace")
                 .expect("cwd identity"),
             creation_selection: RunSelection {
@@ -662,10 +666,14 @@ mod tests {
     }
 
     #[test]
-    fn short_id_is_subdued_metadata_not_the_full_identity() {
+    fn short_id_prefers_the_real_handle_and_falls_back_to_the_uuid_prefix() {
         let session_id = SessionId::new_v7();
-        assert_eq!(short_id(session_id).len(), 8);
-        assert!(session_id.to_string().starts_with(&short_id(session_id)));
+        let mut meta = session_meta(session_id);
+        meta.short_id = Some("explore_1a2b3c4d".into());
+        assert_eq!(short_id(&meta), "explore_1a2b3c4d");
+        meta.short_id = None;
+        assert_eq!(short_id(&meta).len(), 8);
+        assert!(session_id.to_string().starts_with(&short_id(&meta)));
     }
 
     #[test]

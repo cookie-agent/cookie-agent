@@ -37,20 +37,21 @@ use cookie_agent_protocol::{
     ModelSelection, PermissionAction, PermissionEffect, PermissionMode, PermissionRule,
     PermissionRuleSource, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
-    PreparedResourceIdentity, ProviderConnectParams, ProviderCredentialValues,
-    ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection, RunStartParams,
-    RunToolStdinParams, RuntimeChangeReason, SessionId, SessionPermissionOverlay, SessionStatus,
-    SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
+    PreparedResourceIdentity, ProducerDeliveryMode, ProviderConnectParams,
+    ProviderCredentialValues, ProviderDisconnectParams, ProviderId, ProviderModelId, RunSelection,
+    RunStartParams, RunToolStdinParams, RuntimeChangeReason, SessionId, SessionPermissionOverlay,
+    SessionStatus, SessionTitle, SessionTitleChange, SetupFieldId, Sha256Digest, ToolCallId,
     ToolTerminationOutcome, TreeApprovalGrant, TreeApprovalGrantId, VariantId, WildcardPattern,
 };
 use jiff::Timestamp;
 use tempfile::TempDir;
 
 use crate::{
-    DelegateInvocation, Engine, EngineError, EngineHistoryView, EngineOptions, PreparedExecutor,
-    PreparedSerializationKey, PreparedTool, PromptSection, SessionToolContext, ToolCall,
-    ToolConcurrency, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProgress,
-    ToolProvider, ToolSpec, TurnAgentContext, runtime::ModelRetrySleepMode,
+    AgentMessageInvocation, DelegateInvocation, Engine, EngineError, EngineHistoryView,
+    EngineOptions, PreparedExecutor, PreparedSerializationKey, PreparedTool, PromptSection,
+    SessionToolContext, ToolCall, ToolConcurrency, ToolError, ToolExecutionContext,
+    ToolPreparationContext, ToolProgress, ToolProvider, ToolSpec, TurnAgentContext,
+    runtime::ModelRetrySleepMode,
 };
 
 const PLUGIN_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_plugin.py");
@@ -2032,7 +2033,7 @@ struct TestDelegateArgs {
     description: String,
     #[serde(default)]
     background: bool,
-    resume_session_id: Option<SessionId>,
+    resume_session_id: Option<String>,
     #[serde(default)]
     inherit_context: bool,
 }
@@ -3692,6 +3693,7 @@ fn create_buffered_delegated_child(engine: &Engine, parent: SessionId) -> Sessio
     let parent_projection = engine.inner.store.get(parent).expect("parent projection");
     let EventPayload::SessionCreated {
         origin: _,
+        short_id: _,
         cwd_identity,
         creation_selection,
         creation_agent,
@@ -3720,6 +3722,7 @@ fn create_buffered_delegated_child(engine: &Engine, parent: SessionId) -> Sessio
             child,
             cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
             EventPayload::SessionCreated {
+                short_id: None,
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {
                     root_session_id: parent,
                     parent_session_id: parent,
@@ -8060,6 +8063,7 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             let session_id = result.metadata["session_id"]
                 .as_str()
                 .expect("child session ID");
+            let handle = result.metadata["handle"].as_str().expect("child handle");
             let preview = result.output.split_once("\n\n").expect("child preview").0;
             assert!(["child 0 complete", "child 1 complete"].contains(&preview));
             assert_eq!(result.title.as_str(), "Subagent finished");
@@ -8067,6 +8071,7 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
                 result.metadata,
                 serde_json::json!({
                     "session_id": session_id,
+                    "handle": handle,
                     "status": "completed",
                     "total_lines": 1,
                 })
@@ -8074,10 +8079,10 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             assert_eq!(
                 result.output,
                 format!(
-                    "{preview}\n\n[subagent session {session_id}; completed; 1 lines; use get_subagent_result with this session_id for the full output]"
+                    "{preview}\n\n[subagent session {handle}; completed; 1 lines; use get_subagent_result with session_id \"{handle}\" for the full output]"
                 )
             );
-            assert_eq!(result.output.matches(session_id).count(), 1);
+            assert_eq!(result.output.matches(handle).count(), 2);
             assert_eq!(result.output.matches(preview).count(), 1);
         }
     }
@@ -8292,12 +8297,13 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         let child_id = result.metadata["session_id"]
             .as_str()
             .expect("child session ID");
+        let handle = result.metadata["handle"].as_str().expect("child handle");
         assert_eq!(result.metadata["status"], "cancelled");
         assert!(result.metadata.get("preview").is_none());
         assert!(
             result
                 .output
-                .contains(&format!("[subagent session {child_id}; cancelled;"))
+                .contains(&format!("[subagent session {handle}; cancelled;"))
         );
         assert!(encoded.contains(&serde_json::to_string(&result.output).unwrap()));
         assert!(events.iter().any(|event| matches!(&event.payload,
@@ -8671,6 +8677,66 @@ async fn scripted_cancellable_delegation_server() -> (String, tokio::task::JoinH
         let mut child = child.expect("child socket");
         let mut buffer = [0_u8; 256];
         while child.read(&mut buffer).await.unwrap_or(0) != 0 {}
+    });
+    (format!("http://{address}/v1"), task)
+}
+
+/// Foreground delegation whose child finishes a first turn, then serves the
+/// child's wake turn after the harness releases the paused producer wake. The
+/// request order is deterministic: parent initial -> child turn one -> parent
+/// resume -> child wake turn.
+async fn scripted_finished_wake_server() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("finished wake listener");
+    let address = listener.local_addr().expect("listener address");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        let (mut parent, _) = listener.accept().await.expect("wake parent initial");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut parent).await)
+                .expect("wake parent request"),
+        );
+        write_scripted_sse(
+            &mut parent,
+            &scripted_tool_body(
+                "finished-wake-delegate",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":"Wake child",
+                    "prompt":"child turn one work",
+                    "background":false
+                }),
+            ),
+        )
+        .await;
+
+        let (mut child_one, _) = listener.accept().await.expect("child first turn");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut child_one).await)
+                .expect("child first request"),
+        );
+        write_scripted_sse(&mut child_one, &scripted_text_body("child turn one")).await;
+
+        let (mut parent_two, _) = listener.accept().await.expect("parent resumed");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut parent_two).await)
+                .expect("parent resumed request"),
+        );
+        write_scripted_sse(
+            &mut parent_two,
+            &scripted_text_body("parent first run done"),
+        )
+        .await;
+
+        let (mut child_two, _) = listener.accept().await.expect("child wake turn");
+        requests.push(
+            String::from_utf8(read_scripted_http_request(&mut child_two).await)
+                .expect("child wake request"),
+        );
+        write_scripted_sse(&mut child_two, &scripted_text_body("child turn two")).await;
+        requests
     });
     (format!("http://{address}/v1"), task)
 }
@@ -20745,7 +20811,9 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         )
         .await
         .expect("cancelled queued resume result");
-    assert!(result.output.starts_with("<status>cancelled</status>"));
+    // Liveness, not delegation lifecycle: the session's last completed run is
+    // still terminal, so the tool reports that status and its last message.
+    assert!(result.output.starts_with("<status>completed</status>"));
     assert!(!result.output.contains("queued resume done"));
     let child_events = fixture
         .engine
@@ -21331,11 +21399,35 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         )
         .await
         .expect_err("foreign parent cannot read child result");
+    let foreign_result_message = foreign_result_error.to_string();
     assert!(
-        foreign_result_error
-            .to_string()
-            .contains("not owned by the caller")
+        foreign_result_message.contains("unknown subagent reference"),
+        "foreign reference must self-repair: {foreign_result_message}"
     );
+    assert!(foreign_result_message.contains(&child_session_id.to_string()));
+    // The child's *handle* is likewise scoped to its own tree: a foreign caller
+    // that lists no children of its own must not resolve it.
+    let child_handle = fixture
+        .engine
+        .get_session(child_session_id)
+        .expect("child session")
+        .short_id
+        .expect("generated child handle");
+    let foreign_handle_error = fixture
+        .engine
+        .get_subagent_result(
+            foreign.session_id,
+            child_handle.clone(),
+            false,
+            0,
+            2000,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("foreign parent cannot resolve another tree's handle");
+    let foreign_handle_message = foreign_handle_error.to_string();
+    assert!(foreign_handle_message.contains("unknown subagent reference"));
+    assert!(foreign_handle_message.contains(&child_handle));
     let missing_id = SessionId::new_v7();
     let missing_error = fixture
         .engine
@@ -21379,6 +21471,128 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
     let requests = server.await.expect("running steer server");
     assert_eq!(requests.len(), 3);
     assert!(requests[2].contains("focus on the revised requirement"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_text() {
+    let (endpoint, server) = scripted_finished_wake_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let (wake_reached, wake_release) = fixture.engine.install_producer_wake_hook();
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("finished wake parent");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("finished-wake").expect("run ID"),
+                selection,
+                input: "start a child that finishes".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted finished wake parent run");
+
+    let child_session_id = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "finished wake child",
+        |child| child.status == SessionStatus::Completed,
+    )
+    .await
+    .session_id;
+
+    let first = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            child_session_id,
+            false,
+            0,
+            2000,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("first completed result");
+    assert!(first.output.starts_with("<status>completed</status>"));
+    assert!(first.output.contains("child turn one"));
+
+    fixture
+        .engine
+        .send_agent_message(AgentMessageInvocation {
+            sender_session_id: parent.session_id,
+            sender_run_id: cookie_agent_protocol::RunId::new_v7(),
+            sender_tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+            recipient_session_id: child_session_id,
+            body: "next task".into(),
+            mode: ProducerDeliveryMode::Steer,
+        })
+        .await
+        .expect("wake send");
+
+    // The wake is paused before its `RunStarted`, so the projection is still
+    // terminal. Liveness must nevertheless report running, not turn-one text.
+    wake_reached.await.expect("producer wake paused");
+    let immediate = fixture
+        .engine
+        .get_subagent_result(
+            parent.session_id,
+            child_session_id,
+            false,
+            0,
+            2000,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("running result after wake accepted");
+    assert_eq!(
+        immediate.output,
+        "<status>running</status>\n<content>\n</content>"
+    );
+    assert!(!immediate.output.contains("child turn one"));
+
+    let wait_engine = fixture.engine.clone();
+    let mut waiter = tokio::spawn(async move {
+        wait_engine
+            .get_subagent_result(
+                parent.session_id,
+                child_session_id,
+                true,
+                0,
+                2000,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+    });
+    let premature = tokio::time::timeout(std::time::Duration::from_millis(150), &mut waiter).await;
+    assert!(
+        premature.is_err(),
+        "wait=true must block until the steered turn ends, not return turn-one text"
+    );
+
+    wake_release.notify_one();
+
+    let waited = waiter
+        .await
+        .expect("woken result waiter")
+        .expect("woken result");
+    assert!(waited.output.starts_with("<status>completed</status>"));
+    assert!(waited.output.contains("child turn two"));
+    assert!(!waited.output.contains("child turn one"));
+
+    let requests = server.await.expect("finished wake server");
+    assert_eq!(requests.len(), 4);
+    assert!(requests[3].contains("next task"));
     fixture.engine.shutdown().await;
 }
 
@@ -21493,7 +21707,10 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         description: resumed_entry.request.description,
         prompt: resumed_entry.request.prompt,
         background: true,
-        resume_session_id: resumed_entry.request.resume_session_id,
+        resume_session_id: resumed_entry
+            .request
+            .resume_session_id
+            .map(|session_id| session_id.to_string()),
         inherit_context: false,
     };
     let duplicate_engine = fixture.engine.clone();
@@ -22691,7 +22908,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
             .await
             .expect("queued child result after failed cancellation")
             .output,
-        "<status>queued</status>\n<content>\n</content>"
+        "<status>running</status>\n<content>\n</content>"
     );
     assert!(
         !fixture

@@ -31,9 +31,12 @@ summarized in the [tool reference](../reference/tools.md#agent-messaging).
 
 ### Addressing
 
-`send_message` targets a **raw `session_id` only** — the same raw-session
-addressing model the removed `steer_subagent` tool used. No labels, aliases, or
-special targets (`parent`, `root`).
+`send_message` accepts either a **full session UUID or the recipient's short
+handle** (`explore_1a2b3c4d`) — the same raw-session addressing model the
+removed `steer_subagent` tool used. A non-UUID reference is resolved as a
+handle against the sender's tree only; if it matches no live tree peer the
+send fails with a self-repairing candidate list, and a handle from another tree
+never resolves. No labels, aliases, or special targets (`parent`, `root`).
 
 There is **no discovery mechanism**. An agent learns a peer's session ID only
 because the parent disclosed it — in the delegation prompt, in a steering
@@ -42,9 +45,9 @@ children's IDs from `delegate_subagent`). The parent therefore controls the
 communication graph: siblings can only talk if the parent chose to introduce
 them, and an agent cannot enumerate the tree to find targets on its own.
 
-Every inbound message envelope carries `message_id` and `from.session_id`, so
-a recipient can reply by sending to `from.session_id` even if the parent never
-introduced it to the sender.
+Every inbound message envelope carries `message_id` and the sender's
+`from.session_id` plus its `from.handle`, so a recipient can reply by sending
+to either form even if the parent never introduced it to the sender.
 
 ### Message Envelope
 
@@ -56,14 +59,15 @@ system input materializes as a user turn):
 <agent_message>
 {
   "message_id": "...",          // ProducerMessage id
-  "from": { "session_id": "...", "agent_type": "explore" },
+  "from": { "session_id": "...", "agent_type": "explore", "handle": "explore_1a2b3c4d" },
   "body": "…markdown text…"
 }
 </agent_message>
 ```
 
 The recipient is implicit — the envelope only ever appears in the session it
-was delivered to. Hop metadata (the loop-safety chain count described under
+was delivered to. `from.handle` is `null` for senders created before handles
+existed. Hop metadata (the loop-safety chain count described under
 [Guards](#guards)) is internal producer metadata and is **not** rendered in the
 envelope.
 
@@ -75,7 +79,7 @@ envelope.
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `send_message` | `to: <session_id>, body, mode?` (`steer`/`queue`, default `steer`) | Resolve the recipient session, check permission, register/find the sender's agent-producer on the recipient session, send with idempotency key derived from `(sender session, run, tool_call)` (same derivation pattern as `invocation_id`) |
+| `send_message` | `to: <handle or session_id>, body, mode?` (`steer`/`queue`, default `steer`) | Resolve the recipient reference (UUID, or handle within the sender's tree), check permission, register/find the sender's agent-producer on the recipient session, send with idempotency key derived from `(sender session, run, tool_call)` (same derivation pattern as `invocation_id`) |
 
 Model-facing arguments are exactly `to`, `body`, and `mode`; the argument
 object is strict. The recipient argument is named `to`; it was renamed from
@@ -108,8 +112,15 @@ give up, or report to its parent):
 - `send_message:invalid_arguments` — missing, unknown, or wrongly typed
   arguments, including the removed `recipient_session_id` spelling,
 - `send_message:invalid_body` — empty or over `max_body_bytes`,
-- `send_message:unknown_session` — malformed or nonexistent session ID,
-- `send_message:not_tree_peer` — session exists but `root_session_id` differs,
+- `send_message:unknown_session` — a well-formed session UUID that names no
+  session,
+- `send_message:not_tree_peer` — a well-formed session UUID whose
+  `root_session_id` differs from the sender's,
+- a **non-UUID recipient** is treated as a subagent handle: a handle that
+  matches no live peer in the sender's tree fails with the self-repairing
+  `unknown subagent reference …` tool error, whose candidate list renders each
+  addressable peer as `handle — description — status (session_id <uuid>)`
+  (pre-handle peers print their UUID once),
 - `send_message:self_send` — sender targeted its own session,
 - `send_message:inbox_full` — recipient has `max_pending_per_session` pending
   agent messages (see Configuration),

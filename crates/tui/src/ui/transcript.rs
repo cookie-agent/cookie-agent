@@ -5310,6 +5310,7 @@ mod tests {
             seq,
             timestamp: Timestamp::now(),
             payload: EventPayload::SessionCreated {
+                short_id: None,
                 origin: SessionOrigin::Root,
                 cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace").expect("cwd"),
                 creation_selection: selection.clone(),
@@ -6399,6 +6400,7 @@ mod tests {
 
     fn session_meta(id: SessionId) -> SessionMeta {
         SessionMeta {
+            short_id: None,
             session_id: id,
             origin: SessionOrigin::Root,
             cwd_identity: cookie_agent_protocol::CwdIdentity::new("/workspace").expect("cwd"),
@@ -8002,7 +8004,7 @@ mod tests {
         let mut child_meta = delegated_meta(child, root, "worker");
         child_meta.status = SessionStatus::Running;
         app.tree = Some(SessionTree {
-            session: session_meta(root),
+            session: titled_meta(root, "root session", 1),
             children: vec![SessionTree {
                 session: child_meta,
                 children: Vec::new(),
@@ -23107,10 +23109,11 @@ mod tests {
         let mut app = test_app().await;
         let root = SessionId::new_v7();
         let child = SessionId::new_v7();
+        let child_meta = titled_meta(child, "child session", 1);
         app.tree = Some(SessionTree {
             session: titled_meta(root, "root session", 1),
             children: vec![SessionTree {
-                session: titled_meta(child, "child session", 1),
+                session: child_meta.clone(),
                 children: Vec::new(),
             }],
         });
@@ -23121,7 +23124,11 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].1.contains("child warning"));
         assert!(warnings[0].1.contains("child session"));
-        assert!(warnings[0].1.contains(&crate::ui::pickers::short_id(child)));
+        assert!(
+            warnings[0]
+                .1
+                .contains(&crate::ui::pickers::short_id(&child_meta))
+        );
         // The warning carries the durable time of the child's event row.
         let child_state = app.store.sessions.get(&child).expect("child session");
         let event_time = child_state

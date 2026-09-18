@@ -257,8 +257,13 @@ impl Engine {
             preset: child_policy.preset.clone(),
         };
         let child_session_id = entry.reservation.child_session_id;
+        let short_id = {
+            let existing = self.existing_tree_handles(root)?;
+            super::handles::generate_handle(agent.as_str(), &existing, super::handles::random_hex)?
+        };
         let creation = Event::SessionCreated {
             origin,
+            short_id: Some(short_id),
             cwd_identity: parent.meta.cwd_identity.clone(),
             creation_selection: selection,
             creation_agent: Box::new(child_policy.agent.clone()),
@@ -822,8 +827,12 @@ impl Engine {
             )
             .await?;
         }
+        let short_id = target
+            .child_session_id
+            .and_then(|id| self.session_short_id(id));
         let result = cancelled_delegate_result_with_reason(
             target.child_session_id,
+            short_id.as_deref(),
             "delegate admission was abandoned",
         );
         self.request(target.parent_session_id, |reply| {

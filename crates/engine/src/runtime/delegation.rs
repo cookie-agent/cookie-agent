@@ -2,9 +2,9 @@ use std::sync::{Arc, atomic::Ordering};
 
 use cookie_agent_protocol::{
     DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, InvocationId,
-    PersistedToolResult as ToolResult, ProducerId, ProducerOwner, RunId, RunStartParams,
-    SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId, ToolCallTermination,
-    ToolTerminationOutcome,
+    PersistedAssistantPart, PersistedToolResult as ToolResult, ProducerId, ProducerOwner, RunId,
+    RunStartParams, SafeToolError, SessionId, SessionOrigin, SessionStatus, ToolCallId,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Engine, EngineError, Event, SessionCommand,
     admission::AdmissionGuard,
+    handles::SubagentScope,
     helpers::{
         invocation_id, safe_code, safe_display, safe_error, sanitize_safe_text, session_depth,
     },
@@ -192,8 +193,11 @@ impl Engine {
             .get(&parent_tool_call_id)
             .is_some_and(|tool| tool == "delegate_subagent")
         {
-            let result =
-                cancelled_delegate_result_with_reason(None, "parent run was already terminal");
+            let result = cancelled_delegate_result_with_reason(
+                None,
+                None,
+                "parent run was already terminal",
+            );
             self.append(
                 parent_session_id,
                 Some(parent_run_id),
@@ -286,6 +290,17 @@ impl Engine {
                 "resume_session_id and inherit_context cannot both be set".into(),
             ));
         }
+        let resume_session_id = invocation
+            .resume_session_id
+            .as_deref()
+            .map(|reference| {
+                self.resolve_subagent_target(
+                    invocation.parent_session_id,
+                    reference,
+                    SubagentScope::DirectChildren,
+                )
+            })
+            .transpose()?;
         if let Some(existing) = self.delegation_event_get(invocation_id).await?
             && existing.child_run_id.is_some()
         {
@@ -297,7 +312,7 @@ impl Engine {
                 && existing.child_agent.agent == invocation.agent_type
                 && existing.request.description == invocation.description
                 && existing.request.prompt == invocation.prompt
-                && existing.request.resume_session_id == invocation.resume_session_id
+                && existing.request.resume_session_id == resume_session_id
                 && existing.request.inherit_context == invocation.inherit_context
                 && existing.request.staged_skill == staged_skill;
             if !request_matches {
@@ -386,8 +401,7 @@ impl Engine {
                 "delegate target or depth is not allowed".into(),
             ));
         }
-        let resume_child = invocation
-            .resume_session_id
+        let resume_child = resume_session_id
             .map(|resume_session_id| {
                 self.validate_resume_target(
                     invocation.parent_session_id,
@@ -465,7 +479,7 @@ impl Engine {
             description: invocation.description,
             prompt: invocation.prompt,
             title,
-            resume_session_id: invocation.resume_session_id,
+            resume_session_id,
             inherit_context: invocation.inherit_context,
             seeded_context,
             background: invocation.background,
@@ -562,8 +576,11 @@ impl Engine {
             Ok(child) => child,
             Err(error) => {
                 if is_delegation_event_append_failure(&error) {
-                    let result =
-                        delegate_failure_result(None, "delegate reservation event append failed");
+                    let result = delegate_failure_result(
+                        None,
+                        None,
+                        "delegate reservation event append failed",
+                    );
                     self.resolve_delegate_failure_if_pending(
                         invocation.parent_session_id,
                         invocation.parent_run_id,
@@ -940,6 +957,7 @@ impl Engine {
                 if is_delegation_event_append_failure(&error) {
                     let result = delegate_failure_result(
                         Some(entry.reservation.child_session_id),
+                        child.short_id.as_deref(),
                         "delegate run event confirmation failed",
                     );
                     let _ = self
@@ -1040,6 +1058,7 @@ impl Engine {
                 Err(_) => {
                     return Ok(delegate_failure_result(
                         Some(handle.child_session_id),
+                        None,
                         "child session is missing",
                     ));
                 }
@@ -1106,6 +1125,7 @@ impl Engine {
             Err(_) => {
                 return Ok(delegate_failure_result(
                     Some(handle.child_session_id),
+                    None,
                     "child session is missing",
                 ));
             }
@@ -1114,7 +1134,11 @@ impl Engine {
             return self.await_delegate(handle).await;
         }
         let Some(child_run_id) = handle.child_run_id else {
-            return Ok(cancelled_delegate_result(handle.child_session_id, None));
+            return Ok(cancelled_delegate_result(
+                handle.child_session_id,
+                child.meta.short_id.as_deref(),
+                None,
+            ));
         };
         let _ = self.cancel_run(child_run_id).await;
         self.await_delegate(handle).await
@@ -1753,6 +1777,11 @@ impl Engine {
         let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
             DelegateTeaser {
                 session_id: child_session_id,
+                short_id: child
+                    .meta
+                    .short_id
+                    .clone()
+                    .unwrap_or_else(|| child_session_id.to_string()),
                 status: SessionStatus::Cancelled,
                 preview: String::new(),
                 total_lines: 0,
@@ -2158,101 +2187,47 @@ impl Engine {
         })
     }
 
+    /// Reports **session liveness**, not delegation lifecycle. A running
+    /// (including queued/starting, or finished-then-woken) subagent reports
+    /// "running"; once it ends, the result is the last assistant message of its
+    /// most recent turn, paginated by `offset`/`limit`.
     pub async fn get_subagent_result(
         &self,
         caller_session_id: SessionId,
-        child_session_id: SessionId,
+        reference: impl std::fmt::Display,
         wait: bool,
         offset: u32,
         limit: u32,
         cancellation: CancellationToken,
     ) -> Result<ToolResult, EngineError> {
-        let handle = self
-            .ensure_subagent_owned(caller_session_id, child_session_id)
+        let child_session_id = self.resolve_subagent_target(
+            caller_session_id,
+            reference,
+            SubagentScope::DirectChildren,
+        )?;
+        self.ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
         loop {
             let child = self.inner.store.get(child_session_id)?;
-            let record = self
-                .inner
-                .delegations_by_session
-                .lock()
-                .map_err(|_| EngineError::ActorStopped)?
-                .get(&child_session_id)
-                .copied();
-            let durable = self
-                .inner
-                .delegation_events
-                .entries()
-                .into_iter()
-                .rev()
-                .find(|entry| entry.reservation.child_session_id == child_session_id);
-            // Durable lifecycle data wins when the registry still points at an
-            // older invocation (which can happen after a resumed delegation).
-            let registry_is_current = match (record, durable.as_ref()) {
-                (Some(record), Some(entry)) => {
-                    record.invocation_id == entry.reservation.invocation_id
-                }
-                (None, _) => false,
-                (Some(_), None) => true,
-            };
-            let state = record
-                .filter(|_| registry_is_current)
-                .map(|record| record.state);
-            let durable_state = durable.as_ref().map(|entry| {
-                entry.terminal_status.map_or_else(
-                    || {
-                        if entry.started {
-                            DelegationState::Running
-                        } else {
-                            DelegationState::Queued
-                        }
-                    },
-                    DelegationState::Finished,
-                )
-            });
-            let effective_state = state.or(durable_state);
-            let terminal_status = effective_state.and_then(|state| match state {
-                DelegationState::Finished(status) => Some(status),
-                DelegationState::Queued | DelegationState::Starting | DelegationState::Running => {
-                    None
-                }
-            });
-            let durable_child_run_id = durable.as_ref().and_then(|entry| entry.child_run_id);
-            let terminal = terminal_status.is_some()
-                || (effective_state.is_none()
-                    && durable.is_none()
-                    && matches!(
-                        child.status,
-                        SessionStatus::Completed
-                            | SessionStatus::Failed
-                            | SessionStatus::Interrupted
-                            | SessionStatus::Cancelled
-                    ));
-            if terminal || !wait {
-                let status = match effective_state {
-                    Some(DelegationState::Queued) => "queued",
-                    Some(DelegationState::Starting | DelegationState::Running) => "running",
-                    Some(DelegationState::Finished(status)) => session_status_name(status),
-                    None => terminal_status
-                        .map(session_status_name)
-                        .unwrap_or_else(|| session_status_name(child.status)),
-                };
-                let text = if terminal {
-                    delegate_final_text(
-                        &child,
-                        if durable.is_some() {
-                            durable_child_run_id
-                        } else {
-                            record
-                                .filter(|_| registry_is_current)
-                                .and_then(|record| record.child_run_id)
-                                .or(handle.child_run_id)
-                        },
-                    )
-                } else {
-                    ""
-                };
-                return Ok(paginated_subagent_result(status, text, offset, limit));
+            // Liveness is the session's own state *plus* an owed producer wake.
+            // A `send_message` to a finished child is durably accepted before it
+            // replies, but its `RunStarted` is appended asynchronously: pending
+            // mail (and an in-flight/scheduled wake) covers that gap so a
+            // same-turn read cannot return the previous turn's text.
+            let running = matches!(child.status, SessionStatus::Running | SessionStatus::Idle)
+                || super::producers::has_pending_producer_message(&child.log.event_snapshot())
+                || self.producer_wake_in_flight(child_session_id);
+            if !running {
+                let text = last_assistant_message(&child);
+                return Ok(paginated_subagent_result(
+                    session_status_name(child.status),
+                    &text,
+                    offset,
+                    limit,
+                ));
+            }
+            if !wait {
+                return Ok(paginated_subagent_result("running", "", offset, limit));
             }
             tokio::select! {
                 () = cancellation.cancelled() => {
@@ -2297,7 +2272,11 @@ impl Engine {
                 )
                 .await?;
                 drop(admission_guard);
-                Ok(steered_delegate_result(child_session_id, "queued"))
+                Ok(steered_delegate_result(
+                    child_session_id,
+                    child.meta.short_id.as_deref(),
+                    "queued",
+                ))
             }
             DelegationState::Starting | DelegationState::Running => {
                 if matches!(
@@ -2331,7 +2310,11 @@ impl Engine {
                         "subagent is no longer running".into(),
                     ));
                 }
-                Ok(steered_delegate_result(child_session_id, "running"))
+                Ok(steered_delegate_result(
+                    child_session_id,
+                    child.meta.short_id.as_deref(),
+                    "running",
+                ))
             }
             DelegationState::Finished(status) => Err(EngineError::ToolFailed(format!(
                 "subagent is terminal ({}) and cannot be steered",
@@ -2343,9 +2326,14 @@ impl Engine {
     pub async fn cancel_subagent(
         &self,
         caller_session_id: SessionId,
-        child_session_id: SessionId,
+        reference: impl std::fmt::Display,
         reason: Option<String>,
     ) -> Result<ToolResult, EngineError> {
+        let child_session_id = self.resolve_subagent_target(
+            caller_session_id,
+            reference,
+            SubagentScope::DirectChildren,
+        )?;
         let handle = self
             .ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
@@ -2401,7 +2389,12 @@ impl Engine {
             drop(admission_guard);
             self.finish_background_or_retry(child_session_id, record.invocation_id)
                 .await;
-            return Ok(cancelled_delegate_result(child_session_id, None));
+            let short_id = self.session_short_id(child_session_id);
+            return Ok(cancelled_delegate_result(
+                child_session_id,
+                short_id.as_deref(),
+                None,
+            ));
         }
         let child_run_id = record
             .child_run_id
@@ -2423,6 +2416,7 @@ impl Engine {
             if !matches!(child.status, SessionStatus::Running | SessionStatus::Idle) {
                 return Ok(cancelled_delegate_result(
                     child_session_id,
+                    child.meta.short_id.as_deref(),
                     Some(delegate_final_text(&child, Some(child_run_id)).to_owned()),
                 ));
             }
@@ -3172,15 +3166,44 @@ fn delegation_producer_authority(invocation_id: InvocationId) -> ProducerAuthori
     }
 }
 
-pub(super) fn render_background_completion(teaser: &DelegateTeaser) -> String {
+/// The completion body shared by the foreground `delegate_subagent` result and
+/// the pushed `<subagent_notification>`. Both the runtime renderer
+/// ([`render_background_completion`]) and the history-replay renderer
+/// (`model_history`) call this so the stored-body dedup comparison always sees
+/// byte-identical text.
+pub(crate) fn render_delegate_teaser_body(
+    preview: &str,
+    status: SessionStatus,
+    total_lines: u64,
+    handle: &str,
+) -> String {
+    format!(
+        "{}\n\n[subagent session {handle}; {}; {total_lines} lines; use get_subagent_result with session_id \"{handle}\" for the full output]",
+        sanitize_safe_text(preview, 2048),
+        session_status_name(status),
+    )
+}
+
+/// The pushed `<subagent_notification>` envelope, shared by the runtime and
+/// history-replay renderers.
+pub(crate) fn render_subagent_notification(
+    preview: &str,
+    status: SessionStatus,
+    total_lines: u64,
+    handle: &str,
+) -> String {
     format!(
         "<subagent_notification>{}</subagent_notification>",
-        serde_json::json!({
-            "session_id": teaser.session_id,
-            "status": session_status_name(teaser.status),
-            "preview": teaser.preview,
-            "total_lines": teaser.total_lines,
-        })
+        render_delegate_teaser_body(preview, status, total_lines, handle)
+    )
+}
+
+pub(super) fn render_background_completion(teaser: &DelegateTeaser) -> String {
+    render_subagent_notification(
+        &teaser.preview,
+        teaser.status,
+        teaser.total_lines,
+        &teaser.short_id,
     )
 }
 
@@ -3287,6 +3310,8 @@ fn context_seed_from_history(history: Vec<oven_sdk::HistoryTurn>) -> Vec<Delegat
 #[derive(Clone)]
 pub(super) struct DelegateTeaser {
     pub(super) session_id: SessionId,
+    /// Model-facing handle; falls back to the UUID for pre-handle sessions.
+    pub(super) short_id: String,
     pub(super) status: SessionStatus,
     pub(super) preview: String,
     pub(super) total_lines: u64,
@@ -3301,6 +3326,11 @@ fn delegate_teaser(
     let text = delegate_final_text(child, child_run_id);
     DelegateTeaser {
         session_id: child_session_id,
+        short_id: child
+            .meta
+            .short_id
+            .clone()
+            .unwrap_or_else(|| child_session_id.to_string()),
         status,
         preview: preview_text(text),
         total_lines: text.lines().count() as u64,
@@ -3312,6 +3342,39 @@ fn delegate_final_text(child: &session::SessionProjection, child_run_id: Option<
         .and_then(|run_id| child.runs.get(&run_id))
         .and_then(|run| run.final_text.as_deref())
         .unwrap_or("")
+}
+
+/// The last assistant message the session emitted: the most recent completed
+/// run's final text, falling back to the most recent committed model turn's
+/// text when a run ended without a completed turn (cancel/failure/interrupt).
+fn last_assistant_message(child: &session::SessionProjection) -> String {
+    let events = child.log.event_snapshot();
+    if let Some(text) = events.iter().rev().find_map(|event| match &event.payload {
+        Event::RunCompleted {
+            final_text: Some(text),
+        } => Some(text.clone()),
+        _ => None,
+    }) {
+        return text;
+    }
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            Event::ModelTurnCommitted { turn, .. } => {
+                let text = turn
+                    .content
+                    .iter()
+                    .filter_map(|part| match part {
+                        PersistedAssistantPart::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                (!text.is_empty()).then_some(text)
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 fn preview_text(text: &str) -> String {
@@ -3326,7 +3389,7 @@ fn preview_text(text: &str) -> String {
     first_lines[..end].to_owned()
 }
 
-const fn session_status_name(status: SessionStatus) -> &'static str {
+pub(super) const fn session_status_name(status: SessionStatus) -> &'static str {
     match status {
         SessionStatus::Idle => "running",
         SessionStatus::Running => "running",
@@ -3369,15 +3432,30 @@ fn paginated_subagent_result(status: &str, text: &str, offset: u32, limit: u32) 
     }
 }
 
-fn steered_delegate_result(child_session_id: SessionId, status: &str) -> ToolResult {
+/// The model-facing reference for a session: its handle when one exists, else
+/// the full UUID.
+fn reference_label(session_id: Option<SessionId>, short_id: Option<&str>) -> Option<String> {
+    short_id
+        .map(str::to_owned)
+        .or_else(|| session_id.map(|id| id.to_string()))
+}
+
+fn steered_delegate_result(
+    child_session_id: SessionId,
+    short_id: Option<&str>,
+    status: &str,
+) -> ToolResult {
+    let label = reference_label(Some(child_session_id), short_id)
+        .expect("steer result has a session reference");
     structured_delegate_result(
         "Subagent steered",
         format!(
-            "Subagent steered. [subagent session {child_session_id}; {}]",
+            "Subagent steered. [subagent session {label}; {}]",
             safe_display(status)
         ),
         serde_json::json!({
             "session_id": child_session_id,
+            "handle": short_id,
             "status": status,
         }),
     )
@@ -3396,15 +3474,15 @@ fn terminal_delegate_result(
     status: SessionStatus,
 ) -> ToolResult {
     let teaser = delegate_teaser(child, child.meta.session_id, status, child_run_id);
-    let output = format!(
-        "{}\n\n[subagent session {}; {}; {} lines; use get_subagent_result with this session_id for the full output]",
-        sanitize_safe_text(&teaser.preview, 2048),
-        teaser.session_id,
-        session_status_name(teaser.status),
+    let output = render_delegate_teaser_body(
+        &teaser.preview,
+        teaser.status,
         teaser.total_lines,
+        &teaser.short_id,
     );
     let metadata = serde_json::json!({
         "session_id": teaser.session_id,
+        "handle": teaser.short_id,
         "status": session_status_name(teaser.status),
         "total_lines": teaser.total_lines,
     });
@@ -3426,9 +3504,12 @@ fn structured_delegate_result(title: &str, output: String, metadata: Value) -> T
 
 pub(super) fn cancelled_delegate_result(
     child_session_id: SessionId,
+    short_id: Option<&str>,
     partial_report: Option<String>,
 ) -> ToolResult {
-    let mut output = format!("Delegate cancelled. [subagent session {child_session_id}]");
+    let label = reference_label(Some(child_session_id), short_id)
+        .expect("cancel result has a session reference");
+    let mut output = format!("Delegate cancelled. [subagent session {label}]");
     if let Some(report) = &partial_report {
         output.push_str(&format!(" Partial report: {}", safe_display(report)));
     }
@@ -3437,7 +3518,8 @@ pub(super) fn cancelled_delegate_result(
         output,
         serde_json::json!({
             "status": "cancelled",
-            "child_session_id": child_session_id,
+            "session_id": child_session_id,
+            "handle": short_id,
             "partial_report": partial_report,
         }),
     )
@@ -3445,18 +3527,20 @@ pub(super) fn cancelled_delegate_result(
 
 pub(super) fn cancelled_delegate_result_with_reason(
     child_session_id: Option<SessionId>,
+    short_id: Option<&str>,
     reason: &str,
 ) -> ToolResult {
     let mut output = format!("Delegate cancelled: {}.", safe_display(reason));
-    if let Some(session_id) = child_session_id {
-        output.push_str(&format!(" [subagent session {session_id}]"));
+    if let Some(label) = reference_label(child_session_id, short_id) {
+        output.push_str(&format!(" [subagent session {label}]"));
     }
     structured_delegate_result(
         "Delegate cancelled",
         output,
         serde_json::json!({
             "status": "cancelled",
-            "child_session_id": child_session_id,
+            "session_id": child_session_id,
+            "handle": short_id,
             "reason": reason,
         }),
     )
@@ -3464,18 +3548,20 @@ pub(super) fn cancelled_delegate_result_with_reason(
 
 pub(super) fn delegate_failure_result(
     child_session_id: Option<SessionId>,
+    short_id: Option<&str>,
     reason: &str,
 ) -> ToolResult {
     let mut output = format!("Delegate failed: {}.", safe_display(reason));
-    if let Some(session_id) = child_session_id {
-        output.push_str(&format!(" [subagent session {session_id}]"));
+    if let Some(label) = reference_label(child_session_id, short_id) {
+        output.push_str(&format!(" [subagent session {label}]"));
     }
     structured_delegate_result(
         "Delegate failed",
         output,
         serde_json::json!({
             "status": "failed",
-            "child_session_id": child_session_id,
+            "session_id": child_session_id,
+            "handle": short_id,
             "reason": reason,
         }),
     )
@@ -3515,9 +3601,11 @@ pub(super) fn is_delegation_event_append_failure(error: &EngineError) -> bool {
 #[cfg(test)]
 mod concurrency_tests {
     use super::{
-        DELEGATED_CONTEXT_MAX_BYTES, background_queue_limit_reached, cancelled_delegate_result,
-        cancelled_delegate_result_with_reason, context_seed_from_history, delegate_failure_result,
-        paginated_subagent_result, preview_text, steered_delegate_result, validate_redelivery_mode,
+        DELEGATED_CONTEXT_MAX_BYTES, DelegateTeaser, background_queue_limit_reached,
+        cancelled_delegate_result, cancelled_delegate_result_with_reason,
+        context_seed_from_history, delegate_failure_result, paginated_subagent_result,
+        preview_text, render_background_completion, render_delegate_teaser_body,
+        steered_delegate_result, validate_redelivery_mode,
     };
 
     #[test]
@@ -3525,41 +3613,41 @@ mod concurrency_tests {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let cases = [
             (
-                steered_delegate_result(session_id, "running"),
+                steered_delegate_result(session_id, None, "running"),
                 format!("Subagent steered. [subagent session {session_id}; running]"),
-                serde_json::json!({"session_id": session_id, "status": "running"}),
+                serde_json::json!({"session_id": session_id, "handle": null, "status": "running"}),
             ),
             (
-                cancelled_delegate_result(session_id, Some("Work so far".into())),
+                cancelled_delegate_result(session_id, None, Some("Work so far".into())),
                 format!(
                     "Delegate cancelled. [subagent session {session_id}] Partial report: Work so far"
                 ),
-                serde_json::json!({"child_session_id": session_id, "status": "cancelled", "partial_report": "Work so far"}),
+                serde_json::json!({"session_id": session_id, "handle": null, "status": "cancelled", "partial_report": "Work so far"}),
             ),
             (
-                cancelled_delegate_result(session_id, None),
+                cancelled_delegate_result(session_id, None, None),
                 format!("Delegate cancelled. [subagent session {session_id}]"),
-                serde_json::json!({"child_session_id": session_id, "status": "cancelled", "partial_report": null}),
+                serde_json::json!({"session_id": session_id, "handle": null, "status": "cancelled", "partial_report": null}),
             ),
             (
-                cancelled_delegate_result_with_reason(Some(session_id), "Parent stopped"),
+                cancelled_delegate_result_with_reason(Some(session_id), None, "Parent stopped"),
                 format!("Delegate cancelled: Parent stopped. [subagent session {session_id}]"),
-                serde_json::json!({"child_session_id": session_id, "status": "cancelled", "reason": "Parent stopped"}),
+                serde_json::json!({"session_id": session_id, "handle": null, "status": "cancelled", "reason": "Parent stopped"}),
             ),
             (
-                cancelled_delegate_result_with_reason(None, "Parent stopped"),
+                cancelled_delegate_result_with_reason(None, None, "Parent stopped"),
                 "Delegate cancelled: Parent stopped.".into(),
-                serde_json::json!({"child_session_id": null, "status": "cancelled", "reason": "Parent stopped"}),
+                serde_json::json!({"session_id": null, "handle": null, "status": "cancelled", "reason": "Parent stopped"}),
             ),
             (
-                delegate_failure_result(Some(session_id), "Child unavailable"),
+                delegate_failure_result(Some(session_id), None, "Child unavailable"),
                 format!("Delegate failed: Child unavailable. [subagent session {session_id}]"),
-                serde_json::json!({"child_session_id": session_id, "status": "failed", "reason": "Child unavailable"}),
+                serde_json::json!({"session_id": session_id, "handle": null, "status": "failed", "reason": "Child unavailable"}),
             ),
             (
-                delegate_failure_result(None, "Child unavailable"),
+                delegate_failure_result(None, None, "Child unavailable"),
                 "Delegate failed: Child unavailable.".into(),
-                serde_json::json!({"child_session_id": null, "status": "failed", "reason": "Child unavailable"}),
+                serde_json::json!({"session_id": null, "handle": null, "status": "failed", "reason": "Child unavailable"}),
             ),
         ];
         for (result, output, metadata) in cases {
@@ -3573,20 +3661,90 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn delegate_outputs_surface_the_handle_in_place_of_the_uuid() {
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let handle = "explore_1a2b3c4d";
+        let steered = steered_delegate_result(session_id, Some(handle), "running");
+        assert_eq!(
+            steered.output,
+            "Subagent steered. [subagent session explore_1a2b3c4d; running]"
+        );
+        let cancelled = cancelled_delegate_result(session_id, Some(handle), None);
+        assert_eq!(
+            cancelled.output,
+            "Delegate cancelled. [subagent session explore_1a2b3c4d]"
+        );
+        assert_eq!(
+            cancelled.metadata["session_id"],
+            serde_json::json!(session_id)
+        );
+        assert_eq!(cancelled.metadata["handle"], serde_json::json!(handle));
+        let failed = delegate_failure_result(Some(session_id), Some(handle), "Child unavailable");
+        assert_eq!(
+            failed.output,
+            "Delegate failed: Child unavailable. [subagent session explore_1a2b3c4d]"
+        );
+        assert!(!failed.output.contains(&session_id.to_string()));
+    }
+
+    #[test]
+    fn background_notification_snapshot_matches_the_foreground_teaser_body() {
+        let teaser = DelegateTeaser {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            short_id: "explore_1a2b3c4d".into(),
+            status: cookie_agent_protocol::SessionStatus::Completed,
+            preview: "first line\nsecond line".into(),
+            total_lines: 79,
+        };
+        // `sanitize_safe_text` folds control characters (including newlines) to
+        // spaces, exactly as the foreground result does.
+        insta::assert_snapshot!(
+            render_background_completion(&teaser),
+            @r###"
+<subagent_notification>first line second line
+
+[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]</subagent_notification>
+"###
+        );
+    }
+
+    #[test]
+    fn foreground_tool_result_text_snapshot_matches_the_shared_teaser_body() {
+        // `terminal_delegate_result` renders exactly this body, so this is the
+        // foreground `delegate_subagent` tool-result text.
+        insta::assert_snapshot!(
+            render_delegate_teaser_body(
+                "first line\nsecond line",
+                cookie_agent_protocol::SessionStatus::Completed,
+                79,
+                "explore_1a2b3c4d",
+            ),
+            @r###"
+first line second line
+
+[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
+"###
+        );
+    }
+
+    #[test]
     fn delegate_display_fields_are_bounded_and_control_free_without_changing_metadata() {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let text = format!("\x1b\n\t{}", "é".repeat(2048));
         for (result, key) in [
-            (steered_delegate_result(session_id, &text), "status"),
+            (steered_delegate_result(session_id, None, &text), "status"),
             (
-                cancelled_delegate_result(session_id, Some(text.clone())),
+                cancelled_delegate_result(session_id, None, Some(text.clone())),
                 "partial_report",
             ),
             (
-                cancelled_delegate_result_with_reason(Some(session_id), &text),
+                cancelled_delegate_result_with_reason(Some(session_id), None, &text),
                 "reason",
             ),
-            (delegate_failure_result(Some(session_id), &text), "reason"),
+            (
+                delegate_failure_result(Some(session_id), None, &text),
+                "reason",
+            ),
         ] {
             assert_eq!(result.metadata[key], text);
             assert!(result.output.len() < 1200);

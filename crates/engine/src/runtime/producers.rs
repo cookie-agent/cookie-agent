@@ -722,6 +722,8 @@ impl Engine {
         }
         let engine = self.clone();
         tokio::spawn(async move {
+            #[cfg(test)]
+            engine.wait_for_producer_wake_hook().await;
             let params = RunStartParams {
                 reset_fallback: false,
                 session_id: session,
@@ -750,6 +752,55 @@ impl Engine {
                 .await;
         });
         Ok(())
+    }
+
+    /// A producer wake this session has scheduled or started but not finished.
+    /// Complements the durable pending-mail signal while a wake is in flight.
+    pub(super) fn producer_wake_in_flight(&self, session: SessionId) -> bool {
+        self.inner
+            .producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session)
+            .is_some_and(|state| state.starting || state.wake_scheduled)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_producer_wake_hook(
+        &self,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .producer_wake_hook
+            .lock()
+            .expect("producer wake hook lock poisoned") = Some(Arc::new(super::PagingRaceHook {
+            reached: std::sync::Mutex::new(Some(reached)),
+            release: Arc::clone(&release),
+        }));
+        (receiver, release)
+    }
+
+    #[cfg(test)]
+    async fn wait_for_producer_wake_hook(&self) {
+        let hook = self
+            .inner
+            .producer_wake_hook
+            .lock()
+            .expect("producer wake hook lock poisoned")
+            .clone();
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .expect("producer wake hook reached lock poisoned")
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
     }
 
     fn commit_producer_start(
@@ -1448,6 +1499,7 @@ impl Engine {
         hop: u32,
     ) -> Result<ProducerMessageId, EngineError> {
         self.require_registration(session, producer_id, authority)?;
+        let sender_short_id = self.session_short_id(sender);
         let projection = self.goal_producer_projection(session)?;
         if let Some(existing) = projection.messages.iter().find(|message| {
             message.producer_owner == authority.owner && message.idempotency_key == key
@@ -1456,6 +1508,7 @@ impl Engine {
                 existing.message_id,
                 sender,
                 sender_agent_type,
+                sender_short_id.as_deref(),
                 &body,
             );
             if existing.mode != mode
@@ -1484,6 +1537,7 @@ impl Engine {
             message_id,
             sender,
             sender_agent_type,
+            sender_short_id.as_deref(),
             &body,
         );
         self.append_direct(
@@ -1520,6 +1574,7 @@ impl Engine {
         let body = super::delegation::render_background_completion(&teaser);
         let description = producer_description("Delegation completed: ", &teaser.preview);
         let super::delegation::DelegateTeaser {
+            short_id,
             status,
             preview,
             total_lines,
@@ -1605,6 +1660,7 @@ impl Engine {
                 Event::DelegateFinishedV2 {
                     invocation_id: reservation.invocation_id,
                     session_id: reservation.child_session_id,
+                    short_id: Some(short_id),
                     status,
                     preview,
                     total_lines,
@@ -1954,6 +2010,21 @@ pub(crate) fn producer_state_pending(events: &[cookie_agent_protocol::StoredEven
             .messages
             .iter()
             .any(|message| pending(message) || (message.consumed && !message.consumption_recorded))
+}
+
+/// Whether accepted-but-unconsumed producer mail is addressed to this session.
+///
+/// This is the race-free "a wake is owed" signal: `ProducerMessageAccepted` is
+/// durable before a send reports success, and a message stays pending through
+/// the whole window before its consumer's `RunStarted` flips session status to
+/// `Running` (it clears only when a committed model turn has actually consumed
+/// it). Liveness checks therefore cannot miss a steered finished child in the
+/// gap between acceptance and run admission.
+pub(super) fn has_pending_producer_message(events: &[cookie_agent_protocol::StoredEvent]) -> bool {
+    GoalProducerProjection::from_events(events)
+        .messages
+        .iter()
+        .any(pending)
 }
 
 fn pending(message: &ProducerMessageRecord) -> bool {

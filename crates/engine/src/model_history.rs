@@ -1083,37 +1083,37 @@ fn assemble_history_with_replay(
             }
             EventPayload::DelegateFinished {
                 session_id,
+                short_id,
                 status,
                 preview,
                 total_lines,
             } => {
-                logical.push(LogicalTurn::User(user_text(&format!(
-                    "<subagent_notification>{}</subagent_notification>",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "status": format!("{status:?}").to_ascii_lowercase(),
-                        "preview": preview,
-                        "total_lines": total_lines,
-                    })
-                ))));
+                logical.push(LogicalTurn::User(user_text(
+                    &crate::runtime::render_subagent_notification(
+                        preview,
+                        *status,
+                        *total_lines,
+                        short_id.as_deref().unwrap_or(&session_id.to_string()),
+                    ),
+                )));
             }
             EventPayload::DelegateFinishedV2 {
                 invocation_id,
                 session_id,
+                short_id,
                 status,
                 preview,
                 total_lines,
                 ..
             } if !producer_delegations.contains(invocation_id) => {
-                logical.push(LogicalTurn::User(user_text(&format!(
-                    "<subagent_notification>{}</subagent_notification>",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "status": format!("{status:?}").to_ascii_lowercase(),
-                        "preview": preview,
-                        "total_lines": total_lines,
-                    })
-                ))));
+                logical.push(LogicalTurn::User(user_text(
+                    &crate::runtime::render_subagent_notification(
+                        preview,
+                        *status,
+                        *total_lines,
+                        short_id.as_deref().unwrap_or(&session_id.to_string()),
+                    ),
+                )));
             }
             _ => {}
         }
@@ -2975,6 +2975,7 @@ mod tests {
                 2,
                 RunId::new_v7(),
                 EventPayload::DelegateFinishedV2 {
+                    short_id: None,
                     invocation_id: producer_invocation,
                     session_id: child,
                     status: SessionStatus::Completed,
@@ -2986,6 +2987,7 @@ mod tests {
                 3,
                 RunId::new_v7(),
                 EventPayload::DelegateFinishedV2 {
+                    short_id: Some("explore_1a2b3c4d".into()),
                     invocation_id: legacy_invocation,
                     session_id: child,
                     status: SessionStatus::Completed,
@@ -2999,7 +3001,15 @@ mod tests {
         let history = assemble_full_history(&events, &store, &binding(), "system").unwrap();
         let rendered = serde_json::to_string(&history).unwrap();
         assert!(!rendered.contains("duplicate"));
-        assert!(rendered.contains("legacy result"));
+        // Replay and the runtime renderer share one body: the handle-form
+        // notification, byte for byte.
+        let expected = crate::runtime::render_subagent_notification(
+            "legacy result",
+            SessionStatus::Completed,
+            1,
+            "explore_1a2b3c4d",
+        );
+        assert!(rendered.contains(&serde_json::to_string(&expected).unwrap()));
     }
 
     #[test]

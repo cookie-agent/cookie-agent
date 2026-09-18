@@ -18,7 +18,7 @@ mod ownership;
 pub mod permissions;
 mod plugin;
 mod policy;
-mod runtime;
+pub(crate) mod runtime;
 mod runtime_snapshot;
 #[cfg(test)]
 mod runtime_tests;
@@ -36,6 +36,7 @@ pub use plugin::{EngineEvent, PluginRegistry, PluginState, PluginStatus};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).
+pub use runtime::handles::SubagentScope;
 pub use runtime::messaging_api::{
     MESSAGE_DISABLED, MESSAGE_ENGINE_SHUTDOWN, MESSAGE_INBOX_FULL, MESSAGE_INFLIGHT_FULL,
     MESSAGE_INVALID_ARGUMENTS, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED,

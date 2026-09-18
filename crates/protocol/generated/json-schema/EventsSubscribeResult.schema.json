@@ -1005,6 +1005,13 @@
               "minLength": 71,
               "pattern": "^sha256:[0-9a-f]{64}$"
             },
+            "short_id": {
+              "description": "Short, tree-unique model-facing handle (`<agent_type>_<8 hex>`).\nOptional and additive: sessions created before handles existed carry\nno value and resolve by full UUID only.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "session_created"
@@ -2574,6 +2581,13 @@
               "type": "string",
               "format": "uuid"
             },
+            "short_id": {
+              "description": "Handle rendered into the notification body. Additive and optional:\npre-handle logs render the UUID.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "status": {
               "$ref": "#/$defs/SessionStatus"
             },
@@ -2609,6 +2623,13 @@
             "session_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "short_id": {
+              "description": "Handle rendered into the notification body. Additive and optional:\npre-handle logs render the UUID.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "status": {
               "$ref": "#/$defs/SessionStatus"
