@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 19 is current-only. A client must call `handshake` with
-`{ "protocol_version": 19 }` before any other method.
+Protocol 20 is current-only. A client must call `handshake` with
+`{ "protocol_version": 20 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 19.
+members of protocol 20.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 19 alongside independent display and output references. The
+preserved in protocol 20 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment

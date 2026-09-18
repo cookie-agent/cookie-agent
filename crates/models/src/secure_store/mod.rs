@@ -18,6 +18,7 @@ pub use windows::{
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -149,14 +150,31 @@ impl SecureDirectory {
         }
     }
 
-    /// Acquires a cross-process exclusive lock file.
+    /// Acquires a cross-process exclusive lock file with the default budget.
+    ///
+    /// Bounded alias for [`Self::lock_within`]; the unbounded form is not
+    /// reachable.
     pub fn lock(&self, name: &str) -> Result<SecureDirectoryLock<'_>, SecureStoreError> {
+        self.lock_within(name, DEFAULT_LOCK_BUDGET)
+    }
+
+    /// Acquires a cross-process exclusive lock file within `budget`.
+    ///
+    /// Nonblocking attempts retry on an exponential, jittered backoff until
+    /// `budget` elapses, then fail with [`SecureStoreError::LockContention`].
+    pub fn lock_within(
+        &self,
+        name: &str,
+        budget: Duration,
+    ) -> Result<SecureDirectoryLock<'_>, SecureStoreError> {
         validate_name(name)?;
         #[cfg(unix)]
         {
             let lock = open_or_create_file(&self.directory, name)?;
-            rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
-                .map_err(io_error)?;
+            let started = Instant::now();
+            if !lock_within_file(&lock, budget).map_err(SecureStoreError::Io)? {
+                return Err(lock_contention(self.path.join(name), started.elapsed()));
+            }
             rustix::fs::fsync(&self.directory).map_err(io_error)?;
             Ok(SecureDirectoryLock {
                 directory: self,
@@ -167,7 +185,35 @@ impl SecureDirectory {
         #[cfg(windows)]
         {
             windows::validate_leaf_name(name)?;
-            windows::lock(self, name)
+            windows::lock_within(self, name, budget)
+        }
+    }
+
+    /// Attempts a single nonblocking exclusive acquisition.
+    ///
+    /// `None` means another process or descriptor currently holds the lock.
+    pub fn try_lock(
+        &self,
+        name: &str,
+    ) -> Result<Option<SecureDirectoryLock<'_>>, SecureStoreError> {
+        validate_name(name)?;
+        #[cfg(unix)]
+        {
+            let lock = open_or_create_file(&self.directory, name)?;
+            if !try_lock_once(&lock).map_err(SecureStoreError::Io)? {
+                return Ok(None);
+            }
+            rustix::fs::fsync(&self.directory).map_err(io_error)?;
+            Ok(Some(SecureDirectoryLock {
+                directory: self,
+                lock_name: name.to_owned(),
+                _lock: lock,
+            }))
+        }
+        #[cfg(windows)]
+        {
+            windows::validate_leaf_name(name)?;
+            windows::try_lock(self, name)
         }
     }
 
@@ -307,7 +353,7 @@ impl SecureDirectoryLock<'_> {
 #[cfg(windows)]
 impl Drop for SecureDirectoryLock<'_> {
     fn drop(&mut self) {
-        windows::unlock(&self._lock);
+        let _ = windows::unlock(&self._lock);
     }
 }
 
@@ -320,8 +366,88 @@ pub enum SecureStoreError {
     UnsafePath,
     #[error("secure storage object exceeds its byte limit")]
     TooLarge,
+    #[error(
+        "timed out after {waited_ms} ms waiting for the cross-process lock at `{}`",
+        path.display()
+    )]
+    LockContention { path: PathBuf, waited_ms: u64 },
     #[error("secure storage I/O failed")]
     Io(#[source] io::Error),
+}
+
+/// Default budget for bounded cross-process store locks.
+pub const DEFAULT_LOCK_BUDGET: Duration = Duration::from_secs(5);
+
+/// Budget for hot read-path acquisitions that should fail fast.
+pub const HOT_READ_LOCK_BUDGET: Duration = Duration::from_secs(2);
+
+/// Attempts one nonblocking exclusive lock on an already-open file.
+///
+/// `true` means the lock was acquired; `false` means it is held elsewhere.
+#[cfg(unix)]
+pub fn try_lock_once(file: &fs::File) -> io::Result<bool> {
+    match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(true),
+        Err(error)
+            if error == rustix::io::Errno::WOULDBLOCK || error == rustix::io::Errno::AGAIN =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+pub fn try_lock_once(file: &fs::File) -> io::Result<bool> {
+    windows::try_lock_once(file)
+}
+
+/// Releases an exclusive lock held on `file`.
+pub fn unlock(file: &fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        rustix::fs::flock(file, rustix::fs::FlockOperation::Unlock).map_err(Into::into)
+    }
+    #[cfg(windows)]
+    {
+        windows::unlock(file)
+    }
+}
+
+/// Bounded retry of [`try_lock_once`]; `true` when acquired within `budget`.
+///
+/// Backoff is exponential with jitter, starting at ~2 ms and capped at ~50 ms.
+pub fn lock_within_file(file: &fs::File, budget: Duration) -> io::Result<bool> {
+    let deadline = Instant::now() + budget;
+    let mut attempt = 0_u32;
+    loop {
+        if try_lock_once(file)? {
+            return Ok(true);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        let delay = contended_backoff(attempt).min(deadline - now);
+        std::thread::sleep(delay);
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+fn contended_backoff(attempt: u32) -> Duration {
+    let base_ms = 2_u64.saturating_mul(1_u64 << attempt.min(5)).min(40);
+    // No RNG dependency: derive a small jitter from the wall clock.
+    let jitter_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| u64::from(elapsed.subsec_nanos()) % 11);
+    Duration::from_millis((base_ms + jitter_ms).min(50))
+}
+
+fn lock_contention(path: PathBuf, waited: Duration) -> SecureStoreError {
+    SecureStoreError::LockContention {
+        path,
+        waited_ms: u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+    }
 }
 
 #[cfg(unix)]

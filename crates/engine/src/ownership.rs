@@ -7,8 +7,6 @@ use std::{
     },
 };
 
-use fs2::FileExt as _;
-
 #[cfg(any(unix, test))]
 const OWNER_LOCK_FILE: &str = "owner.lock";
 #[cfg(windows)]
@@ -23,7 +21,7 @@ pub(crate) struct HeldLock {
 
 impl Drop for HeldLock {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self._file);
+        let _ = cookie_agent_models::secure_store::unlock(&self._file);
     }
 }
 
@@ -121,20 +119,15 @@ pub(crate) fn try_acquire(session_dir: &Path) -> std::io::Result<SessionOwnershi
         options.mode(0o600);
         options.open(path)?
     };
-    match file.try_lock_exclusive() {
-        Ok(()) => {
+    match cookie_agent_models::secure_store::try_lock_once(&file) {
+        Ok(true) => {
             #[cfg(unix)]
             repair_unix_lock_permissions(&file)?;
             #[cfg(windows)]
             repair_windows_lock_acl(&file)?;
             Ok(SessionOwnership::Owned(HeldLock { _file: file }))
         }
-        Err(error)
-            if error.kind() == std::io::ErrorKind::WouldBlock
-                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
-        {
-            Ok(SessionOwnership::Foreign)
-        }
+        Ok(false) => Ok(SessionOwnership::Foreign),
         Err(error) => Err(error),
     }
 }

@@ -20,7 +20,11 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthSettings, McpServerConfig};
 #[cfg(windows)]
-use cookie_agent_models::secure_store::SecureDirectory;
+use cookie_agent_models::secure_store::{
+    DEFAULT_LOCK_BUDGET, HOT_READ_LOCK_BUDGET, SecureDirectory,
+};
+#[cfg(unix)]
+use cookie_agent_models::secure_store::{DEFAULT_LOCK_BUDGET, lock_within_file, unlock};
 use cookie_agent_protocol::{
     ApprovalBoundary, ApprovalCapability, ApprovalResourceSource, PermissionAction,
     PersistedToolResult as ToolResult, PreparedApprovalResource, PreparedBindingLifetime,
@@ -589,7 +593,9 @@ impl OAuthCredentialFile {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
-            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            let lock = directory
+                .lock_within(OAUTH_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)
+                .map_err(|_| ())?;
             let mut candidate = load_oauth_store_from_lock_windows(&lock, &name)?;
             update(&mut candidate);
             let bytes = serde_json::to_vec(&candidate).map_err(|_| ())?;
@@ -619,7 +625,9 @@ impl OAuthCredentialFile {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
-            let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+            let lock = directory
+                .lock_within(OAUTH_STORE_LOCK_FILE, HOT_READ_LOCK_BUDGET)
+                .map_err(|_| ())?;
             Ok(load_oauth_store_from_lock_windows(&lock, &name)?
                 .get(key)
                 .cloned())
@@ -905,7 +913,9 @@ fn oauth_store_directory_windows(path: &Path) -> Result<(SecureDirectory, String
 #[cfg(windows)]
 fn load_oauth_store_windows(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
     let (directory, name) = oauth_store_directory_windows(path)?;
-    let lock = directory.lock(OAUTH_STORE_LOCK_FILE).map_err(|_| ())?;
+    let lock = directory
+        .lock_within(OAUTH_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)
+        .map_err(|_| ())?;
     load_oauth_store_from_lock_windows(&lock, &name)
 }
 
@@ -951,7 +961,9 @@ impl OAuthStoreLock {
             options.mode(0o600).custom_flags(libc::O_CLOEXEC);
         }
         let file = options.open(&path).map_err(|_| ())?;
-        fs2::FileExt::lock_exclusive(&file).map_err(|_| ())?;
+        if !lock_within_file(&file, DEFAULT_LOCK_BUDGET).map_err(|_| ())? {
+            return Err(());
+        }
         Ok(Self { file })
     }
 }
@@ -959,7 +971,7 @@ impl OAuthStoreLock {
 #[cfg(unix)]
 impl Drop for OAuthStoreLock {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.file);
+        let _ = unlock(&self.file);
     }
 }
 

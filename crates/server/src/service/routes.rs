@@ -429,14 +429,26 @@ impl ServerProtocol for Server {
         &self,
         params: ProviderConnectParams,
     ) -> Result<ProviderConnectResult> {
-        Server::connect_provider(self, params).map_err(Into::into)
+        // Provider connect takes the cross-process store lock; keep the
+        // synchronous disk work off the async worker.
+        let server = self.clone();
+        tokio::task::spawn_blocking(move || Server::connect_provider(&server, params))
+            .await
+            .map_err(|_| ServerFault::from(RpcFault::engine()))?
+            .map_err(Into::into)
     }
 
     async fn disconnect_provider(
         &self,
         params: ProviderDisconnectParams,
     ) -> Result<ProviderDisconnectResult> {
-        Server::disconnect_provider(self, params).map_err(Into::into)
+        // Provider disconnect takes the cross-process store lock; keep the
+        // synchronous disk work off the async worker.
+        let server = self.clone();
+        tokio::task::spawn_blocking(move || Server::disconnect_provider(&server, params))
+            .await
+            .map_err(|_| ServerFault::from(RpcFault::engine()))?
+            .map_err(Into::into)
     }
 }
 

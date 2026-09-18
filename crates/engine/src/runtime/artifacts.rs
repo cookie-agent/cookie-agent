@@ -602,10 +602,9 @@ mod unix {
                 if age < super::TEMPORARY_ARTIFACT_GRACE {
                     continue;
                 }
-                match file.try_lock_exclusive() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(_) => continue,
+                match cookie_agent_models::secure_store::try_lock_once(&file) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => continue,
                 }
                 match unlinkat(&*self.directory_handle, &name, AtFlags::empty()) {
                     Ok(()) => deleted = true,
@@ -1314,10 +1313,9 @@ mod windows {
                 let Some(file) = self.open_existing(&name)? else {
                     continue;
                 };
-                match file.try_lock_exclusive() {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(_) => continue,
+                match cookie_agent_models::secure_store::try_lock_once(&file) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => continue,
                 }
                 match fs::remove_file(entry.path()) {
                     Ok(()) => {}

@@ -128,6 +128,24 @@ pub(super) fn session_owned_by_another_process(error: &ClientError) -> bool {
     matches!(error, ClientError::Rpc(error) if error.code == SESSION_OWNED_BY_ANOTHER_PROCESS_CODE)
 }
 
+/// Renders the spec's store-contention copy when the daemon reports
+/// `lock_contention`; `store` is the human noun for the error site.
+pub(super) fn store_contention_message(error: &ClientError, store: &str) -> String {
+    let code = match error {
+        ClientError::Rpc(rpc) => rpc
+            .data
+            .as_ref()
+            .and_then(|data| data.get("code"))
+            .and_then(serde_json::Value::as_str),
+        _ => None,
+    };
+    if code == Some("lock_contention") {
+        format!("Another cookie-agent process is writing the {store} — try again.")
+    } else {
+        error.to_string()
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum PaletteEntry<'a> {
     Command(&'static CommandSpec),
@@ -6238,7 +6256,7 @@ impl App {
                         outcome: ProviderMutationOutcome::Failed {
                             provider_id: provider.id,
                             action,
-                            error: error.to_string(),
+                            error: store_contention_message(&error, "providers"),
                         },
                     });
                     return;
@@ -6318,7 +6336,7 @@ impl App {
                 Err(error) => ProviderMutationOutcome::Failed {
                     provider_id,
                     action: ProviderAction::Disconnect,
-                    error: error.to_string(),
+                    error: store_contention_message(&error, "providers"),
                 },
             };
             let _ = updates.send(RpcUpdate::ProviderMutationFinished { outcome });

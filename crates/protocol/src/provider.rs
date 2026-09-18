@@ -675,6 +675,7 @@ pub enum ProviderConnectErrorCode {
     InvalidCredential,
     UnsupportedAuthMethod,
     ProviderStoreWriteFailed,
+    LockContention,
     RuntimeCompileFailed,
     IdempotencyConflict,
 }
@@ -697,6 +698,7 @@ pub enum ProviderDisconnectErrorCode {
     ProviderStateRevisionConflict,
     StaleProviderConnectionGeneration,
     ProviderStoreWriteFailed,
+    LockContention,
     RuntimeCompileFailed,
     IdempotencyConflict,
 }

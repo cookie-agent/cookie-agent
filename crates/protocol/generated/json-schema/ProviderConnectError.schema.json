@@ -41,6 +41,7 @@
         "invalid_credential",
         "unsupported_auth_method",
         "provider_store_write_failed",
+        "lock_contention",
         "runtime_compile_failed",
         "idempotency_conflict"
       ]

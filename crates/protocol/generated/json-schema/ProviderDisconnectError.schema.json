@@ -36,6 +36,7 @@
         "provider_state_revision_conflict",
         "stale_provider_connection_generation",
         "provider_store_write_failed",
+        "lock_contention",
         "runtime_compile_failed",
         "idempotency_conflict"
       ]

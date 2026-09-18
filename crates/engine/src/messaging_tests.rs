@@ -496,7 +496,7 @@ fn ac8_agent_owner_events_are_supported_by_the_protocol_projection() {
 
 #[test]
 fn ac9_protocol_version_and_bindings_are_present() {
-    assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 19);
+    assert_eq!(cookie_agent_protocol::PROTOCOL_VERSION, 20);
     assert!(
         std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),

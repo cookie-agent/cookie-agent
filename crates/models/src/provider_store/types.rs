@@ -601,11 +601,16 @@ pub enum ProviderStoreError {
     ProposalMismatch,
     #[error("provider store encoding failed")]
     Encoding,
+    #[error("provider store lock contention")]
+    Contention,
 }
 
 impl From<SecureStoreError> for ProviderStoreError {
     fn from(error: SecureStoreError) -> Self {
-        Self::Storage(error)
+        match error {
+            SecureStoreError::LockContention { .. } => Self::Contention,
+            error => Self::Storage(error),
+        }
     }
 }
 

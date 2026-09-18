@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::secure_store::{SecureDirectory, SecureDirectoryLock, SecureStoreError};
+use crate::secure_store::{
+    DEFAULT_LOCK_BUDGET, SecureDirectory, SecureDirectoryLock, SecureStoreError,
+};
 
 use super::{
     CATALOG_BODY_FILE, CATALOG_CACHE_SCHEMA_VERSION, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES,
@@ -296,7 +298,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
     fn load_cache(&self, _now: Timestamp) -> Result<ValidatedCache, CatalogError> {
         let directory = self.cache.as_ref().map_err(Clone::clone)?;
         let lock = directory
-            .lock(CATALOG_LOCK_FILE)
+            .lock_within(CATALOG_LOCK_FILE, DEFAULT_LOCK_BUDGET)
             .map_err(CatalogError::from_store)?;
         recover_cache(&lock)?;
         let body = lock
@@ -327,7 +329,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
     fn commit_cache(&self, body: &[u8], meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
         let directory = self.cache.as_ref().map_err(Clone::clone)?;
         let lock = directory
-            .lock(CATALOG_LOCK_FILE)
+            .lock_within(CATALOG_LOCK_FILE, DEFAULT_LOCK_BUDGET)
             .map_err(CatalogError::from_store)?;
         recover_cache(&lock)?;
         let meta_bytes = serde_json::to_vec_pretty(meta).map_err(|_| {
@@ -949,6 +951,7 @@ impl CatalogError {
             SecureStoreError::HomeUnavailable => "catalog_cache_home_unavailable",
             SecureStoreError::UnsafePath => "catalog_cache_invalid_path",
             SecureStoreError::TooLarge => "catalog_cache_too_large",
+            SecureStoreError::LockContention { .. } => "catalog_cache_lock_contention",
             SecureStoreError::Io(_) => "catalog_cache_io_failed",
         };
         Self::new(code, "catalog cache could not be used")

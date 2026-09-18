@@ -13,7 +13,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     BoundedSetupString, SafeSetupValue, Sha256Digest,
-    secure_store::{SecureDirectory, SecureDirectoryLock},
+    secure_store::{DEFAULT_LOCK_BUDGET, SecureDirectory, SecureDirectoryLock},
 };
 
 use super::{
@@ -166,7 +166,9 @@ impl ProviderStore {
         #[cfg(test)]
         self.transaction_opens
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let lock = self.directory.lock(PROVIDER_STORE_LOCK_FILE)?;
+        let lock = self
+            .directory
+            .lock_within(PROVIDER_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)?;
         reject_obsolete_files(&lock)?;
         let state = match lock.read(PROVIDER_STORE_FILE, MAX_STORE_BYTES)? {
             Some(bytes) => {

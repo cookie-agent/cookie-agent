@@ -3,4 +3,4 @@
 /**
  *The exact protocol wire version.
  */
-export type ProtocolVersion = 19;
+export type ProtocolVersion = 20;

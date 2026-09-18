@@ -120,6 +120,41 @@ fn independent_descriptors_serialize_cross_process_style_locking() {
 }
 
 #[test]
+fn lock_within_times_out_on_contention_and_recovers_after_release() {
+    let temporary = tempfile::tempdir().unwrap();
+    let first = directory(&temporary);
+    let second = SecureDirectory::open_in(temporary.path(), "store").unwrap();
+    // Distinct open file descriptions in one process contend under flock.
+    let held = first.lock("state.lock").unwrap();
+    let started = std::time::Instant::now();
+    let result = second.lock_within("state.lock", Duration::from_millis(200));
+    let elapsed = started.elapsed();
+    assert!(matches!(
+        result,
+        Err(SecureStoreError::LockContention { .. })
+    ));
+    assert!(elapsed < Duration::from_secs(2), "waited {elapsed:?}");
+    drop(held);
+    assert!(
+        second
+            .lock_within("state.lock", Duration::from_millis(200))
+            .is_ok()
+    );
+}
+
+#[test]
+fn try_lock_reports_contention_then_succeeds_after_release() {
+    let temporary = tempfile::tempdir().unwrap();
+    let first = directory(&temporary);
+    let second = SecureDirectory::open_in(temporary.path(), "store").unwrap();
+    assert!(second.try_lock("state.lock").unwrap().is_some());
+    let held = first.lock("state.lock").unwrap();
+    assert!(second.try_lock("state.lock").unwrap().is_none());
+    drop(held);
+    assert!(second.try_lock("state.lock").unwrap().is_some());
+}
+
+#[test]
 fn lock_replacement_does_not_block_atomic_publication() {
     let temporary = tempfile::tempdir().unwrap();
     let directory = directory(&temporary);

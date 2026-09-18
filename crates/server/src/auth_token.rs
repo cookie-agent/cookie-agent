@@ -11,7 +11,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 #[cfg(windows)]
-use cookie_agent_models::secure_store::{SecureDirectory, SecureStoreError};
+use cookie_agent_models::secure_store::{DEFAULT_LOCK_BUDGET, SecureDirectory, SecureStoreError};
 use cookie_agent_protocol::paths;
 use thiserror::Error;
 
@@ -64,7 +64,7 @@ fn load_or_create_token_windows(path: &Path) -> Result<String, TokenError> {
     let parent = path.parent().ok_or(TokenError::UnsafePath)?;
     let directory = SecureDirectory::open(parent).map_err(token_store_error)?;
     let lock = directory
-        .lock(".token-v1.lock")
+        .lock_within(".token-v1.lock", DEFAULT_LOCK_BUDGET)
         .map_err(token_store_error)?;
     if let Some(bytes) = lock
         .read(TOKEN_FILE, (TOKEN_ENCODED_BYTES + 1) as u64)
@@ -84,6 +84,10 @@ fn token_store_error(error: SecureStoreError) -> TokenError {
         SecureStoreError::Io(error) => TokenError::Io(error),
         SecureStoreError::TooLarge => TokenError::InvalidToken,
         SecureStoreError::HomeUnavailable | SecureStoreError::UnsafePath => TokenError::UnsafePath,
+        SecureStoreError::LockContention { .. } => TokenError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "token store lock contention",
+        )),
     }
 }
 

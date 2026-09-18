@@ -10,12 +10,14 @@ use std::{
     },
     path::{Component, Path, PathBuf},
     ptr::null_mut,
+    time::{Duration, Instant},
 };
 
 use uuid::Uuid;
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_LOCK_VIOLATION, ERROR_SUCCESS, HANDLE,
+        INVALID_HANDLE_VALUE, LocalFree,
     },
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
@@ -31,8 +33,9 @@ use windows_sys::Win32::{
     Storage::FileSystem::{
         CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
         FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, MOVEFILE_REPLACE_EXISTING,
-        MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, UnlockFileEx, WRITE_DAC, WRITE_OWNER,
+        FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, UnlockFileEx,
+        WRITE_DAC, WRITE_OWNER,
     },
     System::{
         IO::OVERLAPPED,
@@ -577,6 +580,9 @@ fn private_file_error(error: SecureStoreError) -> io::Error {
         SecureStoreError::HomeUnavailable | SecureStoreError::TooLarge => {
             io::Error::other("private file creation failed")
         }
+        SecureStoreError::LockContention { .. } => {
+            io::Error::new(io::ErrorKind::WouldBlock, "private file lock contention")
+        }
     }
 }
 
@@ -623,26 +629,16 @@ pub(super) fn read_file(
     Ok(Some(bytes))
 }
 
-pub(super) fn lock<'a>(
+pub(super) fn lock_within<'a>(
     directory: &'a SecureDirectory,
     name: &str,
+    budget: Duration,
 ) -> Result<SecureDirectoryLock<'a>, SecureStoreError> {
     let path = directory.path.join(name);
     let file = open_or_create(&path)?;
-    let mut overlapped = OVERLAPPED::default();
-    // SAFETY: the synchronous file handle and OVERLAPPED are valid for the blocking call.
-    if unsafe {
-        LockFileEx(
-            handle(&file),
-            LOCKFILE_EXCLUSIVE_LOCK,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &mut overlapped,
-        )
-    } == 0
-    {
-        return Err(SecureStoreError::Io(io::Error::last_os_error()));
+    let started = Instant::now();
+    if !super::lock_within_file(&file, budget).map_err(SecureStoreError::Io)? {
+        return Err(super::lock_contention(path, started.elapsed()));
     }
     Ok(SecureDirectoryLock {
         directory,
@@ -651,11 +647,54 @@ pub(super) fn lock<'a>(
     })
 }
 
-pub(super) fn unlock(file: &fs::File) {
+pub(super) fn try_lock<'a>(
+    directory: &'a SecureDirectory,
+    name: &str,
+) -> Result<Option<SecureDirectoryLock<'a>>, SecureStoreError> {
+    let path = directory.path.join(name);
+    let file = open_or_create(&path)?;
+    if super::try_lock_once(&file).map_err(SecureStoreError::Io)? {
+        Ok(Some(SecureDirectoryLock {
+            directory,
+            lock_name: name.to_owned(),
+            _lock: file,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn try_lock_once(file: &fs::File) -> io::Result<bool> {
     let mut overlapped = OVERLAPPED::default();
-    // SAFETY: this unlocks the same whole-file range locked by `lock`.
-    unsafe {
-        UnlockFileEx(handle(file), 0, u32::MAX, u32::MAX, &mut overlapped);
+    // SAFETY: the synchronous file handle and OVERLAPPED are valid for the call.
+    if unsafe {
+        LockFileEx(
+            handle(file),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    } != 0
+    {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+pub(super) fn unlock(file: &fs::File) -> io::Result<()> {
+    let mut overlapped = OVERLAPPED::default();
+    // SAFETY: this unlocks the same whole-file range locked by `lock_within`.
+    if unsafe { UnlockFileEx(handle(file), 0, u32::MAX, u32::MAX, &mut overlapped) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
