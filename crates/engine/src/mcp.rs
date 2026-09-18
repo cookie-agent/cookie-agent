@@ -20,9 +20,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use cookie_agent_config::{LoadedMcpServer, McpOAuthSettings, McpServerConfig};
 #[cfg(windows)]
-use cookie_agent_models::secure_store::{
-    DEFAULT_LOCK_BUDGET, HOT_READ_LOCK_BUDGET, SecureDirectory,
-};
+use cookie_agent_models::secure_store::{DEFAULT_LOCK_BUDGET, SecureDirectory};
 #[cfg(unix)]
 use cookie_agent_models::secure_store::{DEFAULT_LOCK_BUDGET, lock_within_file, unlock};
 use cookie_agent_protocol::{
@@ -250,6 +248,7 @@ struct McpOAuthHttpClient {
     follow_redirects: reqwest::Client,
     stop_redirects: reqwest::Client,
     exchange: OAuthExchangeState,
+    store: ServerCredentialStore,
 }
 
 #[derive(Clone, Default)]
@@ -616,7 +615,33 @@ impl OAuthCredentialFile {
         }
     }
 
+    /// Lock-free read of one credential entry (D6).
+    ///
+    /// The store is only ever mutated via temp-file plus atomic replace, so a
+    /// reader always observes a complete old-or-new document; there is no torn
+    /// state to guard. On Windows the general data reader opens with
+    /// `FILE_SHARE_DELETE`, so a lock-free reader cannot block the writer's
+    /// replace.
     fn get(&self, key: &str) -> Result<Option<PersistedOAuthCredential>, ()> {
+        #[cfg(windows)]
+        {
+            Ok(load_oauth_store_windows(&self.inner.path)?
+                .get(key)
+                .cloned())
+        }
+        #[cfg(unix)]
+        {
+            Ok(load_oauth_store(&self.inner.path)?.get(key).cloned())
+        }
+    }
+
+    /// Bounded-lock read used by the refresh-claim check (D6-correctness).
+    ///
+    /// Unlike [`Self::get`] this takes the exclusive lock so the pre-flight
+    /// compare against disk is coherent; any error (including contention) is
+    /// reported to the caller, which skips the optimization and proceeds with
+    /// the live request.
+    fn get_for_claim(&self, key: &str) -> Result<Option<PersistedOAuthCredential>, ()> {
         #[cfg(windows)]
         {
             let _transaction = self
@@ -626,7 +651,7 @@ impl OAuthCredentialFile {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let (directory, name) = oauth_store_directory_windows(&self.inner.path)?;
             let lock = directory
-                .lock_within(OAUTH_STORE_LOCK_FILE, HOT_READ_LOCK_BUDGET)
+                .lock_within(OAUTH_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)
                 .map_err(|_| ())?;
             Ok(load_oauth_store_from_lock_windows(&lock, &name)?
                 .get(key)
@@ -669,6 +694,15 @@ impl CredentialStore for ServerCredentialStore {
         };
         self.file
             .update(|all| {
+                if let Some(existing) = all.get(&self.key)
+                    && credential_superseded(&existing.credentials, &stored.credentials)
+                {
+                    // Compare-before-write CAS (D6-correctness): the on-disk
+                    // entry is newer (or a same-timestamp rotation), so the
+                    // caller's credentials are superseded. The DISK wins; skip
+                    // the write without error.
+                    return;
+                }
                 all.insert(self.key.clone(), stored);
             })
             .map_err(|()| oauth_store_auth_error())
@@ -681,6 +715,43 @@ impl CredentialStore for ServerCredentialStore {
             })
             .map_err(|()| oauth_store_auth_error())
     }
+}
+
+impl ServerCredentialStore {
+    /// Bounded-lock disk read for the refresh-claim check.
+    ///
+    /// Any error (including lock contention) yields `None`: the optimization is
+    /// skipped and the live request proceeds. This is never a failure mode.
+    fn claim_credential(&self) -> Option<PersistedOAuthCredential> {
+        self.file.get_for_claim(&self.key).ok().flatten()
+    }
+}
+
+/// Compare-before-write CAS predicate (D6-correctness).
+///
+/// Returns `true` when the freshly re-read on-disk entry supersedes the
+/// candidate being saved, in which case the write is skipped. The disk wins
+/// when it is strictly newer by `token_received_at`, or carries the same
+/// timestamp with a different refresh token. Equal-refresh-token idempotent
+/// writes and `token_response: None` administrative downgrades are allowed.
+fn credential_superseded(
+    existing: &StrictStoredCredentials,
+    candidate: &StrictStoredCredentials,
+) -> bool {
+    if candidate.token_response.is_none() {
+        return false;
+    }
+    let strictly_newer = existing.token_received_at > candidate.token_received_at;
+    let same_timestamp = existing.token_received_at == candidate.token_received_at;
+    strictly_newer || (same_timestamp && existing.refresh_token() != candidate.refresh_token())
+}
+
+fn refresh_token_of(response: &OAuthTokenResponse) -> Option<String> {
+    serde_json::to_value(response)
+        .ok()?
+        .get("refresh_token")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 impl OAuthCredentialBinding {
@@ -747,10 +818,14 @@ impl StrictStoredCredentials {
         )
         .with_issuer(self.issuer)
     }
+
+    fn refresh_token(&self) -> Option<String> {
+        self.token_response.as_ref().and_then(refresh_token_of)
+    }
 }
 
 impl McpOAuthHttpClient {
-    fn new(exchange: OAuthExchangeState) -> Result<Self, ToolError> {
+    fn new(exchange: OAuthExchangeState, store: ServerCredentialStore) -> Result<Self, ToolError> {
         let base = || {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -767,8 +842,73 @@ impl McpOAuthHttpClient {
             follow_redirects,
             stop_redirects,
             exchange,
+            store,
         })
     }
+
+    /// Pre-flight refresh claim (D6-correctness).
+    ///
+    /// Compares the refresh token about to be presented to the IdP against the
+    /// on-disk credential under a bounded lock. When disk has rotated ahead,
+    /// another process already refreshed: synthesize a 200 adopting the disk
+    /// credentials instead of making a doomed IdP call. Any read error or
+    /// contention skips the check so the live request proceeds.
+    fn adopted_success(&self, requested: Option<&str>) -> Option<http::Response<Vec<u8>>> {
+        let requested = requested?;
+        let disk = self.store.claim_credential()?;
+        if disk.binding != self.store.binding {
+            return None;
+        }
+        let token_response = disk.credentials.token_response.as_ref()?;
+        let disk_refresh = refresh_token_of(token_response)?;
+        if disk_refresh == requested {
+            return None;
+        }
+        let body = serde_json::to_vec(token_response).ok()?;
+        http::Response::builder()
+            .status(http::StatusCode::OK)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .ok()
+    }
+}
+
+/// Extracts the refresh-token grant's token from an OAuth form body.
+///
+/// Returns `Some(token)` only for `grant_type=refresh_token` requests; `None`
+/// otherwise. This sniffing is the fragile part of the refresh claim and is
+/// covered by a debug test that fails loudly if rmcp stops routing refreshes
+/// through this client.
+fn refresh_grant_token(body: &[u8]) -> Option<String> {
+    let mut grant_type = None;
+    let mut refresh_token = None;
+    for (name, value) in url::form_urlencoded::parse(body) {
+        match name.as_ref() {
+            "grant_type" => grant_type = Some(value.into_owned()),
+            "refresh_token" => refresh_token = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    if grant_type.as_deref() != Some("refresh_token") {
+        return None;
+    }
+    refresh_token
+}
+
+/// Whether a token-endpoint response is the `invalid_grant` rejection.
+fn response_is_invalid_grant(response: &http::Response<Vec<u8>>) -> bool {
+    if response.status() != http::StatusCode::BAD_REQUEST {
+        return false;
+    }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(response.body())
+        && value.get("error").and_then(serde_json::Value::as_str) == Some("invalid_grant")
+    {
+        return true;
+    }
+    response
+        .body()
+        .windows(b"invalid_grant".len())
+        .any(|window| window == b"invalid_grant")
 }
 
 impl OAuthExchangeState {
@@ -831,6 +971,12 @@ impl OAuthHttpClient for McpOAuthHttpClient {
             let timeout = operation.timeout;
             let mut oauth_request = operation.request;
             self.exchange.restore_in_request(&mut oauth_request);
+            // D6-correctness pre-flight: for a refresh grant, adopt a rotation
+            // that already landed on disk instead of making a doomed IdP call.
+            let refresh_token = refresh_grant_token(oauth_request.body());
+            if let Some(response) = self.adopted_success(refresh_token.as_deref()) {
+                return Ok(response);
+            }
             let mut request = reqwest::Request::try_from(oauth_request)
                 .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)?;
             *request.timeout_mut() = timeout;
@@ -869,9 +1015,20 @@ impl OAuthHttpClient for McpOAuthHttpClient {
             for (name, value) in &headers {
                 response = response.header(name, value);
             }
-            response
+            let response = response
                 .body(body)
-                .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)
+                .map_err(|_| Box::new(OAuthHttpFailure) as rmcp::transport::OAuthHttpClientError)?;
+            // D6-correctness recovery: a refresh the IdP rejected with
+            // `invalid_grant` may have lost a cross-process race. Re-check disk
+            // once; if a sibling landed a rotation, adopt it instead of
+            // surfacing re-login.
+            if refresh_token.is_some()
+                && response_is_invalid_grant(&response)
+                && let Some(adopted) = self.adopted_success(refresh_token.as_deref())
+            {
+                return Ok(adopted);
+            }
+            Ok(response)
         })
     }
 }
@@ -912,11 +1069,17 @@ fn oauth_store_directory_windows(path: &Path) -> Result<(SecureDirectory, String
 
 #[cfg(windows)]
 fn load_oauth_store_windows(path: &Path) -> Result<BTreeMap<String, PersistedOAuthCredential>, ()> {
+    // D6: reads are lock-free on Windows too. The general data reader opens
+    // with `FILE_SHARE_DELETE`, so this cannot block a concurrent atomic
+    // replace, and the replace is atomic (old-or-new bytes, never torn).
     let (directory, name) = oauth_store_directory_windows(path)?;
-    let lock = directory
-        .lock_within(OAUTH_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)
-        .map_err(|_| ())?;
-    load_oauth_store_from_lock_windows(&lock, &name)
+    let Some(bytes) = directory
+        .read(&name, OAUTH_STORE_MAX_BYTES)
+        .map_err(|_| ())?
+    else {
+        return Ok(BTreeMap::new());
+    };
+    serde_json::from_slice(&bytes).map_err(|_| ())
 }
 
 #[cfg(windows)]
@@ -1819,12 +1982,16 @@ impl ServerRuntime {
             response_error: self.oauth_response_error.clone(),
             ..Default::default()
         };
-        let http_client = McpOAuthHttpClient::new(authorization_code.clone())?;
+        // The HTTP client needs the same credential store the manager uses so
+        // the refresh claim can compare the outgoing refresh token against
+        // disk (D6-correctness).
+        let store = self.oauth_store()?;
+        let http_client = McpOAuthHttpClient::new(authorization_code.clone(), store.clone())?;
         let mut manager =
             AuthorizationManager::new_with_oauth_http_client(url, Arc::new(http_client))
                 .await
                 .map_err(|error| ToolError::execution(authorization_code.diagnostic(&error)))?;
-        manager.set_credential_store(self.oauth_store()?);
+        manager.set_credential_store(store);
         Ok((manager, authorization_code))
     }
 

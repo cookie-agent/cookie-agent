@@ -18,13 +18,15 @@ use sha2::{Digest as _, Sha256};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
-    sync::Barrier,
+    sync::{Barrier, Notify},
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    McpRegistry, McpServerState, OAUTH_CALLBACK_TIMEOUT, canonical_oauth_resource_url,
-    oauth_credential_key,
+    McpOAuthHttpClient, McpRegistry, McpServerState, OAUTH_CALLBACK_TIMEOUT, OAUTH_STORE_FILE,
+    OAuthCredentialFile, OAuthExchangeState, PersistedOAuthCredential, ServerCredentialStore,
+    StrictStoredCredentials, canonical_oauth_resource_url, credential_superseded,
+    oauth_credential_key, refresh_grant_token,
 };
 
 struct OAuthFixtureState {
@@ -34,6 +36,12 @@ struct OAuthFixtureState {
     reject_all_access: AtomicBool,
     reject_refresh: AtomicBool,
     transient_refresh_failure: AtomicBool,
+    rotate_refreshes: AtomicBool,
+    refresh_sequence: AtomicU64,
+    valid_refresh: Mutex<Option<String>>,
+    refresh_gate: AtomicBool,
+    refresh_seen: Notify,
+    refresh_release: Notify,
     code_exchange_error: Mutex<Option<String>>,
     token_expires_in: AtomicU64,
     mcp2_bearer_requests: AtomicUsize,
@@ -62,6 +70,12 @@ impl OAuthFixture {
             reject_all_access: AtomicBool::new(false),
             reject_refresh: AtomicBool::new(false),
             transient_refresh_failure: AtomicBool::new(false),
+            rotate_refreshes: AtomicBool::new(false),
+            refresh_sequence: AtomicU64::new(2),
+            valid_refresh: Mutex::new(None),
+            refresh_gate: AtomicBool::new(false),
+            refresh_seen: Notify::new(),
+            refresh_release: Notify::new(),
             code_exchange_error: Mutex::new(None),
             token_expires_in: AtomicU64::new(3600),
             mcp2_bearer_requests: AtomicUsize::new(0),
@@ -281,6 +295,10 @@ async fn handle_request(
                 .collect::<BTreeMap<_, _>>();
             if params.get("grant_type").map(String::as_str) == Some("refresh_token") {
                 state.refreshes.fetch_add(1, Ordering::SeqCst);
+                if state.refresh_gate.load(Ordering::SeqCst) {
+                    state.refresh_seen.notify_one();
+                    state.refresh_release.notified().await;
+                }
                 if state.transient_refresh_failure.load(Ordering::SeqCst) {
                     return json_response(
                         &mut stream,
@@ -297,6 +315,31 @@ async fn handle_request(
                     )
                     .await;
                 }
+                let issued_refresh = if state.rotate_refreshes.load(Ordering::SeqCst) {
+                    // Single-use rotating refresh tokens: presenting a consumed
+                    // token is `invalid_grant`.
+                    let presented = params.get("refresh_token").cloned().unwrap_or_default();
+                    let matched = {
+                        let valid = state.valid_refresh.lock().expect("valid refresh");
+                        valid.as_deref() == Some(presented.as_str())
+                    };
+                    if !matched {
+                        return json_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            json!({"error":"invalid_grant","error_description":"oauth-token-sentinel"}),
+                        )
+                        .await;
+                    }
+                    let next = format!(
+                        "refresh-{}",
+                        state.refresh_sequence.fetch_add(1, Ordering::SeqCst)
+                    );
+                    *state.valid_refresh.lock().expect("valid refresh") = Some(next.clone());
+                    next
+                } else {
+                    "refresh-1".to_owned()
+                };
                 return json_response(
                     &mut stream,
                     "200 OK",
@@ -304,7 +347,7 @@ async fn handle_request(
                         "access_token": "access-2",
                         "token_type": "Bearer",
                         "expires_in": state.token_expires_in.load(Ordering::SeqCst),
-                        "refresh_token": "refresh-1",
+                        "refresh_token": issued_refresh,
                         "scope": "mcp offline_access"
                     }),
                 )
@@ -331,6 +374,7 @@ async fn handle_request(
                 )
                 .await;
             }
+            *state.valid_refresh.lock().expect("valid refresh") = Some("refresh-1".to_owned());
             json_response(
                 &mut stream,
                 "200 OK",
@@ -1298,4 +1342,452 @@ fn malformed_oauth_store_is_strict_and_redacted() {
     assert!(error.contains(&path.display().to_string()));
     assert!(error.contains("remove the file"));
     assert!(!error.contains("oauth-token-sentinel"));
+}
+
+// --- D6: lock-free credential reads -----------------------------------------
+
+#[cfg(unix)]
+const CHILD_LOCK_ENV: &str = "COOKIE_AGENT_OAUTH_LOCK_CHILD";
+
+fn token_response_json(access: &str, refresh: &str) -> rmcp::transport::auth::OAuthTokenResponse {
+    serde_json::from_value(json!({
+        "access_token": access,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": refresh,
+        "scope": "mcp offline_access"
+    }))
+    .expect("OAuth token response")
+}
+
+fn strict_credentials(access: &str, refresh: &str, received_at: u64) -> StrictStoredCredentials {
+    StrictStoredCredentials {
+        client_id: "cookie-test-client".to_owned(),
+        token_response: Some(token_response_json(access, refresh)),
+        granted_scopes: vec!["mcp".to_owned()],
+        token_received_at: Some(received_at),
+        issuer: Some("issuer".to_owned()),
+    }
+}
+
+fn stored_credentials(access: &str, refresh: &str, received_at: u64) -> StoredCredentials {
+    StoredCredentials::new(
+        "cookie-test-client".to_owned(),
+        Some(token_response_json(access, refresh)),
+        vec!["mcp".to_owned()],
+        Some(received_at),
+    )
+    .with_issuer(Some("issuer".to_owned()))
+}
+
+fn token_field(
+    response: &rmcp::transport::auth::OAuthTokenResponse,
+    field: &str,
+) -> Option<String> {
+    serde_json::to_value(response)
+        .ok()?
+        .get(field)?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn oauth_binding(url: &str) -> super::OAuthCredentialBinding {
+    super::OAuthCredentialBinding::from_config(&remote_config(url.to_owned())).expect("binding")
+}
+
+fn seed_credential(
+    path: &std::path::Path,
+    server: &str,
+    url: &str,
+    access: &str,
+    refresh: &str,
+    received_at: u64,
+) -> OAuthCredentialFile {
+    let file = OAuthCredentialFile::open(path.to_owned()).expect("OAuth file");
+    let binding = oauth_binding(url);
+    let key = oauth_credential_key(server, &binding.resource_url);
+    file.update(|all| {
+        all.insert(
+            key,
+            PersistedOAuthCredential {
+                binding,
+                credentials: strict_credentials(access, refresh, received_at),
+            },
+        );
+    })
+    .expect("seed credential");
+    file
+}
+
+async fn refresh_via_http_client(
+    url: String,
+    store: ServerCredentialStore,
+    stale: StoredCredentials,
+) -> Result<rmcp::transport::auth::OAuthTokenResponse, rmcp::transport::AuthError> {
+    let exchange = OAuthExchangeState::default();
+    let http_client = McpOAuthHttpClient::new(exchange, store).expect("OAuth HTTP client");
+    let mut manager = rmcp::transport::AuthorizationManager::new_with_oauth_http_client(
+        url,
+        Arc::new(http_client),
+    )
+    .await
+    .expect("authorization manager");
+    let resolution = manager.resolve_metadata().await.expect("metadata");
+    manager.set_metadata(resolution.metadata);
+    manager
+        .configure_client(rmcp::transport::auth::OAuthClientConfig::new(
+            "cookie-test-client".to_owned(),
+            "http://127.0.0.1".to_owned(),
+        ))
+        .expect("configure client");
+    let credentials = rmcp::transport::auth::InMemoryCredentialStore::new();
+    credentials
+        .save(stale)
+        .await
+        .expect("seed stale credentials");
+    manager.set_credential_store(credentials);
+    manager.refresh_token().await
+}
+
+#[test]
+fn refresh_grant_sniffing_matches_rmcp_refresh_shape() {
+    // Locks the wire shape rmcp's refresh uses so a future rmcp that stops
+    // routing refreshes through our client fails loudly instead of silently
+    // bypassing the claim check.
+    assert_eq!(
+        refresh_grant_token(b"grant_type=refresh_token&refresh_token=abc&resource=x"),
+        Some("abc".to_owned())
+    );
+    assert_eq!(
+        refresh_grant_token(b"grant_type=authorization_code&code=abc"),
+        None
+    );
+    assert_eq!(refresh_grant_token(b""), None);
+}
+
+#[test]
+fn cas_predicate_matches_spec() {
+    let existing = strict_credentials("a", "r1", 100);
+    assert!(credential_superseded(
+        &existing,
+        &strict_credentials("b", "r2", 90)
+    ));
+    assert!(credential_superseded(
+        &existing,
+        &strict_credentials("b", "r2", 100)
+    ));
+    assert!(!credential_superseded(
+        &existing,
+        &strict_credentials("b", "r1", 100)
+    ));
+    assert!(!credential_superseded(
+        &existing,
+        &strict_credentials("b", "r2", 200)
+    ));
+    let downgrade = StrictStoredCredentials {
+        token_response: None,
+        ..strict_credentials("b", "r2", 50)
+    };
+    assert!(!credential_superseded(&existing, &downgrade));
+}
+
+#[tokio::test]
+async fn credential_save_cas_skips_superseded_and_lands_fresh() {
+    let directory = tempfile::tempdir().expect("profile data");
+    let path = directory.path().join(OAUTH_STORE_FILE);
+    let url = "https://example.test/mcp";
+    let file = OAuthCredentialFile::open(path).expect("OAuth file");
+    let binding = oauth_binding(url);
+    let key = oauth_credential_key("remote", &binding.resource_url);
+    file.update(|all| {
+        all.insert(
+            key.clone(),
+            PersistedOAuthCredential {
+                binding: binding.clone(),
+                credentials: strict_credentials("access-1", "refresh-1", 100),
+            },
+        );
+    })
+    .expect("seed disk");
+    let store = file.scoped("remote", binding);
+
+    // Fresh (newer) write lands.
+    store
+        .save(stored_credentials("access-2", "refresh-2", 200))
+        .await
+        .expect("fresh save");
+    let disk = file.get(&key).expect("read").expect("entry");
+    assert_eq!(
+        token_field(
+            disk.credentials.token_response.as_ref().unwrap(),
+            "access_token"
+        ),
+        Some("access-2".to_owned())
+    );
+
+    // Older write is skipped and reports success; disk is unchanged.
+    store
+        .save(stored_credentials("access-stale", "refresh-stale", 150))
+        .await
+        .expect("stale save returns Ok");
+    let disk = file.get(&key).expect("read").expect("entry");
+    assert_eq!(
+        token_field(
+            disk.credentials.token_response.as_ref().unwrap(),
+            "access_token"
+        ),
+        Some("access-2".to_owned())
+    );
+
+    // Same timestamp, different refresh token: skipped.
+    store
+        .save(stored_credentials("access-rotated", "refresh-rotated", 200))
+        .await
+        .expect("rotation save returns Ok");
+    let disk = file.get(&key).expect("read").expect("entry");
+    assert_eq!(
+        token_field(
+            disk.credentials.token_response.as_ref().unwrap(),
+            "access_token"
+        ),
+        Some("access-2".to_owned())
+    );
+
+    // Same timestamp, same refresh token: idempotent write lands.
+    store
+        .save(stored_credentials("access-2b", "refresh-2", 200))
+        .await
+        .expect("idempotent save");
+    let disk = file.get(&key).expect("read").expect("entry");
+    assert_eq!(
+        token_field(
+            disk.credentials.token_response.as_ref().unwrap(),
+            "access_token"
+        ),
+        Some("access-2b".to_owned())
+    );
+
+    // `token_response: None` administrative downgrade is allowed.
+    store
+        .save(StoredCredentials::new(
+            "cookie-test-client".to_owned(),
+            None,
+            Vec::new(),
+            Some(400),
+        ))
+        .await
+        .expect("downgrade save");
+    let disk = file.get(&key).expect("read").expect("entry");
+    assert!(disk.credentials.token_response.is_none());
+}
+
+#[tokio::test]
+async fn refresh_claim_adopts_rotated_disk_credential_without_idp_hit() {
+    let fixture = OAuthFixture::start().await;
+    fixture.state.rotate_refreshes.store(true, Ordering::SeqCst);
+    let directory = tempfile::tempdir().expect("profile data");
+    let path = directory.path().join(OAUTH_STORE_FILE);
+    let url = fixture.mcp_url();
+    // A sibling process already rotated disk to these credentials.
+    let file = seed_credential(
+        &path,
+        "remote",
+        &url,
+        "access-rotated",
+        "refresh-rotated",
+        200,
+    );
+    *fixture.state.valid_refresh.lock().unwrap() = Some("refresh-rotated".to_owned());
+    let store = file.scoped("remote", oauth_binding(&url));
+    let result = refresh_via_http_client(
+        url,
+        store,
+        stored_credentials("access-old", "refresh-old", 100),
+    )
+    .await
+    .expect("adopted disk credentials");
+    assert_eq!(
+        token_field(&result, "access_token").as_deref(),
+        Some("access-rotated")
+    );
+    assert_eq!(
+        fixture.state.refreshes.load(Ordering::SeqCst),
+        0,
+        "pre-flight claim must avoid the IdP call"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn refresh_claim_recovers_from_invalid_grant_by_adopting_disk() {
+    let fixture = OAuthFixture::start().await;
+    fixture.state.reject_refresh.store(true, Ordering::SeqCst);
+    fixture.state.refresh_gate.store(true, Ordering::SeqCst);
+    let directory = tempfile::tempdir().expect("profile data");
+    let path = directory.path().join(OAUTH_STORE_FILE);
+    let url = fixture.mcp_url();
+    let file = seed_credential(&path, "remote", &url, "access-old", "refresh-old", 100);
+    let store = file.scoped("remote", oauth_binding(&url));
+    let rotate_file = file.clone();
+    let rotate_binding = oauth_binding(&url);
+    let rotate_key = oauth_credential_key("remote", &rotate_binding.resource_url);
+    let refresh_url = url.clone();
+    let task = tokio::spawn(async move {
+        refresh_via_http_client(
+            refresh_url,
+            store,
+            stored_credentials("access-old", "refresh-old", 100),
+        )
+        .await
+    });
+
+    // The IdP has the request in hand; a sibling lands a rotation before the
+    // IdP rejects the stale token.
+    fixture.state.refresh_seen.notified().await;
+    rotate_file
+        .update(|all| {
+            all.insert(
+                rotate_key,
+                PersistedOAuthCredential {
+                    binding: rotate_binding,
+                    credentials: strict_credentials("access-new", "refresh-new", 200),
+                },
+            );
+        })
+        .expect("rotate disk");
+    fixture.state.refresh_release.notify_one();
+    let result = task
+        .await
+        .expect("refresh task")
+        .expect("invalid_grant recovered by disk adoption");
+    assert_eq!(
+        token_field(&result, "access_token").as_deref(),
+        Some("access-new")
+    );
+    assert_eq!(fixture.state.refreshes.load(Ordering::SeqCst), 1);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn refresh_claim_read_error_falls_back_to_live_idp_call() {
+    let fixture = OAuthFixture::start().await;
+    fixture.state.rotate_refreshes.store(true, Ordering::SeqCst);
+    let directory = tempfile::tempdir().expect("profile data");
+    let path = directory.path().join(OAUTH_STORE_FILE);
+    let url = fixture.mcp_url();
+    let file = seed_credential(&path, "remote", &url, "access-old", "refresh-old", 100);
+    // Corrupt the store so the pre-flight claim read errors; the live refresh
+    // must still proceed (the optimization is never a failure mode).
+    std::fs::write(&path, b"{ not valid json").expect("corrupt store");
+    *fixture.state.valid_refresh.lock().unwrap() = Some("refresh-old".to_owned());
+    let store = file.scoped("remote", oauth_binding(&url));
+    let result = refresh_via_http_client(
+        url,
+        store,
+        stored_credentials("access-old", "refresh-old", 100),
+    )
+    .await
+    .expect("live refresh");
+    assert_eq!(fixture.state.refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        token_field(&result, "access_token").as_deref(),
+        Some("access-2")
+    );
+    fixture.stop().await;
+}
+
+#[cfg(unix)]
+#[test]
+fn credential_read_is_lock_free_while_lock_held_by_child_process() {
+    let Some(path) = std::env::var_os(CHILD_LOCK_ENV) else {
+        run_lock_free_read_parent();
+        return;
+    };
+    // Child: hold the OAuth store's exclusive lock, announce readiness, and
+    // wait for the parent to release us.
+    use std::io::Write as _;
+    let path = std::path::PathBuf::from(path);
+    let lock = super::OAuthStoreLock::acquire(&path).expect("child acquires store lock");
+    println!("OAUTH-LOCK-CHILD-HOLDING");
+    std::io::stdout().flush().expect("flush marker");
+    let mut line = String::new();
+    let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line);
+    drop(lock);
+}
+
+#[cfg(unix)]
+fn run_lock_free_read_parent() {
+    use std::{
+        io::{BufRead as _, BufReader, Write as _},
+        process::{Command, Stdio},
+        time::Instant,
+    };
+
+    let directory = tempfile::tempdir().expect("profile data");
+    let path = directory.path().join(OAUTH_STORE_FILE);
+    let url = "https://example.test/mcp";
+    let binding = oauth_binding(url);
+    let key = oauth_credential_key("remote", &binding.resource_url);
+    let file = OAuthCredentialFile::open(path.clone()).expect("OAuth file");
+    file.update(|all| {
+        all.insert(
+            key.clone(),
+            PersistedOAuthCredential {
+                binding: binding.clone(),
+                credentials: strict_credentials("access-1", "refresh-1", 100),
+            },
+        );
+    })
+    .expect("seed disk");
+
+    let exe = std::env::current_exe().expect("test executable");
+    let mut child = Command::new(exe)
+        .args([
+            "--exact",
+            "mcp::oauth_tests::credential_read_is_lock_free_while_lock_held_by_child_process",
+            "--nocapture",
+        ])
+        .env(CHILD_LOCK_ENV, &path)
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn child process");
+    let stdout = child.stdout.take().expect("child stdout");
+    let mut lines = BufReader::new(stdout).lines();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "child never reported holding the lock"
+        );
+        match lines.next() {
+            Some(Ok(line)) if line.contains("OAUTH-LOCK-CHILD-HOLDING") => break,
+            Some(Ok(_)) => {}
+            Some(Err(error)) => panic!("child stdout error: {error}"),
+            None => panic!("child exited before holding the lock"),
+        }
+    }
+
+    // The child holds the exclusive store lock. A lock-taking read would block
+    // for the 5 s budget; the D6 read must complete promptly and observe the
+    // seeded credential.
+    let started = Instant::now();
+    let stored = file.get(&key).expect("lock-free read").expect("credential");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "read waited on the child's lock"
+    );
+    assert_eq!(
+        stored.credentials.refresh_token().as_deref(),
+        Some("refresh-1")
+    );
+
+    child
+        .stdin
+        .as_mut()
+        .expect("child stdin")
+        .write_all(b"release\n")
+        .expect("release child");
+    let status = child.wait().expect("wait for child");
+    assert!(status.success());
 }
