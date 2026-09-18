@@ -13636,6 +13636,32 @@ mod tests {
         assert!(!session_owned_by_another_process(&same_message));
     }
 
+    #[test]
+    fn store_contention_retry_policy_is_exactly_once() {
+        let contention = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+            code: -32011,
+            message: "provider connect error".into(),
+            data: Some(serde_json::json!({"code": "lock_contention"})),
+        });
+        let other = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+            code: -32011,
+            message: "provider connect error".into(),
+            data: Some(serde_json::json!({"code": "provider_store_write_failed"})),
+        });
+
+        assert!(retry_store_contention_once(0, &contention));
+        assert!(!retry_store_contention_once(1, &contention));
+        assert!(!retry_store_contention_once(0, &other));
+        assert_eq!(
+            store_contention_message(&contention, "providers"),
+            "Another cookie-agent process is writing the providers — try again."
+        );
+        assert_eq!(
+            store_contention_message(&other, "providers"),
+            other.to_string()
+        );
+    }
+
     #[tokio::test]
     async fn tree_children_use_their_own_ownership_classification() {
         let mut app = test_app().await;

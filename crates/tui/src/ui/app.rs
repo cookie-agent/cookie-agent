@@ -128,18 +128,34 @@ pub(super) fn session_owned_by_another_process(error: &ClientError) -> bool {
     matches!(error, ClientError::Rpc(error) if error.code == SESSION_OWNED_BY_ANOTHER_PROCESS_CODE)
 }
 
+/// Whether the daemon reported retryable store contention (`lock_contention`),
+/// covering both the bounded-lock budget and a lost commit-time CAS.
+pub(super) fn is_store_contention(error: &ClientError) -> bool {
+    match error {
+        ClientError::Rpc(rpc) => {
+            rpc.data
+                .as_ref()
+                .and_then(|data| data.get("code"))
+                .and_then(serde_json::Value::as_str)
+                == Some("lock_contention")
+        }
+        _ => false,
+    }
+}
+
+/// Provider connect/disconnect resubmit policy: the first contention-class
+/// failure gets exactly one automatic resubmission of the identical request
+/// (same client request id, so the daemon's replay path answers a commit whose
+/// response was lost); a second consecutive contention surfaces to the user and
+/// the pending payload stays held.
+pub(super) fn retry_store_contention_once(attempt: usize, error: &ClientError) -> bool {
+    attempt == 0 && is_store_contention(error)
+}
+
 /// Renders the spec's store-contention copy when the daemon reports
 /// `lock_contention`; `store` is the human noun for the error site.
 pub(super) fn store_contention_message(error: &ClientError, store: &str) -> String {
-    let code = match error {
-        ClientError::Rpc(rpc) => rpc
-            .data
-            .as_ref()
-            .and_then(|data| data.get("code"))
-            .and_then(serde_json::Value::as_str),
-        _ => None,
-    };
-    if code == Some("lock_contention") {
+    if is_store_contention(error) {
         format!("Another cookie-agent process is writing the {store} — try again.")
     } else {
         error.to_string()
@@ -6237,29 +6253,34 @@ impl App {
         self.status = format!("{} provider {}…", action_name(action), provider.id);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
+        let params = ProviderConnectParams {
+            client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
+                .expect("uuid-derived client connect id"),
+            provider_id: provider.id.clone(),
+            expected_catalog_revision: catalog_revision,
+            setup_values,
+            auth_method,
+            auth_values,
+        };
         let task = tokio::spawn(async move {
-            let connect = match client
-                .connect_provider(ProviderConnectParams {
-                    client_connect_id: ClientConnectId::new(Uuid::now_v7().to_string())
-                        .expect("uuid-derived client connect id"),
-                    provider_id: provider.id.clone(),
-                    expected_catalog_revision: catalog_revision,
-                    setup_values,
-                    auth_method,
-                    auth_values,
-                })
-                .await
-            {
-                Ok(connect) => connect,
-                Err(error) => {
-                    let _ = updates.send(RpcUpdate::ProviderMutationFinished {
-                        outcome: ProviderMutationOutcome::Failed {
-                            provider_id: provider.id,
-                            action,
-                            error: store_contention_message(&error, "providers"),
-                        },
-                    });
-                    return;
+            let mut attempt = 0_usize;
+            let connect = loop {
+                match client.connect_provider(params.clone()).await {
+                    Ok(connect) => break connect,
+                    Err(error) => {
+                        if retry_store_contention_once(attempt, &error) {
+                            attempt += 1;
+                            continue;
+                        }
+                        let _ = updates.send(RpcUpdate::ProviderMutationFinished {
+                            outcome: ProviderMutationOutcome::Failed {
+                                provider_id: provider.id,
+                                action,
+                                error: store_contention_message(&error, "providers"),
+                            },
+                        });
+                        return;
+                    }
                 }
             };
             let _ = updates.send(RpcUpdate::ProviderMutationFinished {
@@ -6327,17 +6348,28 @@ impl App {
         let updates = self.rpc_updates_tx.clone();
         let provider_id = provider.id;
         let task = tokio::spawn(async move {
-            let outcome = match client.disconnect_provider(params).await {
-                Ok(result) => ProviderMutationOutcome::Disconnected {
-                    provider_id,
-                    baseline,
-                    runtime: Box::new(result.runtime.snapshot),
-                },
-                Err(error) => ProviderMutationOutcome::Failed {
-                    provider_id,
-                    action: ProviderAction::Disconnect,
-                    error: store_contention_message(&error, "providers"),
-                },
+            let mut attempt = 0_usize;
+            let outcome = loop {
+                match client.disconnect_provider(params.clone()).await {
+                    Ok(result) => {
+                        break ProviderMutationOutcome::Disconnected {
+                            provider_id,
+                            baseline,
+                            runtime: Box::new(result.runtime.snapshot),
+                        };
+                    }
+                    Err(error) => {
+                        if retry_store_contention_once(attempt, &error) {
+                            attempt += 1;
+                            continue;
+                        }
+                        break ProviderMutationOutcome::Failed {
+                            provider_id,
+                            action: ProviderAction::Disconnect,
+                            error: store_contention_message(&error, "providers"),
+                        };
+                    }
+                }
             };
             let _ = updates.send(RpcUpdate::ProviderMutationFinished { outcome });
         });

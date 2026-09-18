@@ -1152,7 +1152,7 @@ impl ModelManager {
                 let publication = prepare_publication(&candidate, &mutation)?;
                 let retained = prepared_retained(&self.retained.load_full(), &candidate);
                 let effective_auth = effective_auth_for(&candidate, mutation_provider(&mutation));
-                transaction.commit(*proposal)?;
+                transaction.commit(*proposal).map_err(map_commit_error)?;
                 self.retained.store(retained);
                 self.current.store(Arc::clone(&candidate));
                 Ok(ModelMutationResult {
@@ -1215,7 +1215,7 @@ impl ModelManager {
                 let publication = prepare_publication(&candidate, &mutation)?;
                 let retained = prepared_retained(&self.retained.load_full(), &candidate);
                 let effective_auth = effective_auth_for(&candidate, mutation_provider(&mutation));
-                transaction.commit(*proposal)?;
+                transaction.commit(*proposal).map_err(map_commit_error)?;
                 self.retained.store(retained);
                 self.current.store(Arc::clone(&candidate));
                 Ok(ModelMutationResult {
@@ -3818,6 +3818,16 @@ fn mutation_provider(mutation: &ProviderStoreMutation) -> &ProviderId {
     }
 }
 
+/// Maps a failed commit to a manager error. A lost commit-time compare-and-swap
+/// is a distinct retryable outcome; the client layer resubmits the identical
+/// request (same id) exactly once. The manager never replays it internally.
+fn map_commit_error(error: ProviderStoreError) -> ModelManagerError {
+    match error {
+        ProviderStoreError::Stale => ModelManagerError::Contention,
+        error => ModelManagerError::ProviderStore(error),
+    }
+}
+
 fn effective_auth_for(
     runtime: &CompiledModelRuntime,
     provider_id: &ProviderId,
@@ -3872,6 +3882,8 @@ pub enum ModelManagerError {
     ExecutableBuild(#[from] ModelBuildError),
     #[error("provider_store_reload_failed")]
     ProviderStore(#[from] ProviderStoreError),
+    #[error("provider store contention")]
+    Contention,
     #[error("model manifest construction failed")]
     Manifest(#[from] crate::manifests::ManifestError),
 }

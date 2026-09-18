@@ -599,6 +599,8 @@ pub enum ProviderStoreError {
     GenerationExhausted,
     #[error("provider store proposal does not belong to this transaction")]
     ProposalMismatch,
+    #[error("provider store changed since the transaction began")]
+    Stale,
     #[error("provider store encoding failed")]
     Encoding,
     #[error("provider store lock contention")]

@@ -70,6 +70,9 @@ impl RpcFault {
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(
                 cookie_agent_models::provider_store::ProviderStoreError::Contention,
             )) => ProviderConnectErrorCode::LockContention,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::Contention) => {
+                ProviderConnectErrorCode::LockContention
+            }
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => {
                 ProviderConnectErrorCode::ProviderStoreWriteFailed
             }
@@ -97,6 +100,7 @@ impl RpcFault {
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::StaleConnectionGeneration)) => ProviderDisconnectErrorCode::StaleProviderConnectionGeneration,
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::IdempotencyConflict)) => ProviderDisconnectErrorCode::IdempotencyConflict,
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(cookie_agent_models::provider_store::ProviderStoreError::Contention)) => ProviderDisconnectErrorCode::LockContention,
+            EngineError::ModelManager(cookie_agent_models::ModelManagerError::Contention) => ProviderDisconnectErrorCode::LockContention,
             EngineError::ModelManager(cookie_agent_models::ModelManagerError::ProviderStore(_)) => ProviderDisconnectErrorCode::ProviderStoreWriteFailed,
             _ => ProviderDisconnectErrorCode::RuntimeCompileFailed,
         };

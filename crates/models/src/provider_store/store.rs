@@ -142,9 +142,9 @@ impl ProviderStore {
             }
         }
         let transaction = self.begin_transaction()?;
-        // Refresh the stamp while the lock is still held so it always
-        // describes the state that was actually read.
-        let post_read_stamp = StoreFileStamp::current(&file_path);
+        // The stamp was captured under the read lock inside `begin_transaction`
+        // and describes exactly the state that was read.
+        let post_read_stamp = transaction.file_stamp;
         if !matches!(post_read_stamp, StoreFileStamp::Unknown) {
             *self
                 .reload_stamp
@@ -161,7 +161,12 @@ impl ProviderStore {
         }
     }
 
-    /// Starts a lock+reread transaction. The lock remains held through proposal compilation.
+    /// Starts a bounded lock+reread transaction.
+    ///
+    /// The lock is held only for the reread and released before returning, so
+    /// proposal compilation, runtime compilation, and the publication callback
+    /// all run lock-free. `commit` re-acquires the lock and compare-and-swaps
+    /// the base stamp captured here against the live on-disk state.
     pub fn begin_transaction(&self) -> Result<ProviderStoreTransaction<'_>, ProviderStoreError> {
         #[cfg(test)]
         self.transaction_opens
@@ -177,18 +182,28 @@ impl ProviderStore {
             }
             None => StoreState::fresh()?,
         };
+        // Capture the content stamp of the state actually read while the read
+        // lock is still held, so `reload_if_changed` caches a stamp that
+        // describes this read rather than a later, post-release observation.
+        let file_stamp = StoreFileStamp::current(&self.directory.path().join(PROVIDER_STORE_FILE));
+        drop(lock);
         Ok(ProviderStoreTransaction {
-            lock,
+            directory: &self.directory,
             state,
+            file_stamp,
             transaction_id: Uuid::now_v7(),
         })
     }
 }
 
-/// Held provider-store transaction used to propose, compile, then commit exactly one state.
+/// Provider-store transaction used to propose, compile, then commit exactly one state.
+///
+/// The transaction holds no file lock; `state` is the base stamp that `commit`
+/// validates against a fresh on-disk reread before replacing the store.
 pub struct ProviderStoreTransaction<'a> {
-    lock: SecureDirectoryLock<'a>,
+    directory: &'a SecureDirectory,
     state: StoreState,
+    file_stamp: StoreFileStamp,
     transaction_id: Uuid,
 }
 
@@ -394,6 +409,11 @@ impl ProviderStoreTransaction<'_> {
     }
 
     /// Atomically commits the exact pre-serialized proposal. No revision is allocated here.
+    ///
+    /// The commit re-acquires the store lock, rereads the on-disk state, and
+    /// compare-and-swaps the live `generation`/`store_revision` against the
+    /// proposal's recorded base. A concurrent commit that landed first yields
+    /// [`ProviderStoreError::Stale`] and leaves the disk untouched.
     pub fn commit(
         self,
         proposal: ProposedProviderStore,
@@ -404,12 +424,31 @@ impl ProviderStoreTransaction<'_> {
         {
             return Err(ProviderStoreError::ProposalMismatch);
         }
+        // Re-acquire the lock only for the compare-and-swap and the replace;
+        // compile and publication already ran lock-free.
+        let lock = self
+            .directory
+            .lock_within(PROVIDER_STORE_LOCK_FILE, DEFAULT_LOCK_BUDGET)?;
+        let live = match lock.read(PROVIDER_STORE_FILE, MAX_STORE_BYTES)? {
+            Some(bytes) => {
+                let bytes = Zeroizing::new(bytes);
+                decode_state(bytes.as_ref())?
+            }
+            None => StoreState::fresh()?,
+        };
+        if live.generation != proposal.base_generation
+            || live.store_revision != proposal.base_revision
+        {
+            drop(lock);
+            return Err(ProviderStoreError::Stale);
+        }
         // Allocate the complete safe return value before the durable write. After replacement,
         // commit only moves prebuilt data so manager publication remains infallible.
         let snapshot = proposal.state.snapshot();
         let mutation = proposal.mutation.clone();
-        self.lock
+        self.directory
             .atomic_replace(PROVIDER_STORE_FILE, proposal.bytes.as_ref())?;
+        drop(lock);
         Ok(CommittedProviderStore { snapshot, mutation })
     }
 }

@@ -780,8 +780,16 @@ fn concurrent_independent_transactions_retry_without_lost_updates() {
                 let transaction = store.begin_transaction().unwrap();
                 match transaction.propose_connect(&request, &catalog_revision()) {
                     Ok(ConnectProposal::Proposed(proposal)) => {
-                        transaction.commit(*proposal).unwrap();
-                        break;
+                        match transaction.commit(*proposal) {
+                            Ok(_) => break,
+                            // Another process landed between our reread and our
+                            // commit; the compare-and-swap rejected us without
+                            // clobbering. Rebase and retry.
+                            Err(ProviderStoreError::Stale) => {
+                                snapshot = store.load().unwrap();
+                            }
+                            other => panic!("unexpected concurrent commit outcome: {other:?}"),
+                        }
                     }
                     Err(ProviderStoreError::StoreGenerationConflict) => {
                         drop(transaction);
@@ -798,6 +806,88 @@ fn concurrent_independent_transactions_retry_without_lost_updates() {
     let loaded = initial_store.load().unwrap();
     assert_eq!(loaded.providers().len(), 2);
     assert_eq!(loaded.generation().get(), 3);
+}
+
+#[test]
+fn commit_rejects_a_stale_base_without_clobbering() {
+    let temporary = TempDir::new().unwrap();
+    let store = private_store(&temporary);
+    let initial = store.load().unwrap();
+
+    // Two transactions read the same base before either commits.
+    let first = store.begin_transaction().unwrap();
+    let second = store.begin_transaction().unwrap();
+    let first_proposal = match first
+        .propose_connect(
+            &connect_request(&initial, "first", "openai", "one"),
+            &catalog_revision(),
+        )
+        .unwrap()
+    {
+        ConnectProposal::Proposed(proposal) => proposal,
+        ConnectProposal::Replay(_) => unreachable!(),
+    };
+    let second_proposal = match second
+        .propose_connect(
+            &connect_request(&initial, "second", "anthropic", "two"),
+            &catalog_revision(),
+        )
+        .unwrap()
+    {
+        ConnectProposal::Proposed(proposal) => proposal,
+        ConnectProposal::Replay(_) => unreachable!(),
+    };
+
+    first.commit(*first_proposal).unwrap();
+    let error = second.commit(*second_proposal).unwrap_err();
+    assert!(matches!(error, ProviderStoreError::Stale));
+
+    // The losing commit left the first writer's content on disk.
+    let loaded = store.load().unwrap();
+    assert!(
+        loaded
+            .provider(&ProviderId::new("openai").unwrap())
+            .is_some()
+    );
+    assert!(
+        loaded
+            .provider(&ProviderId::new("anthropic").unwrap())
+            .is_none()
+    );
+}
+
+#[test]
+fn begin_releases_the_store_lock_before_commit() {
+    let temporary = TempDir::new().unwrap();
+    let store = private_store(&temporary);
+    let initial = store.load().unwrap();
+
+    let first = store.begin_transaction().unwrap();
+    // A second independent reread would block (and time out) on the first
+    // transaction's lock under the old wide-hold design. Retention is now
+    // bounded to the reread, so this succeeds while the first is still open.
+    let second = store.begin_transaction().unwrap();
+    assert_eq!(second.snapshot().generation(), initial.generation());
+
+    let proposal = match first
+        .propose_connect(
+            &connect_request(&initial, "after-begin", "openai", "secret"),
+            &catalog_revision(),
+        )
+        .unwrap()
+    {
+        ConnectProposal::Proposed(proposal) => proposal,
+        ConnectProposal::Replay(_) => unreachable!(),
+    };
+    first.commit(*proposal).unwrap();
+    drop(second);
+    assert!(
+        store
+            .load()
+            .unwrap()
+            .provider(&ProviderId::new("openai").unwrap())
+            .is_some()
+    );
 }
 
 #[test]
