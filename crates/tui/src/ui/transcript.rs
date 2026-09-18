@@ -9591,8 +9591,10 @@ mod tests {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let data_dir = directory.path().join("data");
         let session_dir =
-            cookie_agent_engine::session::SessionStore::project_dir(&data_dir, directory.path())
-                .join("sessions")
+            cookie_agent_engine::session::SessionStore::open(&data_dir, directory.path())
+                .expect("session store")
+                .workdir_dir_path()
+                .to_path_buf()
                 .join(session.to_string());
         #[cfg(unix)]
         fs::create_dir_all(&session_dir).unwrap();

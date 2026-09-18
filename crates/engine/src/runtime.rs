@@ -1335,21 +1335,19 @@ impl Engine {
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         let artifacts = ArtifactRouter::for_store(&store)?;
-        if !store.is_flat_layout() {
-            // Every write belongs to the directory of the writing session's root.
-            let placement = Arc::clone(&store);
-            artifacts.install_tree_resolver(Arc::new(move |session| {
-                Some(placement.root_of(session).unwrap_or(session))
-            }));
-            // A sweep reuses what a tree load harvested only while the store
-            // still agrees the harvest is current, so it has to ask the store:
-            // resident tip and durable length, the same pair a fold is verified
-            // against (§3.3, §5.2).
-            let fingerprinting = Arc::clone(&store);
-            artifacts.install_log_fingerprint_probe(Arc::new(move |session| {
-                fingerprinting.log_fingerprint(session)
-            }));
-        }
+        // Every write belongs to the directory of the writing session's root.
+        let placement = Arc::clone(&store);
+        artifacts.install_tree_resolver(Arc::new(move |session| {
+            Some(placement.root_of(session).unwrap_or(session))
+        }));
+        // A sweep reuses what a tree load harvested only while the store
+        // still agrees the harvest is current, so it has to ask the store:
+        // resident tip and durable length, the same pair a fold is verified
+        // against (§3.3, §5.2).
+        let fingerprinting = Arc::clone(&store);
+        artifacts.install_log_fingerprint_probe(Arc::new(move |session| {
+            fingerprinting.log_fingerprint(session)
+        }));
         let mcp = Arc::new(
             crate::McpRegistry::new(
                 options.config.mcp_servers.clone(),
@@ -1372,13 +1370,13 @@ impl Engine {
         tools.push(plugins.clone());
         let delegation_events = DelegationEventStore::open(Arc::clone(&store))?;
         let grant_journal = GrantInvalidationJournal::open(
-            store.project_dir_path().join("grant-invalidations.jsonl"),
+            store.workdir_dir_path().join("grant-invalidations.jsonl"),
         )?;
         let (runtime_notifications, _) = broadcast::channel(64);
         let (engine_events, _) = broadcast::channel(256);
         let plugin_diagnostics = Arc::new(PluginDiagnosticAccumulator::default());
         let mut runtime_revision_index = RuntimeRevisionIndex::open(
-            store.project_dir_path().join("runtime-revisions-v8.jsonl"),
+            store.workdir_dir_path().join("runtime-revisions-v8.jsonl"),
         )?;
         runtime_revision_index.record(
             published_runtime.result.snapshot.runtime_revision.clone(),

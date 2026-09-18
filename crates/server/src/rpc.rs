@@ -305,7 +305,6 @@ fn session_debug_code(error: &SessionError) -> &'static str {
         SessionError::InvalidForkTitle(_) => "session_invalid_fork_title",
         SessionError::TreeRejected(_) => "session_tree_rejected",
         SessionError::TreeContended(_) => "session_tree_contended",
-        SessionError::Migration(_) => "session_migration",
     }
 }
 

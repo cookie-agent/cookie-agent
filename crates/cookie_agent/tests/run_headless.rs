@@ -473,12 +473,11 @@ fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
     )
 }
 
-/// Every blob the engine retained, whichever artifact layout the fixture
-/// produced. A fresh store is v2 — one `artifacts/` per root tree plus
-/// `artifacts.shared/` inside `<data>/sessions/<workdir-key>/` — while a legacy
-/// flat store keeps `projects/<hash>/artifacts/`. Walking the data root keeps
-/// the assertion about retained *content* rather than about a directory layout,
-/// which is what this test cares about.
+/// Every blob the engine retained. A store partitions artifacts by tree — one
+/// `artifacts/` per root tree plus `artifacts.shared/` inside
+/// `<data>/sessions/<workdir-key>/`. Walking the data root keeps the assertion
+/// about retained *content* rather than about a directory layout, which is what
+/// this test cares about.
 fn artifact_blobs(data_root: &Path) -> Vec<String> {
     fn is_artifact_store(name: &str) -> bool {
         name == "artifacts" || name == "artifacts.shared"

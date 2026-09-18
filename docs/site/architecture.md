@@ -266,7 +266,7 @@ working directory:
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache
   sessions/<workdirkey>/           # one store per canonical cwd
-    layout.json                    # {"version":2}; "migration" while migrating
+    layout.json                    # {"version":2}
     cwd                            # canonical work-dir path
     grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
@@ -282,7 +282,6 @@ working directory:
         index.json                 # child-summary cache, {"version":1,...}
         <child-session-id>/        # metadata, events.jsonl, owner.lock
         <child-session-id>.owner.lock # Windows sidecar for a child
-  projects/<16-hex-cwd-hash>/      # legacy flat store, see "Migration"
 ```
 
 `<workdirkey>` is `<16-hex-hash>-<sanitized-basename>`, where the hash is the
@@ -328,30 +327,7 @@ Unloaded trees are never collected, which keeps an unread child log from
 looking unreferenced. Expired, unreferenced digests are unlinked after a grace
 period that protects newly published files.
 
-### Migration
-
-A store that still has the flat v1 shape (`projects/<hash>/sessions/<id>/`) is
-migrated once, on the first open, before the store is constructed; progress
-prints one `cookie-agent:` line per phase to stderr. Nothing runs concurrently
-with it: migration takes a `migration.lock` for the work dir and aborts with a
-loud error if any legacy session is owned by a live process, so no session can
-be appending while it moves. Every move is a rename — session directories,
-`meta.json` → `metadata`, project-level files, and Windows sidecars — so a
-large store migrates at directory-entry speed rather than by copying bytes.
-
-The steps are journal-driven and existence-checked, so an interrupted migration
-resumes rather than repeating or skipping work: plan, scaffold the v2 work dir,
-move roots, move children under their root's `subagents/`, place artifacts, then
-verify. Verification runs before completion and checks session counts, that
-every `metadata` parses and names its own directory, that each child appears in
-exactly one root's `subagents/`, and that the artifact inventory is conserved.
-`.migrating` is the resume journal, `.migrated` and a `layout.json` carrying
-`"migration":"complete"` mark the store done, and `projects/<hash>/MIGRATED`
-is left as a tombstone pointing at the new location. A store is never served
-half-migrated: only a `complete` marker licenses the v2 layout. An older binary
-pointed at a migrated store sees the tombstone and creates a fresh empty legacy
-project rather than corrupting the new store, so run one current version per
-data directory.
+### Delegation and ownership
 
 Delegation reservations, child publication, run start/attachment, and terminal
 state use the parent session's `events.jsonl`. On open, the engine projects
@@ -372,8 +348,7 @@ idle session is evicted from memory. On Unix the lock is
 directory renames. New-session and fork publication acquire the Windows sidecar
 derived from the final directory path before renaming the temporary directory.
 Session discovery ignores the sidecar because it scans only directories.
-Session listing reads `metadata` without locking, falling back to the legacy
-`meta.json` name. Opening an existing session
+Session listing reads `metadata` without locking. Opening an existing session
 for mutation attempts the lock; success enters a non-writable adoption state,
 reconciles only that session's interrupted work, and then publishes ownership.
 Reconciliation failure revokes the log's write capability and releases the lock

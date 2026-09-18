@@ -1811,18 +1811,9 @@ impl ArtifactRouter {
         )
     }
 
-    /// Router for an open store: a legacy flat store keeps its existing
-    /// project-wide directory, a v2 store partitions by tree (§5.1).
+    /// Router for an open store: a v2 store partitions artifacts by tree (§5.1).
     pub(crate) fn for_store(store: &crate::session::SessionStore) -> std::io::Result<Arc<Self>> {
-        let workdir_dir = store.workdir_dir_path();
-        if !store.is_flat_layout() {
-            return Self::open(workdir_dir.to_path_buf());
-        }
-        Self::open_layout(
-            workdir_dir.to_path_buf(),
-            store.project_dir_path().join(ARTIFACTS_DIR),
-            store.sessions_dir_path().to_path_buf(),
-        )
+        Self::open(store.workdir_dir_path().to_path_buf())
     }
 
     /// Router for callers without a store at all: every write lands in the given
@@ -2658,8 +2649,8 @@ pub(crate) fn collect_artifact_references_in_events(
     Ok(())
 }
 
-/// Rewrite the cross-reference ledger wholesale. Only the v1 migration
-/// (§6.3 step 5) does this; steady-state collection appends to the file.
+/// Rewrite the cross-reference ledger wholesale when an append was lost;
+/// steady-state collection appends to the file.
 pub(crate) fn write_cross_ref_ledger(
     path: &Path,
     entries: &BTreeSet<(String, SessionId)>,
