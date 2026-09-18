@@ -191,7 +191,7 @@ fn python_command() -> &'static str {
 }
 
 fn test_timeout(seconds: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(if cfg!(windows) { seconds * 10 } else { seconds })
+    std::time::Duration::from_secs(seconds)
 }
 
 const EVENT_WATCHDOG_SECONDS: u64 = 60;
