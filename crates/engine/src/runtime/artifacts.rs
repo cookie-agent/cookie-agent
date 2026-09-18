@@ -2704,7 +2704,15 @@ pub(crate) fn write_cross_ref_ledger(
         let _ = std::fs::remove_file(&temporary);
         return written;
     }
-    match std::fs::rename(&temporary, path) {
+    // A rebuilt ledger overwrites one that already exists. Rust's `fs::rename`
+    // already replaces on Windows (`MOVEFILE_REPLACE_EXISTING`); the Windows
+    // path adds `MOVEFILE_WRITE_THROUGH` and a bounded retry for transient
+    // access-denied/sharing violations against a concurrently scanned file.
+    #[cfg(unix)]
+    let replaced = std::fs::rename(&temporary, path);
+    #[cfg(windows)]
+    let replaced = crate::session::replace_windows_path_with_retry(&temporary, path);
+    match replaced {
         Ok(()) => Ok(()),
         Err(error) => {
             let _ = std::fs::remove_file(&temporary);

@@ -4520,7 +4520,7 @@ fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
 }
 
 #[cfg(windows)]
-fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
     const ATTEMPTS: usize = 50;
     const BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
 

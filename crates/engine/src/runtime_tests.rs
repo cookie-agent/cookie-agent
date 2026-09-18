@@ -253,6 +253,18 @@ async fn await_session_change<T>(
     }
 }
 
+/// Await a test hook under the same watchdog the projection waits use.
+///
+/// Hook receivers are raw `oneshot`s. Without this, a production path that
+/// never reaches its hook does not fail the test: it parks the test thread
+/// forever and libtest never reaches the `failures:` section, so the whole CI
+/// job is cancelled with zero diagnostics.
+async fn with_watchdog<T>(description: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), future)
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {description}"))
+}
+
 async fn await_event(
     engine: &Engine,
     session_id: SessionId,
@@ -18468,7 +18480,9 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let requests = captured.await.expect("delegation server task");
+    let requests = with_watchdog("delegation server task", captured)
+        .await
+        .expect("delegation server task");
     assert_eq!(requests.len(), 3);
     let children = fixture
         .engine
@@ -18651,7 +18665,7 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         )
         .await
         .expect("parent run");
-    reserved
+    with_watchdog("durable reservation before child creation", reserved)
         .await
         .expect("durable reservation before child creation");
     let entry = fixture
@@ -21395,7 +21409,9 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         )
         .await
         .expect("first resume parent run");
-    ready.await.expect("first parent and child requests");
+    with_watchdog("first parent and child requests", ready)
+        .await
+        .expect("first parent and child requests");
     let child_session_id = await_session_change(
         &fixture.engine,
         parent.session_id,
@@ -21455,9 +21471,12 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         )
         .await
         .expect("second resume parent run");
-    resume_admitted
-        .await
-        .expect("first running resume admitted before redelivery");
+    with_watchdog(
+        "first running resume admitted before redelivery",
+        resume_admitted,
+    )
+    .await
+    .expect("first running resume admitted before redelivery");
     let resumed_entry = fixture
         .engine
         .inner
@@ -21686,7 +21705,9 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         )
         .await
         .expect("handoff race first run");
-    ready.await.expect("race child active");
+    with_watchdog("race child active", ready)
+        .await
+        .expect("race child active");
     let child_session_id = await_session_change(
         &fixture.engine,
         parent.session_id,
@@ -21730,9 +21751,12 @@ async fn running_resume_completion_before_actor_admission_keeps_the_old_owner_te
         )
         .await
         .expect("handoff race second run");
-    admission_reached
-        .await
-        .expect("resume paused before child actor admission");
+    with_watchdog(
+        "resume paused before child actor admission",
+        admission_reached,
+    )
+    .await
+    .expect("resume paused before child actor admission");
     release_child
         .send(())
         .expect("complete child before admission");
@@ -21803,7 +21827,9 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         )
         .await
         .expect("cancelled admission first run");
-    ready.await.expect("cancelled admission child active");
+    with_watchdog("cancelled admission child active", ready)
+        .await
+        .expect("cancelled admission child active");
     let child_session_id = await_session_change(
         &fixture.engine,
         parent.session_id,
@@ -21854,7 +21880,7 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
         )
         .await
         .expect("cancelled admission second run");
-    admission_reached
+    with_watchdog("resume paused after actor admission", admission_reached)
         .await
         .expect("resume paused after actor admission");
     let resumed_invocation_id = fixture
@@ -22040,7 +22066,9 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
         )
         .await
         .expect("monitor failure first run");
-    ready.await.expect("monitor failure child active");
+    with_watchdog("monitor failure child active", ready)
+        .await
+        .expect("monitor failure child active");
     let child_session_id = await_session_change(
         &fixture.engine,
         parent.session_id,
@@ -22156,7 +22184,9 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         )
         .await
         .expect("attachment cancellation first run");
-    ready.await.expect("attachment cancellation child active");
+    with_watchdog("attachment cancellation child active", ready)
+        .await
+        .expect("attachment cancellation child active");
     let child_session_id = await_session_change(
         &fixture.engine,
         parent.session_id,
@@ -22200,9 +22230,12 @@ async fn cancellation_between_run_attachment_and_publication_terminalizes_invoca
         )
         .await
         .expect("attachment cancellation second run");
-    attachment_reached
-        .await
-        .expect("resume paused after durable run attachment");
+    with_watchdog(
+        "resume paused after durable run attachment",
+        attachment_reached,
+    )
+    .await
+    .expect("resume paused after durable run attachment");
     let invocation_id = fixture
         .engine
         .inner

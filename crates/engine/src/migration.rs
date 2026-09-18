@@ -1079,9 +1079,17 @@ impl Journal {
 /// (§6.3 step 0, M1).
 struct OwnerLocks {
     held: Vec<HeldLock>,
-    /// Windows files `owner.lock` *beside* its session directory; the rename
-    /// cannot happen while the lock is held, so it is deferred to `release`.
+    /// Windows files `owner.lock` *beside* its session directory. The open
+    /// handle denies pathname replacement (share mode `READ | WRITE`), so the
+    /// sidecar cannot move with its directory; `release` relocates it after the
+    /// handle closes. Unix keeps the lock *inside* the directory, so its list is
+    /// always empty there.
     sidecars: Vec<(PathBuf, PathBuf)>,
+    /// Windows sidecars left beside a session directory by a crash between the
+    /// directory move and `release`. The session already lives at its
+    /// destination, so the duplicate is litter that would keep the retired flat
+    /// directory non-empty; `release` removes it once the locks are dropped.
+    stale: Vec<PathBuf>,
 }
 
 impl OwnerLocks {
@@ -1089,19 +1097,35 @@ impl OwnerLocks {
         let mut locks = Self {
             held: Vec::new(),
             sidecars: Vec::new(),
+            stale: Vec::new(),
         };
         for (id, destination) in plan.placements(target) {
             let flat = legacy_sessions.join(id.to_string());
-            let directory = if flat.is_dir() { &flat } else { &destination };
+            let owned_flat = flat.is_dir();
+            let directory = if owned_flat { &flat } else { &destination };
             match try_acquire(directory) {
                 // A stale lock is ours to take; it moves with its session.
                 Ok(SessionOwnership::Owned(held)) => {
                     locks.held.push(held);
-                    let source_lock = owner_lock_path(directory);
-                    if source_lock.parent() != Some(directory.as_ref()) && source_lock.is_file() {
-                        locks
-                            .sidecars
-                            .push((source_lock, owner_lock_path(&destination)));
+                    let held_lock = owner_lock_path(directory);
+                    // A sidecar (parent outside the directory) only exists on
+                    // Windows; the Unix lock lives inside the directory and is
+                    // moved by the directory rename itself.
+                    if held_lock.parent() != Some(directory.as_ref()) {
+                        if owned_flat {
+                            if held_lock.is_file() {
+                                locks
+                                    .sidecars
+                                    .push((held_lock, owner_lock_path(&destination)));
+                            }
+                        } else {
+                            // The directory is already at its destination, so a
+                            // sidecar still at the flat path is a crash orphan.
+                            let orphan = owner_lock_path(&flat);
+                            if orphan.is_file() {
+                                locks.stale.push(orphan);
+                            }
+                        }
                     }
                 }
                 Ok(SessionOwnership::Foreign) => {
@@ -1120,14 +1144,27 @@ impl OwnerLocks {
         Ok(locks)
     }
 
-    /// Drop every lock, then move the sidecar files that could not move with it.
+    /// Drop every lock, then move the sidecar files that could not move with it
+    /// and drop the crash orphans a resume found. This is the *only* place a
+    /// sidecar moves: [`move_session`] must not attempt it while the handle is
+    /// open, because the held handle denies pathname replacement.
     fn release(self) -> Result<(), SessionError> {
-        let Self { held, sidecars, .. } = self;
+        let Self {
+            held,
+            sidecars,
+            stale,
+        } = self;
         drop(held);
         for (source, destination) in sidecars {
-            if source.is_file() && !destination.is_file() {
-                rename(&source, &destination)?;
+            if source.is_file() {
+                replace_path(&source, &destination).map_err(|error| SessionError::Io {
+                    path: destination.clone(),
+                    source: error,
+                })?;
             }
+        }
+        for path in stale {
+            remove_file(&path)?;
         }
         Ok(())
     }
@@ -1234,12 +1271,12 @@ fn move_session(source: &Path, destination: &Path) -> Result<(), SessionError> {
         rename(source, destination)?;
     }
     rename_metadata(destination)?;
-    // Windows keeps the ownership lock beside the directory; unix moves it along
-    // inside it. `OwnerLocks::release` relocates the sidecars once held.
-    let source_lock = owner_lock_path(source);
-    if source_lock.parent() != Some(source) && source_lock.is_file() {
-        rename(&source_lock, &owner_lock_path(destination))?;
-    }
+    // The Windows ownership sidecar is deliberately *not* moved here: the
+    // migration holds its handle open for the whole procedure and that handle
+    // denies pathname replacement (`ownership.rs` share mode is `READ | WRITE`).
+    // `OwnerLocks::release` performs the move exactly once, after the handle is
+    // closed and after the session directory is durable. Unix keeps the lock
+    // inside the directory, so it is carried by the directory rename above.
     Ok(())
 }
 
@@ -1397,7 +1434,7 @@ fn write_atomically(path: &Path, bytes: &[u8], parent: &Path) -> Result<(), Sess
         let _ = fs::remove_file(&temporary);
         return Err(failure);
     }
-    match fs::rename(&temporary, path) {
+    match replace_path(&temporary, path) {
         Ok(()) => {}
         Err(source) => {
             let _ = fs::remove_file(&temporary);
@@ -1409,6 +1446,29 @@ fn write_atomically(path: &Path, bytes: &[u8], parent: &Path) -> Result<(), Sess
     }
     fsync_directory(parent)?;
     Ok(())
+}
+
+/// Replace `destination` with `source` for an atomic-write target that may
+/// already exist.
+///
+/// Rust's `fs::rename` already passes `MOVEFILE_REPLACE_EXISTING` on Windows,
+/// so replacement is not what is missing here. What the Windows path adds is
+/// `MOVEFILE_WRITE_THROUGH` (the marker/temporary ordering stays durable) plus a
+/// bounded retry on transient `ERROR_ACCESS_DENIED` (5) /
+/// `ERROR_SHARING_VIOLATION` (32) when an antivirus or indexer briefly holds the
+/// just-written temporary or the destination. The Unix path is a plain rename.
+///
+/// Note: this is a durability/contention hardening, not the root cause of the
+/// Windows migration failures; those come from renaming a held owner-lock
+/// sidecar (see `OwnerLocks`).
+#[cfg(unix)]
+fn replace_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_path(source: &Path, destination: &Path) -> std::io::Result<()> {
+    crate::session::replace_windows_path_with_retry(source, destination)
 }
 
 /// Sweep every atomic-write temporary the migration procedure can leave in the
