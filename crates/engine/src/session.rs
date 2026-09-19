@@ -4508,11 +4508,14 @@ mod tests {
     use crate::ownership::owner_lock_path;
 
     use super::{
-        EVENTS_FILE, IndexedChild, LAYOUT_MARKER_FILE, SESSION_META_FILE, SESSIONS_ROOT_DIR,
-        SUBAGENT_INDEX_FILE, SUBAGENT_INDEX_VERSION, SUBAGENTS_DIR, SessionError, SessionStore,
-        SessionSummary, SubagentIndex, TREE_LOAD_RACES, TreeLoadObserver, TreeLoadProducts,
-        TreeLoadStatus, WORKDIR_CWD_FILE, meta_path, projection,
+        EVENTS_FILE, IndexedChild, SESSION_META_FILE, SESSIONS_ROOT_DIR, SUBAGENT_INDEX_FILE,
+        SUBAGENT_INDEX_VERSION, SUBAGENTS_DIR, SessionError, SessionStore, SessionSummary,
+        SubagentIndex, TREE_LOAD_RACES, TreeLoadObserver, TreeLoadProducts, TreeLoadStatus,
+        meta_path, projection,
     };
+
+    #[cfg(unix)]
+    use super::{LAYOUT_MARKER_FILE, WORKDIR_CWD_FILE};
 
     /// The v2 work-dir store for `cwd` (what a freshly opened store creates).
     fn workdir_dir(data_root: &Path, cwd: &Path) -> std::path::PathBuf {
@@ -7855,6 +7858,7 @@ mod windows_tests {
                 session_id,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
                 EventPayload::SessionCreated {
+                    short_id: None,
                     origin: SessionOrigin::Root,
                     cwd_identity: CwdIdentity::new("workspace:test").unwrap(),
                     creation_selection: selection.clone(),
