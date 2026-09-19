@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: nightly-prune
+  cancel-in-progress: false
+
 jobs:
   prune:
     runs-on: ubuntu-22.04
