@@ -775,6 +775,39 @@ fn managed_effort_variant_order_preserves_catalog_value_order() {
 }
 
 #[test]
+fn openai_compatible_mixed_reasoning_options_keep_effort_variants() {
+    let mut provider = record("@ai-sdk/openai-compatible", Some("https://example.com/v1"));
+    provider
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .reasoning_options = vec![
+        CatalogReasoningOption::Toggle,
+        CatalogReasoningOption::Effort {
+            values: vec![Some("low".into()), Some("high".into()), Some("max".into())],
+        },
+    ];
+
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, None)
+        .unwrap();
+    let model = compiled.models.values().next().unwrap();
+    assert_eq!(
+        model
+            .variant_order
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["low", "high", "max"]
+    );
+    assert!(!model.variants.keys().any(|id| id.as_str() == "off"));
+}
+
+#[test]
 fn managed_toggle_only_preserves_on_but_toggle_with_effort_suppresses_it() {
     let mut provider = record("@ai-sdk/anthropic", None);
     provider

@@ -5219,7 +5219,7 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
 #[tokio::test]
 async fn working_directory_section_reports_session_cwd() {
     let (endpoint, captured) = scripted_model_server().await;
-    let fixture = synthetic_default_fixture_with_config(None, &endpoint, "");
+    let fixture = synthetic_default_fixture_with_config(None, &endpoint, "").expect("engine");
     let descriptor = fixture
         .engine
         .runtime_snapshot()
@@ -5602,13 +5602,14 @@ fn workspace_internal_agent_replaces_builtin_document_and_limits() {
 
 fn synthetic_default_fixture(authored_agent: Option<&str>) -> Fixture {
     synthetic_default_fixture_with_config(authored_agent, "http://127.0.0.1:9/v1", "")
+        .expect("engine")
 }
 
 fn synthetic_default_fixture_with_config(
     authored_agent: Option<&str>,
     endpoint: &str,
     extra_config: &str,
-) -> Fixture {
+) -> Result<Fixture, EngineError> {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -5672,14 +5673,13 @@ default_variant = "precise"
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
         model_snapshot_directory: Some(directory.path().join("model-snapshots")),
-    })
-    .expect("engine");
-    Fixture {
+    })?;
+    Ok(Fixture {
         _directory: directory,
         engine,
         config,
         manager,
-    }
+    })
 }
 
 async fn scripted_model_server() -> (String, tokio::task::JoinHandle<String>) {
@@ -9781,7 +9781,8 @@ lazy = true
         toml_string(&mcp_call.display().to_string()),
     );
     let agent = "---\ndescription: Plugin preemption test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions:\n  plugin:\n    \"issue_read *\": allow\n---\nTest plugin ownership pinning.\n";
-    let fixture = synthetic_default_fixture_with_config(Some(agent), &endpoint, &extra_config);
+    let fixture = synthetic_default_fixture_with_config(Some(agent), &endpoint, &extra_config)
+        .expect("engine");
     let snapshot = fixture.engine.runtime_snapshot().expect("runtime").snapshot;
     let agent = snapshot
         .agents
@@ -12456,28 +12457,18 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 }
 
 #[test]
-fn synthetic_default_replaces_no_authored_agent_and_unrunnable_authored_agents_only() {
-    let unrunnable = synthetic_default_fixture(Some(
-        "---\ndescription: Unrunnable primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnrunnable prompt.\n",
-    ));
-    let snapshot = unrunnable
-        .engine
-        .runtime_snapshot()
-        .expect("runtime")
-        .snapshot;
-    assert_eq!(snapshot.agents.len(), 5);
-    assert!(
-        snapshot
-            .agents
-            .iter()
-            .any(|agent| agent.id.as_str() == "default" && agent.runnable_as_root)
-    );
-    assert!(
-        snapshot
-            .agents
-            .iter()
-            .any(|agent| agent.id.as_str() == "primary" && !agent.runnable_as_root)
-    );
+fn synthetic_default_replaces_no_authored_agent_and_unknown_models_are_diagnostic() {
+    let error = match synthetic_default_fixture_with_config(
+        Some(
+            "---\ndescription: Unknown primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnknown prompt.\n",
+        ),
+        "http://127.0.0.1:9/v1",
+        "",
+    ) {
+        Ok(_) => panic!("unknown model should reject engine startup"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, EngineError::UnknownAgentModel { .. }));
 
     let (runnable, _) = custom_fixture();
     let snapshot = runnable
@@ -18805,7 +18796,33 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
 
 #[tokio::test]
 async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases() {
-    let (endpoint, captured) = scripted_delegation_server().await;
+    let (endpoint, responses, captured) = scripted_channel_server(4).await;
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            "delegate this task",
+            scripted_tool_body(
+                "delegate-call",
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type": "worker", "description": "Write report", "prompt": "write report"
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            "write report",
+            scripted_text_body("delegated child report"),
+        ),
+        MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body("parent accepted child report"),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            crate::runtime::compaction::COMPACTION_INSTRUCTION,
+            scripted_text_body("Compacted child report"),
+        ),
+    ] {
+        responses.send(response).expect("scripted response");
+    }
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture
         .engine
@@ -18838,10 +18855,6 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let requests = with_watchdog("delegation server task", captured)
-        .await
-        .expect("delegation server task");
-    assert_eq!(requests.len(), 3);
     let children = fixture
         .engine
         .children(parent.session_id)
@@ -18876,7 +18889,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
             .await
     });
-    tokio::time::timeout(test_timeout(2), janitor_reached)
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), janitor_reached)
         .await
         .expect("janitor pre-barrier hook timeout")
         .expect("janitor reached pre-barrier hook");
@@ -18887,7 +18900,7 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
         .enqueue_compact_without_residency_for_test(child.session_id)
         .await
         .expect("queue compaction ahead of eviction barrier");
-    tokio::time::timeout(test_timeout(2), compaction_reached)
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), compaction_reached)
         .await
         .expect("compaction execution hook timeout")
         .expect("detached compaction reached delay hook");
@@ -18906,9 +18919,15 @@ async fn foreground_delegate_and_its_fork_page_after_delayed_compaction_releases
             .compaction_reserved_for_test(child.session_id)
     );
     compaction_release.notify_waiters();
-    let _ = tokio::time::timeout(test_timeout(2), compaction)
+    let compacted = with_watchdog("compaction reply", compaction)
         .await
-        .expect("compaction reply timeout");
+        .expect("compaction task")
+        .expect("compaction succeeds");
+    assert!(compacted.compacted);
+    let requests = with_watchdog("delegation and compaction server", captured)
+        .await
+        .expect("scripted server");
+    assert_eq!(requests.len(), 4);
     assert!(
         !fixture
             .engine
@@ -19644,7 +19663,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
 
     // Residency eviction has no durable event after the store transition, so
     // this test intentionally polls the residency cache itself.
-    let child_session_id = tokio::time::timeout(test_timeout(3), async {
+    let child_session_id = tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
         loop {
             if let Some(child) = fixture
                 .engine
@@ -21097,7 +21116,7 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         )
         .await
         .expect("queued cancel second run");
-    tokio::time::timeout(test_timeout(3), queued)
+    tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), queued)
         .await
         .expect("terminal resume queue timeout")
         .expect("terminal resume queued for cancellation");

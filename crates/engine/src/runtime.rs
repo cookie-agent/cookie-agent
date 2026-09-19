@@ -12,6 +12,7 @@ use std::sync::mpsc as std_mpsc;
 
 use arc_swap::ArcSwap;
 use cookie_agent_config::LoadedConfiguration;
+use cookie_agent_identity::ModelKey;
 use cookie_agent_models::{
     ModelManager,
     manifests::{ManifestError, ModelSnapshotManifestStore, RehydrationError},
@@ -153,6 +154,14 @@ pub enum EngineError {
     Config(#[source] Box<cookie_agent_config::ConfigError>),
     #[error("agent `{0}` is not eligible in this session origin")]
     IneligibleAgent(AgentId),
+    #[error(
+        "agent `{agent}` references unknown model `{model}`; refresh models.dev or choose an available model"
+    )]
+    UnknownAgentModel { agent: AgentId, model: ModelKey },
+    #[error(
+        "agent `{agent}` references catalog model `{model}`, but it is unavailable in the compiled runtime"
+    )]
+    UnavailableAgentModel { agent: AgentId, model: ModelKey },
     #[error("agent `{0}` is disabled")]
     DisabledAgent(AgentId),
     #[error("run {0} not found")]

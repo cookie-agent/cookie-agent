@@ -1,6 +1,8 @@
 use super::*;
 
-async fn held_background_child_server() -> (
+async fn held_background_child_server(
+    expect_wake: bool,
+) -> (
     String,
     tokio::sync::oneshot::Receiver<()>,
     Arc<tokio::sync::Notify>,
@@ -64,9 +66,12 @@ async fn held_background_child_server() -> (
         )
         .await;
 
-        if let Ok(Ok((mut wake, _))) =
-            tokio::time::timeout(test_timeout(1), listener.accept()).await
-        {
+        if expect_wake {
+            let (mut wake, _) =
+                tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), listener.accept())
+                    .await
+                    .expect("producer wake timeout")
+                    .expect("producer wake");
             requests.push(
                 String::from_utf8(read_scripted_http_request(&mut wake).await)
                     .expect("producer wake UTF-8"),
@@ -83,13 +88,16 @@ async fn held_background_child_server() -> (
     )
 }
 
-async fn start_held_background_delegation() -> (
+async fn start_held_background_delegation(
+    expect_wake: bool,
+) -> (
     Fixture,
     SessionId,
     Arc<tokio::sync::Notify>,
     tokio::task::JoinHandle<Vec<String>>,
 ) {
-    let (endpoint, child_reached, release, server) = held_background_child_server().await;
+    let (endpoint, child_reached, release, server) =
+        held_background_child_server(expect_wake).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture
         .engine
@@ -130,7 +138,7 @@ async fn start_held_background_delegation() -> (
 
 #[tokio::test]
 async fn reverted_background_reservation_cannot_publish_child_completion() {
-    let (fixture, parent_id, release, server) = start_held_background_delegation().await;
+    let (fixture, parent_id, release, server) = start_held_background_delegation(false).await;
     let reservation = fixture
         .engine
         .inner
@@ -214,7 +222,7 @@ async fn reverted_background_reservation_cannot_publish_child_completion() {
 
 #[tokio::test]
 async fn surviving_background_reservation_publishes_completion_once() {
-    let (fixture, parent_id, release, server) = start_held_background_delegation().await;
+    let (fixture, parent_id, release, server) = start_held_background_delegation(true).await;
     let through_seq = fixture
         .engine
         .inner

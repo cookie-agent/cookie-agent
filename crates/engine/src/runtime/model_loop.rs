@@ -657,6 +657,12 @@ impl Engine {
                 active_runs.remove(&run_id);
             }
             let _ = engine.reconcile_producers(session_id).await;
+            // The delegation monitor can observe the terminal event before
+            // this task releases its active-run pin. Retry eviction now so a
+            // skipped completion sweep need not wait for the periodic janitor.
+            if let Err(error) = engine.evict_idle_subagents().await {
+                eprintln!("session {session_id} completion eviction failed: {error}");
+            }
         });
         Ok(RunStartResult { run_id })
     }

@@ -67,7 +67,8 @@ async fn selection_fixture(endpoint: &str) -> (Fixture, RunSelection, RunSelecti
         ),
         endpoint,
         "",
-    );
+    )
+    .expect("engine");
     fixture.engine.shutdown().await;
 
     let primary = AgentId::new("primary").expect("primary agent ID");

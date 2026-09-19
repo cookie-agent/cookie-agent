@@ -513,7 +513,7 @@ impl DynamicCompiler {
                 ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
             });
         }
-        let (mut variants, variant_order, default_variant) =
+        let (mut variants, mut variant_order, default_variant) =
             managed_variants(&model.reasoning_options, override_, &defaults, &options).map_err(
                 |_| {
                     if override_.is_some() {
@@ -523,6 +523,14 @@ impl DynamicCompiler {
                     }
                 },
             )?;
+        // Catalog reasoning controls can exceed the selected wire protocol.
+        // Keep supported generated choices without losing the whole model.
+        // Explicit model overrides remain strict and must disable or replace
+        // incompatible variants themselves.
+        if override_.is_none() {
+            variants.retain(|_, variant| reasoning_supported(variant.reasoning.as_ref(), adapter));
+            variant_order.retain(|id| variants.contains_key(id));
+        }
         if variants
             .values()
             .any(|variant| !validate_defaults(&variant.defaults, &capabilities))

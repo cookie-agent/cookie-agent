@@ -262,6 +262,8 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::ToolOutput(_) => "tool_output_io",
         EngineError::AgentMdIo { .. } => "agent_md_io",
         EngineError::IneligibleAgent(_) => "ineligible_agent",
+        EngineError::UnknownAgentModel { .. } => "unknown_agent_model",
+        EngineError::UnavailableAgentModel { .. } => "unavailable_agent_model",
         EngineError::DisabledAgent(_) => "disabled_agent",
         EngineError::MissingRun(_) => "missing_run",
         EngineError::SessionRunning(_) => "session_running",
