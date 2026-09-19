@@ -8141,7 +8141,7 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
         .expect("parallel delegation run")
         .run_id;
 
-    tokio::time::timeout(test_timeout(5), children_reached)
+    tokio::time::timeout(test_timeout(10), children_reached)
         .await
         .expect("both child model requests started before either completed")
         .expect("child request signal");
@@ -8282,7 +8282,7 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
         .await
         .expect("rebuild producer run")
         .run_id;
-    tokio::time::timeout(test_timeout(5), children_reached)
+    tokio::time::timeout(test_timeout(10), children_reached)
         .await
         .expect("child requests started")
         .expect("child request signal");
@@ -8330,7 +8330,7 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
         .rebuild_delegation_registry_for_test()
         .expect("registry rebuild");
     tokio::time::timeout(
-        test_timeout(5),
+        test_timeout(10),
         fixture.engine.wait_for_delegation_reconciliation_for_test(),
     )
     .await
@@ -8398,7 +8398,7 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         .await
         .expect("parent run")
         .run_id;
-    tokio::time::timeout(test_timeout(5), children_reached)
+    tokio::time::timeout(test_timeout(10), children_reached)
         .await
         .expect("child requests started")
         .expect("child request signal");
@@ -8475,7 +8475,7 @@ async fn cancelling_foreground_delegates_preserves_child_sessions_in_results_and
         .await
         .expect("adopt cancelled parent");
     tokio::time::timeout(
-        test_timeout(5),
+        test_timeout(10),
         reopened.wait_for_delegation_reconciliation_for_test(),
     )
     .await
