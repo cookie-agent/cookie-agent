@@ -443,7 +443,7 @@ The synthesized `default` agent still declares explicit dotenv read denies and
 `.env.example` allows in its permission map. These are ordinary policy rules,
 not an implicit guard applied to authored agents or session overlays. The same
 applies to its explicit credential-file denies (such as `store-v3.json`,
-`token-v1`, `id_*`, `.netrc`, and `application_default_credentials.json`).
+`id_*`, `.netrc`, and `application_default_credentials.json`).
 
 This contract governs tool permission evaluation. It does not replace filesystem
 integrity and resource-binding checks, or govern engine configuration and prompt

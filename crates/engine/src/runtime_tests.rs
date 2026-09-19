@@ -12030,7 +12030,7 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         ),
         (
             PermissionAction::Read,
-            "nested/token-v1",
+            "nested/store-v3.json",
             cookie_agent_protocol::PermissionEffect::Deny,
         ),
         (

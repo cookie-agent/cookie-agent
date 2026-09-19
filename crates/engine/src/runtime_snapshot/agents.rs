@@ -338,8 +338,6 @@ fn built_in_default_permissions() -> Result<IndexMap<PermissionAction, Permissio
             "*/store-v3.json",
             PermissionEffect::Deny,
         ),
-        (PermissionAction::Read, "token-v1", PermissionEffect::Deny),
-        (PermissionAction::Read, "*/token-v1", PermissionEffect::Deny),
         (PermissionAction::Read, "id_*", PermissionEffect::Deny),
         (PermissionAction::Read, "*/id_*", PermissionEffect::Deny),
         (PermissionAction::Read, ".netrc", PermissionEffect::Deny),

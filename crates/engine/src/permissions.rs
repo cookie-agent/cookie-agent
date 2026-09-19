@@ -1894,7 +1894,7 @@ mod tests {
             ".env.example",
             "nested/.env.local",
             "store-v3.json",
-            "nested/token-v1",
+            "nested/store-v3.json",
             ".ssh/id_ed25519",
             ".netrc",
             "application_default_credentials.json",

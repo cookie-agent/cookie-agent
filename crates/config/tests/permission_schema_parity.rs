@@ -280,8 +280,6 @@ permissions:
     "*/.env.example": allow
     "store-v3.json": deny
     "*/store-v3.json": deny
-    "token-v1": deny
-    "*/token-v1": deny
     "id_*": deny
     "*/id_*": deny
     ".netrc": deny
@@ -319,11 +317,6 @@ Fixture agent body.
             (
                 PermissionAction::Read,
                 "store-v3.json",
-                PermissionEffect::Deny,
-            ),
-            (
-                PermissionAction::Read,
-                "nested/token-v1",
                 PermissionEffect::Deny,
             ),
             (PermissionAction::Read, "id_ed25519", PermissionEffect::Deny),
