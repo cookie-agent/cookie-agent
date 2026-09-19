@@ -40,15 +40,31 @@ The daemon binds to `127.0.0.1:7419` by default:
 cookie daemon
 ```
 
-Attach from another terminal:
+Its first stdout line is the machine-readable ready frame; everything the
+daemon prints afterward is human logging. A supervisor writes the daemon's
+stdout to a pipe, reads exactly that one line, and ignores the rest:
 
-```sh
-cookie attach
+```text
+daemon-ready {"url":"ws://127.0.0.1:7419/ws","token":"<43-char base64url>"}
 ```
 
-The attach URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
-`--url`. Only loopback WebSocket URLs with the exact `/ws` path are accepted.
-The client uses the local daemon token; see [Server](../engine/server.md).
+The token is generated fresh for each run, kept only in daemon memory, and dies
+with the process. Treat the ready line as a secret: do not archive or log it.
+Pass `--port 0` to let the OS pick an ephemeral port; the ready line then
+carries the real port, and clients must use that URL rather than guessing 7419.
+
+Attach from another terminal with the token from the ready line:
+
+```sh
+cookie attach --token '<43-char base64url>'
+```
+
+`attach`, `connect`, `disconnect`, and `mcp` require `--token` (or the
+`COOKIE_DAEMON_TOKEN` environment variable). There is no file to read and no
+interactive prompt, so a missing token is clap's standard required-argument
+error. The URL defaults to `ws://127.0.0.1:7419/ws` and may be changed with
+`--url`; only loopback WebSocket URLs with the exact `/ws` path are accepted.
+See [Server](../engine/server.md).
 Only open trusted workspaces: configured plugins and eager MCP servers can
 start during engine initialization, before a model tool call is approved.
 Allowed shell commands run without a filesystem sandbox; see the

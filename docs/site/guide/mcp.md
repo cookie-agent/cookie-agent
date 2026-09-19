@@ -74,7 +74,8 @@ use HTTPS with a non-root path. Unknown fields and mixed transport fields fail,
 including on disabled entries.
 
 An authorization challenge changes the server state to `needs_auth`. Run
-`cookie mcp auth <server>`, or select the server in `/mcp` and press `a`, then
+`cookie mcp --token <TOKEN> auth <server>` (or set `COOKIE_DAEMON_TOKEN`),
+or select the server in `/mcp` and press `a`, then
 open the displayed URL. The daemon listens on an ephemeral `127.0.0.1` callback
 port for five minutes. The TUI can copy the URL with `c` and cancel the wait with
 Escape. Successful authorization stores the token and reconnects the server.

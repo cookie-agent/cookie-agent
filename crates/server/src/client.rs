@@ -26,17 +26,7 @@ impl Client {
         Self::connect_stream(client)
     }
 
-    /// Connect to the daemon using its standard authentication token.
-    pub async fn connect_websocket(url: &str) -> Result<Self, ClientError> {
-        WebSocketTransport::connect(url)
-            .await
-            .map(Self::connect_stream)
-            .map_err(|error| {
-                ClientError::WebSocket(cookie_agent_protocol::diagnostics::error_chain(&error))
-            })
-    }
-
-    /// Connect using an explicit daemon authentication token.
+    /// Connect using the per-run daemon authentication token.
     pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
         WebSocketTransport::connect_with_token(url, token)
             .await

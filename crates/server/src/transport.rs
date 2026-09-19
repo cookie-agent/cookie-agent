@@ -8,7 +8,7 @@ use tokio_tungstenite::{
 };
 use zeroize::Zeroizing;
 
-use crate::{load_auth_token, validate_websocket_url};
+use crate::validate_websocket_url;
 
 pub struct InProcessStream {
     sender: mpsc::Sender<MessageFrame>,
@@ -51,15 +51,7 @@ pub struct WebSocketTransport {
 }
 
 impl WebSocketTransport {
-    /// Connect to a validated daemon endpoint using the standard bearer token.
-    pub async fn connect(url: &str) -> Result<Self, TransportError> {
-        let token = Zeroizing::new(
-            load_auth_token().map_err(|error| TransportError::Other(error.to_string()))?,
-        );
-        Self::connect_with_token(url, &token).await
-    }
-
-    /// Connect with an explicit bearer token, primarily for isolated clients and tests.
+    /// Connect to a validated daemon endpoint with an explicit per-run bearer token.
     pub async fn connect_with_token(url: &str, token: &str) -> Result<Self, TransportError> {
         validate_websocket_url(url).map_err(|error| TransportError::Other(error.to_string()))?;
         let request = authenticated_request(url, token)?;
@@ -116,7 +108,7 @@ pub(crate) fn authenticated_request(
     url: &str,
     token: &str,
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, TransportError> {
-    if token.len() != 43
+    if token.len() != crate::token::TOKEN_ENCODED_BYTES
         || !token
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))

@@ -12,11 +12,14 @@ port = 7419
 Omission inherits the lower layer. An authored table replaces it completely;
 omitted fields use the defaults below. See [config.toml](../guide/configuration.md).
 Unknown fields fail. The port accepts `0` through `65535`; `0` asks the OS for
-an available port, so clients must use the actual bound port.
+an available port, so clients must use the actual bound port. `cookie daemon
+--port <N>` overrides the configured port for that run (including `--port 0`).
 
 The binary only binds IPv4 loopback. Remote exposure is not an implemented run
-mode. WebSocket clients authenticate with the local daemon token; see the
-[security contract](../guide/security.md#private-state).
+mode. Each daemon run generates a fresh in-memory bearer token and prints it
+once as its first stdout line (`daemon-ready {"url":...,"token":...}`); clients
+connect with `--token` or `COOKIE_DAEMON_TOKEN`. The token is never persisted.
+See the [security contract](../guide/security.md#daemon-authentication-token).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

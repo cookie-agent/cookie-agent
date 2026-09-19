@@ -15,16 +15,18 @@ has six top-level subcommands plus a default mode:
 |---|---|
 | *(none)* | Start an in-process daemon and open the TUI over an in-memory stream |
 | `run [options] <prompt>` | Run one prompt headlessly through the local engine |
-| `daemon` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default |
-| `attach [--url]` | Attach the TUI to an existing daemon WebSocket |
-| `connect [provider_id]` | Interactive durable managed-provider connection (TTY only) |
-| `disconnect [provider_id]` | Interactive durable managed-provider disconnection (TTY only) |
-| `mcp list` | List configured MCP servers |
-| `mcp auth <server>` | Start OAuth authorization for a remote MCP server |
+| `daemon [--port]` | Run only the daemon, listening on `ws://127.0.0.1:7419/ws` by default; `--port 0` picks an ephemeral port |
+| `attach [--url] --token` | Attach the TUI to an existing daemon WebSocket |
+| `connect [provider_id] --token` | Interactive durable managed-provider connection (TTY only) |
+| `disconnect [provider_id] --token` | Interactive durable managed-provider disconnection (TTY only) |
+| `mcp --token list` | List configured MCP servers |
+| `mcp --token auth <server>` | Start OAuth authorization for a remote MCP server |
 
 The daemon binds only to the configured port and authenticates every WebSocket
-with a bearer token stored at `~/.cookie-agent/daemon/token-v1`.
-`attach`, `connect`, `disconnect`, and `mcp` accept only loopback `ws`/`wss`
+with a fresh per-run bearer token. It generates the token at startup, keeps it
+only in memory, and prints it once as its first stdout line, so there is no
+token file on disk. `attach`, `connect`, `disconnect`, and `mcp` require the
+token via `--token` or `COOKIE_DAEMON_TOKEN` and accept only loopback `ws`/`wss`
 URLs whose path is exactly `/ws`. They use the same shared protocol client as
 the TUI, so the CLI keeps working even when built without the `tui` feature.
 
@@ -54,7 +56,7 @@ identity
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
 | `tools` | Built-in `read` (filesystem and artifact URIs), `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, and goal providers. |
-| `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public `load_auth_token` / `validate_websocket_url` APIs. |
+| `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public per-run token / `validate_websocket_url` APIs. |
 | `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
 
@@ -262,7 +264,6 @@ working directory:
 
 ```text
 ~/.cookie-agent/
-  daemon/token-v1                  # daemon bearer token
   providers/store-v3.json          # durable managed connections
   catalog/                         # validated models.dev cache
   sessions/<workdirkey>/           # one store per canonical cwd

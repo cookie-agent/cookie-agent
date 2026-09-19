@@ -14,9 +14,10 @@ use axum::{
 use futures_util::StreamExt;
 use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
+use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
-use crate::{MessageFrame, MessageStream, TransportError, auth_token::load_or_create_token};
+use crate::{MessageFrame, MessageStream, TransportError};
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,
@@ -52,18 +53,21 @@ impl MessageStream for WebSocketStream {
 }
 
 impl Server {
-    pub fn router(self: Arc<Self>) -> Result<Router, ServerError> {
-        let token = Arc::new(load_or_create_token(&self.token_path)?);
-        Ok(Router::new()
+    pub fn router(self: Arc<Self>, token: Arc<Zeroizing<String>>) -> Router {
+        Router::new()
             .route("/ws", get(websocket_upgrade))
             .with_state(WebSocketState {
                 server: self,
                 token,
-            }))
+            })
     }
 
-    pub async fn serve(self: Arc<Self>, port: u16) -> Result<RunningServer, ServerError> {
-        let router = self.clone().router()?;
+    pub async fn serve(
+        self: Arc<Self>,
+        port: u16,
+        token: Zeroizing<String>,
+    ) -> Result<RunningServer, ServerError> {
+        let router = self.clone().router(Arc::new(token));
         let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
             .await
             .map_err(ServerError::Listen)?;
@@ -84,7 +88,7 @@ impl Server {
 #[derive(Clone)]
 struct WebSocketState {
     server: Arc<Server>,
-    token: Arc<String>,
+    token: Arc<Zeroizing<String>>,
 }
 
 async fn websocket_upgrade(
@@ -96,7 +100,7 @@ async fn websocket_upgrade(
     if !peer.ip().is_loopback() || headers.contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !authorized(&headers, &state.token) {
+    if !authorized(&headers, state.token.as_str()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let server = state.server;
@@ -120,4 +124,33 @@ pub(crate) fn authorized(headers: &HeaderMap, expected: &str) -> bool {
         return false;
     };
     token.len() == expected.len() && bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    use super::authorized;
+
+    fn bearer(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(value).expect("authorization header"),
+        );
+        headers
+    }
+
+    #[test]
+    fn in_memory_token_is_validated_without_any_file_read() {
+        let token = "A".repeat(43);
+        assert!(authorized(&bearer(&format!("Bearer {token}")), &token));
+        assert!(!authorized(&bearer("Bearer wrong"), &token));
+        assert!(!authorized(
+            &bearer(&format!("Bearer {}", "A".repeat(42))),
+            &token
+        ));
+        assert!(!authorized(&bearer("Basic abc"), &token));
+        assert!(!authorized(&HeaderMap::new(), &token));
+    }
 }

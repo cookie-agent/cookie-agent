@@ -29,7 +29,7 @@ arc-swap = "1.8.2"
 async-trait = "0.1.91"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
 bytes = "1.12.1"
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { version = "4.6.4", features = ["derive", "env"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 crc32fast = "1.5.0"
 flate2 = "1.1.9"

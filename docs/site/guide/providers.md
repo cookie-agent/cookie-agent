@@ -7,8 +7,9 @@ providers can still be available through the catalog and user provider store.
 
 ## Managed providers
 
-`/connect` in the TUI, or `cookie connect` against the daemon, walks through
-provider setup and authentication. Connections are stored globally for the
+`/connect` in the TUI, or `cookie connect --token <TOKEN>` against the daemon
+(or set `COOKIE_DAEMON_TOKEN`), walks through provider setup and
+authentication. Connections are stored globally for the
 current user, not in the workspace config. Setup is validated locally; the first
 model request tests the credentials. Never commit credential-bearing files.
 

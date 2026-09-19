@@ -1,8 +1,7 @@
 //! TUI adapter for the shared protocol client.
 
 pub use cookie_agent_server::{
-    ClientDelivery, ClientError, ClientProtocol, load_auth_token as read_daemon_token,
-    validate_websocket_url,
+    ClientDelivery, ClientError, ClientProtocol, validate_websocket_url,
 };
 
 use std::{ops::Deref, sync::Arc};
@@ -27,15 +26,6 @@ impl Client {
             let _ = server.serve_stream(service).await;
         });
         Self::connect_stream(client)
-    }
-
-    pub async fn connect_websocket(url: &str) -> Result<Self, ClientError> {
-        WebSocketTransport::connect(url)
-            .await
-            .map(Self::connect_stream)
-            .map_err(|error| {
-                ClientError::WebSocket(cookie_agent_protocol::diagnostics::error_chain(&error))
-            })
     }
 
     pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {

@@ -11,6 +11,9 @@ use std::{
 #[path = "../../../test-support/config_harness.rs"]
 mod config_harness;
 
+/// A syntactically valid 43-character base64url daemon token for CLI parsing.
+const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 struct TestHome(PathBuf);
 
 impl TestHome {
@@ -63,7 +66,7 @@ fn run_cookie(arguments: &[&str], extra_environment: &[(&str, &str)]) -> Output 
 #[test]
 fn checked_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
     let output = run_cookie(
-        &["connect"],
+        &["connect", "--token", TEST_TOKEN],
         &[
             ("COOKIE_AGENT_THEME", "ignored-theme"),
             ("COOKIE_AGENT_CONFIG__SERVER__PORT", "ignored-port"),
@@ -93,7 +96,7 @@ fn checked_fixture_rejects_ambient_config_overrides_before_cli_secret_input() {
 
 #[test]
 fn disconnect_is_cwd_independent_and_rejects_non_tty() {
-    let output = run_cookie(&["disconnect", "openai"], &[]);
+    let output = run_cookie(&["disconnect", "openai", "--token", TEST_TOKEN], &[]);
     assert!(!output.status.success());
     let report = format!(
         "{}\n{}",
@@ -107,7 +110,7 @@ fn disconnect_is_cwd_independent_and_rejects_non_tty() {
 #[test]
 #[cfg(feature = "tui")]
 fn attach_uses_the_tui_entry_point_without_a_workspace() {
-    let output = run_cookie(&["attach"], &[]);
+    let output = run_cookie(&["attach", "--token", TEST_TOKEN], &[]);
     assert!(!output.status.success());
     let report = format!(
         "{}\n{}",
@@ -121,7 +124,7 @@ fn attach_uses_the_tui_entry_point_without_a_workspace() {
 
 #[test]
 fn connect_is_cwd_independent_and_rejects_non_tty_before_credentials() {
-    let output = run_cookie(&["connect", "openai"], &[]);
+    let output = run_cookie(&["connect", "openai", "--token", TEST_TOKEN], &[]);
     assert!(!output.status.success());
     let report = format!(
         "{}\n{}",

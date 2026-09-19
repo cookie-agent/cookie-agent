@@ -23,7 +23,8 @@ use cookie_agent_protocol::{
     RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
 };
 use cookie_agent_server::{
-    Client, ClientProtocol, Server, in_process_pair, validate_websocket_url,
+    Client, ClientProtocol, Server, generate_token, in_process_pair, ready_line,
+    validate_websocket_url,
 };
 use cookie_agent_tools::{
     BuiltinTools, delegate::DelegateToolProvider, message::MessageToolProvider,
@@ -98,11 +99,18 @@ enum Command {
         args: Box<run::RunArgs>,
     },
     /// Serve the exact cookie-agent protocol 20 JSON-RPC WebSocket daemon on localhost.
-    Daemon,
+    Daemon {
+        /// Localhost port to bind. `0` selects an ephemeral port; the ready line
+        /// reports the real one.
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Attach the TUI to an existing daemon.
     Attach {
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: String,
     },
     /// Securely create or update a durable global managed-provider connection.
     Connect {
@@ -110,6 +118,8 @@ enum Command {
         provider_id: Option<String>,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: String,
     },
     /// Remove a durable global managed-provider connection.
     Disconnect {
@@ -117,6 +127,8 @@ enum Command {
         provider_id: Option<String>,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: String,
     },
     /// List MCP servers or start remote-server OAuth.
     Mcp {
@@ -124,6 +136,8 @@ enum Command {
         command: McpCommand,
         #[arg(long, default_value = DEFAULT_WEBSOCKET_URL)]
         url: String,
+        #[arg(long, env = "COOKIE_DAEMON_TOKEN", hide_env_values = true)]
+        token: String,
     },
 }
 
@@ -283,13 +297,29 @@ async fn main_result() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Command::Daemon) => {
-            run_daemon(compose(workspace.as_deref().expect("daemon workspace")).await?).await
+        Some(Command::Daemon { port }) => {
+            run_daemon(
+                compose(workspace.as_deref().expect("daemon workspace")).await?,
+                port,
+            )
+            .await
         }
-        Some(Command::Connect { provider_id, url }) => run_connect(&url, provider_id).await,
-        Some(Command::Disconnect { provider_id, url }) => run_disconnect(&url, provider_id).await,
-        Some(Command::Mcp { command, url }) => run_mcp(&url, command).await,
-        Some(Command::Attach { url }) => run_attached_tui(&url).await,
+        Some(Command::Connect {
+            provider_id,
+            url,
+            token,
+        }) => run_connect(&url, &token, provider_id).await,
+        Some(Command::Disconnect {
+            provider_id,
+            url,
+            token,
+        }) => run_disconnect(&url, &token, provider_id).await,
+        Some(Command::Mcp {
+            command,
+            url,
+            token,
+        }) => run_mcp(&url, &token, command).await,
+        Some(Command::Attach { url, token }) => run_attached_tui(&url, &token).await,
         None => {
             run_local_frontend(compose(workspace.as_deref().expect("local workspace")).await?).await
         }
@@ -511,9 +541,9 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "tui")]
-async fn run_attached_tui(url: &str) -> anyhow::Result<()> {
+async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
-    let client = cookie_agent_tui::Client::connect_websocket(url)
+    let client = cookie_agent_tui::Client::connect_websocket_with_token(url, token)
         .await
         .context("connect to daemon WebSocket")?;
     client.handshake().await.context("handshake with daemon")?;
@@ -521,7 +551,7 @@ async fn run_attached_tui(url: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(not(feature = "tui"))]
-async fn run_attached_tui(url: &str) -> anyhow::Result<()> {
+async fn run_attached_tui(url: &str, _token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
     anyhow::bail!("cookie was built without TUI support")
 }
@@ -535,14 +565,14 @@ async fn runtime_snapshot(
         .context("runtime.snapshot.get failed")
 }
 
-async fn run_connect(url: &str, provider_id: Option<String>) -> anyhow::Result<()> {
+async fn run_connect(url: &str, token: &str, provider_id: Option<String>) -> anyhow::Result<()> {
     require_interactive_tty(
         io::stdin().is_terminal(),
         io::stdout().is_terminal(),
         io::stderr().is_terminal(),
         "connect",
     )?;
-    let client = Client::connect_websocket(url).await?;
+    let client = Client::connect_websocket_with_token(url, token).await?;
     let mut io = StdioConnectIo;
     run_connect_with(&client, provider_id, &mut io).await
 }
@@ -594,14 +624,14 @@ async fn run_connect_with<I: ConnectIo>(
     Ok(())
 }
 
-async fn run_disconnect(url: &str, provider_id: Option<String>) -> anyhow::Result<()> {
+async fn run_disconnect(url: &str, token: &str, provider_id: Option<String>) -> anyhow::Result<()> {
     require_interactive_tty(
         io::stdin().is_terminal(),
         io::stdout().is_terminal(),
         io::stderr().is_terminal(),
         "disconnect",
     )?;
-    let client = Client::connect_websocket(url).await?;
+    let client = Client::connect_websocket_with_token(url, token).await?;
     let mut io = StdioConnectIo;
     client.handshake().await.context("handshake with daemon")?;
     let runtime = runtime_snapshot(&client).await?;
@@ -638,8 +668,8 @@ async fn run_disconnect(url: &str, provider_id: Option<String>) -> anyhow::Resul
     Ok(())
 }
 
-async fn run_mcp(url: &str, command: McpCommand) -> anyhow::Result<()> {
-    let client = Client::connect_websocket(url).await?;
+async fn run_mcp(url: &str, token: &str, command: McpCommand) -> anyhow::Result<()> {
+    let client = Client::connect_websocket_with_token(url, token).await?;
     client.handshake().await.context("handshake with daemon")?;
     match command {
         McpCommand::List => {
@@ -992,8 +1022,10 @@ fn read_secret_line(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
     Ok(Zeroizing::new(value))
 }
 
-async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
-    let listener = match runtime.server.clone().serve(runtime.port).await {
+async fn run_daemon(mut runtime: Runtime, port_override: Option<u16>) -> anyhow::Result<()> {
+    let token = generate_token().context("generate daemon authentication token")?;
+    let port = port_override.unwrap_or(runtime.port);
+    let listener = match runtime.server.clone().serve(port, token.clone()).await {
         Ok(listener) => listener,
         Err(error) => {
             runtime.server.shutdown();
@@ -1002,9 +1034,11 @@ async fn run_daemon(mut runtime: Runtime) -> anyhow::Result<()> {
             return Err(anyhow::Error::new(error).context("start WebSocket daemon"));
         }
     };
+    let url = format!("ws://{}/ws", listener.address());
+    println!("{}", ready_line(&url, token.as_str()));
+    drop(token);
     println!(
-        "cookie daemon listening on ws://{}/ws (protocol {})",
-        listener.address(),
+        "cookie daemon listening on {url} (protocol {})",
         cookie_agent_protocol::PROTOCOL_VERSION
     );
     let signal = tokio::signal::ctrl_c().await;
@@ -1021,6 +1055,9 @@ mod config_harness;
 
 #[cfg(all(test, unix))]
 mod tests {
+    /// A syntactically valid 43-character base64url daemon token.
+    const TEST_TOKEN: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
     /// Compose with configuration loaded from the workspace only, isolating tests from any
     /// real user-level configuration on the host.
     async fn compose_isolated<T: CatalogTransport + 'static>(
@@ -1263,7 +1300,13 @@ mod tests {
         assert_eq!(Cli::try_parse_from(["cookie"]).unwrap().command, None);
         assert_eq!(
             Cli::try_parse_from(["cookie", "daemon"]).unwrap().command,
-            Some(Command::Daemon)
+            Some(Command::Daemon { port: None })
+        );
+        assert_eq!(
+            Cli::try_parse_from(["cookie", "daemon", "--port", "0"])
+                .unwrap()
+                .command,
+            Some(Command::Daemon { port: Some(0) })
         );
         assert!(Cli::try_parse_from(["cookie", "--trust-workspace", "daemon"]).is_err());
         assert!(
@@ -1272,7 +1315,7 @@ mod tests {
         assert!(Cli::try_parse_from(["cookie", "mcp", "approve", "github"]).is_err());
         assert!(Cli::try_parse_from(["cookie", "mcp", "reject", "github"]).is_err());
         assert_eq!(
-            Cli::try_parse_from(["cookie", "mcp", "auth", "remote"])
+            Cli::try_parse_from(["cookie", "mcp", "--token", TEST_TOKEN, "auth", "remote"])
                 .unwrap()
                 .command,
             Some(Command::Mcp {
@@ -1280,6 +1323,7 @@ mod tests {
                     server: "remote".into()
                 },
                 url: DEFAULT_WEBSOCKET_URL.into(),
+                token: TEST_TOKEN.into(),
             })
         );
         assert_eq!(
@@ -1422,24 +1466,54 @@ mod tests {
         for command in [
             Command::Attach {
                 url: DEFAULT_WEBSOCKET_URL.into(),
+                token: TEST_TOKEN.into(),
             },
             Command::Connect {
                 provider_id: None,
                 url: DEFAULT_WEBSOCKET_URL.into(),
+                token: TEST_TOKEN.into(),
             },
             Command::Disconnect {
                 provider_id: None,
                 url: DEFAULT_WEBSOCKET_URL.into(),
+                token: TEST_TOKEN.into(),
             },
             Command::Mcp {
                 command: McpCommand::List,
                 url: DEFAULT_WEBSOCKET_URL.into(),
+                token: TEST_TOKEN.into(),
             },
         ] {
             assert!(
                 local_workspace(&Some(command), || panic!("cwd inspected"))
                     .unwrap()
                     .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_subcommands_require_an_explicit_token() {
+        for arguments in [
+            vec!["cookie", "attach"],
+            vec!["cookie", "connect"],
+            vec!["cookie", "disconnect"],
+            vec!["cookie", "mcp", "list"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&arguments).is_err(),
+                "missing token accepted for {arguments:?}"
+            );
+        }
+        for arguments in [
+            vec!["cookie", "attach", "--token", TEST_TOKEN],
+            vec!["cookie", "connect", "--token", TEST_TOKEN],
+            vec!["cookie", "disconnect", "--token", TEST_TOKEN],
+            vec!["cookie", "mcp", "--token", TEST_TOKEN, "list"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&arguments).is_ok(),
+                "token rejected for {arguments:?}"
             );
         }
     }
