@@ -80,6 +80,7 @@ jobs:
 
   windows:
     name: Windows MSVC (${{ matrix.arch }})
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +98,11 @@ jobs:
           components: clippy
       - run: cargo check --locked --workspace
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - name: Run tests
+        run: cargo test --locked --workspace -- --nocapture
+        timeout-minutes: 60
+        env:
+          RUST_BACKTRACE: 1
 
   release-targets:
     name: Release target check (${{ matrix.target }})
