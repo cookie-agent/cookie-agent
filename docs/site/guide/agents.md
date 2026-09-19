@@ -183,10 +183,11 @@ Background sessions move through `queued`, `running`, and a terminal
 `completed`, `failed`, `interrupted`, or `cancelled` state. Completion appends a
 parent event containing the session ID and handle, status, first 20 result lines
 (at most 2 KiB), and total line count. Use `get_subagent_result` with the
-child's handle or UUID, optional `wait`, and zero-based `offset`/`limit` to
-retrieve the last assistant message of the child's most recent turn in pages; a
-running child (including one just woken by `send_message`) reports as running
-and returns no text, and `wait = true` blocks until its turn ends. Use
+child's handle or UUID and zero-based `offset`/`limit` to read the last assistant
+message of the child's most recent turn in pages; a running child (including one
+just woken by `send_message`) reports as running and returns no text. It never
+waits. If a background child is still running, tell the user that you are waiting
+and end the turn; its completion notification will wake this parent session. Use
 `cancel_subagent` with the owned handle or UUID and optional `reason` to cancel
 it. Result and cancellation operations reject sessions that are not direct
 children of the caller.

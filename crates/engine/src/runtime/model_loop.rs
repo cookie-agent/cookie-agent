@@ -52,9 +52,6 @@ impl Engine {
         let runtime = self.current_runtime();
         let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?;
-        if !agent.runnable_as_root {
-            return Err(EngineError::NoRunnableModel);
-        }
         freeze_root_agent_policy(
             agent,
             Arc::clone(&agents),

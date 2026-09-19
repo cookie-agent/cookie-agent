@@ -144,7 +144,7 @@ prose.
 ```json
 {
   "name": "delegate_subagent",
-  "description": "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>, and you can also fetch it with get_subagent_result. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).",
+  "description": "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).",
   "parameters": {
     "type": "object",
     "properties": {
@@ -168,7 +168,7 @@ prose.
 ```json
 {
   "name": "get_subagent_result",
-  "description": "Check the status of a subagent you delegated. If it is still running, the result says so (use wait=true to block until it ends its turn). Once it has ended, the result contains the last assistant message the subagent emitted, along with its terminal status. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.",
+  "description": "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -176,7 +176,6 @@ prose.
         "type": "string",
         "description": "Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
       },
-      "wait": { "type": "boolean", "default": false },
       "offset": { "type": "integer", "default": 0 },
       "limit": { "type": "integer", "default": 2000 }
     },
@@ -304,9 +303,8 @@ Pinned contract:
 
 - **Subagent running** (including queued/starting, and including a finished
   subagent that was woken into a new turn by a `send_message`): the tool
-  reports that the subagent is still running and returns no final text. With
-  `wait: true`, it blocks until the subagent ends its turn, then behaves as
-  below.
+  reports that the subagent is still running and returns no final text. It
+  returns immediately and never waits.
 - **Subagent ended**: the tool returns the **last assistant message emitted
   by the subagent** (the final text of its most recent turn), along with the
   terminal status. The message text is paginated by the existing `offset` /

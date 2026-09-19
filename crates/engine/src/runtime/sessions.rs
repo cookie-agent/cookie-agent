@@ -58,9 +58,6 @@ impl Engine {
         }
         let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?.clone();
-        if !agent.runnable_as_root {
-            return Err(EngineError::NoRunnableModel);
-        }
         let policy = freeze_root_agent_policy(
             &agent,
             agents,

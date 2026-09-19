@@ -12458,17 +12458,22 @@ fn runtime_snapshot_model_descriptor_preserves_compiled_variant_order() {
 
 #[test]
 fn synthetic_default_replaces_no_authored_agent_and_unknown_models_are_diagnostic() {
-    let error = match synthetic_default_fixture_with_config(
-        Some(
-            "---\ndescription: Unknown primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnknown prompt.\n",
-        ),
-        "http://127.0.0.1:9/v1",
-        "",
-    ) {
-        Ok(_) => panic!("unknown model should reject engine startup"),
-        Err(error) => error,
-    };
+    let fixture = synthetic_default_fixture(Some(
+        "---\ndescription: Unknown primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/missing\", variant: base }]\npermissions: {}\n---\nUnknown prompt.\n",
+    ));
+    let error = fixture
+        .engine
+        .create_session(RunSelection {
+            agent: AgentId::new("primary").expect("primary agent ID"),
+            model: ModelSelection {
+                model: "custom.test/missing".parse().expect("unknown model"),
+                variant: None,
+            },
+            preset: None,
+        })
+        .expect_err("unknown model should reject explicit session selection");
     assert!(matches!(error, EngineError::UnknownAgentModel { .. }));
+    drop(fixture);
 
     let (runnable, _) = custom_fixture();
     let snapshot = runnable

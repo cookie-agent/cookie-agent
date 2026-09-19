@@ -72,27 +72,6 @@ impl AgentRegistry {
                         });
                     }
                     AgentModelRef::Model(model_key) => {
-                        if models.model(model_key).is_none() {
-                            let error = if models
-                                .catalog()
-                                .model(&model_key.provider_id(), &model_key.model_id())
-                                .is_some()
-                            {
-                                EngineError::UnavailableAgentModel {
-                                    agent: id.clone(),
-                                    model: model_key.clone(),
-                                }
-                            } else {
-                                EngineError::UnknownAgentModel {
-                                    agent: id.clone(),
-                                    model: model_key.clone(),
-                                }
-                            };
-                            match error {
-                                EngineError::UnknownAgentModel { .. } => return Err(error),
-                                _ => eprintln!("{error}"),
-                            }
-                        }
                         let variant = match (&fallback.variant, models.model(model_key)) {
                             (None, Some(model)) => model.model.default_variant.clone(),
                             (Some(cookie_agent_identity::ConfiguredVariantRef::Base), _) => None,

@@ -138,6 +138,33 @@ impl FrozenRunPolicy {
     }
 }
 
+fn missing_model_error(
+    agent: &ResolvedAgent,
+    runtime: &crate::runtime_snapshot::PublishedRuntime,
+    selection: &protocol::ModelSelection,
+) -> Option<EngineError> {
+    if runtime.models.model(&selection.model).is_some() {
+        return None;
+    }
+    let error = if runtime
+        .models
+        .catalog()
+        .model(&selection.model.provider_id(), &selection.model.model_id())
+        .is_some()
+    {
+        EngineError::UnavailableAgentModel {
+            agent: agent.document.id.clone(),
+            model: selection.model.clone(),
+        }
+    } else {
+        EngineError::UnknownAgentModel {
+            agent: agent.document.id.clone(),
+            model: selection.model.clone(),
+        }
+    };
+    Some(error)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn freeze_root_agent_policy(
     agent: &ResolvedAgent,
@@ -148,6 +175,9 @@ pub(crate) fn freeze_root_agent_policy(
     result_limits: ResultLimits,
     model_retry: cookie_agent_config::ModelRetryConfig,
 ) -> Result<FrozenRunPolicy, EngineError> {
+    if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
+        return Err(error);
+    }
     if !agent.runnable_as_root {
         return Err(EngineError::NoRunnableModel);
     }
@@ -209,6 +239,9 @@ pub(crate) fn freeze_delegated_agent_policy(
     inherited_depth_ceiling: u32,
     options: FreezeOptions,
 ) -> Result<FrozenRunPolicy, EngineError> {
+    if let Some(error) = missing_model_error(agent, runtime.as_ref(), selection) {
+        return Err(error);
+    }
     let bindings = if agent.resolved_fallback.is_empty() {
         if inherited_suffix.first().map(|binding| &binding.selection) != Some(selection) {
             return Err(EngineError::NoRunnableModel);

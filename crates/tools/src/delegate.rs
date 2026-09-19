@@ -47,8 +47,6 @@ struct GetResultArgs {
     /// Handle or full UUID of one of the caller's subagents.
     session_id: String,
     #[serde(default)]
-    wait: bool,
-    #[serde(default)]
     offset: u32,
     limit: Option<u32>,
 }
@@ -147,6 +145,13 @@ impl ToolProvider for DelegateToolProvider {
             body.push_str(": ");
             body.push_str(description);
         }
+        body.push_str(
+            "\n\nDelegation behavior:\n\
+             - Foreground delegation waits for the child and returns its result.\n\
+             - background=true returns a handle immediately; when the child finishes, this parent session receives a completion notification.\n\
+             - If you need to wait for a background child, tell the user that you are waiting and end your turn; the completion notification will wake this session.\n\
+             - Use get_subagent_result only to read the available result after notification; it does not wait.",
+        );
         Ok(vec![PromptSection {
             title: "Available subagents".into(),
             body,
@@ -165,7 +170,7 @@ impl ToolProvider for DelegateToolProvider {
                     result_truncation: result_truncation_policy("delegate_subagent"),
                     name: "delegate_subagent".into(),
                     permission_name: Self::get_permission_name("delegate_subagent")?.into(),
-                    description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>, and you can also fetch it with get_subagent_result. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
+                    description: "Delegate a self-contained task to a specialist agent. Foreground (default) blocks until done. background=true returns immediately with a session handle; the result is pushed back automatically as a <subagent_notification>. If you need to wait for completion, tell the user and end your turn; the notification will wake this session. Use get_subagent_result only to read the available result after notification. To continue an existing subagent, pass its resume_session_id (see the handle in its start/completion notice).".into(),
                     parameters: serde_json::json!({
                         "type":"object","additionalProperties":false,
                         "properties":{
@@ -188,7 +193,7 @@ impl ToolProvider for DelegateToolProvider {
                     result_truncation: result_truncation_policy("get_subagent_result"),
                     name: "get_subagent_result".into(),
                     permission_name: Self::get_permission_name("get_subagent_result")?.into(),
-                    description: "Check the status of a subagent you delegated. If it is still running, the result says so (use wait=true to block until it ends its turn). Once it has ended, the result contains the last assistant message the subagent emitted, along with its terminal status. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
+                    description: "Read the current status and latest result of a subagent you delegated. This call returns immediately; it never waits. A background delegation sends a completion notification to this parent session when it ends. Use the handle from the subagent's start or completion notice, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible.".into(),
                     parameters: serde_json::json!({
                         "type":"object","additionalProperties":false,
                         "properties":{
@@ -196,7 +201,6 @@ impl ToolProvider for DelegateToolProvider {
                                 "type":"string",
                                 "description":"Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
                             },
-                            "wait":{"type":"boolean","default":false},
                             "offset":{"type":"integer","minimum":0,"default":0},
                             "limit":{"type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000}
                         },
@@ -419,7 +423,7 @@ impl PreparedExecutor for DelegateExecutor {
                     .get_subagent_result(
                         context.session,
                         &args.session_id,
-                        args.wait,
+                        false,
                         args.offset,
                         args.limit.expect("normalized result limit"),
                         context.cancellation,
@@ -506,7 +510,7 @@ mod tests {
 
     use super::{
         CancelArgs, DelegateToolProvider, GetResultArgs, background_start_result,
-        delegate_permission_resource, parse_delegate,
+        delegate_permission_resource, parse_delegate, parse_result,
     };
 
     fn assert_legacy_grant_does_not_match(
@@ -569,7 +573,6 @@ mod tests {
             "read",
             &GetResultArgs {
                 session_id: session_id.to_string(),
-                wait: false,
                 offset: 0,
                 limit: Some(super::DEFAULT_RESULT_LIMIT),
             },
@@ -661,6 +664,18 @@ mod tests {
         assert_eq!(
             legacy.metadata,
             serde_json::json!({"session_id": session_id, "handle": null})
+        );
+    }
+
+    #[test]
+    fn result_arguments_reject_removed_wait_parameter() {
+        let session_id = SessionId::new_v7();
+        assert!(
+            parse_result(&serde_json::json!({
+                "session_id": session_id,
+                "wait": true
+            }))
+            .is_err()
         );
     }
 
