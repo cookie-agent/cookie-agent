@@ -44,3 +44,33 @@ fn windows_private_store_uses_preexisting_untrusted_acl() {
     SecureDirectory::open_in(temporary.path(), "preexisting")
         .expect("preexisting ordinary directory");
 }
+
+#[test]
+fn windows_private_files_support_long_paths_and_keep_private_acls() {
+    use cookie_agent_models::secure_store::{
+        create_windows_private_dir_all, create_windows_private_file, replace_windows_path,
+    };
+    use std::{io::Write as _, os::windows::ffi::OsStrExt as _};
+
+    let temporary = tempfile::tempdir().expect("temporary root");
+    let directory = temporary
+        .path()
+        .join("nested-storage-".repeat(6))
+        .join("child-storage-".repeat(6))
+        .join("metadata-storage-".repeat(6));
+    assert!(directory.as_os_str().encode_wide().count() > 260);
+    create_windows_private_dir_all(&directory).expect("create long directory path");
+    verify_windows_private_creation(&directory).expect("private directory ACL");
+    let target = directory.join("metadata");
+    for contents in [b"first".as_slice(), b"replacement".as_slice()] {
+        let staging = directory.join(".metadata.tmp");
+        let mut file = create_windows_private_file(&staging).expect("create long file path");
+        file.write_all(contents).expect("write metadata");
+        file.sync_all().expect("sync metadata");
+        drop(file);
+        verify_windows_private_creation(&staging).expect("private staging ACL");
+        replace_windows_path(&staging, &target).expect("replace long file path");
+        verify_windows_private_creation(&target).expect("private metadata ACL");
+        assert_eq!(std::fs::read(&target).expect("read metadata"), contents);
+    }
+}

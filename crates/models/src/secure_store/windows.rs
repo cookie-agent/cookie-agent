@@ -8,7 +8,7 @@ use std::{
         fs::OpenOptionsExt,
         io::{AsRawHandle, FromRawHandle, RawHandle},
     },
-    path::{Component, Path, PathBuf},
+    path::{Component, Path, PathBuf, Prefix},
     ptr::null_mut,
     time::{Duration, Instant},
 };
@@ -183,12 +183,28 @@ fn current_user_sid() -> io::Result<SidBuffer> {
 }
 
 fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
-    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    if wide.contains(&0) {
+    if path.as_os_str().encode_wide().any(|unit| unit == 0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "secure storage path contains an invalid character",
         ));
+    }
+    // Native APIs need an extended path even when std::fs accepts the same
+    // long path. Normalize first: verbatim paths do not resolve `/` or `..`.
+    // Unlike canonicalize, absolute also works for files not yet created.
+    let path = std::path::absolute(path)?;
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => {
+                wide.splice(..0, r"\\?\".encode_utf16());
+            }
+            Prefix::UNC(..) => {
+                wide.splice(..2, r"\\?\UNC\".encode_utf16());
+            }
+            _ => {} // Already verbatim or a device path.
+        },
+        _ => unreachable!("absolute Windows path has a prefix"),
     }
     wide.push(0);
     Ok(wide)
@@ -773,4 +789,26 @@ pub(super) fn remove(lock: &SecureDirectoryLock<'_>, name: &str) -> Result<(), S
 pub(super) fn validate_leaf_name(name: &str) -> Result<(), SecureStoreError> {
     validate_name(name)?;
     validate_component(OsStr::new(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_paths_normalize_before_becoming_verbatim() {
+        for (input, expected) in [
+            (r"C:/store/unused/../state", r"\\?\C:\store\state"),
+            (
+                r"\\server\share\unused\..\state",
+                r"\\?\UNC\server\share\state",
+            ),
+            (r"\\?\C:\store\state", r"\\?\C:\store\state"),
+            (r"\\?\UNC\server\share\state", r"\\?\UNC\server\share\state"),
+        ] {
+            let wide = wide_path(Path::new(input)).expect("native path");
+            assert_eq!(wide, expected.encode_utf16().chain([0]).collect::<Vec<_>>());
+        }
+        assert!(wide_path(Path::new("invalid\0path")).is_err());
+    }
 }

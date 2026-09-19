@@ -7723,6 +7723,8 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
         ("same", ["same.txt", "same.txt"], 1),
         ("distinct", ["one.txt", "two.txt"], 2),
     ] {
+        let delay_ms = if expected_max == 1 { 60 } else { 0 };
+        let barrier = (expected_max == 2).then(|| Arc::new(tokio::sync::Barrier::new(3)));
         let (endpoint, responses, captured) = scripted_channel_server(2).await;
         responses
             .send(MatchedScriptedResponse::last_message_role(
@@ -7731,12 +7733,12 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
                     (
                         "write-call",
                         "parallel_write",
-                        serde_json::json!({"name":"write-target","delay_ms":60,"serialization_key":keys[0]}),
+                        serde_json::json!({"name":"write-target","delay_ms":delay_ms,"serialization_key":keys[0]}),
                     ),
                     (
                         "edit-call",
                         "parallel_edit",
-                        serde_json::json!({"name":"edit-target","delay_ms":60,"serialization_key":keys[1]}),
+                        serde_json::json!({"name":"edit-target","delay_ms":delay_ms,"serialization_key":keys[1]}),
                     ),
                 ]),
             ))
@@ -7756,7 +7758,7 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
             .engine
             .register_tool_provider(Arc::new(TestParallelToolProvider {
                 state: Arc::clone(&state),
-                barrier: None,
+                barrier: barrier.clone(),
             }));
         let session = fixture
             .engine
@@ -7777,6 +7779,9 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
             )
             .await
             .expect("mutation run");
+        if let Some(barrier) = barrier {
+            with_watchdog("distinct-file executors overlap", barrier.wait()).await;
+        }
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         assert_eq!(state.max_active.load(Ordering::SeqCst), expected_max);
         assert_eq!(

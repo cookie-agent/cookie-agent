@@ -1946,17 +1946,18 @@ impl ArtifactRouter {
 
     /// The store for one root tree, created on first write.
     pub(crate) fn tree_store(&self, tree: SessionId) -> std::io::Result<Arc<ArtifactStore>> {
-        if let Some(store) = self.cached_tree_store(tree) {
-            return Ok(store);
-        }
-        let store = self.new_store(self.tree_dir(tree).join(ARTIFACTS_DIR))?;
+        // Initialization creates directories and scans scratch files. Keep it
+        // inside the cache lock so concurrent first writers cannot race it.
         let mut roots = self
             .roots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Ok(Arc::clone(
-            roots.entry(tree).or_insert_with(|| Arc::clone(&store)),
-        ))
+        if let Some(store) = roots.get(&tree) {
+            return Ok(Arc::clone(store));
+        }
+        let store = self.new_store(self.tree_dir(tree).join(ARTIFACTS_DIR))?;
+        roots.insert(tree, Arc::clone(&store));
+        Ok(store)
     }
 
     fn cached_tree_store(&self, tree: SessionId) -> Option<Arc<ArtifactStore>> {
@@ -2953,6 +2954,40 @@ mod router_tests {
             roots,
             children,
         }
+    }
+
+    #[test]
+    fn concurrent_first_writes_share_one_tree_store() {
+        let fixture = placement();
+        let gate = std::sync::Barrier::new(8);
+        let stores = std::thread::scope(|scope| {
+            let writers = (0..8)
+                .map(|index| {
+                    let router = &fixture.router;
+                    let gate = &gate;
+                    let tree = fixture.roots[0];
+                    scope.spawn(move || {
+                        gate.wait();
+                        let store = router.tree_store(tree).expect("initialize tree store");
+                        let content = format!("writer {index}");
+                        let (_, digest) = store.retain(content.as_bytes()).expect("retain output");
+                        assert_eq!(
+                            store
+                                .read_paged(&digest, 0, 1)
+                                .expect("read output")
+                                .content,
+                            content
+                        );
+                        store
+                    })
+                })
+                .collect::<Vec<_>>();
+            writers
+                .into_iter()
+                .map(|writer| writer.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(stores.iter().all(|store| Arc::ptr_eq(store, &stores[0])));
     }
 
     fn tree_dir(workdir: &Path, root: SessionId) -> std::path::PathBuf {
