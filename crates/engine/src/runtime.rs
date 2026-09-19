@@ -676,12 +676,6 @@ impl ModelRetrySleepHook {
 }
 
 #[cfg(test)]
-struct GapSendHook {
-    reached: std_mpsc::Sender<()>,
-    release: std_mpsc::Receiver<()>,
-}
-
-#[cfg(test)]
 struct AdmissionConfirmationHook {
     reached: mpsc::UnboundedSender<()>,
     release: Arc<tokio::sync::Barrier>,
@@ -705,11 +699,6 @@ struct AbandonedSweepHook {
     reached: mpsc::UnboundedSender<()>,
     captured: mpsc::UnboundedSender<Vec<RunId>>,
     release: Arc<tokio::sync::Notify>,
-}
-
-#[derive(Debug)]
-struct PersistedSubscriber {
-    sender: mpsc::Sender<EventSubscriptionMessage>,
 }
 
 type PluginDiagnosticKey = (
@@ -911,7 +900,6 @@ impl RuntimeRevisionIndex {
 }
 
 const SESSION_MAILBOX_CAPACITY: usize = 256;
-const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 const MAX_PENDING_PREPARED_TOOLS: usize = 64;
 const PLUGIN_DIAGNOSTIC_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 /// Semantic revision of the no-model builtin runtime contract.
@@ -1221,7 +1209,6 @@ pub(crate) struct Inner {
     delegation_recovery_stale_producers:
         Mutex<Vec<(SessionId, InvocationId, cookie_agent_protocol::ProducerId)>>,
     next_admission_generation: AtomicU64,
-    subscribers: Mutex<HashMap<SessionId, Vec<PersistedSubscriber>>>,
     actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     residency_mutation: tokio::sync::Mutex<()>,
     output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
@@ -1262,8 +1249,6 @@ pub(crate) struct Inner {
     pub(crate) model_retry_sleep_hook: ModelRetrySleepHook,
     #[cfg(test)]
     pub(crate) pending_approval_ready: tokio::sync::Notify,
-    #[cfg(test)]
-    gap_send_hook: Mutex<Option<GapSendHook>>,
     #[cfg(test)]
     admission_confirmation_hook: Mutex<Option<Arc<AdmissionConfirmationHook>>>,
     #[cfg(test)]
@@ -1417,7 +1402,6 @@ impl Engine {
                 delegation_reconciliation_requested: AtomicBool::new(false),
                 delegation_recovery_stale_producers: Mutex::new(Vec::new()),
                 next_admission_generation: AtomicU64::new(1),
-                subscribers: Mutex::new(HashMap::new()),
                 actors: Mutex::new(HashMap::new()),
                 residency_mutation: tokio::sync::Mutex::new(()),
                 output_hubs: Mutex::new(HashMap::new()),
@@ -1457,8 +1441,6 @@ impl Engine {
                 model_retry_sleep_hook: ModelRetrySleepHook::default(),
                 #[cfg(test)]
                 pending_approval_ready: tokio::sync::Notify::new(),
-                #[cfg(test)]
-                gap_send_hook: Mutex::new(None),
                 #[cfg(test)]
                 admission_confirmation_hook: Mutex::new(None),
                 #[cfg(test)]

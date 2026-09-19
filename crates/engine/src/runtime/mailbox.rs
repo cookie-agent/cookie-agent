@@ -18,9 +18,9 @@ use tokio::sync::{mpsc, oneshot};
 use super::PagingRaceHook;
 use super::ToolCallFailureCode;
 use super::{
-    ApprovalTerminal, Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS,
-    PERSISTED_SUBSCRIBER_QUEUE_CAPACITY, PendingInput, PendingPromotionState, PersistedSubscriber,
-    PredictiveCompactionInput, SESSION_MAILBOX_CAPACITY, SessionCommand, ToolFailure,
+    ApprovalTerminal, Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
+    PendingPromotionState, PredictiveCompactionInput, SESSION_MAILBOX_CAPACITY, SessionCommand,
+    ToolFailure,
     approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
     model_loop,
@@ -331,7 +331,6 @@ impl Engine {
         } else {
             self.inner.store.append(session, run, origin, event)?
         };
-        self.publish_stored_event(&envelope);
         if !was_persisted && self.inner.store.is_persisted(session)? {
             for durable in self.inner.store.get(session)?.log.all_events() {
                 let drops = self
@@ -348,52 +347,6 @@ impl Engine {
             self.record_plugin_drops(session, drops);
         }
         Ok(envelope)
-    }
-
-    fn publish_stored_event(&self, envelope: &StoredEvent) {
-        let session = envelope.session_id;
-        self.inner
-            .subscribers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(session)
-            .or_default()
-            .retain_mut(|subscriber| {
-                // Reserve one queue slot for a control message. Once the
-                // event capacity is reached, queue a gap and close this live
-                // subscription; the gap is delivered even if this event is
-                // terminal, and the client resumes from `last_delivered_seq`.
-                let is_gap = subscriber.sender.capacity() <= 1;
-                let message = if is_gap {
-                    EventSubscriptionMessage::Gap {
-                        session_id: session,
-                        last_delivered_seq: envelope.seq.saturating_sub(1),
-                    }
-                } else {
-                    EventSubscriptionMessage::Event {
-                        event: Box::new(envelope.clone()),
-                    }
-                };
-                match subscriber.sender.try_send(message) {
-                    Ok(()) => {
-                        #[cfg(test)]
-                        if is_gap
-                            && let Some(hook) = self
-                                .inner
-                                .gap_send_hook
-                                .lock()
-                                .expect("gap send hook lock poisoned")
-                                .take()
-                        {
-                            let _ = hook.reached.send(());
-                            let _ = hook.release.recv();
-                        }
-                        !is_gap
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => false,
-                    Err(mpsc::error::TrySendError::Closed(_)) => false,
-                }
-            });
     }
 
     fn record_plugin_drops(
@@ -1540,25 +1493,7 @@ impl Engine {
                 let _ = reply.send(result);
             }
             SessionCommand::Subscribe { cursor, reply } => {
-                // Snapshot and registration share the actor turn, so appends
-                // cannot land in the cursor-to-live handoff gap.
-                let result = self.inner.store.get(session).map(|projection| {
-                    let events = projection
-                        .log
-                        .all_events()
-                        .into_iter()
-                        .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
-                        .collect();
-                    let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
-                    self.inner
-                        .subscribers
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .entry(session)
-                        .or_default()
-                        .push(PersistedSubscriber { sender });
-                    (EventsSubscribeResult { events }, receiver)
-                });
+                let result = self.inner.store.subscribe_events(session, cursor);
                 let _ = reply.send(result.map_err(EngineError::from));
             }
             SessionCommand::Resume { reply } => {

@@ -367,6 +367,82 @@ impl Drop for PanicResistantTempDir {
 }
 
 #[tokio::test]
+async fn direct_store_appends_share_the_subscription_handoff() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    let cursor = session.last_event_seq;
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let writer_gate = Arc::clone(&gate);
+    let writer_store = Arc::clone(&fixture.engine.inner.store);
+    let writer = tokio::task::spawn_blocking(move || {
+        writer_gate.wait();
+        for index in 0..32 {
+            writer_store
+                .append(
+                    session_id,
+                    None,
+                    cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                    EventPayload::UserInputAdmitted {
+                        input: format!("input {index}"),
+                    },
+                )
+                .expect("direct append");
+        }
+    });
+    let store = Arc::clone(&fixture.engine.inner.store);
+    let subscriber = tokio::task::spawn_blocking(move || {
+        gate.wait();
+        store
+            .subscribe_events(session_id, Some(cursor))
+            .expect("subscribe")
+    });
+    let (snapshot, mut live) = with_watchdog("subscription handoff", subscriber)
+        .await
+        .unwrap();
+    with_watchdog("direct writer", writer).await.unwrap();
+    let mut events = snapshot.events;
+    with_watchdog("direct append delivery", async {
+        while events.len() < 32 {
+            match live.recv().await.expect("live subscription") {
+                EventSubscriptionMessage::Event { event } => events.push(*event),
+                EventSubscriptionMessage::Gap { .. } => panic!("unexpected gap"),
+            }
+        }
+    })
+    .await;
+    for (index, event) in events.iter().enumerate() {
+        assert_eq!(event.seq, cursor + index as u64 + 1);
+        assert!(
+            matches!(&event.payload, EventPayload::UserInputAdmitted { input }
+            if input == &format!("input {index}"))
+        );
+    }
+    // Actor appends use the same publication path and must arrive exactly once.
+    fixture
+        .engine
+        .append(
+            session_id,
+            None,
+            cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+            EventPayload::UserInputAdmitted {
+                input: "actor append".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(with_watchdog("actor append delivery", live.recv()).await,
+        Some(EventSubscriptionMessage::Event { event }) if event.seq == cursor + 33)
+    );
+    assert!(matches!(
+        live.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn plugin_publication_streams_bus_but_rejects_unregistered_model_emission() {
     let (mut fixture, selection) = custom_fixture();
     let session = fixture.engine.create_session(selection).expect("session");
@@ -4625,7 +4701,9 @@ async fn model_less_delegated_child_first_request_inherits_parent_cache_strategy
         .children(parent.session_id)
         .expect("children")[0]
         .session_id;
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(
         request_body(&requests[1])["prompt_cache_key"],
@@ -4724,7 +4802,9 @@ async fn wildcard_delegation_pattern_spawns_matching_subagent() {
     )
     .await;
 
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 3);
     let parent_prompt = request_body(&requests[0]).to_string();
     assert!(parent_prompt.contains("Available subagents:"));
@@ -4793,7 +4873,9 @@ async fn normalized_tool_call_name_is_refused_before_execution() {
     )
     .await;
 
-    let requests = server.await.expect("alias server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("alias server");
     assert_eq!(
         requests.len(),
         2,
@@ -4998,7 +5080,9 @@ async fn tool_prompt_sections_are_ordered_fingerprinted_and_frozen() {
             .contains("Changed second section.")
     );
 
-    let requests = captured.await.expect("captured prompt requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured prompt requests");
     assert_eq!(requests.len(), 3);
     let first_request = request_body(&requests[0]).to_string();
     assert!(first_request.contains("First section\\nnormalized."));
@@ -5126,7 +5210,9 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
             .agent
             .prompt_fingerprint
     );
-    captured.await.expect("captured ordered request");
+    with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured ordered request");
     fixture.engine.shutdown().await;
 }
 
@@ -5180,7 +5266,9 @@ async fn working_directory_section_reports_session_cwd() {
         Sha256Digest::of_bytes(run.agent.composed_prompt.as_bytes()),
         run.agent.prompt_fingerprint
     );
-    captured.await.expect("captured working-directory request");
+    with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured working-directory request");
     fixture.engine.shutdown().await;
 }
 
@@ -5749,7 +5837,9 @@ async fn consecutive_root_runs_reload_agent_md() {
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].contains("run one AGENTS.md context"));
     assert!(!requests[0].contains("run two AGENTS.md context"));
@@ -5819,7 +5909,9 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
         )
         .await
         .expect("start AGENTS.md context run");
-    let request = captured.await.expect("captured AGENTS.md context request");
+    let request = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured AGENTS.md context request");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
     let events = fixture
@@ -6289,7 +6381,9 @@ async fn assert_retry_budget_and_fallback(status: u16, expected_attempts_on_firs
             .all(|delay| *delay == std::time::Duration::from_millis(1))
     );
 
-    let requests = captured.await.expect("retry requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("retry requests");
     assert_eq!(requests.len(), expected_attempts_on_first + 1);
     assert!(
         requests[..expected_attempts_on_first]
@@ -6384,7 +6478,9 @@ async fn mid_stream_failure_still_consumes_standard_retries_before_fallback() {
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let requests = captured.await.expect("mid-stream retry requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("mid-stream retry requests");
     assert_eq!(requests.len(), attempts_on_first + 1);
     assert!(
         requests[..attempts_on_first]
@@ -6478,7 +6574,13 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
         |projection| projection.status == SessionStatus::Cancelled,
     )
     .await;
-    assert_eq!(captured.await.expect("overload request").len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("overload request")
+            .len(),
+        1
+    );
     assert_eq!(
         projection
             .log
@@ -7021,7 +7123,9 @@ async fn parallel_tools_start_in_model_order_and_terminate_in_completion_order()
             .pending_calls
             .is_empty()
     );
-    let requests = captured.await.expect("parallel server");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("parallel server");
     assert!(requests[1].contains("first completed"));
     assert!(requests[1].contains("failure failed"));
     assert!(requests[1].contains("third completed"));
@@ -7151,7 +7255,13 @@ async fn opt_out_completion_never_allocates_capture_files_or_waits_for_publicati
     assert!(result.retained_output.is_none());
     assert!(result.truncation.is_none());
     assert_eq!(attempted.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(captured.await.unwrap().len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
     drop(publication);
     fixture.engine.shutdown().await;
 }
@@ -7312,7 +7422,13 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
         !history.contains("retained output is incomplete"),
         "display must remain UI-only"
     );
-    assert_eq!(captured.await.unwrap().len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -7449,7 +7565,9 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
             expected
         );
     }
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert!(requests[1].contains(&format!("artifact://{manifest_id}/results")));
     assert!(requests[1].contains("[diagnostics]"));
     assert!(!requests[1].contains("PLUGIN_UI_ONLY"));
@@ -7589,7 +7707,13 @@ async fn cancelling_parallel_tools_terminates_every_started_call_once() {
             if parts.iter().any(|part| matches!(part, oven_sdk::ContentValue::Text(text) if text == &result.output)))
         );
     }
-    assert_eq!(captured.await.expect("cancellation server").len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("cancellation server")
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -7655,7 +7779,13 @@ async fn same_file_write_and_edit_serialize_while_distinct_files_overlap() {
             .expect("mutation run");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
         assert_eq!(state.max_active.load(Ordering::SeqCst), expected_max);
-        assert_eq!(captured.await.expect("mutation server").len(), 2);
+        assert_eq!(
+            with_watchdog("captured fixture completion", captured)
+                .await
+                .expect("mutation server")
+                .len(),
+            2
+        );
         fixture.engine.shutdown().await;
     }
 }
@@ -7737,7 +7867,13 @@ async fn same_key_parallel_calls_prepare_as_batch_and_execute_in_call_order() {
         &["first".to_owned(), "second".to_owned()]
     );
     assert_eq!(state.max_active.load(Ordering::SeqCst), 1);
-    assert_eq!(captured.await.expect("batch server").len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("batch server")
+            .len(),
+        2
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -7863,7 +7999,13 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
     assert!(terminations.iter().any(|(id, outcome)| {
         *id == "denied-write" && *outcome == ToolTerminationOutcome::Failed
     }));
-    assert_eq!(captured.await.expect("approval batch server").len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("approval batch server")
+            .len(),
+        2
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -7956,7 +8098,10 @@ async fn cancellation_during_approval_terminates_batch_without_execution() {
         .count();
     assert_eq!((starts, terminations), (3, 3));
     assert_eq!(
-        captured.await.expect("approval cancellation server").len(),
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("approval cancellation server")
+            .len(),
         1
     );
     fixture.engine.shutdown().await;
@@ -8086,7 +8231,9 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             assert_eq!(result.output.matches(preview).count(), 1);
         }
     }
-    let requests = server.await.expect("parallel delegate server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("parallel delegate server");
     assert_eq!(requests.len(), 4);
     assert!(
         requests
@@ -8211,7 +8358,9 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
     release_children.notify_one();
     wait_for_session_not_running(&fixture.engine, parent.session_id).await;
     wait_for_run_inactive(&fixture.engine, run).await;
-    let requests = server.await.expect("parallel delegate server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("parallel delegate server");
     assert_eq!(requests.len(), 4);
     fixture.engine.shutdown().await;
 }
@@ -9684,7 +9833,9 @@ lazy = true
     release.notify_one();
 
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = server.await.expect("model server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("model server");
     assert_eq!(requests.len(), 2);
     let projection = fixture
         .engine
@@ -10128,7 +10279,9 @@ async fn native_compaction_commits_window_and_failure_falls_back_to_summary() {
                 Some(cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. })
             ));
         }
-        let requests = captured.await.expect("captured requests");
+        let requests = with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("captured requests");
         assert!(requests[1].starts_with("POST /v1/responses/compact "));
         assert!(requests[1].contains("compact this context"));
         if fail_native {
@@ -10514,7 +10667,13 @@ async fn oversized_webfetch_truncation_notice_exposes_full_artifact_for_public_r
         assert_eq!(page.next_offset_lines, None);
     }
     fixture.engine.shutdown().await;
-    assert_eq!(captured.await.unwrap().len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -10662,7 +10821,13 @@ async fn retained_tool_result_artifacts_remain_readable_after_elision_and_revert
         assert_eq!(page.next_offset_lines, None);
     }
     fixture.engine.shutdown().await;
-    assert_eq!(captured.await.unwrap().len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -11121,7 +11286,9 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             before.as_slice(),
             "compaction must preserve every original event, including tool output and emitted content"
         );
-        let requests = captured.await.expect("captured compaction requests");
+        let requests = with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("captured compaction requests");
         assert_eq!(requests.len(), if provider_retry { 3 } else { 2 });
         if provider_retry {
             for marker in [
@@ -11364,7 +11531,9 @@ async fn automatic_compaction_failure_limit_suppresses_after_three_and_resets() 
             .unwrap();
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
     }
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     let events = fixture
         .engine
         .inner
@@ -11566,7 +11735,9 @@ async fn mixed_binding_fallback_preserves_configured_provider_order() {
         )
         .await
         .unwrap();
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     let events = fixture
         .engine
         .inner
@@ -11823,7 +11994,9 @@ async fn summary_compaction_retains_recent_tail_across_new_input_and_repeat_comp
         );
     }
 
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 5);
     let first_summary_request = &requests[2];
     assert!(first_summary_request.contains(OLD_USER));
@@ -12667,7 +12840,9 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
             .await
             .expect("historical manual compaction")
     );
-    let requests = server.await.expect("preset switch server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("preset switch server");
     assert_eq!(requests.len(), 5);
     assert!(
         requests[4].contains("Python preset compaction prompt"),
@@ -13813,7 +13988,7 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     )));
     approve_once(&fixture.engine, &approval, "steering-race-approval").await;
     wait_for_tool_execution(&fixture.engine, session.session_id, &executed).await;
-    compaction_reached
+    with_watchdog("compaction_reached fixture completion", compaction_reached)
         .await
         .expect("promotion compaction started");
     let during_reservation = tokio::time::timeout(
@@ -13829,7 +14004,9 @@ async fn pending_steering_promotes_after_tools_and_compaction_in_admission_order
     .expect("steer during compaction");
     assert!(during_reservation.accepted);
     release_compaction.notify_one();
-    let requests = captured.await.expect("steering server task");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("steering server task");
     assert_eq!(requests.len(), 4);
     assert!(!requests[0].contains("first pending"));
     for input in [first_pending, "third pending", "fourth pending"] {
@@ -13978,7 +14155,9 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
             )
             .await
     });
-    compaction_reached.await.expect("start compaction reached");
+    with_watchdog("compaction_reached fixture completion", compaction_reached)
+        .await
+        .expect("start compaction reached");
     let run = fixture
         .engine
         .inner
@@ -14042,7 +14221,13 @@ async fn cancel_during_start_prediction_aborts_compaction_without_appending_inpu
             .engine
             .compaction_reserved_for_test(session.session_id)
     );
-    assert_eq!(captured.await.expect("cancel server task").len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("cancel server task")
+            .len(),
+        2
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -14212,7 +14397,13 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
             if tool_call_id == call_id && byte_count == 6
     )));
 
-    assert_eq!(captured.await.expect("scripted server").len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("scripted server")
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -14349,7 +14540,13 @@ async fn cancelling_non_delegate_with_session_shaped_metadata_stays_generic() {
             termination.error.unwrap().message.as_str(),
             "tool call cancelled after it started"
         );
-        assert_eq!(captured.await.expect("scripted server").len(), 1);
+        assert_eq!(
+            with_watchdog("captured fixture completion", captured)
+                .await
+                .expect("scripted server")
+                .len(),
+            1
+        );
         fixture.engine.shutdown().await;
     }
 }
@@ -14448,7 +14645,13 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
             .contains("1 progress record(s) never entered the session mailbox and were discarded"),
         "{error_message}"
     );
-    assert_eq!(captured.await.expect("scripted server").len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("scripted server")
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -14515,7 +14718,13 @@ async fn bash_internal_timeout_commits_all_chunks_before_terminal_event() {
             .as_ref()
             .is_some_and(|error| error.message.as_str() == "bash timed out")
     );
-    assert_eq!(captured.await.expect("scripted server").len(), 1);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("scripted server")
+            .len(),
+        1
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -14575,7 +14784,9 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
             )
             .await
     });
-    compaction_reached.await.expect("start compaction reached");
+    with_watchdog("compaction_reached fixture completion", compaction_reached)
+        .await
+        .expect("start compaction reached");
     let run = fixture
         .engine
         .inner
@@ -14631,7 +14842,9 @@ async fn steer_during_start_prediction_survives_initial_submission_and_reaches_m
     );
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
-    let requests = captured.await.expect("scripted requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("scripted requests");
     assert_eq!(requests.len(), 4);
     assert!(requests[2].contains("initial second-run input"));
     assert!(!requests[2].contains(steering));
@@ -14799,7 +15012,9 @@ async fn responses_message_transport_fields_allow_approval_and_summary_checkpoin
             .contains("openai.responses.message_continuation"),
         "restoration must retain the witness"
     );
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 4);
     assert!(
         requests
@@ -14847,7 +15062,13 @@ async fn responses_message_transport_fields_allow_generated_titles() {
             EventPayload::SessionTitleCommitted { change: cookie_agent_protocol::SessionTitleChange::InternalAgentSet { title, .. }, .. }
             if title.as_str() == "Transport title"))
     }).await;
-    assert_eq!(captured.await.unwrap().len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -14913,7 +15134,9 @@ async fn repeated_approvals_remain_stateless_and_reuse_the_user_request_prefix()
         .filter(|event| matches!(event.payload, EventPayload::ApprovalEvaluated { .. }))
         .count();
     assert_eq!(evaluations, 2);
-    let requests = captured.await.expect("persistent approval server task");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("persistent approval server task");
     assert_eq!(requests.len(), 5);
     fixture.engine.shutdown().await;
 }
@@ -15209,7 +15432,9 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
             .expect("pending approvals lock")
             .is_empty()
     );
-    let requests = captured.await.expect("approval server task");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("approval server task");
     assert!(requests[2].contains("rejected by auto-approve(N) mode"));
     fixture.engine.shutdown().await;
 }
@@ -15279,7 +15504,13 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
             .expect("pending approvals lock")
             .is_empty()
     );
-    assert_eq!(captured.await.expect("approval server task").len(), 3);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("approval server task")
+            .len(),
+        3
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -15351,7 +15582,13 @@ async fn auto_approve_y_rechecks_identical_calls_without_creating_a_tree_grant()
         event.payload,
         EventPayload::TreeApprovalGrantCommitted { .. }
     )));
-    assert_eq!(captured.await.expect("approval server task").len(), 5);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("approval server task")
+            .len(),
+        5
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -15439,7 +15676,13 @@ async fn auto_approve_n_and_y_preserve_classifier_allow_and_deny() {
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::ApprovalEscalated { .. }))
         );
-        assert_eq!(captured.await.expect("approval server task").len(), 3);
+        assert_eq!(
+            with_watchdog("captured fixture completion", captured)
+                .await
+                .expect("approval server task")
+                .len(),
+            3
+        );
         fixture.engine.shutdown().await;
     }
 }
@@ -15811,7 +16054,9 @@ async fn scripted_root_run_completes_through_the_real_adapter_and_reopens() {
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let request = captured.await.expect("scripted server task");
+    let request = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("scripted server task");
     assert!(request.starts_with("POST /v1/chat/completions? HTTP/1.1"));
     assert!(
         fixture
@@ -15922,7 +16167,9 @@ async fn user_input_transform_audit_uses_the_final_chain_value() {
             .await
             .expect("run starts after transform chain");
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
-        let request = captured.await.unwrap();
+        let request = with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap();
         assert!(request.contains(expected_input));
         let events = fixture
             .engine
@@ -16062,7 +16309,9 @@ async fn compact_cancellation_reason_reaches_the_engine_result() {
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    captured.await.unwrap();
+    with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     let result = fixture
         .engine
         .compact_session_result(
@@ -16139,7 +16388,9 @@ async fn active_run_steering_uses_user_input_interception_and_audit() {
         ))
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].contains("steer transformed"));
     let events = fixture
@@ -16223,7 +16474,9 @@ async fn blocking_steering_uses_the_same_input_interception_and_audit() {
         ))
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert!(requests[1].contains("blocking transformed"));
     let events = fixture
         .engine
@@ -16599,7 +16852,9 @@ async fn rejected_unsigned_replay_is_not_silently_removed_after_restart_or_varia
     )
     .await;
 
-    let requests = captured.await.expect("unsigned replay requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("unsigned replay requests");
     assert_eq!(
         request_body(&requests[1])["messages"][1]["content"][0],
         serde_json::json!({"type":"thinking","thinking":"reason","signature":""})
@@ -16643,7 +16898,9 @@ async fn signed_anthropic_replay_never_triggers_degradation() {
     run_replay_test_turn(&fixture, session.session_id, &selection, "signed-seed").await;
     run_replay_test_turn(&fixture, session.session_id, &selection, "signed-reject").await;
 
-    let requests = captured.await.expect("signed replay requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("signed replay requests");
     assert_eq!(requests.len(), 2);
     assert_eq!(
         request_body(&requests[1])["messages"][1]["content"][0]["signature"],
@@ -16674,7 +16931,9 @@ async fn unsigned_replay_rejection_uses_normal_fallback_without_reasoning_remova
     run_replay_test_turn(&fixture, session.session_id, &selection, "variant-seed").await;
     run_replay_test_turn(&fixture, session.session_id, &selection, "variant-reject").await;
 
-    let requests = captured.await.expect("variant replay requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("variant replay requests");
     assert_eq!(requests.len(), 3);
     assert!(anthropic_request_has_unsigned_thinking(&requests[1]));
     assert!(anthropic_request_has_unsigned_thinking(&requests[2]));
@@ -16818,7 +17077,9 @@ async fn compaction_full_history_preserves_eligible_reasoning_and_recent_tail() 
         "unexpected compaction commit: {commit:?}"
     );
 
-    let requests = captured.await.expect("unsigned replay compaction requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("unsigned replay compaction requests");
     assert_eq!(requests.len(), 3);
     let rejected_artifact = request_body(&requests[1])["messages"][1]["content"][0].clone();
     assert_eq!(
@@ -16913,7 +17174,9 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
                 .status,
             SessionStatus::Completed
         );
-        let requests = captured.await.unwrap();
+        let requests = with_watchdog("captured fixture completion", captured)
+            .await
+            .unwrap();
         assert_eq!(requests.len(), 2);
         let follow_up = request_body(&requests[1]);
         if capable {
@@ -17034,7 +17297,9 @@ async fn anthropic_prompt_caching_records_wire_markers_usage_and_rollup() {
         wait_for_session_not_running(&fixture.engine, session.session_id).await;
     }
 
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 3);
     for request in &requests {
         let body = request_body(request);
@@ -17365,7 +17630,9 @@ async fn model_request_replacement_precedes_cache_and_keep_adjustments_chain() {
         .await
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     let body = request_body(&requests[0]);
     assert_eq!(body["max_tokens"], 19);
     assert_eq!(body["system"][0]["text"], "Replacement system");
@@ -17509,7 +17776,9 @@ async fn anthropic_cache_markers_survive_real_checkpoint_reopen() {
         .unwrap();
     wait_for_session_not_running(&reopened, session.session_id).await;
 
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 3);
     let compaction_body = request_body(&requests[1]);
     assert_eq!(cache_marker_count(&compaction_body), 3);
@@ -17574,7 +17843,9 @@ async fn anthropic_prompt_caching_disabled_emits_no_markers_or_cache_usage() {
         .unwrap();
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
-    let requests = captured.await.unwrap();
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(cache_marker_count(&request_body(&requests[0])), 0);
     let rollup = fixture
@@ -17619,7 +17890,9 @@ async fn primary_agent_max_output_tokens_caps_model_requests() {
         .expect("start capped run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
 
-    let requests = captured.await.expect("captured capped request");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("captured capped request");
     let body = requests[0]
         .split_once("\r\n\r\n")
         .expect("HTTP request body")
@@ -17986,7 +18259,9 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .await
         .expect("branch run");
     wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let requests = captured.await.expect("scripted requests");
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("scripted requests");
     assert_eq!(requests.len(), 3);
     assert!(requests[2].contains("first input"));
     assert!(requests[2].contains("branch input"));
@@ -18316,7 +18591,13 @@ async fn registered_external_tool_must_declare_resource_and_cannot_bypass_deny()
                     error.code.as_str() == "execution_failed"
                 })
     )));
-    assert_eq!(captured.await.expect("resource-bound server").len(), 2);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("resource-bound server")
+            .len(),
+        2
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -18433,7 +18714,13 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         .await
         .expect("unrelated run");
     wait_for_session_not_running(&fixture.engine, unrelated.session_id).await;
-    assert_eq!(captured.await.expect("tree usage requests").len(), 6);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("tree usage requests")
+            .len(),
+        6
+    );
 
     fixture.engine.shutdown().await;
     drop(fixture.engine);
@@ -18762,7 +19049,9 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
     release.notify_one();
     fixture.engine.shutdown().await;
     drop(fixture.engine);
-    server.await.expect("missing child server");
+    with_watchdog("server fixture completion", server)
+        .await
+        .expect("missing child server");
 
     let reopened = Engine::open(EngineOptions {
         data_dir: snapshot.path().join("data"),
@@ -18846,7 +19135,9 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         )
         .await
         .expect("parent run");
-    reserved.await.expect("durable staged reservation");
+    with_watchdog("reserved fixture completion", reserved)
+        .await
+        .expect("durable staged reservation");
     let entry = fixture
         .engine
         .inner
@@ -18920,7 +19211,9 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
     assert!(grants.rules.iter().any(|rule| {
         rule.action == PermissionAction::Bash && rule.resource.as_str() == "git *"
     }));
-    let requests = server.await.expect("staged recovery server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("staged recovery server");
     let child_request = requests
         .iter()
         .find(|request| request.contains("Restart recovered skill body"))
@@ -19040,7 +19333,13 @@ async fn delegated_child_uses_description_title_without_title_agent() {
                 }
             ))
     );
-    assert_eq!(captured.await.expect("titled delegation server").len(), 4);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("titled delegation server")
+            .len(),
+        4
+    );
     fixture
         .engine
         .rename_session(
@@ -19299,7 +19598,13 @@ async fn background_delegate_returns_session_then_notifies_and_paginates() {
             .await
             .is_err()
     );
-    assert_eq!(captured.await.expect("background server").len(), 3);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("background server")
+            .len(),
+        3
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -19382,7 +19687,13 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
         .expect("automatic paging result reopen");
     assert!(result.output.contains("first line"));
     assert!(fixture.engine.inner.store.is_resident(child_session_id));
-    assert_eq!(captured.await.expect("automatic paging server").len(), 3);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("automatic paging server")
+            .len(),
+        3
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -19634,7 +19945,13 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
         .await
         .expect("refreshed result link");
     assert!(result.output.contains("second child result"));
-    assert_eq!(server.await.expect("resume server").len(), 6);
+    assert_eq!(
+        with_watchdog("server fixture completion", server)
+            .await
+            .expect("resume server")
+            .len(),
+        6
+    );
     let parent_event_path = fixture
         .engine
         .inner
@@ -19817,7 +20134,9 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .expect("resume capped child after restart");
     wait_for_session_not_running(&engine, child).await;
 
-    let requests = server.await.expect("capped restart server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("capped restart server");
     let resumed = requests
         .iter()
         .find(|request| request.contains("second capped child task"))
@@ -20500,7 +20819,13 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         |child| child.runs.len() == 2 && child.status == SessionStatus::Completed,
     )
     .await;
-    assert_eq!(server.await.expect("paging server").len(), 12);
+    assert_eq!(
+        with_watchdog("server fixture completion", server)
+            .await
+            .expect("paging server")
+            .len(),
+        12
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -20684,7 +21009,13 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
             if input == "queued terminal resume correction"
     )));
     assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(1));
-    assert_eq!(server.await.expect("queued resume server").len(), 10);
+    assert_eq!(
+        with_watchdog("server fixture completion", server)
+            .await
+            .expect("queued resume server")
+            .len(),
+        10
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -20997,7 +21328,9 @@ async fn inherited_context_is_event_backed_and_deterministic_after_restart() {
             .expect("child assembled history"),
     )
     .expect("serialize child history");
-    let requests = server.await.expect("inherited context server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("inherited context server");
     let child_request = requests
         .iter()
         .find(|request| {
@@ -21072,7 +21405,13 @@ async fn background_delegate_permission_approval_gates_child_admission() {
         |child| child.status == SessionStatus::Completed,
     )
     .await;
-    assert_eq!(captured.await.expect("approval-gated server").len(), 3);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("approval-gated server")
+            .len(),
+        3
+    );
     fixture.engine.shutdown().await;
 }
 
@@ -21222,7 +21561,13 @@ async fn tree_permission_mode_gates_child_and_survives_child_eviction() {
     )
     .await;
     assert!(!executed.is_set());
-    assert_eq!(captured.await.expect("tree-mode requests").len(), 4);
+    assert_eq!(
+        with_watchdog("captured fixture completion", captured)
+            .await
+            .expect("tree-mode requests")
+            .len(),
+        4
+    );
 
     let evicted = fixture
         .engine
@@ -21357,7 +21702,9 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         )
         .await
         .expect("accepted steer parent run");
-    reached.await.expect("child request reached server");
+    with_watchdog("reached fixture completion", reached)
+        .await
+        .expect("child request reached server");
 
     let child_session_id = await_child(
         &fixture.engine,
@@ -21468,7 +21815,9 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
         .await
         .expect_err("terminal child cannot be steered");
     assert!(terminal_error.to_string().contains("terminal (completed)"));
-    let requests = server.await.expect("running steer server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("running steer server");
     assert_eq!(requests.len(), 3);
     assert!(requests[2].contains("focus on the revised requirement"));
     fixture.engine.shutdown().await;
@@ -21542,7 +21891,9 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
 
     // The wake is paused before its `RunStarted`, so the projection is still
     // terminal. Liveness must nevertheless report running, not turn-one text.
-    wake_reached.await.expect("producer wake paused");
+    with_watchdog("wake_reached fixture completion", wake_reached)
+        .await
+        .expect("producer wake paused");
     let immediate = fixture
         .engine
         .get_subagent_result(
@@ -21590,7 +21941,9 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
     assert!(waited.output.contains("child turn two"));
     assert!(!waited.output.contains("child turn one"));
 
-    let requests = server.await.expect("finished wake server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("finished wake server");
     assert_eq!(requests.len(), 4);
     assert!(requests[3].contains("next task"));
     fixture.engine.shutdown().await;
@@ -21886,7 +22239,9 @@ async fn concurrent_running_resume_redelivery_reuses_admission_monitor_and_compl
         })
         .count();
     assert_eq!(resumed_notifications, 1);
-    let requests = server.await.expect("running resume server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("running resume server");
     assert_eq!(requests.len(), 6);
     assert!(requests.iter().any(|request| {
         !request.contains("\"role\":\"tool\"") && request.contains("resume active prompt")
@@ -22121,6 +22476,11 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
             .expect("interleaved direct steer")
             .accepted
     );
+    let (_, mut parent_events) = fixture
+        .engine
+        .subscribe(parent.session_id, None)
+        .await
+        .expect("subscribe before rollback");
     fixture
         .engine
         .cancel_inflight_delegation_for_test(resumed_invocation_id)
@@ -22161,20 +22521,35 @@ async fn interleaved_steer_then_running_resume_rollback_recalls_only_resume_prom
                     EventPayload::UserInputAdmitted { input } if input == "interleaved direct steer"
                 )
             });
-            let latest_cancelled = fixture
-                .engine
-                .inner
-                .delegation_events
-                .entries()
-                .last()
-                .is_some_and(|entry| {
-                    entry.reservation.child_session_id == child_session_id
-                        && entry.terminal_status == Some(SessionStatus::Cancelled)
-                });
-            recalled && steer_preserved && latest_cancelled
+            recalled && steer_preserved
         },
     )
     .await;
+    // Recall is a child event; cancellation is a parent journal event. Require
+    // live delivery as well as durable state, without waiting on an idle child.
+    with_watchdog("cancelled delegation live event", async {
+        loop {
+            match parent_events.recv().await.expect("parent subscription open") {
+                EventSubscriptionMessage::Event { event } if matches!(
+                    event.payload,
+                    EventPayload::DelegationFinished { invocation_id, status: SessionStatus::Cancelled, .. }
+                        if invocation_id == resumed_invocation_id
+                ) => break,
+                EventSubscriptionMessage::Gap { .. } => panic!("unexpected parent event gap"),
+                _ => {}
+            }
+        }
+    }).await;
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .delegation_events
+            .get(resumed_invocation_id)
+            .expect("cancelled invocation")
+            .terminal_status,
+        Some(SessionStatus::Cancelled)
+    );
     let (registry_invocation, terminal_status, _) = fixture
         .engine
         .delegation_registry_snapshot(child_session_id)
@@ -22533,7 +22908,9 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         )
         .await
         .expect("accepted queued steer parent run");
-    reached.await.expect("queue reached capacity");
+    with_watchdog("reached fixture completion", reached)
+        .await
+        .expect("queue reached capacity");
     let queued_id = fixture
         .engine
         .inner
@@ -22640,7 +23017,9 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         EventPayload::UserInputSubmitted { input }
             if input == "apply this queued correction"
     )));
-    let requests = server.await.expect("queued steer recovery server");
+    let requests = with_watchdog("server fixture completion", server)
+        .await
+        .expect("queued steer recovery server");
     assert_eq!(requests.len(), 2);
     assert!(requests[1].contains("apply this queued correction"));
     reopened.shutdown().await;
@@ -22723,7 +23102,9 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
             .find(|entry| entry.reservation.child_session_id == failed.session_id)
             .is_some_and(|entry| entry.child_run_id.is_none())
     );
-    server.await.expect("startup failure server");
+    with_watchdog("server fixture completion", server)
+        .await
+        .expect("startup failure server");
     fixture.engine.shutdown().await;
 }
 
@@ -22791,7 +23172,9 @@ async fn fifth_background_delegate_queues_and_starts_when_a_slot_frees() {
             .len(),
         5
     );
-    server.await.expect("queued delegation server");
+    with_watchdog("server fixture completion", server)
+        .await
+        .expect("queued delegation server");
     fixture.engine.shutdown().await;
 }
 

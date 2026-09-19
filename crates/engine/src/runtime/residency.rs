@@ -244,8 +244,9 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&session_id);
             if self.inner.store.evict(session_id)? {
-                self.notify_evicted_subscribers(session_id, last_event_seq)
-                    .await;
+                self.inner
+                    .store
+                    .notify_evicted_subscribers(session_id, last_event_seq);
                 self.clear_evicted_session_caches(session_id, &session.meta.origin);
                 evicted.push(session_id);
             }
@@ -326,25 +327,6 @@ impl Engine {
             .max()?;
         let idle = Duration::try_from(now.duration_since(ended_at)).ok()?;
         (idle > idle_after).then_some(ended_at)
-    }
-
-    async fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
-        let subscribers = self
-            .inner
-            .subscribers
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&session_id)
-            .unwrap_or_default();
-        for subscriber in subscribers {
-            let _ = subscriber
-                .sender
-                .send(cookie_agent_protocol::EventSubscriptionMessage::Gap {
-                    session_id,
-                    last_delivered_seq: last_event_seq,
-                })
-                .await;
-        }
     }
 
     fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {

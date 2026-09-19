@@ -22,12 +22,13 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload, RunId,
-    RunSelection, SessionId, SessionMeta, SessionOrigin, SessionPermissionOverlay,
-    SessionRenameRecord, SessionStatus, SessionTitle, SessionTitleChange, SessionTree, ToolCallId,
-    Usage, UsageRollup,
+    AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload,
+    EventSubscriptionMessage, EventsSubscribeResult, RunId, RunSelection, SessionId, SessionMeta,
+    SessionOrigin, SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle,
+    SessionTitleChange, SessionTree, StoredEvent, ToolCallId, Usage, UsageRollup,
 };
 use thiserror::Error;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
@@ -48,6 +49,7 @@ pub(crate) const SUBAGENTS_DIR: &str = "subagents";
 pub(crate) const SUBAGENT_INDEX_FILE: &str = "index.json";
 /// Current `subagents/index.json` schema version.
 const SUBAGENT_INDEX_VERSION: u32 = 1;
+const PERSISTED_SUBSCRIBER_QUEUE_CAPACITY: usize = 256;
 /// Event log file name.
 pub(crate) const EVENTS_FILE: &str = "events.jsonl";
 /// Layout version written by this build.
@@ -648,6 +650,7 @@ pub struct SessionStore {
     /// [`Self::publish_prepared_dir`] stays true until its entries have moved.
     publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     mutation: Mutex<()>,
+    subscribers: Mutex<HashMap<SessionId, Vec<mpsc::Sender<EventSubscriptionMessage>>>>,
     closed: AtomicBool,
     #[cfg(test)]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
@@ -728,6 +731,7 @@ impl SessionStore {
             adoption_locks: Mutex::new(HashMap::new()),
             publish_locks: Mutex::new(HashMap::new()),
             mutation: Mutex::new(()),
+            subscribers: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             #[cfg(test)]
             eviction_transition_hook: Mutex::new(None),
@@ -1633,7 +1637,80 @@ impl SessionStore {
             let resident = self.get_resident(id).expect("resident after append");
             assert_projection_equivalent(&resident, &reference);
         }
+        self.publish_stored_event(&envelope);
         Ok(envelope)
+    }
+
+    pub(crate) fn subscribe_events(
+        &self,
+        session: SessionId,
+        cursor: Option<u64>,
+    ) -> Result<
+        (
+            EventsSubscribeResult,
+            mpsc::Receiver<EventSubscriptionMessage>,
+        ),
+        SessionError,
+    > {
+        self.ensure_tree_for(session)?;
+        // Snapshot and registration share the append lock with actor writes and
+        // direct journal writes, closing the snapshot-to-live handoff gap.
+        let _mutation = self.lock_mutation();
+        let events = self
+            .get(session)?
+            .log
+            .all_events()
+            .into_iter()
+            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
+            .collect();
+        let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(session)
+            .or_default()
+            .push(sender);
+        Ok((EventsSubscribeResult { events }, receiver))
+    }
+
+    fn publish_stored_event(&self, envelope: &StoredEvent) {
+        // Called under mutation after projection update, preserving append order.
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(envelope.session_id)
+            .or_default()
+            .retain(|sender| {
+                // Reserve the final slot for a gap so a slow reader can replay.
+                let is_gap = sender.capacity() <= 1;
+                let message = if is_gap {
+                    EventSubscriptionMessage::Gap {
+                        session_id: envelope.session_id,
+                        last_delivered_seq: envelope.seq.saturating_sub(1),
+                    }
+                } else {
+                    EventSubscriptionMessage::Event {
+                        event: Box::new(envelope.clone()),
+                    }
+                };
+                sender.try_send(message).is_ok() && !is_gap
+            });
+    }
+
+    pub(crate) fn notify_evicted_subscribers(&self, session_id: SessionId, last_event_seq: u64) {
+        let subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&session_id)
+            .unwrap_or_default();
+        for sender in subscribers {
+            // publish_stored_event always leaves a slot for this final gap.
+            let _ = sender.try_send(EventSubscriptionMessage::Gap {
+                session_id,
+                last_delivered_seq: last_event_seq,
+            });
+        }
     }
 
     pub fn fork(
