@@ -378,9 +378,6 @@ pub enum SecureStoreError {
 /// Default budget for bounded cross-process store locks.
 pub const DEFAULT_LOCK_BUDGET: Duration = Duration::from_secs(5);
 
-/// Budget for hot read-path acquisitions that should fail fast.
-pub const HOT_READ_LOCK_BUDGET: Duration = Duration::from_secs(2);
-
 /// Attempts one nonblocking exclusive lock on an already-open file.
 ///
 /// `true` means the lock was acquired; `false` means it is held elsewhere.

@@ -1,6 +1,7 @@
 # Store Lock Retention and Contention Policy
 
-Status: draft proposal. Not implemented. This document records design decisions
+Status: implemented (D1-D9 with D6-correctness, landed across commits
+53cfbfbc..12c1f30b). This document records design decisions
 for how cookie-agent acquires and retains the cross-process advisory locks that
 guard its `~/.cookie-agent` secure stores, and for the deprecation of the
 localhost daemon bearer token. It amends the platform trust model described in
