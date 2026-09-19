@@ -100,8 +100,8 @@ pub(super) enum ProducerCommand {
     /// Atomic agent-mail accept: the hop guard, pending-agent-mail cap check,
     /// pair-window guard, and durable `ProducerMessageAccepted` append happen
     /// inside one actor handler, so concurrent senders cannot interleave
-    /// count-then-accept and the envelope (which embeds the generated message
-    /// id) renders once. Guards run strictly after the idempotency replay
+    /// count-then-accept and the readable envelope renders once. Guards run
+    /// strictly after the idempotency replay
     /// check, so a retried acceptance never re-judges a stored message.
     SendAgentMessage {
         authority: ProducerAuthority,
@@ -112,6 +112,7 @@ pub(super) enum ProducerCommand {
         sender: SessionId,
         sender_agent_type: String,
         body: String,
+        include_reply_hint: bool,
         /// Chain depth computed from the sender's own log before this command
         /// is issued; stamped onto the accepted event as guard metadata.
         hop: u32,
@@ -369,6 +370,7 @@ impl Engine {
                 sender,
                 sender_agent_type,
                 body,
+                include_reply_hint,
                 hop,
                 reply,
             } => {
@@ -382,6 +384,7 @@ impl Engine {
                     sender,
                     &sender_agent_type,
                     body,
+                    include_reply_hint,
                     hop,
                 ));
             }
@@ -1480,6 +1483,7 @@ impl Engine {
             sender,
             sender_agent_type,
             body,
+            true,
             hop,
         )
     }
@@ -1494,8 +1498,9 @@ impl Engine {
         key: ProducerIdempotencyKey,
         description: SafeDisplayText,
         sender: SessionId,
-        sender_agent_type: &str,
+        _sender_agent_type: &str,
         body: String,
+        include_reply_hint: bool,
         hop: u32,
     ) -> Result<ProducerMessageId, EngineError> {
         self.require_registration(session, producer_id, authority)?;
@@ -1505,11 +1510,10 @@ impl Engine {
             message.producer_owner == authority.owner && message.idempotency_key == key
         }) {
             let envelope = super::messaging_api::render_agent_message_envelope(
-                existing.message_id,
                 sender,
-                sender_agent_type,
                 sender_short_id.as_deref(),
                 &body,
+                include_reply_hint,
             );
             if existing.mode != mode
                 || existing.description != description
@@ -1534,11 +1538,10 @@ impl Engine {
         .map_err(|code| EngineError::Messaging(code.to_owned()))?;
         let message_id = ProducerMessageId::new_v7();
         let envelope = super::messaging_api::render_agent_message_envelope(
-            message_id,
             sender,
-            sender_agent_type,
             sender_short_id.as_deref(),
             &body,
+            include_reply_hint,
         );
         self.append_direct(
             session,

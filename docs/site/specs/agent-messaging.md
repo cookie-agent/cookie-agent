@@ -45,31 +45,31 @@ children's IDs from `delegate_subagent`). The parent therefore controls the
 communication graph: siblings can only talk if the parent chose to introduce
 them, and an agent cannot enumerate the tree to find targets on its own.
 
-Every inbound message envelope carries `message_id` and the sender's
-`from.session_id` plus its `from.handle`, so a recipient can reply by sending
-to either form even if the parent never introduced it to the sender.
+Every inbound message envelope carries the sender's handle when one exists,
+so a recipient can reply directly with `send_message`. Older sessions without
+a handle use the full sender UUID in the reply hint.
 
 ### Message Envelope
 
-The durable body (`ProducerMessageAccepted.body`) is JSON, rendered into the
-recipient prompt as a user-turn materialization (repo convention: tool-emitted
-system input materializes as a user turn):
+The durable body (`ProducerMessageAccepted.body`) is readable text rendered
+into the recipient prompt as a user-turn materialization (repo convention:
+tool-emitted system input materializes as a user turn):
 
 ```xml
-<agent_message>
-{
-  "message_id": "...",          // ProducerMessage id
-  "from": { "session_id": "...", "agent_type": "explore", "handle": "explore_1a2b3c4d" },
-  "body": "…markdown text…"
-}
+<agent_message from="explore_1a2b3c4d">
+Message written by the sending agent
+
+[use `send_message(to="explore_1a2b3c4d", ...)` to reply]
 </agent_message>
 ```
 
-The recipient is implicit — the envelope only ever appears in the session it
-was delivered to. `from.handle` is `null` for senders created before handles
-existed. Hop metadata (the loop-safety chain count described under
-[Guards](#guards)) is internal producer metadata and is **not** rendered in the
-envelope.
+The `from` attribute identifies the sender in both variants. The reply hint
+appears only when the recipient's `send_message` tool is exposed. The original
+body is preserved as written; the engine adds only the envelope and optional
+hint. The recipient is implicit — the envelope only ever
+appears in the session it was delivered to. Message IDs, sender UUIDs, agent
+hop counts, and other delivery metadata remain in the durable event record and
+are not rendered into the model-facing body.
 
 ## Tool Surface
 

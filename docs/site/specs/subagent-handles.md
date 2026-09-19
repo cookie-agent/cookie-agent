@@ -240,8 +240,8 @@ use get_subagent_result with session_id "explore_1a2b3c4d"
 - Metadata keeps the **full UUID** under a unified `session_id` key (also
   fixing the current `child_session_id` inconsistency on the cancel/failure
   paths), and adds the handle: `{"session_id": "<uuid>", "handle": "explore_1a2b3c4d", ...}`.
-- `<subagent_notification>` and `<agent_message>` envelopes carry the handle
-  alongside the UUID.
+- `<subagent_notification>` and `<agent_message>` envelopes carry the handle.
+  Agent-message UUIDs and delivery metadata remain in the durable event record.
 - The TUI `short_id` helper (`crates/tui/src/ui/pickers.rs`) switches from
   first-8-of-UUID to the real handle.
 

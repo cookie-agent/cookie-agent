@@ -107,24 +107,23 @@ fn map_unknown_session(error: EngineError) -> EngineError {
 }
 
 /// Renders the durable agent-mail envelope, materialized as a user turn at
-/// the recipient's claim point. Field order is fixed so an idempotent retry
-/// renders byte-identically for the stored-body comparison in dedup.
+/// the recipient's claim point. The body stays readable to the model; the
+/// sender handle is enough to reply when `send_message` is visible.
 pub(super) fn render_agent_message_envelope(
-    message_id: ProducerMessageId,
     sender_session_id: SessionId,
-    sender_agent_type: &str,
     sender_short_id: Option<&str>,
     body: &str,
+    include_reply_hint: bool,
 ) -> String {
+    let sender_label = sender_short_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| sender_session_id.to_string());
+    let reply_hint = include_reply_hint
+        .then(|| format!("\n\n[use `send_message(to=\"{sender_label}\", ...)` to reply]"));
     format!(
-        "<agent_message>\n{{\"message_id\":{},\"from\":{{\"session_id\":{},\"agent_type\":{},\"handle\":{}}},\"body\":{}}}\n</agent_message>",
-        serde_json::to_string(message_id.to_string().as_str())
-            .expect("message id string serializes"),
-        serde_json::to_string(sender_session_id.to_string().as_str())
-            .expect("session id string serializes"),
-        serde_json::to_string(sender_agent_type).expect("agent type string serializes"),
-        serde_json::to_string(&sender_short_id).expect("session handle serializes"),
-        serde_json::to_string(body).expect("message body serializes"),
+        "<agent_message from=\"{sender_label}\">\n{}{}\n</agent_message>",
+        body,
+        reply_hint.unwrap_or_default(),
     )
 }
 
@@ -158,6 +157,38 @@ pub(crate) fn relationship_label(
 }
 
 impl Engine {
+    /// Whether the recipient's current governing agent exposes the built-in
+    /// `send_message` tool. The provider is checked as well so engine-only
+    /// fixtures without the message provider do not receive a misleading
+    /// reply hint.
+    pub(crate) fn send_message_tool_visible(
+        &self,
+        session: SessionId,
+    ) -> Result<bool, EngineError> {
+        let projection = self.messaging_projection(session)?;
+        let agent = crate::permissions::governing_agent_for_skills(&projection);
+        let visible = crate::permissions::PermissionPipeline::tool_visible_with_overlay(
+            &agent,
+            Some(&projection.permission_overlay),
+            "message",
+        );
+        if !visible {
+            return Ok(false);
+        }
+        let providers = self
+            .inner
+            .tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        Ok(providers.iter().any(|provider| {
+            provider
+                .tools_for_session(&crate::tool_api::SessionToolContext::new(session))
+                .ok()
+                .is_some_and(|tools| tools.iter().any(|tool| tool.name == "send_message"))
+        }))
+    }
+
     fn messaging_projection(
         &self,
         session: SessionId,
@@ -289,6 +320,7 @@ impl Engine {
             invocation.recipient_session_id,
         )?;
         let recipient_state = self.agent_recipient_state(invocation.recipient_session_id)?;
+        let include_reply_hint = self.send_message_tool_visible(invocation.recipient_session_id)?;
         let sender = self.messaging_projection(invocation.sender_session_id)?;
         let sender_agent_type = sender.creation_agent.agent.to_string();
         let hop = self
@@ -321,6 +353,7 @@ impl Engine {
                     sender: invocation.sender_session_id,
                     sender_agent_type,
                     body: invocation.body,
+                    include_reply_hint,
                     hop,
                     reply,
                 })
@@ -352,5 +385,37 @@ impl Engine {
             return Ok(registration.producer_id);
         }
         self.register_producer(recipient, authority.clone()).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_agent_message_envelope;
+    use cookie_agent_protocol::SessionId;
+
+    #[test]
+    fn agent_message_envelope_keeps_body_readable_and_reply_hint_optional() {
+        let sender = SessionId::new_v7();
+        let with_hint = render_agent_message_envelope(
+            sender,
+            Some("explore_1a2b3c4d"),
+            "Message written by the sending agent",
+            true,
+        );
+        assert_eq!(
+            with_hint,
+            "<agent_message from=\"explore_1a2b3c4d\">\nMessage written by the sending agent\n\n[use `send_message(to=\"explore_1a2b3c4d\", ...)` to reply]\n</agent_message>"
+        );
+
+        let without_hint = render_agent_message_envelope(
+            sender,
+            Some("explore_1a2b3c4d"),
+            "Message written by the sending agent",
+            false,
+        );
+        assert_eq!(
+            without_hint,
+            "<agent_message from=\"explore_1a2b3c4d\">\nMessage written by the sending agent\n</agent_message>"
+        );
     }
 }
