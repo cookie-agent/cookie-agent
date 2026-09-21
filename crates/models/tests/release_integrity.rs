@@ -432,28 +432,55 @@ fn release_binary_contains_no_secret_material() {
 #[test]
 fn ci_supply_chain_and_release_gates_are_pinned() {
     let workflow = fs::read_to_string(workspace().join(".github/workflows/ci.yml")).unwrap();
+
+    for line in workflow.lines() {
+        let Some((_, reference)) = line.trim().split_once("uses: ") else {
+            continue;
+        };
+        let reference = reference.split_whitespace().next().unwrap();
+        if reference.starts_with("./") {
+            continue;
+        }
+        let (action, revision) = reference.rsplit_once('@').unwrap_or((reference, ""));
+        assert!(
+            revision.len() == 40 && revision.chars().all(|byte| byte.is_ascii_hexdigit()),
+            "{action} must be pinned by a full commit SHA, found `{revision}`"
+        );
+    }
+
     for required in [
         "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4",
-        "cargo install --locked cargo-audit --version '=0.22.2'",
-        "cargo install --locked cargo-deny --version '=0.20.2'",
-        "cargo build --release --locked --workspace --all-targets",
+        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+        "taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73",
+        "tool: cargo-deny@0.20.2,cargo-audit@0.22.2",
+        "cargo clippy --locked --workspace --all-targets -- -D warnings",
+        "cargo build --release --locked -p cookie_agent",
         "cargo audit --file Cargo.lock --deny yanked",
         "cargo deny --locked check advisories licenses sources",
         "cargo test --locked -p cookie_agent_models --test release_integrity",
         "crates/protocol/scripts/check-schema-additive.sh",
         "release_binary_contains_no_secret_material -- --ignored --exact",
+        "needs: [stable, msrv, windows, release-targets]",
     ] {
         assert!(
             workflow.contains(required),
             "missing pinned CI gate: {required}"
         );
     }
+
     for forbidden in [
         ["RUSTC", "_BOOTSTRAP"].concat(),
         ["--allow", "-dirty"].concat(),
         ["--no", "-verify"].concat(),
         ["package", "_workspace.sh"].concat(),
+        ["cargo install --locked cargo-", "audit"].concat(),
+        ["cargo install --locked cargo-", "deny"].concat(),
+        [
+            "cargo build --release --locked --workspace",
+            " --all-targets",
+        ]
+        .concat(),
     ] {
         assert!(
             !workflow.contains(&forbidden),
