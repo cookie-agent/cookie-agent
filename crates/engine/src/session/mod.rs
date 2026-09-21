@@ -1735,6 +1735,19 @@ impl SessionStore {
                         }
                     }
                     Ok(_) => eprintln!("session {root} metadata ID does not match its directory"),
+                    // A root directory without a `metadata` cache is a transient
+                    // discovery state, not a fault. It is what discovery sees
+                    // while a bare `<root>/subagents/` scaffold waits for its
+                    // root to publish, while `publish_prepared_dir` merges a
+                    // prepared directory into that scaffold, and, on filesystems
+                    // without an atomic superseding replace, while the cache
+                    // itself is rewritten. Skipping silently leaves the root
+                    // uncached, so the next discovery retries it.
+                    Err(SessionError::Io { source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        continue;
+                    }
                     Err(error) => {
                         eprintln!("session {root} metadata skipped: {error}");
                         continue;
