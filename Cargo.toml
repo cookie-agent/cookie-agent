@@ -11,7 +11,6 @@ members = [
     "crates/tui",
     "crates/cookie_agent",
 ]
-exclude = ["vendor/syntect"]
 resolver = "2"
 
 [workspace.package]
@@ -78,9 +77,6 @@ oven-sdk-azure = { version = "=0.5.0", git = "https://github.com/cookie-agent/ov
 oven-sdk-cohere = { version = "=0.4.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "4990eba820b3fe73d1cf9f00eda52633aab59a86" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
 rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
-
-[patch.crates-io]
-syntect = { path = "vendor/syntect" }
 
 [profile.dev]
 debug = "line-tables-only"

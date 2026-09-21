@@ -11,10 +11,6 @@ fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn sha256(path: impl AsRef<Path>) -> String {
-    format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
-}
-
 fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
@@ -27,25 +23,6 @@ fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
             files.push(path.strip_prefix(root).unwrap().to_owned());
         }
     }
-}
-
-fn tree_sha256(root: &Path, excluded: &[&str]) -> (usize, String) {
-    let mut files = Vec::new();
-    collect_files(root, root, &mut files);
-    files.retain(|path| !excluded.iter().any(|excluded| path == Path::new(excluded)));
-    files.sort();
-
-    let mut tree = Sha256::new();
-    for relative in &files {
-        // Feed forward-slash paths so the tree hash is platform-stable
-        // (Windows Path rendering uses backslashes).
-        let normalized = relative.to_string_lossy().replace('\\', "/");
-        tree.update(normalized.as_bytes());
-        tree.update([0]);
-        tree.update(fs::read(root.join(relative)).unwrap());
-        tree.update([0]);
-    }
-    (files.len(), format!("{:x}", tree.finalize()))
 }
 
 const WORKSPACE_MANIFESTS: &[&str] = &[
@@ -143,11 +120,7 @@ fn owned_source_files() -> Vec<PathBuf> {
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .map(|path| PathBuf::from(String::from_utf8(path.to_vec()).unwrap()))
-        .filter(|path| {
-            !path.starts_with("vendor")
-                && !path.starts_with("target")
-                && !path.starts_with("assets")
-        })
+        .filter(|path| !path.starts_with("target") && !path.starts_with("assets"))
         .map(|path| root.join(path))
         .filter(|path| path.is_file())
         .collect()
@@ -231,16 +204,23 @@ fn the_wire_contract_ships_no_typescript_bindings_or_checked_in_generated_tree()
 }
 
 #[test]
-fn syntect_patch_is_exactly_pinned_and_declared() {
+fn syntect_is_exactly_pinned_from_crates_io() {
     let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     assert!(manifest.contains("syntect = { version = \"=5.3.0\""));
-    assert!(manifest.contains("syntect = { path = \"vendor/syntect\" }"));
+    assert!(
+        !manifest.contains("[patch.crates-io]"),
+        "no dependency may be patched to a local path"
+    );
     let root = manifest.parse::<toml::Value>().unwrap();
     let syntect = root["workspace"]["dependencies"]["syntect"]
         .as_table()
         .unwrap();
     assert_eq!(syntect["version"].as_str(), Some("=5.3.0"));
     assert_eq!(syntect["default-features"].as_bool(), Some(false));
+    assert!(
+        syntect.get("path").is_none() && syntect.get("git").is_none(),
+        "syntect must resolve from crates.io"
+    );
     assert_eq!(
         syntect["features"]
             .as_array()
@@ -250,104 +230,21 @@ fn syntect_patch_is_exactly_pinned_and_declared() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from(["default-syntaxes", "default-themes", "regex-fancy"])
     );
-
-    let vendor = workspace().join("vendor/syntect");
-    let vendored_manifest = fs::read_to_string(vendor.join("Cargo.toml")).unwrap();
-    for declaration in [
-        "[dependencies.bincode]",
-        "version = \"1.3.3\"",
-        "optional = true",
-    ] {
-        assert!(
-            vendored_manifest.contains(declaration),
-            "missing bincode declaration: {declaration}"
-        );
-    }
+    assert!(
+        !workspace().join("vendor").exists(),
+        "the vendored dependency tree is gone"
+    );
 
     let lock = fs::read_to_string(workspace().join("Cargo.lock")).unwrap();
     assert!(lock.contains("name = \"bincode\"\n"));
-    assert!(!lock.contains("name = \"syntect-bincode-compat\"\n"));
-    assert!(!lock.contains("name = \"bincode_reloaded\"\n"));
-}
-
-#[test]
-fn vendored_syntect_matches_declared_upstream_delta() {
-    let vendor = workspace().join("vendor/syntect");
-    let provenance = fs::read_to_string(vendor.join("README.cookie-agent.md")).unwrap();
-    for required in [
-        "https://github.com/trishume/syntect",
-        "v5.3.0",
-        "e4670846ecf16d8832db6c43d531bec466214e27",
-        "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925",
-        "not regenerated.",
-    ] {
-        assert!(
-            provenance.contains(required),
-            "missing provenance: {required}"
-        );
-    }
-
-    assert_eq!(
-        sha256(vendor.join("Cargo.toml")),
-        "f2e94171e18e8dc4bd510f0481248bd88ea651b8f925e31520f321957a771ec9"
-    );
-    assert!(!vendor.join("Cargo.lock").exists());
-    assert_eq!(
-        sha256(vendor.join("src/dumps.rs")),
-        "237719802be45db966a6e2e5de2f58baa970ac84f83fb375dbdd90592e704e91"
-    );
-    assert_eq!(
-        sha256(vendor.join("tests/public_api.rs")),
-        "8e2454ad58226b2ecf01fd1a73f6ad2c04e98f04022379ed5e5f5f89828676d9"
-    );
-    assert_eq!(
-        sha256(vendor.join("tests/snapshots/public-api.txt")),
-        "7a8b4cb34bd3bb01c507c9990faa93d902741a2f08050a60a2f76bacdcd545bd"
-    );
-    for (asset, expected) in [
-        (
-            "assets/default.themedump",
-            "8b57a2118224993360b6fc5fc2fa2e9872a827f00f9c57d43da08fa42c892399",
-        ),
-        (
-            "assets/default_metadata.packdump",
-            "b1df0402dfdb84b9826b206bffafb35553c46530afcbb3c929147760056766f3",
-        ),
-        (
-            "assets/default_newlines.packdump",
-            "d740b20c12e40b678b9f1012401e1969aaa5cd55f1ab329ffeb94d746b06a5c0",
-        ),
-        (
-            "assets/default_nonewlines.packdump",
-            "b61623ff9b5c36e60666d637076697ad8234116b2d53ad2ee9e3908df1c2461d",
-        ),
-    ] {
-        assert_eq!(
-            sha256(vendor.join(asset)),
-            expected,
-            "changed asset: {asset}"
-        );
-    }
-
-    assert_eq!(
-        tree_sha256(
-            &vendor,
-            &["Cargo.toml", "Cargo.lock", "README.cookie-agent.md"]
-        ),
-        (
-            57,
-            "15fd18cb2fb1441f3773b6ed900f656a89dc4a72c4ea6248d6a702574eac4e63".to_owned()
-        )
-    );
+    assert!(lock.contains(
+        "checksum = \"656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925\""
+    ));
 }
 
 #[test]
 fn every_internal_path_dependency_has_its_exact_package_version() {
-    for manifest in PHASE1_MANIFESTS
-        .iter()
-        .copied()
-        .chain(["vendor/syntect/Cargo.toml"])
-    {
+    for manifest in PHASE1_MANIFESTS.iter().copied() {
         let manifest_path = workspace().join(manifest);
         let document = fs::read_to_string(&manifest_path)
             .unwrap()
@@ -386,7 +283,7 @@ fn every_internal_path_dependency_has_its_exact_package_version() {
 }
 
 #[test]
-fn workspace_metadata_limits_publishing_and_uses_vendored_syntect() {
+fn workspace_metadata_limits_publishing_and_uses_registry_syntect() {
     let metadata = cargo_metadata();
     let members = metadata["workspace_members"]
         .as_array()
@@ -426,11 +323,10 @@ fn workspace_metadata_limits_publishing_and_uses_vendored_syntect() {
         .iter()
         .find(|package| package["name"] == "syntect")
         .unwrap();
-    assert!(syntect_package["source"].is_null());
-    assert!(
-        Path::new(syntect_package["manifest_path"].as_str().unwrap())
-            .ends_with(Path::new("vendor").join("syntect").join("Cargo.toml"))
-    );
+    assert_eq!(syntect_package["version"].as_str(), Some("5.3.0"));
+    assert!(syntect_package["source"].as_str().is_some_and(|source| {
+        source.starts_with("registry+https://github.com/rust-lang/crates.io-index")
+    }));
     let bincode_package = packages
         .iter()
         .find(|package| package["name"] == "bincode")
@@ -558,7 +454,6 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         ["--allow", "-dirty"].concat(),
         ["--no", "-verify"].concat(),
         ["package", "_workspace.sh"].concat(),
-        ["--manifest", "-path vendor/"].concat(),
     ] {
         assert!(
             !workflow.contains(&forbidden),

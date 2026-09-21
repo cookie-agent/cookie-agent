@@ -3,10 +3,6 @@ use std::sync::Arc;
 use insta::assert_snapshot;
 use ratatui::style::Modifier;
 use syntect::{
-    dumps::{
-        dump_binary, dump_to_file, dump_to_uncompressed_file, from_binary, from_dump_file,
-        from_uncompressed_data, from_uncompressed_dump_file,
-    },
     highlighting::{
         Color as SyntectColor, FontStyle, Highlighter as SyntectThemeHighlighter, ScopeSelectors,
         StyleModifier, Theme as SyntectTheme, ThemeItem, ThemeSet, ThemeSettings,
@@ -567,15 +563,9 @@ fn cached_highlights_are_identical_to_fresh_highlights() {
 }
 
 #[test]
-fn vendored_syntect_decodes_published_dumps_and_preserves_legacy_helpers() {
-    let newlines: SyntaxSet = from_uncompressed_data(include_bytes!(
-        "../../../../vendor/syntect/assets/default_newlines.packdump"
-    ))
-    .unwrap();
-    let nonewlines: SyntaxSet = from_uncompressed_data(include_bytes!(
-        "../../../../vendor/syntect/assets/default_nonewlines.packdump"
-    ))
-    .unwrap();
+fn bundled_syntect_defaults_cover_the_languages_and_themes_the_tui_highlights() {
+    let newlines = SyntaxSet::load_defaults_newlines();
+    let nonewlines = SyntaxSet::load_defaults_nonewlines();
     for syntaxes in [&newlines, &nonewlines] {
         for token in ["rs", "json", "sh"] {
             assert!(
@@ -588,45 +578,13 @@ fn vendored_syntect_decodes_published_dumps_and_preserves_legacy_helpers() {
         }
     }
 
-    let themes: ThemeSet = from_binary(include_bytes!(
-        "../../../../vendor/syntect/assets/default.themedump"
-    ));
+    let themes = ThemeSet::load_defaults();
     for theme in ["base16-ocean.dark", "base16-eighties.dark"] {
         assert!(
             themes.themes.contains_key(theme),
             "missing built-in theme: {theme}"
         );
     }
-
-    let fixture = vec!["rust".to_owned(), "json".to_owned(), "shell".to_owned()];
-    let compressed = dump_binary(&fixture);
-    assert_eq!(from_binary::<Vec<String>>(&compressed), fixture);
-
-    let directory = tempfile::tempdir().unwrap();
-    let compressed_path = directory.path().join("fixture.dump");
-    dump_to_file(&fixture, &compressed_path).unwrap();
-    assert_eq!(
-        from_dump_file::<Vec<String>, _>(&compressed_path).unwrap(),
-        fixture
-    );
-
-    let uncompressed_path = directory.path().join("fixture.packdump");
-    dump_to_uncompressed_file(&fixture, &uncompressed_path).unwrap();
-    let mut legacy_bytes = Vec::new();
-    legacy_bytes.extend_from_slice(&3_u64.to_le_bytes());
-    for value in ["rust", "json", "shell"] {
-        legacy_bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
-        legacy_bytes.extend_from_slice(value.as_bytes());
-    }
-    assert_eq!(std::fs::read(&uncompressed_path).unwrap(), legacy_bytes);
-    assert_eq!(
-        from_uncompressed_data::<Vec<String>>(&legacy_bytes).unwrap(),
-        fixture
-    );
-    assert_eq!(
-        from_uncompressed_dump_file::<Vec<String>, _>(&uncompressed_path).unwrap(),
-        fixture
-    );
 }
 
 #[test]
