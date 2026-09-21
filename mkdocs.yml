@@ -93,6 +93,9 @@ nav:
       - Agent messaging: specs/agent-messaging.md
       - Model configuration: specs/model-configuration.md
       - Documentation overhaul: specs/documentation-overhaul.md
+      - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
+      - Refactor phase 2 (dependencies, CI): specs/refactor-phase-2-dependencies-ci.md
+      - Refactor phase 3 (module splits): specs/refactor-phase-3-module-splits.md
       - Goal mode and producers: development/goal-mode.md
       - System prompt: reference/system-prompt.md
       - Protocol: reference/protocol.md
