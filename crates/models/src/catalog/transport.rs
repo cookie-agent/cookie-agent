@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, time::Duration};
 
 use futures_util::{Stream, StreamExt as _};
-use reqwest_oven::{Client, header};
+use reqwest::{Client, header};
 use thiserror::Error;
 
 use super::{CATALOG_MAX_BYTES, MODELS_DEV_CATALOG_URL};
@@ -87,7 +87,7 @@ pub struct HttpCatalogTransport {
 impl HttpCatalogTransport {
     pub fn new() -> Result<Self, CatalogTransportError> {
         let client = Client::builder()
-            .redirect(reqwest_oven::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .user_agent(MODELS_DEV_USER_AGENT)

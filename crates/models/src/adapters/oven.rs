@@ -942,7 +942,7 @@ pub struct AnthropicSettingsConfig {
 impl AnthropicSettingsConfig {
     fn to_oven(&self) -> Result<AnthropicSettings, ModelBuildError> {
         Ok(AnthropicSettings {
-            client: reqwest_oven::Client::builder()
+            client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(self.timeouts.connect_seconds))
                 .build()
                 .map_err(|_| ModelError::transport("could not construct Anthropic HTTP client"))?,

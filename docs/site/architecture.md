@@ -174,7 +174,7 @@ See [Configuration](guide/configuration.md) and the
 4. **Executable adapters.** The Oven crates (`oven-sdk`, `oven-sdk-openai`,
    `oven-sdk-anthropic`, `oven-sdk-google`, `oven-sdk-google-vertex`,
    `oven-sdk-bedrock`, `oven-sdk-azure`, `oven-sdk-cohere`, and the
-   `reqwest-oven` HTTP transport) provide normalized language-model
+   `reqwest` HTTP transport) provide normalized language-model
    implementations. The `models` crate selects the adapter for each compiled
    model and freezes it into user manifests.
 5. **Provider store.** Managed connections live in a global per-user provider
