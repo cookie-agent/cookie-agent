@@ -188,7 +188,23 @@ mod temporary_cleanup_tests {
         assert!(path.is_file());
 
         drop(active);
-        drop(ArtifactStore::open(artifacts).expect("reopen with abandoned temporary"));
+        // Dropping `active` releases the flock in this process, but any child
+        // this test binary forked in the window between `fork` and `exec`
+        // still holds a duplicate of the open file description, and an flock
+        // lives on the description rather than on the descriptor. The
+        // temporary therefore stays locked for a few milliseconds longer than
+        // the drop, and `cleanup_temporary_artifacts` skips it with
+        // `try_lock_once`. Production semantics are "an abandoned temporary is
+        // removed on a later startup", so retry the startup rather than
+        // assuming the very first one wins the race.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            drop(ArtifactStore::open(artifacts.clone()).expect("reopen with abandoned temporary"));
+            if !path.exists() || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!path.exists());
     }
 }
