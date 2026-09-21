@@ -518,6 +518,14 @@ impl RuntimeRevisionIndex {
     }
 }
 
+/// How long shutdown waits, in total, for the cancelled run tasks to write
+/// their terminal events.
+///
+/// A cancelled run only has to unwind its current tool call and append one
+/// event, so this is generous; a task still running when it expires is aborted
+/// so shutdown never depends on a wedged provider or tool.
+const RUN_TASK_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const SESSION_MAILBOX_CAPACITY: usize = 256;
 const MAX_PENDING_PREPARED_TOOLS: usize = 64;
 /// Semantic revision of the no-model builtin runtime contract.
@@ -1553,6 +1561,12 @@ impl Engine {
         for run in active {
             run.cancellation.cancel();
         }
+        // Joined here, before the plugin and MCP transports go away and well
+        // before the actors are cleared: a run task may be mid tool call, and
+        // it needs live transports to unwind and a live store to append its
+        // `RunCancelled`. Anything still running when the bound expires is
+        // aborted, so shutdown stays bounded.
+        self.join_run_tasks(RUN_TASK_SHUTDOWN_TIMEOUT).await;
         self.inner.plugins.shutdown().await;
         self.inner.mcp.shutdown().await;
         self.inner

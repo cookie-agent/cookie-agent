@@ -35,10 +35,71 @@ pub(crate) struct SessionRuntimeState {
     pub(super) actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     pub(super) active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
     pub(super) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
+    /// The task driving each in-flight run loop.
+    ///
+    /// Shutdown joins these after cancelling their runs, so a run task gets to
+    /// write its `RunCancelled` while the session actors and the store are
+    /// still up. A task drops its own entry when it finishes, and a new
+    /// registration sweeps whatever finished without being noticed.
+    pub(super) run_tasks: Mutex<HashMap<RunId, tokio::task::JoinHandle<()>>>,
     pub(crate) residency_mutation: tokio::sync::Mutex<()>,
 }
 
+/// Removes a run task's join handle when its task ends, however it ends.
+pub(super) struct RunTaskSlot {
+    pub(super) engine: Engine,
+    pub(super) run_id: RunId,
+}
+
+impl Drop for RunTaskSlot {
+    fn drop(&mut self) {
+        if let Ok(mut tasks) = self.engine.inner.sessions.run_tasks.lock() {
+            tasks.remove(&self.run_id);
+        }
+    }
+}
+
 impl Engine {
+    /// Records the task driving `run_id` so shutdown can wait for it.
+    ///
+    /// A task that finished before its handle arrived here has already dropped
+    /// its slot, so the sweep is what retires the handle it left behind.
+    pub(super) fn register_run_task(&self, run_id: RunId, task: tokio::task::JoinHandle<()>) {
+        let mut tasks = self
+            .inner
+            .sessions
+            .run_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        tasks.retain(|_, task| !task.is_finished());
+        tasks.insert(run_id, task);
+    }
+
+    /// Waits for the in-flight run tasks, then aborts whatever is left.
+    ///
+    /// Called from shutdown while the session actors and the store are still
+    /// up, so a cancelled run's terminal event lands in its log instead of
+    /// being repaired as a restart interruption on the next startup.
+    pub(super) async fn join_run_tasks(&self, bound: std::time::Duration) {
+        let tasks = self
+            .inner
+            .sessions
+            .run_tasks
+            .lock()
+            .map(|mut tasks| tasks.drain().map(|(_, task)| task).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if tasks.is_empty() {
+            return;
+        }
+        let deadline = tokio::time::Instant::now() + bound;
+        for mut task in tasks {
+            if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+
     pub async fn subscribe(
         &self,
         session: SessionId,

@@ -359,6 +359,11 @@ Adoption also schedules delegation recovery for the session's tree, and a resume
 waits — bounded, a few seconds — for that recovery to settle before it returns,
 so background-delegation capacity never reads transiently over-counted; if the
 bound expires the resume still succeeds and recovery finishes in the background.
+A clean shutdown is the other half of that contract: it cancels its in-flight
+runs and then waits, under its own bound, for those run tasks to record
+`RunCancelled` while the actors and the store are still up. Only a crash, or a
+task still wedged when that bound expires and is aborted, leaves a run for the
+next startup to repair as interrupted by daemon restart.
 Reconciliation failure revokes the log's write capability and releases the lock
 so a later attempt can retry. A retained event-log projection cannot append
 after its store drops ownership. A live foreign owner produces `session is
