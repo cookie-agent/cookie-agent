@@ -1,6 +1,6 @@
 # Refactor Phase 1: Test Layout and Build Hygiene
 
-Status: draft, implementation authorized on 2026-09-21. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md). Update the status here and in the [specification index](index.md) when the phase lands on `main`.
+Status: implemented. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md).
 
 Repository: this workspace (paths below are relative to the workspace root).
 Branch: `refactor/phase-1-tests-and-build-hygiene` (from `main`)
