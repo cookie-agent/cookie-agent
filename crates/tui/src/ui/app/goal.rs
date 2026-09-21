@@ -605,5 +605,4 @@ fn bar_controls(actions: &[GoalBarAction], width: u16) -> Vec<(GoalBarAction, &'
 }
 
 #[cfg(test)]
-#[path = "goal/tests.rs"]
 mod tests;
