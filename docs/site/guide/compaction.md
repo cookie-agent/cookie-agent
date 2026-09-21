@@ -125,8 +125,12 @@ The threshold is compared against two signals:
    Its fixed instruction may be extended with the user's focus text. It must
    return summary text only, at most
    `max_summary_bytes` (256 KiB by default); non-text output is rejected. The
-   built-in compaction agent allows 4,096 output tokens. Authored internal-agent
-   documents that omit this limit retain the generic 2,048-token default.
+   built-in compaction document sets no output cap of its own, so it inherits the
+   owner run's `max_output_tokens`, bounded by the model's own output limit; the
+   same inheritance applies to any authored internal-agent document that omits
+   the limit. A nonzero `limits.max_output_tokens` in `compaction.md` overrides
+   the inherited value. The suffix-selection output reserve equals that same
+   effective cap.
    The built-in compaction document uses a flat 3-minute timeout. An authored
    `compaction.md` can override `limits.timeout_ms`; the configured value is
    honored exactly, while zero or omission uses the 30-second internal-agent

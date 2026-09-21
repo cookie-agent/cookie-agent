@@ -182,6 +182,10 @@ fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelec
     })
 }
 
+/// The built-in internal agent documents.
+///
+/// Each declares `max_output_tokens: 0`, so every built-in internal agent
+/// inherits the owner run's document cap at execution time.
 fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, EngineError> {
     [
         (
@@ -190,7 +194,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Evaluate the supplied approval request conservatively. Return only the requested structured decision.\n",
             AgentLimits {
                 timeout_ms: 30_000,
-                max_output_tokens: 2_048,
+                max_output_tokens: 0,
             },
         ),
         (
@@ -199,7 +203,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Summarize conversation context faithfully within the supplied bounds. Return summary text only.\n",
             AgentLimits {
                 timeout_ms: 180_000,
-                max_output_tokens: 4_096,
+                max_output_tokens: 0,
             },
         ),
         (
@@ -208,7 +212,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Generate a concise plain-text title from the supplied first user message. Return title text only.\n",
             AgentLimits {
                 timeout_ms: 10_000,
-                max_output_tokens: 128,
+                max_output_tokens: 0,
             },
         ),
     ]
@@ -443,7 +447,8 @@ mod tests {
     };
     use cookie_agent_config::{
         AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentLimits, AgentMode,
-        AgentModelFallback, AgentModelRef, BUILT_IN_COMPACTION_AGENT_ID,
+        AgentModelFallback, AgentModelRef, BUILT_IN_APPROVAL_AGENT_ID,
+        BUILT_IN_COMPACTION_AGENT_ID, BUILT_IN_TITLE_AGENT_ID,
     };
     use cookie_agent_identity::AgentId as IdentityAgentId;
 
@@ -495,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_compaction_output_limit_does_not_change_authored_internal_default() {
+    fn built_in_and_authored_internal_documents_declare_no_output_cap() {
         let authored: AgentFrontmatter = serde_json::from_value(serde_json::json!({
             "description": "Authored internal",
             "mode": "internal",
@@ -503,14 +508,45 @@ mod tests {
             "models": [{ "model": "${parent_model}" }]
         }))
         .expect("authored internal frontmatter");
-        assert_eq!(authored.limits.max_output_tokens, 2_048);
+        // Zero means "inherit the owner run's cap", not "unbounded".
+        assert_eq!(authored.limits.max_output_tokens, 0);
 
         let documents = built_in_internal_documents().expect("built-in internal documents");
-        let compaction = documents
-            .values()
-            .find(|document| document.id.as_str() == BUILT_IN_COMPACTION_AGENT_ID)
-            .expect("built-in compaction document");
-        assert_eq!(compaction.frontmatter.limits.max_output_tokens, 4_096);
+        assert_eq!(documents.len(), 3);
+        for document in documents.values() {
+            assert_eq!(
+                document.frontmatter.limits.max_output_tokens, 0,
+                "built-in internal agent `{}` must inherit the owner run's output cap",
+                document.id
+            );
+        }
+
+        let explicit: AgentFrontmatter = serde_json::from_value(serde_json::json!({
+            "description": "Authored internal",
+            "mode": "internal",
+            "enabled": true,
+            "models": [{ "model": "${parent_model}" }],
+            "limits": { "max_output_tokens": 64 }
+        }))
+        .expect("authored internal frontmatter");
+        assert_eq!(explicit.limits.max_output_tokens, 64);
+    }
+
+    #[test]
+    fn built_in_internal_documents_declare_their_timeouts() {
+        let documents = built_in_internal_documents().expect("built-in internal documents");
+        let timeout = |id: &str| {
+            documents
+                .values()
+                .find(|document| document.id.as_str() == id)
+                .unwrap_or_else(|| panic!("built-in document `{id}`"))
+                .frontmatter
+                .limits
+                .timeout_ms
+        };
+        assert_eq!(timeout(BUILT_IN_APPROVAL_AGENT_ID), 30_000);
+        assert_eq!(timeout(BUILT_IN_COMPACTION_AGENT_ID), 180_000);
+        assert_eq!(timeout(BUILT_IN_TITLE_AGENT_ID), 10_000);
     }
 
     fn test_agent(id: &str, mode: AgentMode, enabled: bool) -> ResolvedAgent {

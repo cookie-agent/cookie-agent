@@ -52,7 +52,12 @@ impl FrozenInternalAgentPolicy {
 
 #[derive(Clone, Debug)]
 pub(crate) struct InternalAgentLimits {
+    /// The internal agent document's own cap. `0` means the document declares no
+    /// cap and the agent inherits `inherited_max_output_tokens`.
     pub(crate) max_output_tokens: u64,
+    /// The owner run's document cap, carried down so a capless internal agent
+    /// inherits it. `0` means the owner run declares no cap either.
+    pub(crate) inherited_max_output_tokens: u64,
     pub(crate) timeout_ms: u64,
 }
 
@@ -286,11 +291,12 @@ impl Engine {
                             _ => None,
                         })
                         .collect::<String>();
-                    let output_exceeds_document_limit = (policy.limits.max_output_tokens != 0)
-                        && output.len()
-                            > usize::try_from(policy.limits.max_output_tokens)
+                    let output_exceeds_document_limit = max_output_tokens.is_some_and(|limit| {
+                        output.len()
+                            > usize::try_from(limit)
                                 .unwrap_or(usize::MAX)
-                                .saturating_mul(4);
+                                .saturating_mul(4)
+                    });
                     if output_exceeds_document_limit {
                         only_context_failures = false;
                         last_failure = InternalAgentFailure {
@@ -592,6 +598,7 @@ impl Engine {
             runtime: Some(Arc::clone(&owner.runtime)),
             limits: InternalAgentLimits {
                 max_output_tokens: limits.max_output_tokens,
+                inherited_max_output_tokens: owner.agent.max_output_tokens,
                 timeout_ms: limits.timeout_ms,
             },
             cache_strategies,
@@ -671,6 +678,7 @@ fn frozen_internal_policy_from_definition(
         runtime: Some(Arc::clone(&owner.runtime)),
         limits: InternalAgentLimits {
             max_output_tokens: definition.max_output_tokens,
+            inherited_max_output_tokens: owner.agent.max_output_tokens,
             timeout_ms: definition.timeout_ms,
         },
         cache_strategies,
@@ -722,14 +730,31 @@ fn internal_timeout_message(timeout_ms: u64) -> String {
     )
 }
 
+/// The effective per-binding output cap for an internal agent request.
+///
+/// Internal agents run on `${parent_model}` by default, so they inherit the
+/// owner run's output cap the same way they inherit its model: when the
+/// internal agent's own document cap is `0` (the default for authored and
+/// built-in internal agents alike), the owner run's document cap applies
+/// instead. The result is `min(model output limit, first nonzero of [internal
+/// document cap, inherited owner cap])`, and `None` only when the model's
+/// output limit is unknown and both caps are zero.
+///
+/// An explicit nonzero internal document cap therefore still wins over
+/// inheritance, subject to the model minimum. That is also what keeps replay
+/// faithful: sessions frozen under the older defaults carry a nonzero
+/// `FrozenInternalAgentDefinition::max_output_tokens` (2,048 / 4,096 / 128),
+/// and the min rule honours that frozen value instead of inheriting.
 pub(super) fn internal_agent_output_limit(
     binding: &cookie_agent_protocol::FrozenModelBinding,
     policy: &FrozenInternalAgentPolicy,
 ) -> Option<u64> {
-    match (
-        binding.descriptor.capabilities.limits.output,
-        policy.limits.max_output_tokens,
-    ) {
+    let document = if policy.limits.max_output_tokens == 0 {
+        policy.limits.inherited_max_output_tokens
+    } else {
+        policy.limits.max_output_tokens
+    };
+    match (binding.descriptor.capabilities.limits.output, document) {
         (Some(model), 0) => Some(model),
         (Some(model), document) => Some(model.min(document)),
         (None, 0) => None,

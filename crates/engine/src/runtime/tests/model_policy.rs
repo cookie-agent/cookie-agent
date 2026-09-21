@@ -808,3 +808,112 @@ async fn primary_agent_max_output_tokens_caps_model_requests() {
     );
     fixture.engine.shutdown().await;
 }
+
+/// Resolve the effective per-request output cap the internal agent `kind` would
+/// carry when it runs under `selection` on the parent's own binding.
+fn internal_output_cap(
+    fixture: &Fixture,
+    selection: &RunSelection,
+    kind: InternalAgentKind,
+) -> Option<u64> {
+    let owner = frozen_root_policy(fixture, selection);
+    let parent_binding = owner.selected_suffix.first().expect("parent binding");
+    let policy = fixture
+        .engine
+        .internal_agent_policy(kind, &owner, Some(parent_binding))
+        .expect("internal agent policy");
+    let binding = policy.models.first().expect("internal binding").clone();
+    crate::runtime::internal_agents::internal_agent_output_limit(&binding, &policy)
+}
+
+const INTERNAL_KINDS: [InternalAgentKind; 3] = [
+    InternalAgentKind::Approval,
+    InternalAgentKind::ContextCompaction,
+    InternalAgentKind::SessionTitle,
+];
+
+#[test]
+fn built_in_internal_agents_inherit_the_parent_run_output_cap() {
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        "http://127.0.0.1:9/v1",
+        "---\ndescription: Output-capped primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep the response bounded.\n",
+    );
+    for kind in INTERNAL_KINDS {
+        let policy = {
+            let owner = frozen_root_policy(&fixture, &selection);
+            fixture
+                .engine
+                .internal_agent_policy(kind, &owner, owner.selected_suffix.first())
+                .expect("internal agent policy")
+        };
+        // The document itself records no cap; inheritance supplies the bound.
+        assert_eq!(policy.agent.max_output_tokens, 0, "{kind:?} document cap");
+        assert_eq!(policy.limits.max_output_tokens, 0, "{kind:?} document cap");
+        assert_eq!(
+            policy.limits.inherited_max_output_tokens, 128,
+            "{kind:?} inherited cap"
+        );
+        assert_eq!(
+            internal_output_cap(&fixture, &selection, kind),
+            Some(128),
+            "{kind:?} effective cap"
+        );
+    }
+}
+
+#[test]
+fn uncapped_parent_leaves_internal_agents_bounded_by_the_model_output_limit() {
+    // The `custom.test/group/model` fixture declares `output_tokens = 1024`.
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        "http://127.0.0.1:9/v1",
+        "---\ndescription: Uncapped primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: {}\n---\nRespond.\n",
+    );
+    for kind in INTERNAL_KINDS {
+        assert_eq!(
+            internal_output_cap(&fixture, &selection, kind),
+            Some(1_024),
+            "{kind:?} effective cap"
+        );
+    }
+}
+
+#[test]
+fn explicit_internal_output_cap_wins_over_the_inherited_parent_cap() {
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        "http://127.0.0.1:9/v1",
+        "---\ndescription: Output-capped primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep the response bounded.\n",
+        Some((
+            "approval.md",
+            "---\ndescription: Tightly capped approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { max_output_tokens: 64 }\npermissions: {}\n---\nEvaluate approvals.\n",
+        )),
+        None,
+        false,
+    );
+    assert_eq!(
+        internal_output_cap(&fixture, &selection, InternalAgentKind::Approval),
+        Some(64)
+    );
+    // The sibling built-ins still inherit the parent's cap.
+    assert_eq!(
+        internal_output_cap(&fixture, &selection, InternalAgentKind::SessionTitle),
+        Some(128)
+    );
+}
+
+#[test]
+fn explicit_internal_output_cap_is_still_clamped_to_the_model_output_limit() {
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        "http://127.0.0.1:9/v1",
+        "---\ndescription: Output-capped primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions: {}\n---\nKeep the response bounded.\n",
+        Some((
+            "approval.md",
+            "---\ndescription: Loosely capped approval\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { max_output_tokens: 8192 }\npermissions: {}\n---\nEvaluate approvals.\n",
+        )),
+        None,
+        false,
+    );
+    assert_eq!(
+        internal_output_cap(&fixture, &selection, InternalAgentKind::Approval),
+        Some(1_024)
+    );
+}

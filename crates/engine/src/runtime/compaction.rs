@@ -529,17 +529,12 @@ impl Engine {
             }
         }
 
-        // Reserve an output-sized summary before selecting a suffix. The final fit check uses
-        // the actual replay projection and the same calibrated estimator as the input.
-        let output_reserve = match (
-            input.binding.descriptor.capabilities.limits.output,
-            input.owner_policy.agent.max_output_tokens,
-        ) {
-            (Some(model), agent) if agent > 0 => model.min(agent),
-            (Some(model), _) => model,
-            (None, agent) if agent > 0 => agent,
-            _ => DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS,
-        };
+        // Reserve an output-sized summary before selecting a suffix. The reserve is the
+        // compaction agent's own effective output cap, which it inherits from the owner run
+        // when its document declares none. The final fit check uses the actual replay
+        // projection and the same calibrated estimator as the input.
+        let output_reserve = internal_agent_output_limit(input.binding, input.internal_policy)
+            .unwrap_or(DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS);
         let retained_limit = context_limit
             .saturating_sub(output_reserve)
             .min(if trigger_tokens > 0 {

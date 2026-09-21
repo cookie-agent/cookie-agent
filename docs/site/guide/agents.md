@@ -57,11 +57,20 @@ Review the requested change and report concrete findings.
 | `limits` | table | defaults below | Timeouts and token bounds. |
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](agents.md#permissions). At most 256 rules. |
 
-`max_output_tokens` applies in every mode. A nonzero value caps each request at
-the smaller of the document value and the model's own output limit. It defaults
-to no document cap for the non-internal `primary`, `subagent`, and `all` modes.
-Authored internal agents retain a 2,048-token default; setting it explicitly to zero
-removes that document cap.
+`max_output_tokens` applies in every mode and defaults to `0` in all of them. A
+nonzero value caps each request at the smaller of the document value and the
+model's own output limit. For the non-internal `primary`, `subagent`, and `all`
+modes, `0` means no document cap.
+
+Internal agents run on `${parent_model}` by default, so `0` there means they
+inherit the owner run's output cap the same way they inherit its model. The
+effective cap for an internal request is the smaller of the model's own output
+limit and the first nonzero value of the internal document's
+`max_output_tokens` and the owner run's `max_output_tokens`; a request is left
+uncapped only when the model's output limit is unknown and neither document
+sets one. An explicit nonzero value in the internal document therefore still
+wins over inheritance, subject to that model minimum. All three built-in
+internal documents declare `0` and inherit.
 `timeout_ms` applies only to internal agents. For other modes, a nonzero value is
 a hard error. Internal agents use the configured timeout exactly; zero or an
 omitted value uses the 30-second default. The built-in `compaction` agent has a
@@ -298,9 +307,9 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 
 | ID | Role | Default model | Default limits |
 |---|---|---|---|
-| `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; 2,048 max output tokens |
-| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; 4,096 max output tokens |
-| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; 128 max output tokens |
+| `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 
 All three default to `${parent_model}`, so they run on the model the parent run
 is currently using — including its position in the fallback chain: if the run
