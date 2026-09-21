@@ -516,3 +516,122 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
     assert!(requests[1].contains("apply this queued correction"));
     reopened.shutdown().await;
 }
+
+#[tokio::test]
+async fn resume_settles_recovered_background_delegations_before_returning() {
+    let (endpoint, reached, release, server) = scripted_running_steer_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let parent = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("recovery settle parent");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent.session_id,
+                client_run_id: ClientRunId::new("recovery-settle").expect("run ID"),
+                selection,
+                input: "start a background child".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted recovery settle parent run");
+    with_watchdog("reached fixture completion", reached)
+        .await
+        .expect("child request reached server");
+    let child_session_id = await_child(
+        &fixture.engine,
+        parent.session_id,
+        "recovery settle child",
+        |child| child.status == SessionStatus::Running,
+    )
+    .await
+    .session_id;
+    // The parent run must be durably terminal before the snapshot: a parent run
+    // that is still running is repaired as interrupted on adoption, which marks
+    // its delegations finished without any recovery at all. The leak this test
+    // guards lives in the other case, where the durable facts alone say nothing
+    // about a child whose run died with the daemon.
+    await_projection(
+        &fixture.engine,
+        parent.session_id,
+        "recovery settle parent run completion",
+        |session| {
+            session
+                .runs
+                .values()
+                .all(|run| run.status == SessionStatus::Completed)
+        },
+    )
+    .await;
+    assert_eq!(
+        fixture
+            .engine
+            .running_background_delegations_for_test(parent.session_id),
+        1,
+        "the background child holds a slot before the restart"
+    );
+
+    let snapshot = private_tempdir();
+    let cwd = fixture._directory.path().to_owned();
+    let config = fixture.config.clone();
+    let manager = Arc::clone(&fixture.manager);
+    for session in fixture.engine.inner.store.all() {
+        session.log.flush().expect("flush crash snapshot");
+    }
+    copy_test_tree(
+        &fixture._directory.path().join("data"),
+        &snapshot.path().join("data"),
+    );
+    fixture.engine.shutdown().await;
+    release.send(()).expect("release stopped child socket");
+    drop(fixture.engine);
+
+    let reopened = Engine::open(EngineOptions {
+        data_dir: snapshot.path().join("data"),
+        cwd,
+        config,
+        model_manager: manager,
+        tools: Vec::new(),
+        model_snapshot_directory: Some(snapshot.path().join("model-snapshots")),
+    })
+    .expect("reopen background delegate snapshot");
+    reopened
+        .resume(parent.session_id)
+        .await
+        .expect("adopt parent for recovery");
+    assert_eq!(
+        reopened.running_background_delegations_for_test(parent.session_id),
+        0,
+        "resume returns only after the delegation recovery it scheduled settled"
+    );
+    let child = reopened
+        .inner
+        .store
+        .get(child_session_id)
+        .expect("recovered child projection");
+    assert!(
+        child
+            .runs
+            .values()
+            .all(|run| run.status == SessionStatus::Interrupted),
+        "the abandoned child run is terminalized by the recovery: {:?}",
+        child
+            .runs
+            .values()
+            .map(|run| run.status)
+            .collect::<Vec<_>>()
+    );
+    reopened.shutdown().await;
+    // The fixture scripts a steer that this scenario never sends, so its task
+    // is abandoned rather than joined.
+    server.abort();
+}
