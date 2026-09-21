@@ -1,6 +1,5 @@
 ---
-source: crates/tui/src/ui/transcript.rs
-assertion_line: 3523
+source: crates/tui/src/ui/transcript/tests/approvals.rs
 expression: "stable_approval_snapshot(&approval, approval_content(&approval))"
 ---
 PERMISSION REQUIRED · ESCALATED

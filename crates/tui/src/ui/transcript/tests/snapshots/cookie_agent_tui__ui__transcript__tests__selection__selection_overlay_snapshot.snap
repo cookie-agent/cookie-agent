@@ -1,5 +1,5 @@
 ---
-source: crates/tui/src/ui/transcript.rs
+source: crates/tui/src/ui/transcript/tests/selection.rs
 expression: overlay
 ---
 ┌Conversation · events ≥ warning───────────────────────────────────────────────┐
