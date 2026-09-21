@@ -306,6 +306,14 @@ cache only: a missing, corrupt, or stale entry simply means the children are
 unknown until the tree is loaded, and `metadata` remains authoritative per
 session.
 
+A root directory whose `metadata` is absent is skipped silently and left
+uncached, so the next discovery pass retries it. That shape is transient rather
+than faulty: `<root>/subagents/` exists on its own whenever a child publishes
+before its root, and the same shape appears while a prepared directory is
+merged into it. Every other failure to read a root `metadata` — a corrupt cache,
+an ID that disagrees with its directory name — still reports a diagnostic and
+leaves the root uncached for the next pass.
+
 When a root first comes into use — resume, open for mutation, fork source, tree
 or child access — every descendant of that root is read and folded exactly once
 in a single bulk pass. That pass assembles the tree, harvests the artifact
@@ -352,7 +360,10 @@ idle session is evicted from memory. On Unix the lock is
 directory renames. New-session and fork publication acquire the Windows sidecar
 derived from the final directory path before renaming the temporary directory.
 Session discovery ignores the sidecar because it scans only directories.
-Session listing reads `metadata` without locking. Opening an existing session
+Session listing reads `metadata` without locking, which is safe because every
+rewrite of that cache stages a sibling temporary and publishes it with a
+replacement that keeps the name resolvable throughout: `rename` on Unix, and a
+superseding POSIX rename on Windows. Opening an existing session
 for mutation attempts the lock; success enters a non-writable adoption state,
 reconciles only that session's interrupted work, and then publishes ownership.
 Adoption also schedules delegation recovery for the session's tree, and a resume

@@ -235,9 +235,12 @@ re-click path should be near-unreachable.
   general data reader (`windows.rs:486-491`) opens with
   `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`; the `FILE_SHARE_DELETE`
   is load-bearing — it means a lock-free reader does not block the writer's
-  `MoveFileExW(REPLACE_EXISTING)` (`windows.rs:200-207`), and the replace is
-  atomic, so the reader sees the old bytes to close (pending-delete) and the
-  next reader sees the new file. Unix already reads this way
+  replace, so the reader sees the old bytes to close and the next reader sees
+  the new file. (This analysis assumed `MoveFileExW(REPLACE_EXISTING)` was
+  atomic for a reader that already holds a handle. It is — but a reader that
+  opens the name *during* the replace could find it absent, so `replace_path`
+  now prefers the superseding POSIX rename and keeps `MoveFileExW` only as a
+  fallback.) Unix already reads this way
   (`load_oauth_store`, no lock) via `SecureDirectory::read` (`mod.rs:102`). So
   no shared-lock primitive is introduced. The `R | W`-only share mode is kept
   **solely for lock files** (the ownership deny-delete guard), untouched.

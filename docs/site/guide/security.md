@@ -73,9 +73,14 @@ fail closed. The backend:
 - records the target's volume and file identity plus a content digest, then
   repeats route, canonical-path, containment, reparse, identity, and content checks
   before use; and
-- stages complete file content beside the target and publishes it with
-  `MoveFileExW`, using write-through and replace-existing flags when replacing a
-  file.
+- stages complete file content beside the target and publishes it by renaming
+  the staged file over the target. Replacing an existing file uses the
+  superseding POSIX rename (`SetFileInformationByHandle`, `FileRenameInfoEx`),
+  which re-points the name in one metadata transaction so a concurrent reader
+  opening the path by name never finds it absent; where that rename is
+  unavailable, and for a publication that must not replace anything, the
+  publish falls back to `MoveFileExW` with write-through and, when replacing,
+  replace-existing flags.
 
 Containment is a capability constraint, not another permission decision. In
 particular, a relative request remains constrained to its prepared sandbox root
@@ -102,7 +107,13 @@ On Windows, new state directories and files are created with a protected DACL
 whose single access-control entry grants the current user full control.
 Secure-store lock files use an exclusive whole-file `LockFileEx` lock, and
 durable state replacement stages and flushes a private file before publishing it
-with `MoveFileExW` using replace-existing and write-through flags. Existing
+with a superseding POSIX rename (`SetFileInformationByHandle`,
+`FileRenameInfoEx` with replace-if-exists and POSIX semantics) followed by a
+flush of the target's parent directory. That rename keeps the published name
+resolvable for the whole replacement, so a concurrent reader always sees the old
+file or the new one. Kernels and filesystems that reject the information class
+fall back to `MoveFileExW` with replace-existing and write-through flags, which
+is not atomic for concurrent opens by name. Existing
 paths are not checked for owner, DACL shape, reparse points, object type, or hard
 links; they are opened and used as-is.
 
