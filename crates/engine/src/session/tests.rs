@@ -468,6 +468,208 @@ fn concurrent_adoption_has_one_winner() {
     assert_eq!(winners, 1);
 }
 
+/// Every ownership-lock artifact under `directory`, in *either* platform
+/// layout. Both are searched on both platforms on purpose: the point of the
+/// tree-scoped lock is that a child leaves neither behind.
+fn owner_lock_artifacts(directory: &Path) -> Vec<std::path::PathBuf> {
+    fn walk(directory: &Path, found: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "owner.lock" || name.ends_with(".owner.lock") {
+                found.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(directory, &mut found);
+    found.sort();
+    found
+}
+
+/// Creates a root with a child and a grandchild, all published.
+fn persist_test_tree(store: &SessionStore) -> (SessionId, SessionId, SessionId) {
+    let root = persist_test_session(store);
+    let child = persist_test_session_with_origin(store, delegated_origin(root, root, 1));
+    let grandchild = persist_test_session_with_origin(store, delegated_origin(root, child, 2));
+    (root, child, grandchild)
+}
+
+/// (a) Locks are per tree. Publishing children under an owned root adds no
+/// lock anywhere below it — no `owner.lock` and no `<id>.owner.lock` — and the
+/// whole work dir still holds exactly the root's one lock.
+#[test]
+fn publishing_a_child_writes_no_lock_under_the_root() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let store = SessionStore::open(&data, &cwd).expect("owner store");
+    let (root, child, grandchild) = persist_test_tree(&store);
+
+    let root_lock = owner_lock_path(&store.session_dir(root));
+    assert!(root_lock.is_file(), "the tree keeps the root's lock");
+    assert!(
+        owner_lock_artifacts(
+            &store
+                .workdir_dir_path()
+                .join(root.to_string())
+                .join(SUBAGENTS_DIR)
+        )
+        .is_empty(),
+        "no lock of any layout is filed under subagents/"
+    );
+    assert_eq!(
+        owner_lock_artifacts(store.workdir_dir_path()),
+        vec![root_lock],
+        "the tree is guarded by exactly one lock"
+    );
+    assert!(store.is_owned(child) && store.is_owned(grandchild));
+}
+
+/// (b) A foreign root locks its whole tree: another store may neither write a
+/// child of it nor adopt the root, though reading stays legal.
+#[test]
+fn a_foreign_root_refuses_every_session_in_its_tree() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let (root, child, grandchild) = persist_test_tree(&owner);
+
+    let observer = SessionStore::open(&data, &cwd).expect("observer store");
+    observer
+        .get(child)
+        .expect("reading a foreign child is legal");
+    for id in [child, grandchild, root] {
+        assert!(
+            matches!(observer.open_for_write(id), Err(SessionError::SessionLocked(locked)) if locked == id),
+            "session {id} of a foreign tree must not be writable"
+        );
+        assert!(!observer.is_owned(id));
+    }
+}
+
+/// (c) Adopting a child takes the *root's* lock, once, for the whole tree.
+/// That does not make the root writable — it reconciles through its own
+/// adoption — and that adoption takes no second lock.
+#[test]
+fn adopting_a_child_takes_the_root_lock_for_the_whole_tree() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let (root, child, grandchild) = persist_test_tree(&owner);
+    assert_eq!(Arc::strong_count(&owner), 1);
+    drop(owner);
+
+    let adopter = SessionStore::open(&data, &cwd).expect("adopter store");
+    adopter.open_for_write(child).expect("adopt the child");
+    let root_lock = owner_lock_path(&adopter.session_dir(root));
+    assert_eq!(
+        owner_lock_artifacts(adopter.workdir_dir_path()),
+        vec![root_lock.clone()],
+        "adopting through a child takes the root's lock and nothing else"
+    );
+    assert!(adopter.is_owned(child));
+    assert!(
+        !adopter.is_owned(root),
+        "holding the tree is not adopting the root"
+    );
+
+    adopter
+        .open_for_write(root)
+        .expect("adopt the root of a tree already held");
+    assert!(adopter.is_owned(root));
+    adopter
+        .open_for_write(grandchild)
+        .expect("adopt a sibling branch of the same tree");
+    assert_eq!(
+        owner_lock_artifacts(adopter.workdir_dir_path()),
+        vec![root_lock],
+        "no adoption in a held tree takes a second lock"
+    );
+}
+
+/// (d) Dropping the owning store releases the whole tree, so another store can
+/// adopt any session in it.
+#[test]
+fn dropping_the_owning_store_frees_the_whole_tree() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let (root, child, _) = persist_test_tree(&owner);
+
+    let observer = SessionStore::open(&data, &cwd).expect("observer store");
+    assert!(matches!(
+        observer.open_for_write(child),
+        Err(SessionError::SessionLocked(id)) if id == child
+    ));
+
+    assert_eq!(Arc::strong_count(&owner), 1);
+    drop(owner);
+
+    observer
+        .open_for_write(child)
+        .expect("adopt the child of a released tree");
+    observer
+        .open_for_write(root)
+        .expect("adopt the root of a released tree");
+    assert!(observer.is_owned(child) && observer.is_owned(root));
+}
+
+/// (e) Per-child locks an older build wrote are never consulted, and the tree's
+/// load pass removes them.
+#[test]
+fn legacy_child_lock_files_are_swept_and_never_consulted() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let (root, child, _) = persist_test_tree(&owner);
+    let subagents = owner
+        .workdir_dir_path()
+        .join(root.to_string())
+        .join(SUBAGENTS_DIR);
+    assert_eq!(Arc::strong_count(&owner), 1);
+    drop(owner);
+
+    // Both layouts an older build could have left behind, planted together.
+    let legacy_inside = subagents.join(child.to_string()).join("owner.lock");
+    let legacy_sidecar = subagents.join(format!("{child}.owner.lock"));
+    write_private_test_file(&legacy_inside, []);
+    write_private_test_file(&legacy_sidecar, []);
+
+    let store = SessionStore::open(&data, &cwd).expect("cold store");
+    store.load_tree(root).expect("complete the tree");
+
+    assert!(!legacy_inside.exists(), "the load swept the legacy lock");
+    assert!(
+        !legacy_sidecar.exists(),
+        "the load swept the legacy sidecar"
+    );
+    store
+        .open_for_write(child)
+        .expect("a legacy child lock never gated adoption");
+    assert_eq!(
+        owner_lock_artifacts(store.workdir_dir_path()),
+        vec![owner_lock_path(&store.session_dir(root))],
+        "only the root's lock survives"
+    );
+}
+
 #[test]
 fn buffered_publish_is_locked_before_the_directory_becomes_visible() {
     let temporary = private_tempdir();

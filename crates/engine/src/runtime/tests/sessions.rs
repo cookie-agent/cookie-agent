@@ -127,6 +127,57 @@ async fn shutdown_is_idempotent_and_blocks_ownership_reacquisition() {
     reopened.shutdown().await;
 }
 
+/// Ownership is the tree's, not the session's: while one engine holds a tree,
+/// a second engine may write nothing in it — root or delegated child. Once the
+/// holder is gone, adopting the child takes the tree, and the root then becomes
+/// writable through its own adoption, without a second lock.
+#[tokio::test]
+async fn a_second_engine_writes_no_session_of_a_held_tree() {
+    let (fixture, selection) = custom_fixture();
+    let root = fixture
+        .engine
+        .create_session(selection)
+        .expect("root session");
+    let root_id = root.session_id;
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(root_id)
+        .expect("persist root");
+    let child = create_buffered_delegated_child(&fixture.engine, root_id);
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(child)
+        .expect("persist child");
+
+    let engine_b = reopen_engine(&fixture);
+    for id in [child, root_id] {
+        assert!(matches!(
+            engine_b.ensure_session_owned(id),
+            Err(EngineError::SessionOwnedByAnotherProcess(locked)) if locked == id
+        ));
+    }
+
+    fixture.engine.shutdown().await;
+
+    engine_b
+        .ensure_session_owned(child)
+        .expect("adopt the child of a released tree");
+    assert!(engine_b.inner.store.is_owned(child));
+    assert!(
+        !engine_b.inner.store.is_owned(root_id),
+        "taking the tree through a child does not adopt the root"
+    );
+    engine_b
+        .ensure_session_owned(root_id)
+        .expect("adopt the root of a tree this engine already holds");
+    assert!(engine_b.inner.store.is_owned(root_id));
+    engine_b.shutdown().await;
+}
+
 #[tokio::test]
 async fn two_engines_share_a_data_dir_without_sharing_session_writers() {
     let (fixture, selection) = custom_fixture();
