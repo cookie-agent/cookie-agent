@@ -588,7 +588,11 @@ impl Engine {
         }
         let engine = self.clone();
         let session_id = params.session_id;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
+            let _slot = super::mailbox::RunTaskSlot {
+                engine: engine.clone(),
+                run_id,
+            };
             if let Some((name, args)) = direct_skill
                 && let Err(error) = engine
                     .execute_direct_skill(active.clone(), run_id, name, args)
@@ -632,22 +636,27 @@ impl Engine {
                 // A provider-attempt persistence error may also prevent the
                 // terminal append. Retain this active tombstone for reopen
                 // reconciliation rather than clearing a durably Running run.
-                let terminal = if active.cancellation.is_cancelled() {
-                    Event::RunCancelled {
-                        reason: Some(safe_error(&error.user_message())),
-                    }
+                // A cancelled run writes its terminal event straight to the
+                // log. Shutdown cancels every active run and closes the session
+                // mailboxes to new traffic in the same breath, so routing this
+                // append through the actor would drop exactly the
+                // `RunCancelled` that shutdown just asked for and leave the run
+                // to be repaired as a restart interruption instead.
+                let terminalized = if active.cancellation.is_cancelled() {
+                    engine
+                        .append_run_cancelled_once(&active, run_id, Some(error.user_message()))
+                        .map(|_| ())
                 } else {
-                    engine.run_failure_event(session_id, run_id, &error)
+                    engine
+                        .append(
+                            session_id,
+                            Some(run_id),
+                            event_origin("engine:model-loop"),
+                            engine.run_failure_event(session_id, run_id, &error),
+                        )
+                        .await
                 };
-                if let Err(terminal_error) = engine
-                    .append(
-                        session_id,
-                        Some(run_id),
-                        event_origin("engine:model-loop"),
-                        terminal,
-                    )
-                    .await
-                {
+                if let Err(terminal_error) = terminalized {
                     eprintln!(
                         "run {run_id} terminalization failed: {}",
                         terminal_error.user_message()
@@ -666,6 +675,7 @@ impl Engine {
                 eprintln!("session {session_id} completion eviction failed: {error}");
             }
         });
+        self.register_run_task(run_id, task);
         Ok(RunStartResult { run_id })
     }
 

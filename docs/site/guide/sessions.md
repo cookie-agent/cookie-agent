@@ -25,6 +25,10 @@ and tolerates the resulting sequence gaps. The derived `metadata` file is only a
 cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
 the event history.
 
+Shutting the daemon down cleanly cancels whatever runs are in flight and waits,
+under a short bound, for them to record `RunCancelled`; a run only comes back as
+interrupted by daemon restart when the process died without that chance.
+
 Reopening a session adopts it: the engine reconciles that session's interrupted
 work and then waits, under a short bound, for the delegation recovery the
 adoption scheduled. Background subagents whose runs died with the previous

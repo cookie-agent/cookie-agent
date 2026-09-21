@@ -627,3 +627,65 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
         fixture.engine.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn shutdown_joins_in_flight_run_tasks_and_records_run_cancelled() {
+    // The fixture answers nothing until it is released, so the run is parked in
+    // its provider stream for the whole of shutdown.
+    let (endpoint, server, reached, release) =
+        scripted_server_with_delayed_response(vec![scripted_text_body("never delivered")], 0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("shutdown cancellation session");
+    let started = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("shutdown-cancellation").expect("run ID"),
+                selection,
+                input: "stall in the provider stream".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted stalled run");
+    with_watchdog("stalled request reached server", reached)
+        .await
+        .expect("stalled request reached server");
+
+    with_watchdog("engine shutdown", fixture.engine.shutdown()).await;
+
+    let projection = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("stalled session projection");
+    assert_eq!(
+        projection
+            .runs
+            .get(&started.run_id)
+            .map(|run| run.status)
+            .expect("stalled run record"),
+        SessionStatus::Cancelled,
+        "a clean shutdown terminalizes an in-flight run as cancelled"
+    );
+    let terminal = projection
+        .log
+        .events()
+        .iter()
+        .rfind(|event| event.run_id == Some(started.run_id))
+        .map(|event| event.payload.clone())
+        .expect("terminal run event");
+    assert!(
+        matches!(terminal, EventPayload::RunCancelled { .. }),
+        "the run's last event is its cancellation, not an unterminated run: {terminal:?}"
+    );
+
+    release.notify_waiters();
+    server.abort();
+}
