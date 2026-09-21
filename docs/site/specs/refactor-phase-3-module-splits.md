@@ -1,6 +1,6 @@
 # Refactor Phase 3: Module Splits
 
-Status: draft, implementation authorized on 2026-09-21. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md). Update the status here and in the [specification index](index.md) when the phase lands on `main`.
+Status: implemented on 2026-09-21. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md).
 
 Repository: this workspace (paths below are relative to the workspace root).
 Branch: `refactor/phase-3-split-monoliths` (from `main`, after phase 2 has merged)
