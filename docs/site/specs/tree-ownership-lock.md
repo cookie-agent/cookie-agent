@@ -1,8 +1,8 @@
 # Tree-Scoped Session Ownership Lock
 
-Status: draft, implementation authorized on 2026-09-21. This document records
-the decision to move cross-process session ownership from a per-session lock to
-a single lock per root session tree. It amends the ownership rules described in
+Status: implemented on 2026-09-21. This document records the decision to move
+cross-process session ownership from a per-session lock to a single lock per
+root session tree. It amends the ownership rules described in
 [Architecture](../architecture.md) and the session guarantees in
 [Sessions](../guide/sessions.md); it does not touch the `~/.cookie-agent` store
 locks covered by [Store lock retention](store-lock-retention.md).
@@ -64,12 +64,21 @@ The per-child locks buy nothing:
 - **Publication.** A new root or a fork of a root acquires the root lock as it
   does today — inside the temporary directory before the rename on unix, from
   the sidecar path derived from the final directory on Windows. Publishing a
-  child takes no lock; it requires the tree to be `PendingPublish` or `Owned` by
-  this process and fails with `SessionLocked` otherwise.
-- **`is_owned(id)`** is answered from the tree of `id`; `release_ownership`
-  drops every tree lock the store holds. Eviction is unchanged: a tree lock is
-  retained for the lifetime of the process even after every session in the tree
-  has been evicted.
+  child creates no lock of its own; it requires the tree to be `PendingPublish`
+  or `Owned` by this process and fails with `SessionLocked` otherwise. A *fork*
+  of a delegated session is the one publication that can be the first write in a
+  tree — nothing else in the tree has to be open for it — so it acquires the
+  root lock when the tree is free, the same way an adoption reached through a
+  child does, and fails as foreign-owned when it is not. Its temporary directory
+  is prepared inside the root's directory, so the lock is taken before it is
+  created.
+- **`is_owned(id)`** is answered from the tree of `id`, *and* from the
+  per-session record: it is true when the tree is held and settled here and `id`
+  was created or adopted here. That keeps its meaning at the call sites that use
+  it as a write gate, while a foreign root answers `false` for every session in
+  its tree. `release_ownership` drops every tree lock the store holds. Eviction
+  is unchanged: a tree lock is retained for the lifetime of the process even
+  after every session in the tree has been evicted.
 - **Legacy child lock files** (`<child>/owner.lock` and
   `<child-id>.owner.lock`) are ignored. The tree's single load pass removes them
   best-effort. There is no migration and no compatibility decoding.
