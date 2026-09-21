@@ -6,7 +6,6 @@ use std::{
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::{
     CompiledSafeModelBlueprint, FrozenCredentialBinding, FrozenProviderOptions,
@@ -17,7 +16,7 @@ use crate::{
 };
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum AdaptorId {
@@ -133,7 +132,7 @@ impl JsonSchema for LanguageModelDescriptorSchema {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Modality {
@@ -145,7 +144,7 @@ pub enum Modality {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
@@ -155,7 +154,7 @@ pub enum MediaKind {
     Video,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayCapability {
     Unsupported,
@@ -163,15 +162,14 @@ pub enum ReplayCapability {
     Required,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancellationCapability {
     LocalOnly,
     Provider,
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MimeType(String);
 
 impl MimeType {
@@ -228,7 +226,7 @@ impl JsonSchema for MimeType {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaCapability {
     #[schemars(length(min = 1))]
@@ -239,7 +237,7 @@ pub struct MediaCapability {
     pub max_count: u32,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCapabilities {
     #[schemars(length(min = 1))]
@@ -360,8 +358,7 @@ impl<'de> Deserialize<'de> for ModelCapabilities {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, TS)]
-#[ts(type = "number")]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct FiniteF32(f32);
 
 impl FiniteF32 {
@@ -417,8 +414,7 @@ impl JsonSchema for StopSequenceSchema {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ModelToolName(String);
 impl ModelToolName {
     pub fn new(value: impl Into<String>) -> Result<Self, ModelSchemaError> {
@@ -461,7 +457,7 @@ impl JsonSchema for ModelToolName {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolChoice {
     Auto,
@@ -470,7 +466,7 @@ pub enum ToolChoice {
     Named(ModelToolName),
 }
 
-#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestDefaults {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -590,7 +586,7 @@ impl<'de> Deserialize<'de> for RequestDefaults {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
@@ -603,7 +599,7 @@ pub enum ReasoningEffort {
     Default,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompiledReasoningBehavior {
     Effort {
@@ -618,7 +614,7 @@ pub enum CompiledReasoningBehavior {
     },
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedRequestDefaults {
     pub request: RequestDefaults,
@@ -711,7 +707,7 @@ impl JsonSchema for ProviderBetaSchema {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum ProviderOptions {
     #[serde(rename = "anthropic")]
@@ -836,7 +832,7 @@ impl ProviderOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrozenCacheTtl {
     OneHour,
@@ -844,7 +840,7 @@ pub enum FrozenCacheTtl {
     Off,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrozenGoogleCacheMode {
     Implicit,
@@ -852,37 +848,35 @@ pub enum FrozenGoogleCacheMode {
     Off,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrozenOpenAiCacheRetention {
     InMemory,
     #[serde(rename = "24h")]
-    #[ts(rename = "24h")]
     TwentyFourHours,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrozenOpenAiCacheMode {
     Implicit,
     Explicit,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub enum FrozenOpenAiPromptCacheTtl {
     #[serde(rename = "30m")]
-    #[ts(rename = "30m")]
     ThirtyMinutes,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenBedrockMessageCachePoint {
     pub history_index: u64,
     pub ttl: FrozenCacheTtl,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrozenCacheStrategy {
     Anthropic {
@@ -910,16 +904,12 @@ pub enum FrozenCacheStrategy {
         #[schemars(with = "crate::NullableSchema<FrozenOpenAiCacheRetention>", required)]
         prompt_cache_retention: Option<FrozenOpenAiCacheRetention>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
         mode: Option<FrozenOpenAiCacheMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
         ttl: Option<FrozenOpenAiPromptCacheTtl>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
         system: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
         rolling: Option<bool>,
     },
 }
@@ -1080,7 +1070,7 @@ where
     Ok(values)
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VariantOrigin {
     ModelsDevEffort,
@@ -1089,10 +1079,9 @@ pub enum VariantOrigin {
     Explicit,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AvailableVariantDescriptor {
-    #[ts(type = "VariantId")]
     pub id: VariantId,
     #[schemars(with = "ModelDisplayNameSchema")]
     pub display_name: String,
@@ -1100,10 +1089,9 @@ pub struct AvailableVariantDescriptor {
     pub behavior_fingerprint: Sha256Digest,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AvailableModelDescriptor {
-    #[ts(type = "ModelKey")]
     pub key: ModelKey,
     #[schemars(with = "ModelDisplayNameSchema")]
     pub display_name: String,
@@ -1111,11 +1099,9 @@ pub struct AvailableModelDescriptor {
     #[schemars(length(max = 256))]
     pub variants: Vec<AvailableVariantDescriptor>,
     #[schemars(length(max = 256))]
-    #[ts(type = "Array<VariantId>")]
     pub variant_order: Vec<VariantId>,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<VariantId>", required)]
-    #[ts(type = "VariantId | null")]
     pub default_variant: Option<VariantId>,
     pub behavior_fingerprint: Sha256Digest,
 }
@@ -1202,16 +1188,13 @@ impl<'de> Deserialize<'de> for AvailableModelDescriptor {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedModelRef {
     #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
     #[schemars(with = "crate::RequiredModelSelectionSchema")]
-    #[ts(type = "ModelSelection")]
     pub selection: ModelSelection,
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
-    #[ts(type = "ProviderModelId")]
     pub model_id: ProviderModelId,
     pub adapter_id: AdaptorId,
     pub selection_fingerprint: Sha256Digest,
@@ -1255,29 +1238,22 @@ impl<'de> Deserialize<'de> for ResolvedModelRef {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenModelBinding {
-    #[ts(type = "ModelSnapshotRevision")]
     pub manifest_revision: ModelSnapshotRevision,
     pub blueprint_fingerprint: Sha256Digest,
-    #[ts(type = "ModelSelection")]
     pub selection: ModelSelection,
     pub source: FrozenProviderSource,
     pub config_override_fingerprint: Sha256Digest,
     pub credential_binding: FrozenCredentialBinding,
     pub setup_binding: FrozenSetupBinding,
     pub endpoint_identity: SafeEndpointIdentity,
-    #[ts(type = "ProviderRecipeId")]
     pub provider_recipe: ProviderRecipeId,
-    #[ts(type = "ProtocolRecipeId")]
     pub protocol_recipe: ProtocolRecipeId,
-    #[ts(type = "ProviderSetupRecipeId")]
     pub setup_recipe: ProviderSetupRecipeId,
-    #[ts(type = "RecipeCompilerVersion")]
     pub compiler_version: RecipeCompilerVersion,
     #[schemars(with = "LanguageModelDescriptorSchema")]
-    #[ts(type = "LanguageModelDescriptor")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,

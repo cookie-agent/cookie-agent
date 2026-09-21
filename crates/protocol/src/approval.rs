@@ -3,14 +3,13 @@ use std::{borrow::Cow, fmt};
 use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::{
     ApprovalId, PermissionAction, PermissionEffect, SafeCode, SafeErrorMessage, SessionId,
     Sha256Digest, TreeApprovalGrantId, WildcardPattern,
 };
 
-#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationFingerprint {
     digest: Sha256Digest,
@@ -47,7 +46,7 @@ impl<'de> Deserialize<'de> for OperationFingerprint {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedResourceDigest {
     digest: Sha256Digest,
@@ -81,8 +80,7 @@ impl<'de> Deserialize<'de> for PreparedResourceDigest {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PreparedResourceIdentity(String);
 impl PreparedResourceIdentity {
     pub const MAX_BYTES: usize = 512;
@@ -143,7 +141,7 @@ impl JsonSchema for PreparedResourceIdentity {
 
 pub type PreparedCapabilityOperation = PreparedResourceIdentity;
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApprovalBoundary {
     Exact,
@@ -151,7 +149,7 @@ pub enum ApprovalBoundary {
     DelegationTree { root_session_id: SessionId },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalResourceSource {
     PrimaryOperation,
@@ -159,14 +157,14 @@ pub enum ApprovalResourceSource {
     ModelRequest,
     DoomLoopGuard,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedBindingLifetime {
     ProcessLocal,
     RestartStable,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedApprovalResource {
     pub capability: PermissionAction,
@@ -177,7 +175,7 @@ pub struct PreparedApprovalResource {
     pub source: ApprovalResourceSource,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatchedPermissionRule {
     pub source_layer: SafeCode,
@@ -185,7 +183,7 @@ pub struct MatchedPermissionRule {
     pub resource: WildcardPattern,
     pub effect: PermissionEffect,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionTrace {
     pub action: PermissionAction,
@@ -194,7 +192,7 @@ pub struct DecisionTrace {
     pub effect: PermissionEffect,
     pub precedence_reason: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalEvaluation {
     pub resource_digest: PreparedResourceDigest,
@@ -202,7 +200,7 @@ pub struct ApprovalEvaluation {
     pub trace: DecisionTrace,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalTrigger {
     PermissionPolicy,
@@ -211,9 +209,7 @@ pub enum ApprovalTrigger {
     DoomLoop,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     #[default]
@@ -223,19 +219,19 @@ pub enum PermissionMode {
     Ask,
     Yolo,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalCapability {
     pub action: PermissionAction,
     pub operation: PreparedCapabilityOperation,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreparedCapabilityLifetime {
     ProcessLocal,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedOperationIdentity {
     normalized_arguments_digest: Sha256Digest,
@@ -348,7 +344,7 @@ impl<'de> Deserialize<'de> for PreparedOperationIdentity {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalConstraints {
     pub allow_once: bool,
@@ -359,7 +355,7 @@ pub struct ApprovalConstraints {
     pub expires_at: Option<Timestamp>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalReasonCode {
     PolicyAllowed,
@@ -387,7 +383,7 @@ pub enum ApprovalReasonCode {
     Unattended,
     SystemError,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecisionSource {
     Policy,
@@ -399,7 +395,7 @@ pub enum ApprovalDecisionSource {
     DoomLoopGuard,
     System,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalStatus {
     Pending,
@@ -410,12 +406,12 @@ pub enum ApprovalStatus {
     Expired,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalFeedback {
     pub message: SafeErrorMessage,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalInternalDecisionKind {
     Allow,
@@ -423,7 +419,7 @@ pub enum ApprovalInternalDecisionKind {
     Ask,
     Escalate,
 }
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalInternalDecision {
     pub decision: ApprovalInternalDecisionKind,
@@ -523,7 +519,7 @@ impl<'de> Deserialize<'de> for ApprovalInternalDecision {
         Ok(value)
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalUserDecision {
     ApproveOnce,
@@ -531,7 +527,7 @@ pub enum ApprovalUserDecision {
     Reject,
     Cancel,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalFinalOutcome {
     Approved,
@@ -539,7 +535,7 @@ pub enum ApprovalFinalOutcome {
     Cancelled,
     Expired,
 }
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalFinalDecision {
     pub outcome: ApprovalFinalOutcome,
@@ -651,7 +647,7 @@ impl<'de> Deserialize<'de> for ApprovalFinalDecision {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRequest {
     approval_id: ApprovalId,
@@ -767,7 +763,7 @@ impl<'de> Deserialize<'de> for ApprovalRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TreeApprovalGrant {
     pub grant_id: TreeApprovalGrantId,
@@ -848,7 +844,7 @@ impl<'de> Deserialize<'de> for TreeApprovalGrant {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRecord {
     pub session_id: SessionId,

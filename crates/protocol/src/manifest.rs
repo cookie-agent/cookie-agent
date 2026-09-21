@@ -2,12 +2,10 @@ use std::{borrow::Cow, collections::BTreeMap, fmt};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::*;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeEndpointIdentity(String);
 impl SafeEndpointIdentity {
     pub const MAX_BYTES: usize = 2048;
@@ -58,8 +56,7 @@ impl JsonSchema for SafeEndpointIdentity {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct HeaderName(String);
 impl HeaderName {
     pub fn new(value: impl Into<String>) -> Result<Self, ManifestSchemaError> {
@@ -108,8 +105,7 @@ impl JsonSchema for HeaderName {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeStaticHeaderValue(String);
 impl SafeStaticHeaderValue {
     pub fn new(value: impl Into<String>) -> Result<Self, ManifestSchemaError> {
@@ -153,11 +149,10 @@ impl JsonSchema for SafeStaticHeaderValue {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrozenProviderSource {
     Managed {
-        #[ts(type = "ProviderRecipeId")]
         provider_recipe: ProviderRecipeId,
         source_record_digest: Sha256Digest,
         recipe_fingerprint: Sha256Digest,
@@ -168,7 +163,7 @@ pub enum FrozenProviderSource {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrozenCredentialSource {
     AuthoredApiKey,
@@ -177,26 +172,21 @@ pub enum FrozenCredentialSource {
     NoAuth,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenSetupBinding {
-    #[ts(type = "ProviderSetupRecipeId")]
     pub setup_recipe: ProviderSetupRecipeId,
-    #[ts(type = "Record<string, import(\"./SafeSetupValue.js\").SafeSetupValue>")]
     pub values: BTreeMap<SetupFieldId, SafeSetupValue>,
     pub setup_fingerprint: Sha256Digest,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenCredentialBinding {
     pub source: FrozenCredentialSource,
-    #[ts(type = "AuthMethodId")]
     pub auth_method: AuthMethodId,
     #[schemars(length(max = 32))]
-    #[ts(type = "Array<AuthFieldName>")]
     pub fields: Vec<AuthFieldName>,
-    #[ts(type = "Record<string, string>")]
     pub parameters: BTreeMap<AuthParameterId, FrozenAuthParameterValue>,
     pub owned_headers: Vec<HeaderName>,
 }
@@ -237,8 +227,7 @@ impl<'de> Deserialize<'de> for FrozenCredentialBinding {
 
 pub type FrozenProviderOptions = ProviderOptions;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FrozenAuthParameterValue(String);
 
 impl FrozenAuthParameterValue {
@@ -291,8 +280,7 @@ impl JsonSchema for FrozenAuthParameterValue {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NormalizedDecimal(String);
 
 impl NormalizedDecimal {
@@ -357,7 +345,7 @@ impl JsonSchema for NormalizedDecimal {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenRequestDefaults {
     pub temperature: Option<NormalizedDecimal>,
@@ -392,7 +380,7 @@ impl FrozenRequestDefaults {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenResolvedRequestDefaults {
     pub request: FrozenRequestDefaults,
@@ -413,13 +401,11 @@ impl FrozenResolvedRequestDefaults {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenVariantBlueprint {
-    #[ts(type = "VariantId")]
     pub id: VariantId,
     #[schemars(with = "crate::LanguageModelDescriptorSchema")]
-    #[ts(type = "LanguageModelDescriptor")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
@@ -429,29 +415,22 @@ pub struct FrozenVariantBlueprint {
     pub selection_fingerprint: Sha256Digest,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledSafeModelBlueprint {
     pub blueprint_fingerprint: Sha256Digest,
-    #[ts(type = "ModelSelection")]
     pub selection: ModelSelection,
     pub source: FrozenProviderSource,
     pub config_override_fingerprint: Sha256Digest,
     pub setup_binding: FrozenSetupBinding,
     pub credential_binding: FrozenCredentialBinding,
     pub endpoint_identity: SafeEndpointIdentity,
-    #[ts(type = "ProviderRecipeId")]
     pub provider_recipe: ProviderRecipeId,
-    #[ts(type = "ProtocolRecipeId")]
     pub protocol_recipe: ProtocolRecipeId,
-    #[ts(type = "ProviderSetupRecipeId")]
     pub setup_recipe: ProviderSetupRecipeId,
-    #[ts(type = "AuthMethodId")]
     pub auth_method: AuthMethodId,
-    #[ts(type = "RecipeCompilerVersion")]
     pub compiler_version: RecipeCompilerVersion,
     #[schemars(with = "crate::LanguageModelDescriptorSchema")]
-    #[ts(type = "LanguageModelDescriptor")]
     pub descriptor: oven_sdk::LanguageModelDescriptor,
     pub defaults: FrozenResolvedRequestDefaults,
     pub options: FrozenProviderOptions,
@@ -527,16 +506,12 @@ impl<'de> Deserialize<'de> for CompiledSafeModelBlueprint {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSnapshotPayloadV1 {
-    #[ts(type = "CatalogRevision")]
     pub catalog_revision: CatalogRevision,
-    #[ts(type = "RecipeRegistryRevision")]
     pub recipe_registry_revision: RecipeRegistryRevision,
-    #[ts(type = "ProviderStateRevision")]
     pub provider_state_revision: ProviderStateRevision,
-    #[ts(type = "ModelRevision")]
     pub model_revision: ModelRevision,
     #[schemars(length(max = 4096))]
     pub blueprints: Vec<CompiledSafeModelBlueprint>,
@@ -575,8 +550,7 @@ impl<'de> Deserialize<'de> for ModelSnapshotPayloadV1 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "1")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ModelSnapshotManifestSchemaVersion(());
 impl ModelSnapshotManifestSchemaVersion {
     #[must_use]
@@ -619,11 +593,10 @@ impl JsonSchema for ModelSnapshotManifestSchemaVersion {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSnapshotManifestV1 {
     pub schema_version: ModelSnapshotManifestSchemaVersion,
-    #[ts(type = "ModelSnapshotRevision")]
     pub revision: ModelSnapshotRevision,
     pub payload: ModelSnapshotPayloadV1,
 }

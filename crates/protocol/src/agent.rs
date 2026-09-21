@@ -2,12 +2,10 @@ use std::{borrow::Cow, collections::BTreeSet, fmt};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::{AgentId, FrozenModelBinding, ModelKey, ModelSelection, Sha256Digest, WildcardPattern};
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "7")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct AgentSchemaVersion(());
 impl AgentSchemaVersion {
     #[must_use]
@@ -93,7 +91,7 @@ impl<'de> Deserialize<'de> for OlderAgentSchemaVersion {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
@@ -104,7 +102,7 @@ pub enum AgentMode {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionAction {
@@ -119,7 +117,7 @@ pub enum PermissionAction {
     Webfetch,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionEffect {
     Allow,
@@ -127,7 +125,7 @@ pub enum PermissionEffect {
     Deny,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionRule {
     pub action: PermissionAction,
@@ -135,7 +133,7 @@ pub struct PermissionRule {
     pub effect: PermissionEffect,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionOverlay {
     #[schemars(length(max = 256))]
@@ -188,7 +186,7 @@ impl<'de> Deserialize<'de> for SessionPermissionOverlay {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDocumentSource {
     BuiltIn,
@@ -196,11 +194,10 @@ pub enum AgentDocumentSource {
     Workspace,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenDelegationPolicy {
     #[schemars(length(min = 1, max = 256))]
-    #[ts(type = "Array<AgentId>")]
     pub targets: Vec<AgentId>,
     pub effective_depth_ceiling: u32,
 }
@@ -236,10 +233,9 @@ impl<'de> Deserialize<'de> for FrozenDelegationPolicy {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSnapshot {
-    #[ts(type = "AgentId")]
     pub agent: AgentId,
     pub schema: AgentSchemaVersion,
     pub mode: AgentMode,
@@ -466,14 +462,12 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSelection {
-    #[ts(type = "AgentId")]
     pub agent: AgentId,
     #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
     #[schemars(with = "crate::RequiredModelSelectionSchema")]
-    #[ts(type = "ModelSelection")]
     pub model: ModelSelection,
     #[serde(
         default,
@@ -481,18 +475,15 @@ pub struct RunSelection {
         skip_serializing_if = "Option::is_none"
     )]
     #[schemars(with = "Option<AgentPresetNameSchema>")]
-    #[ts(optional = nullable)]
     pub preset: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDescriptor {
-    #[ts(type = "AgentId")]
     pub id: AgentId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<AgentPresetNameSchema>")]
-    #[ts(optional = nullable)]
     pub preset: Option<String>,
     #[schemars(with = "AgentDescriptionSchema")]
     pub description: String,
@@ -501,10 +492,8 @@ pub struct AgentDescriptor {
     pub runnable_as_root: bool,
     #[schemars(with = "Vec<crate::RequiredModelSelectionSchema>")]
     #[schemars(length(max = 256))]
-    #[ts(type = "Array<ModelSelection>")]
     pub resolved_fallback: Vec<ModelSelection>,
     #[schemars(length(max = 256))]
-    #[ts(type = "Array<AgentId>")]
     pub delegation_targets: Vec<AgentId>,
 }
 

@@ -1,6 +1,5 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::{GoalId, InvocationId, ProducerId, SessionId};
 
@@ -14,7 +13,7 @@ use crate::{GoalId, InvocationId, ProducerId, SessionId};
 /// Agent identifies an in-tree agent mail sender; the session identity is
 /// engine-derived from the executing tool context, never from model arguments.
 /// The owner is durable and participates in `(session, owner, key)` dedup.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProducerOwner {
     Plugin { plugin: String },
@@ -26,7 +25,7 @@ pub enum ProducerOwner {
 
 /// Per-send mode. Queue remains accepted-but-deferred during an active run;
 /// steer joins the next safe request without interrupting an in-flight request.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProducerDeliveryMode {
     Steer,
@@ -35,7 +34,7 @@ pub enum ProducerDeliveryMode {
 
 /// Read-only runtime record. Never persist or restore a registration ID.
 /// A fresh registration is required on each process start, even for retries.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProducerRegistration {
     pub producer_id: ProducerId,
@@ -44,7 +43,7 @@ pub struct ProducerRegistration {
     pub age_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginRecoveryStatus {
     Starting,
@@ -55,7 +54,7 @@ pub enum PluginRecoveryStatus {
 
 /// Runtime startup readiness, not a durable producer record or recovery blob.
 /// Failed/disabled means external work is unknown, not that work is complete.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginRecoveryState {
     pub plugin: String,

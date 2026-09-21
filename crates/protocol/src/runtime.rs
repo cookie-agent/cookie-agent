@@ -1,10 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::*;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatalogSource {
     Network,
@@ -12,7 +11,7 @@ pub enum CatalogSource {
     Bootstrap,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogSafeErrorMeta {
     pub code: SafeCode,
@@ -20,7 +19,7 @@ pub struct CatalogSafeErrorMeta {
     pub time: jiff::Timestamp,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogRuntimeState {
     pub stale: bool,
@@ -32,24 +31,18 @@ pub struct CatalogRuntimeState {
     pub last_error: Option<CatalogSafeErrorMeta>,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotV1 {
     pub snapshot_schema_version: RuntimeSnapshotSchemaVersion,
-    #[ts(type = "RecipeRegistryRevision")]
     pub recipe_registry_revision: RecipeRegistryRevision,
-    #[ts(type = "CatalogRevision")]
     pub catalog_revision: CatalogRevision,
     pub catalog_source: CatalogSource,
     pub catalog_state: CatalogRuntimeState,
-    #[ts(type = "ProviderStateRevision")]
     pub provider_state_revision: ProviderStateRevision,
     pub provider_store_generation: ProviderStoreGeneration,
-    #[ts(type = "ModelRevision")]
     pub model_revision: ModelRevision,
-    #[ts(type = "AgentRevision")]
     pub agent_revision: AgentRevision,
-    #[ts(type = "RuntimeRevision")]
     pub runtime_revision: RuntimeRevision,
     #[schemars(length(max = 4096))]
     pub providers: Vec<ProviderDescriptor>,
@@ -141,14 +134,14 @@ impl<'de> Deserialize<'de> for RuntimeSnapshotV1 {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotResult {
     pub snapshot: RuntimeSnapshotV1,
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeChangeReason {
@@ -163,12 +156,11 @@ pub enum RuntimeChangeReason {
     AgentReloaded,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeChangedNotification {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<RuntimeRevision>", required)]
-    #[ts(type = "RuntimeRevision | null")]
     pub previous_revision: Option<RuntimeRevision>,
     pub snapshot: RuntimeSnapshotV1,
     #[schemars(length(min = 1, max = 9))]
@@ -209,6 +201,6 @@ pub const RUNTIME_CHANGED_METHOD: &str = "runtime.changed";
 pub const PROVIDER_CONNECT_METHOD: &str = "provider.connect";
 pub const PROVIDER_DISCONNECT_METHOD: &str = "provider.disconnect";
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotGetParams {}

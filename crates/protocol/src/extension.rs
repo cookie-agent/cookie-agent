@@ -3,7 +3,6 @@ use std::{borrow::Cow, collections::BTreeMap};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 pub const EXTENSION_PROTOCOL_VERSION: &str = "0.0.6";
 pub const PLUGIN_PRODUCER_REGISTER_METHOD: &str = "plugin/producer/register";
@@ -42,8 +41,7 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_FORK_METHOD: &str =
 pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
     "plugin/intercept/session_before_revert";
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"0.0.6\"")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ExtensionProtocolVersion(());
 
 impl ExtensionProtocolVersion {
@@ -92,7 +90,7 @@ impl JsonSchema for ExtensionProtocolVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEngineCapabilities {
     pub producer_messaging: bool,
@@ -104,7 +102,7 @@ pub struct ExtensionEngineCapabilities {
     pub interception: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionInterceptionHook {
     ToolBeforeCall,
@@ -122,7 +120,7 @@ pub enum ExtensionInterceptionHook {
     SessionBeforeRevert,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionPluginCapabilities {
     // Explicit opt-in, off by default in plugin configuration and SDK builders.
@@ -136,7 +134,7 @@ pub struct ExtensionPluginCapabilities {
     pub intercept: Vec<ExtensionInterceptionHook>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeParams {
     pub protocol_version: ExtensionProtocolVersion,
@@ -144,7 +142,7 @@ pub struct ExtensionInitializeParams {
     pub capabilities: ExtensionEngineCapabilities,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolDeclaration {
     pub name: String,
@@ -158,7 +156,7 @@ pub struct ExtensionToolDeclaration {
     pub primary_resource_param: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInitializeResult {
     pub protocol_version: ExtensionProtocolVersion,
@@ -168,27 +166,27 @@ pub struct ExtensionInitializeResult {
     pub tools: Vec<ExtensionToolDeclaration>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionPingParams {}
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionPingResult {}
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionShutdownParams {}
 
 /// Plugin-to-engine request; the connection supplies the stable plugin owner.
 /// Registration is allowed during recovery and does not wait for goal readiness.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerRegisterParams {
     pub session_id: crate::SessionId,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerRegisterResult {
     pub producer_id: crate::ProducerId,
@@ -197,7 +195,7 @@ pub struct ExtensionProducerRegisterResult {
 /// Send requires a live registration owned by this connection and session.
 /// Identical (session, stable owner, key) retries return the original receipt;
 /// different description, body, or mode is rejected. A missing ACK is commit-uncertain.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerSendParams {
     pub session_id: crate::SessionId,
@@ -224,13 +222,13 @@ where
 
 /// Returned only after durable ProducerMessageAccepted append. Retries return
 /// this same receipt, including after consumption, with no second acceptance.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerSendResult {
     pub message_id: crate::ProducerMessageId,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerUnregisterParams {
     pub session_id: crate::SessionId,
@@ -238,7 +236,7 @@ pub struct ExtensionProducerUnregisterParams {
 }
 
 /// Unregister does not remove accepted messages; zero-send unregister is valid.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerUnregisterResult {}
 
@@ -251,7 +249,7 @@ pub struct ExtensionProducerUnregisterResult {}
 /// Release after failed preparation or cancellation may return an unconsumed
 /// message to waiting. Consumed messages cannot return or be discarded.
 /// Discard rejection makes no exactly-once claim about execution or external effects.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerDiscardParams {
     pub session_id: crate::SessionId,
@@ -259,18 +257,18 @@ pub struct ExtensionProducerDiscardParams {
 }
 
 /// Already-discarded owned messages succeed; consumed or currently claimed messages reject.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProducerDiscardResult {}
 
 /// Engine-to-plugin notification, never a deadlineful pending request. Restore
 /// from plugin-owned storage/services and report completion on the same connection.
 /// No response, recovery deadline, replay, or eager session adoption is implied.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionRecoveryStartParams {}
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExtensionRecoveryOutcome {
     Ready,
@@ -279,17 +277,17 @@ pub enum ExtensionRecoveryOutcome {
 
 /// Plugin-to-engine completion request. The engine owns starting/disabled states.
 /// The transport supplies authenticated plugin name + connection epoch out of band.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionRecoveryCompleteParams {
     pub outcome: ExtensionRecoveryOutcome,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionRecoveryCompleteResult {}
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolCallParams {
     pub tool: String,
@@ -304,7 +302,7 @@ pub struct ExtensionToolCallParams {
     pub cancellation_token: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolCallResult {
     pub output: crate::ToolCompletionOutput,
@@ -312,7 +310,7 @@ pub struct ExtensionToolCallResult {
     pub is_error: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEventParams {
     pub session_id: crate::SessionId,
@@ -323,7 +321,7 @@ pub struct ExtensionEventParams {
     pub timestamp: jiff::Timestamp,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionBusEventParams {
     pub session_id: crate::SessionId,
@@ -334,7 +332,7 @@ pub struct ExtensionBusEventParams {
     pub payload: Value,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Non-model publication only. Model-bound content must use producer.send with
 /// an explicitly registered producer; emit must never implicitly register one.
@@ -346,7 +344,7 @@ pub struct ExtensionEmitParams {
     pub payload: Value,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionEmitStatus {
     Published,
@@ -354,7 +352,7 @@ pub enum ExtensionEmitStatus {
     Rejected,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionEmitResultParams {
     pub name: String,
@@ -364,7 +362,7 @@ pub struct ExtensionEmitResultParams {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolBeforeCallParams {
     pub session_id: crate::SessionId,
@@ -377,14 +375,14 @@ pub struct ExtensionToolBeforeCallParams {
     pub resource: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionToolBeforeCallAction {
     Allow,
     Block,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolBeforeCallResult {
     pub action: ExtensionToolBeforeCallAction,
@@ -396,7 +394,7 @@ pub struct ExtensionToolBeforeCallResult {
     pub message_to_model: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolAfterResultParams {
     pub session_id: crate::SessionId,
@@ -407,14 +405,14 @@ pub struct ExtensionToolAfterResultParams {
     pub is_error: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionToolAfterResultAction {
     Keep,
     Replace,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionToolAfterResultResult {
     pub action: ExtensionToolAfterResultAction,
@@ -424,7 +422,7 @@ pub struct ExtensionToolAfterResultResult {
     pub note: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionAgentBeforeStartParams {
     pub session_id: crate::SessionId,
@@ -433,7 +431,7 @@ pub struct ExtensionAgentBeforeStartParams {
     pub prompt_context: Value,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionAgentBeforeStartResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -446,7 +444,7 @@ pub struct ExtensionAgentBeforeStartResult {
     pub inject_message: Option<ExtensionInjectedMessage>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionMessageRole {
     System,
@@ -455,14 +453,14 @@ pub enum ExtensionMessageRole {
     Tool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionInjectedMessage {
     pub role: ExtensionMessageRole,
     pub content: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeCompactParams {
     pub session_id: crate::SessionId,
@@ -473,7 +471,7 @@ pub struct ExtensionSessionBeforeCompactParams {
     pub instructions: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeCompactResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -486,7 +484,7 @@ pub struct ExtensionSessionBeforeCompactResult {
     pub instructions_override: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionUserBeforeInputParams {
     pub session_id: crate::SessionId,
@@ -494,7 +492,7 @@ pub struct ExtensionUserBeforeInputParams {
     pub text: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionUserBeforeInputAction {
     Allow,
@@ -502,7 +500,7 @@ pub enum ExtensionUserBeforeInputAction {
     Handled,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionUserBeforeInputResult {
     pub action: ExtensionUserBeforeInputAction,
@@ -512,14 +510,14 @@ pub struct ExtensionUserBeforeInputResult {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionModelMessage {
     pub role: ExtensionMessageRole,
     pub content: Value,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionModelParamsAdjustments {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -530,7 +528,7 @@ pub struct ExtensionModelParamsAdjustments {
     pub top_p: Option<f64>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeRequestParams {
     pub session_id: crate::SessionId,
@@ -541,14 +539,14 @@ pub struct ExtensionModelBeforeRequestParams {
     pub params: ExtensionModelParamsAdjustments,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionModelBeforeRequestAction {
     Keep,
     Replace,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeRequestResult {
     pub action: ExtensionModelBeforeRequestAction,
@@ -558,7 +556,7 @@ pub struct ExtensionModelBeforeRequestResult {
     pub params_adjustments: Option<ExtensionModelParamsAdjustments>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeHeadersParams {
     pub session_id: crate::SessionId,
@@ -567,7 +565,7 @@ pub struct ExtensionProviderBeforeHeadersParams {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeHeadersResult {
     #[serde(default)]
@@ -576,7 +574,7 @@ pub struct ExtensionProviderBeforeHeadersResult {
     pub delete: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeRequestParams {
     pub session_id: crate::SessionId,
@@ -585,14 +583,14 @@ pub struct ExtensionProviderBeforeRequestParams {
     pub payload: Value,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionProviderBeforeRequestAction {
     Keep,
     Replace,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderBeforeRequestResult {
     pub action: ExtensionProviderBeforeRequestAction,
@@ -600,7 +598,7 @@ pub struct ExtensionProviderBeforeRequestResult {
     pub payload: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderAfterResponseParams {
     pub session_id: crate::SessionId,
@@ -610,11 +608,11 @@ pub struct ExtensionProviderAfterResponseParams {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionProviderAfterResponseResult {}
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionMessageEndParams {
     pub session_id: crate::SessionId,
@@ -624,14 +622,14 @@ pub struct ExtensionMessageEndParams {
     pub content: Vec<crate::PersistedAssistantPart>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionMessageEndAction {
     Keep,
     Replace,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionMessageEndResult {
     pub action: ExtensionMessageEndAction,
@@ -639,7 +637,7 @@ pub struct ExtensionMessageEndResult {
     pub content: Option<Vec<crate::PersistedAssistantPart>>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionModelSelectSource {
     User,
@@ -647,27 +645,25 @@ pub enum ExtensionModelSelectSource {
     FallbackRestore,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionModelBeforeSelectParams {
     pub session_id: crate::SessionId,
     pub context_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(type = "ModelSelection | null")]
     pub from: Option<cookie_agent_identity::ModelSelection>,
-    #[ts(type = "ModelSelection")]
     pub to: cookie_agent_identity::ModelSelection,
     pub source: ExtensionModelSelectSource,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionAllowBlockAction {
     Allow,
     Block,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionAllowBlockResult {
     pub action: ExtensionAllowBlockAction,
@@ -675,7 +671,7 @@ pub struct ExtensionAllowBlockResult {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeForkParams {
     pub session_id: crate::SessionId,
@@ -685,7 +681,7 @@ pub struct ExtensionSessionBeforeForkParams {
 
 pub type ExtensionSessionBeforeForkResult = ExtensionAllowBlockResult;
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeRevertParams {
     pub session_id: crate::SessionId,
@@ -695,7 +691,7 @@ pub struct ExtensionSessionBeforeRevertParams {
     pub instructions: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionSessionBeforeRevertAction {
     Allow,
@@ -703,7 +699,7 @@ pub enum ExtensionSessionBeforeRevertAction {
     Override,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionSessionBeforeRevertResult {
     pub action: ExtensionSessionBeforeRevertAction,

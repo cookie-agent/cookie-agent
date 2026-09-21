@@ -10,7 +10,6 @@ use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_path_to_error::Segment;
-use ts_rs::TS;
 
 use crate::*;
 
@@ -18,8 +17,7 @@ fn producer_description_is_empty(description: &SafeDisplayText) -> bool {
     description.as_str().is_empty()
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionTitle(String);
 impl SessionTitle {
     pub const MAX_BYTES: usize = 512;
@@ -74,8 +72,7 @@ impl JsonSchema for SessionTitle {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EventOrigin(String);
 impl EventOrigin {
     pub fn new(value: impl Into<String>) -> Result<Self, EventSchemaError> {
@@ -145,7 +142,7 @@ impl JsonSchema for EventOrigin {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionOrigin {
     Root,
@@ -159,7 +156,7 @@ pub enum SessionOrigin {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Idle,
@@ -170,7 +167,7 @@ pub enum SessionStatus {
     Interrupted,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationReservation {
     pub invocation_id: InvocationId,
@@ -180,27 +177,27 @@ pub struct DelegationReservation {
     pub child_session_id: SessionId,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegatedContextRole {
     User,
     Assistant,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegatedContextTurn {
     pub role: DelegatedContextRole,
     pub text: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StagedSkillProvenance {
     SkillFork,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StagedSkillPayload {
     pub provenance: StagedSkillProvenance,
@@ -215,11 +212,10 @@ pub struct StagedSkillPayload {
     pub grants: Vec<PermissionRule>,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ModelKey>", required)]
-    #[ts(type = "ModelKey | null")]
     pub model: Option<ModelKey>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegateRequestPayload {
     pub description: String,
@@ -269,29 +265,21 @@ impl DelegateRequestPayload {
     }
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 pub struct SessionMeta {
     pub session_id: SessionId,
     pub origin: SessionOrigin,
     /// Short, tree-unique model-facing handle, absent for pre-handle sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub short_id: Option<String>,
     pub cwd_identity: CwdIdentity,
     pub creation_selection: RunSelection,
-    #[ts(type = "RuntimeRevision")]
     pub runtime_revision: RuntimeRevision,
-    #[ts(type = "CatalogRevision")]
     pub catalog_revision: CatalogRevision,
-    #[ts(type = "ProviderStateRevision")]
     pub provider_state_revision: ProviderStateRevision,
-    #[ts(type = "ModelRevision")]
     pub model_revision: ModelRevision,
-    #[ts(type = "AgentRevision")]
     pub agent_revision: AgentRevision,
-    #[ts(type = "RecipeRegistryRevision")]
     pub recipe_registry_revision: RecipeRegistryRevision,
-    #[ts(type = "ModelSnapshotRevision")]
     pub manifest_revision: ModelSnapshotRevision,
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<SessionTitle>", required)]
@@ -304,7 +292,7 @@ pub struct SessionMeta {
     pub skipped_events: Vec<SkippedEvent>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SkippedEvent {
     pub seq: u64,
     pub reason: String,
@@ -372,7 +360,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionTitleChange {
     UserSet {
@@ -425,7 +413,7 @@ impl SessionTitleChange {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactReference {
     pub uri: String,
@@ -445,7 +433,7 @@ impl ArtifactReference {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolAttachment {
     pub mime_type: MimeType,
@@ -468,21 +456,21 @@ impl ToolAttachment {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEmittedMessageRole {
     System,
     User,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolEmittedContent {
     Text(String),
     File(ToolAttachment),
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolEmittedMessage {
     pub role: ToolEmittedMessageRole,
@@ -541,7 +529,7 @@ impl<'de> Deserialize<'de> for ToolEmittedMessage {
         Self::new(wire.role, wire.content).map_err(serde::de::Error::custom)
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputTruncation {
     pub original_bytes: u64,
@@ -549,7 +537,7 @@ pub struct ToolOutputTruncation {
     pub retained: ArtifactReference,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedToolResult {
     pub title: SafeDisplayText,
@@ -687,14 +675,14 @@ impl<'de> Deserialize<'de> for PersistedToolResult {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SafeToolError {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantToolCallRef {
     #[schemars(range(min = 1))]
@@ -706,7 +694,7 @@ pub struct AssistantToolCallRef {
     pub provider_item_id: Option<ProviderItemId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallPresentation {
     pub title: SafeDisplayText,
@@ -715,7 +703,7 @@ pub struct ToolCallPresentation {
     pub primary_argument: Option<BoundedDisplayText>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallStart {
     pub tool_call_id: ToolCallId,
@@ -726,7 +714,7 @@ pub struct ToolCallStart {
     pub operation_fingerprint: OperationFingerprint,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolTerminationOutcome {
     Completed,
@@ -735,7 +723,7 @@ pub enum ToolTerminationOutcome {
     Interrupted,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallTermination {
     pub tool_call_id: ToolCallId,
@@ -800,7 +788,7 @@ impl<'de> Deserialize<'de> for ToolCallTermination {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Usage {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -828,12 +816,10 @@ pub struct Usage {
 
 pub type SafeModelMetadata = BTreeMap<String, Value>;
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContextScope {
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
-    #[ts(type = "ProviderModelId")]
     pub model_id: ProviderModelId,
     pub resource_id: SafeDisplayText,
 }
@@ -858,7 +844,7 @@ impl fmt::Display for NativeArtifactError {
 }
 impl std::error::Error for NativeArtifactError {}
 
-#[derive(Clone, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeReplayArtifact {
     adapter_id: SafeCode,
@@ -969,7 +955,7 @@ impl<'de> Deserialize<'de> for NativeReplayArtifact {
     }
 }
 
-#[derive(Clone, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeContextWindow {
     adapter_id: SafeCode,
@@ -1103,7 +1089,7 @@ fn validate_native_identity(
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelFinishReason {
     Stop,
@@ -1118,7 +1104,7 @@ pub enum ModelFinishReason {
     Unknown,
     Other(String),
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistedFileSource {
     Artifact {
@@ -1130,12 +1116,11 @@ pub enum PersistedFileSource {
         url: String,
     },
     ProviderReference {
-        #[ts(type = "ProviderId")]
         provider_id: ProviderId,
         id: SafeDisplayText,
     },
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedFilePart {
     pub media_type: MimeType,
@@ -1147,14 +1132,14 @@ pub struct PersistedFilePart {
     #[schemars(with = "crate::NullableSchema<SafeModelMetadata>", required)]
     pub metadata: Option<SafeModelMetadata>,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistedContentValue {
     Text { text: String },
     File { file: PersistedFilePart },
     Json { value: Value },
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistedToolContent {
     Text {
@@ -1172,7 +1157,7 @@ pub enum PersistedToolContent {
         reason: Option<String>,
     },
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PersistedAssistantPart {
     Text {
@@ -1250,7 +1235,7 @@ pub enum PersistedAssistantPart {
     },
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedModelTurn {
     #[schemars(length(max = 4096))]
@@ -1322,7 +1307,7 @@ impl<'de> Deserialize<'de> for PersistedModelTurn {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReplayDisposition {
     Replayed,
@@ -1334,21 +1319,17 @@ pub enum ReplayDisposition {
     DiscardedForeignModelSelection {
         #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
         #[schemars(with = "crate::RequiredModelSelectionSchema")]
-        #[ts(type = "ModelSelection")]
         found: ModelSelection,
         #[serde(deserialize_with = "crate::deserialize_required_model_selection")]
         #[schemars(with = "crate::RequiredModelSelectionSchema")]
-        #[ts(type = "ModelSelection")]
         expected: ModelSelection,
     },
     DiscardedForeignVariant {
         #[serde(deserialize_with = "deserialize_required_option")]
         #[schemars(with = "crate::NullableSchema<VariantId>", required)]
-        #[ts(type = "VariantId | null")]
         found: Option<VariantId>,
         #[serde(deserialize_with = "deserialize_required_option")]
         #[schemars(with = "crate::NullableSchema<VariantId>", required)]
-        #[ts(type = "VariantId | null")]
         expected: Option<VariantId>,
     },
     DiscardedInvalidPayload {
@@ -1356,14 +1337,14 @@ pub enum ReplayDisposition {
     },
     ReconstructedNormalizedHistory,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayDecision {
     pub history_index: u64,
     pub disposition: ReplayDisposition,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelErrorStage {
     #[default]
@@ -1383,7 +1364,7 @@ pub enum ModelErrorStage {
     NativeContextDecode,
     Middleware,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelErrorKind {
     Transport,
@@ -1407,11 +1388,10 @@ pub enum ModelErrorKind {
     Abort,
     Unknown,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelErrorSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub response_body: Option<DiagnosticText>,
     pub kind: ModelErrorKind,
     pub message: SafeErrorMessage,
@@ -1433,7 +1413,7 @@ pub struct ModelErrorSummary {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize, TS,
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum InternalAgentKind {
@@ -1442,18 +1422,17 @@ pub enum InternalAgentKind {
     SessionTitle,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FrozenInternalAgentFallback {
     ParentModel,
     Model { binding: Box<FrozenModelBinding> },
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenInternalAgentDefinition {
     pub kind: InternalAgentKind,
-    #[ts(type = "AgentId")]
     pub agent: AgentId,
     #[schemars(length(min = 1, max = 512))]
     pub description: String,
@@ -1490,7 +1469,7 @@ impl FrozenInternalAgentDefinition {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InternalAgentBackend {
     Model {
@@ -1501,20 +1480,20 @@ pub enum InternalAgentBackend {
         revision: SafeDisplayText,
     },
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SafeInternalAgentCall {
     pub name: SafeCode,
     pub input_summary: SafeDisplayText,
     pub input_digest: Sha256Digest,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SafeInternalAgentResult {
     pub output_summary: SafeDisplayText,
     pub output_digest: Sha256Digest,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InternalAgentFailure {
     pub code: SafeCode,
@@ -1546,7 +1525,7 @@ fn validate_internal_failure(failure: &InternalAgentFailure) -> Result<(), Event
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextCheckpointBoundaries {
     #[schemars(range(min = 1))]
@@ -1560,8 +1539,7 @@ pub struct ContextCheckpointBoundaries {
     #[schemars(with = "crate::NullableSchema<u64>", required)]
     pub prior_checkpoint_seq: Option<u64>,
 }
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, TS)]
-#[ts(type = "number")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SummaryByteLimit(u64);
 impl SummaryByteLimit {
     pub const GLOBAL_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -1604,7 +1582,7 @@ impl JsonSchema for SummaryByteLimit {
         json_schema!({"type":"integer","minimum":0,"maximum":2_097_152})
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextCheckpointBudgets {
     #[schemars(range(min = 1))]
@@ -1619,7 +1597,7 @@ pub struct ContextCheckpointBudgets {
     pub max_summary_bytes: SummaryByteLimit,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextRehydratedFile {
     pub path: SafeDisplayText,
@@ -1628,7 +1606,7 @@ pub struct ContextRehydratedFile {
     pub sha256: Sha256Digest,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentMdEntry {
     pub source: SafeDisplayText,
@@ -1665,7 +1643,7 @@ impl ContextRehydratedFile {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InternalSummaryCheckpoint {
     summary: String,
@@ -1736,7 +1714,7 @@ impl<'de> Deserialize<'de> for InternalSummaryCheckpoint {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContextCheckpoint {
     InternalSummary {
@@ -1747,7 +1725,7 @@ pub enum ContextCheckpoint {
         window: NativeContextWindow,
     },
 }
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextCheckpointCommit {
     pub checkpoint: ContextCheckpoint,
@@ -1824,7 +1802,7 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum EventPayload {
@@ -1834,24 +1812,16 @@ pub enum EventPayload {
         /// Optional and additive: sessions created before handles existed carry
         /// no value and resolve by full UUID only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         short_id: Option<String>,
         cwd_identity: CwdIdentity,
         creation_selection: RunSelection,
         creation_agent: Box<AgentSnapshot>,
-        #[ts(type = "RuntimeRevision")]
         runtime_revision: RuntimeRevision,
-        #[ts(type = "CatalogRevision")]
         catalog_revision: CatalogRevision,
-        #[ts(type = "ProviderStateRevision")]
         provider_state_revision: ProviderStateRevision,
-        #[ts(type = "ModelRevision")]
         model_revision: ModelRevision,
-        #[ts(type = "AgentRevision")]
         agent_revision: AgentRevision,
-        #[ts(type = "RecipeRegistryRevision")]
         recipe_registry_revision: RecipeRegistryRevision,
-        #[ts(type = "ModelSnapshotRevision")]
         manifest_revision: ModelSnapshotRevision,
     },
     SessionReverted {
@@ -1893,7 +1863,6 @@ pub enum EventPayload {
         objective: String,
         revision: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         selection: Option<RunSelection>,
     },
     GoalChecklistRevised {
@@ -1906,7 +1875,6 @@ pub enum EventPayload {
         status: GoalStatus,
         revision: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         selection: Option<RunSelection>,
     },
     /// Sole durable message body and per-send delivery mode. Acceptance is valid
@@ -1920,7 +1888,6 @@ pub enum EventPayload {
         description: SafeDisplayText,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         reminder: Option<GoalReminderIdentity>,
         /// Internal `send_message` guard metadata: position of this message in
         /// its agent-mail chain (`0` for mail sent by a run that has seen no
@@ -1928,7 +1895,6 @@ pub enum EventPayload {
         /// never compared for idempotency. Absent on non-Agent producers and on
         /// mail accepted before hop counting existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         agent_hop: Option<u32>,
     },
     /// Run-scoped reference, not a second body or consumption marker. Its event
@@ -1958,29 +1924,20 @@ pub enum EventPayload {
     ProducerMessageDiscarded {
         message_id: ProducerMessageId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         reminder: Option<GoalReminderIdentity>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         producer_owner: Option<ProducerOwner>,
     },
     RunStarted {
         client_run_id: ClientRunId,
         selection: RunSelection,
         agent: Box<AgentSnapshot>,
-        #[ts(type = "RuntimeRevision")]
         runtime_revision: RuntimeRevision,
-        #[ts(type = "CatalogRevision")]
         catalog_revision: CatalogRevision,
-        #[ts(type = "ProviderStateRevision")]
         provider_state_revision: ProviderStateRevision,
-        #[ts(type = "ModelRevision")]
         model_revision: ModelRevision,
-        #[ts(type = "AgentRevision")]
         agent_revision: AgentRevision,
-        #[ts(type = "RecipeRegistryRevision")]
         recipe_registry_revision: RecipeRegistryRevision,
-        #[ts(type = "ModelSnapshotRevision")]
         manifest_revision: ModelSnapshotRevision,
         #[schemars(length(min = 1, max = 256))]
         selected_suffix: Vec<FrozenModelBinding>,
@@ -2026,10 +1983,8 @@ pub enum EventPayload {
     RunFailed {
         error: SafeErrorMessage,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         model_error: Option<ModelErrorSummary>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         resolved_model: Option<ResolvedModelRef>,
     },
     RunCancelled {
@@ -2068,7 +2023,6 @@ pub enum EventPayload {
         /// The model error that ended the attempt (retry, fallback, or
         /// recovery trigger).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         model_error: Option<ModelErrorSummary>,
     },
     ModelReplayEvaluated {
@@ -2090,12 +2044,10 @@ pub enum EventPayload {
     ModelUsageRecorded {
         #[schemars(range(min = 1))]
         model_turn_seq: u64,
-        #[ts(type = "AgentId")]
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
         #[serde(default)]
-        #[ts(optional = nullable)]
         estimated_cost_pico_usd: Option<u64>,
     },
     ModelFallback {
@@ -2119,7 +2071,6 @@ pub enum EventPayload {
             alias = "output_chunk",
             deserialize_with = "crate::tool_output::deserialize_delta_display"
         )]
-        #[ts(optional = nullable)]
         display: Option<String>,
     },
     ToolCallTerminated {
@@ -2142,19 +2093,12 @@ pub enum EventPayload {
     DelegationReserved {
         reservation: DelegationReservation,
         child_agent: Box<AgentSnapshot>,
-        #[ts(type = "ModelSnapshotRevision")]
         manifest_revision: ModelSnapshotRevision,
-        #[ts(type = "RuntimeRevision")]
         runtime_revision: RuntimeRevision,
-        #[ts(type = "CatalogRevision")]
         catalog_revision: CatalogRevision,
-        #[ts(type = "ProviderStateRevision")]
         provider_state_revision: ProviderStateRevision,
-        #[ts(type = "ModelRevision")]
         model_revision: ModelRevision,
-        #[ts(type = "AgentRevision")]
         agent_revision: AgentRevision,
-        #[ts(type = "RecipeRegistryRevision")]
         recipe_registry_revision: RecipeRegistryRevision,
         #[schemars(length(min = 1, max = 256))]
         selected_suffix: Vec<FrozenModelBinding>,
@@ -2198,7 +2142,6 @@ pub enum EventPayload {
         /// Handle rendered into the notification body. Additive and optional:
         /// pre-handle logs render the UUID.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         short_id: Option<String>,
         status: SessionStatus,
         #[schemars(length(max = 2048))]
@@ -2211,7 +2154,6 @@ pub enum EventPayload {
         /// Handle rendered into the notification body. Additive and optional:
         /// pre-handle logs render the UUID.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
         short_id: Option<String>,
         status: SessionStatus,
         #[schemars(length(max = 2048))]
@@ -2276,12 +2218,10 @@ pub enum EventPayload {
     InternalAgentUsageRecorded {
         internal_run_id: InternalAgentRunId,
         kind: InternalAgentKind,
-        #[ts(type = "AgentId")]
         agent_id: AgentId,
         resolved_model: ResolvedModelRef,
         usage: Usage,
         #[serde(default)]
-        #[ts(optional = nullable)]
         estimated_cost_pico_usd: Option<u64>,
     },
     InternalAgentFailed {
@@ -2715,7 +2655,7 @@ impl EventPayload {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginDiagnosticKind {
     EventDrop,
@@ -2731,14 +2671,12 @@ pub enum PluginDiagnosticKind {
     RecoveryDisabled,
 }
 
-#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub engine_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub origin: Option<EventOrigin>,
     pub session_id: SessionId,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -3075,7 +3013,7 @@ fn replace_path_with_null(value: &mut Value, path: &serde_path_to_error::Path) -
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventSubscriptionMessage {
     Event {
@@ -3086,7 +3024,7 @@ pub enum EventSubscriptionMessage {
         last_delivered_seq: u64,
     },
 }
-#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputStream {
     Stdout,
@@ -3114,7 +3052,7 @@ impl OutputStream {
         }
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputDelta {
     pub call_id: ToolCallId,
@@ -3122,14 +3060,14 @@ pub struct OutputDelta {
     pub byte_offset: u64,
     pub data: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputGap {
     pub call_id: ToolCallId,
     pub stream: OutputStream,
     pub next_offset: u64,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSnapshot {
     pub call_id: ToolCallId,
@@ -3137,7 +3075,7 @@ pub struct OutputSnapshot {
     pub end_offset: u64,
     pub chunks: Vec<OutputDelta>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSnapshotEnvelope {
     pub stream: OutputStream,

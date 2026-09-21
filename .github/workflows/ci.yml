@@ -25,8 +25,8 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Check generated bindings and additive event schema
-        run: crates/protocol/scripts/check-bindings.sh --check
+      - name: Check the additive protocol schema contract
+        run: crates/protocol/scripts/check-schema-additive.sh
       - run: cargo test --locked --workspace
         env:
           RUSTFLAGS: -D warnings

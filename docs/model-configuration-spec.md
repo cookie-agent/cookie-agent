@@ -583,7 +583,7 @@ cargo test --locked --workspace
 cargo fmt --all -- --check
 cargo +stable clippy --locked --workspace --all-targets -- -D warnings
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
-crates/protocol/scripts/check-bindings.sh --check
+crates/protocol/scripts/check-schema-additive.sh
 RUSTDOCFLAGS='-D warnings' ./scripts/build-docs.sh
 cargo deny --locked check advisories licenses sources
 ```

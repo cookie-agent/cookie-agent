@@ -26,6 +26,5 @@ fn main() -> Result<(), cookie_agent_protocol::BindingExportError> {
         ));
     }
     cookie_agent_protocol::export_json_schema_set(&root.join("json-schema"))?;
-    cookie_agent_protocol::export_typescript_binding_set(&root.join("typescript"))?;
     Ok(())
 }

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::schema_for;
 use serde_json::{Value, json};
-use ts_rs::TS;
 
 use super::*;
 
@@ -1668,9 +1667,4 @@ fn bounded_display_text_bounds_bytes_but_permits_controls() {
 #[test]
 fn runtime_snapshot_schema_snapshot() {
     insta::assert_json_snapshot!(schema_for!(RuntimeSnapshotResult));
-}
-
-#[test]
-fn runtime_snapshot_typescript_snapshot() {
-    insta::assert_snapshot!(RuntimeSnapshotResult::export_to_string(&typescript_config()).unwrap());
 }

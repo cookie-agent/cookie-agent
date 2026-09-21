@@ -198,6 +198,39 @@ fn models_source_has_no_unapproved_open_responses_adapter_surface() {
 }
 
 #[test]
+fn the_wire_contract_ships_no_typescript_bindings_or_checked_in_generated_tree() {
+    let workspace = workspace();
+    let manifest = fs::read_to_string(workspace.join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains("ts-rs"), "ts-rs must not be declared");
+    for absent in [
+        "crates/protocol/generated",
+        "crates/protocol/typescript",
+        "crates/protocol/scripts/check-bindings.sh",
+    ] {
+        assert!(
+            !workspace.join(absent).exists(),
+            "removed binding artifact remains: {absent}"
+        );
+    }
+    let script = workspace.join("crates/protocol/scripts/check-schema-additive.sh");
+    let text = fs::read_to_string(&script).unwrap();
+    for forbidden in ["npm", "node_modules", "tsc"] {
+        assert!(
+            !text.contains(forbidden),
+            "the additive schema check must not need a JavaScript toolchain: {forbidden}"
+        );
+    }
+    for manifest in ["crates/protocol/Cargo.toml", "crates/identity/Cargo.toml"] {
+        assert!(
+            !fs::read_to_string(workspace.join(manifest))
+                .unwrap()
+                .contains("ts-rs"),
+            "{manifest} must not depend on ts-rs"
+        );
+    }
+}
+
+#[test]
 fn syntect_patch_is_exactly_pinned_and_declared() {
     let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     assert!(manifest.contains("syntect = { version = \"=5.3.0\""));
@@ -512,6 +545,7 @@ fn ci_supply_chain_and_release_gates_are_pinned() {
         "cargo audit --file Cargo.lock --deny yanked",
         "cargo deny --locked check advisories licenses sources",
         "cargo test --locked -p cookie_agent_models --test release_integrity",
+        "crates/protocol/scripts/check-schema-additive.sh",
         "release_binary_contains_no_secret_material -- --ignored --exact",
     ] {
         assert!(

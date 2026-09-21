@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::{ArtifactReference, Sha256Digest};
 
@@ -49,7 +48,7 @@ pub fn validate_tool_stream_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolOutputDeclaration {
     #[default]
@@ -107,14 +106,14 @@ impl ToolOutputDeclaration {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputChunk {
     pub stream: Option<String>,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolCompletionOutput {
     Single { text: String },
@@ -122,7 +121,7 @@ pub enum ToolCompletionOutput {
     Streamed,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedToolStream {
     pub name: Option<String>,
@@ -134,7 +133,7 @@ pub struct RetainedToolStream {
     pub next_offset: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetainedToolOutput {
     pub reference: ArtifactReference,
@@ -142,7 +141,7 @@ pub struct RetainedToolOutput {
     pub incomplete: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolOutputManifest {
     pub streams: Vec<RetainedToolStream>,

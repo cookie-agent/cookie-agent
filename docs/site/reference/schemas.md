@@ -24,6 +24,11 @@ shapes before validation. Delegation lifecycle records are ordinary parent
 session events; the removed `delegations.jsonl` surface and its schema versions
 are not read.
 
-The protocol crate exports JSON Schema and TypeScript binding sets for the wire
-roots. The [Rust API documentation](api.md) describes the public Rust types;
-the [protocol reference](protocol.md) summarizes the active method surface.
+The protocol crate exports a JSON Schema set for the wire roots on demand
+through `cargo run -p cookie_agent_protocol --example generate -- --output
+<directory>`; no generated tree is checked in.
+`crates/protocol/scripts/check-schema-additive.sh` regenerates the schemas into
+a temporary directory and enforces that the event payload and extension
+protocol only ever grow relative to the checked-in baselines. The
+[Rust API documentation](api.md) describes the public Rust types; the
+[protocol reference](protocol.md) summarizes the active method surface.

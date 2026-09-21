@@ -50,7 +50,7 @@ identity
 | Crate | Responsibility |
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
-| `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema and TypeScript bindings, the frame-level `Transport` trait, the `ClientProtocol`/`ServerProtocol` traits, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. Re-exports `identity` and hosts the unified wire types. |
+| `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the `ClientProtocol`/`ServerProtocol` traits, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. Re-exports `identity` and hosts the unified wire types. |
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |

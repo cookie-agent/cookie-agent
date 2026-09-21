@@ -4,7 +4,7 @@ set -euo pipefail
 protocol_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="${protocol_root}/scripts/check-event-payload-additive.py"
 baseline="${protocol_root}/event-payload-baseline.json"
-schema="${1:-${protocol_root}/generated/json-schema/EventPayload.schema.json}"
+schema="${1:?usage: $0 <EventPayload.schema.json>}"
 temporary_root="$(mktemp -d)"
 trap 'rm -rf "${temporary_root}"' EXIT
 

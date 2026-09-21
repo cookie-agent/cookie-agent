@@ -3,7 +3,6 @@ use std::{borrow::Cow, collections::BTreeMap, fmt};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 use crate::*;
 
@@ -14,8 +13,7 @@ pub const SESSION_GOAL_SET_METHOD: &str = "session.goal.set";
 pub const SESSION_GOAL_LIFECYCLE_METHOD: &str = "session.goal.lifecycle";
 pub const SESSION_PRODUCERS_METHOD: &str = "session.producers";
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-#[ts(type = "\"2.0\"")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct JsonRpcVersion(());
 impl JsonRpcVersion {
     #[must_use]
@@ -58,21 +56,20 @@ impl JsonSchema for JsonRpcVersion {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum JsonRpcId {
     Null,
     Number(i64),
     String(String),
 }
-#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub jsonrpc: JsonRpcVersion,
     pub id: JsonRpcId,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub params: Option<Value>,
 }
 impl Request {
@@ -96,7 +93,7 @@ impl fmt::Debug for Request {
             .finish()
     }
 }
-#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuccessResponse {
     pub jsonrpc: JsonRpcVersion,
@@ -112,13 +109,12 @@ impl fmt::Debug for SuccessResponse {
             .finish()
     }
 }
-#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub data: Option<Value>,
 }
 impl fmt::Debug for JsonRpcError {
@@ -130,26 +126,25 @@ impl fmt::Debug for JsonRpcError {
             .finish()
     }
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorResponse {
     pub jsonrpc: JsonRpcVersion,
     pub id: JsonRpcId,
     pub error: JsonRpcError,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Response {
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
-#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Notification {
     pub jsonrpc: JsonRpcVersion,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub params: Option<Value>,
 }
 impl Notification {
@@ -172,57 +167,56 @@ impl fmt::Debug for Notification {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientHello {
     pub protocol_version: ProtocolVersion,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerHello {
     pub protocol_version: ProtocolVersion,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateParams {
     pub selection: RunSelection,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCreateResult {
     pub session: SessionMeta,
 }
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListParams {
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub cwd_identity: Option<CwdIdentity>,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionListResult {
     pub sessions: Vec<SessionMeta>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGetParams {
     pub session_id: SessionId,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGetResult {
     pub session: SessionMeta,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalGetParams {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalGetResult {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -230,23 +224,22 @@ pub struct SessionGoalGetResult {
     pub goal: Option<GoalState>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalSetParams {
     pub session_id: SessionId,
     pub objective: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub selection: Option<RunSelection>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalSetResult {
     pub goal: GoalState,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalLifecycleParams {
     pub session_id: SessionId,
@@ -254,30 +247,29 @@ pub struct SessionGoalLifecycleParams {
     pub expected_revision: u64,
     pub action: GoalLifecycleAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub selection: Option<RunSelection>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionGoalLifecycleResult {
     pub goal: GoalState,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionProducersParams {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionProducersResult {
     pub producers: Vec<ProducerRegistration>,
     pub plugin_recovery: Vec<PluginRecoveryState>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRollup {
     pub input_tokens: u64,
@@ -292,15 +284,13 @@ pub struct UsageRollup {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<f64>", required)]
     pub estimated_cost_usd: Option<f64>,
-    #[ts(type = "Record<ModelKey, import(\"./ModelUsageRollup.js\").ModelUsageRollup>")]
     pub by_model: BTreeMap<ModelKey, ModelUsageRollup>,
     #[serde(skip)]
     #[schemars(skip)]
-    #[ts(skip)]
     pub arithmetic_overflow: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageRollup {
     pub input_tokens: u64,
@@ -317,15 +307,12 @@ pub struct ModelUsageRollup {
     pub estimated_cost_usd: Option<f64>,
     #[serde(skip)]
     #[schemars(skip)]
-    #[ts(skip)]
     pub observations: Vec<Usage>,
     #[serde(skip)]
     #[schemars(skip)]
-    #[ts(skip)]
     pub cost_provenance: Vec<UsageCostProvenance>,
     #[serde(skip)]
     #[schemars(skip)]
-    #[ts(skip)]
     pub arithmetic_overflow: bool,
 }
 
@@ -335,20 +322,20 @@ pub enum UsageCostProvenance {
     Stamped(Option<u64>),
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUsageParams {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUsageResult {
     pub session_id: SessionId,
     pub usage: UsageRollup,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionTreeUsageResult {
     pub session_id: SessionId,
@@ -356,36 +343,33 @@ pub struct SessionTreeUsageResult {
     pub session_count: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentUsageParams {
-    #[ts(type = "AgentId")]
     pub agent_id: AgentId,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentUsageResult {
-    #[ts(type = "AgentId")]
     pub agent_id: AgentId,
     pub usage: UsageRollup,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalUsageParams {}
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalUsageResult {
     pub usage: UsageRollup,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildSummary {
     pub session_id: SessionId,
-    #[ts(type = "AgentId")]
     pub agent: AgentId,
     #[serde(deserialize_with = "deserialize_nullable_title")]
     #[schemars(with = "crate::NullableSchema<SessionTitle>", required)]
@@ -408,54 +392,54 @@ where
 {
     Option::deserialize(d)
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionTree {
     pub session: SessionMeta,
     pub children: Vec<SessionTree>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionChildrenParams {
     pub session_id: SessionId,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionChildrenResult {
     pub children: Vec<ChildSummary>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionTreeParams {
     pub session_id: SessionId,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionTreeResult {
     pub tree: SessionTree,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionResumeParams {
     pub session_id: SessionId,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionResumeResult {
     pub session: SessionMeta,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetPermissionModeParams {
     pub session_id: SessionId,
     pub mode: PermissionMode,
 }
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSetPermissionModeResult {}
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionRuleSource {
     SessionOverlay,
@@ -463,7 +447,7 @@ pub enum PermissionRuleSource {
     Default,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectivePermissionRule {
     pub resource: WildcardPattern,
@@ -471,7 +455,7 @@ pub struct EffectivePermissionRule {
     pub source: PermissionRuleSource,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectivePermissionAction {
     pub action: PermissionAction,
@@ -480,13 +464,13 @@ pub struct EffectivePermissionAction {
     pub patterns: Vec<EffectivePermissionRule>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionGetParams {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionGetResult {
     pub permissions: Vec<EffectivePermissionAction>,
@@ -494,7 +478,7 @@ pub struct SessionPermissionGetResult {
     pub current_mode: Option<PermissionMode>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionSetParams {
     pub session_id: SessionId,
@@ -503,7 +487,7 @@ pub struct SessionPermissionSetParams {
     pub effect: PermissionEffect,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionClearParams {
     pub session_id: SessionId,
@@ -511,20 +495,20 @@ pub struct SessionPermissionClearParams {
     pub resource: WildcardPattern,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionPermissionMutationResult {
     pub permissions: Vec<EffectivePermissionAction>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillSource {
     User,
     Project,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillDescriptor {
     pub name: String,
@@ -543,19 +527,19 @@ pub struct SkillDescriptor {
     pub argument_hint: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsListParams {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsListResult {
     pub skills: Vec<SkillDescriptor>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsGetParams {
     pub session_id: SessionId,
@@ -564,7 +548,7 @@ pub struct SkillsGetParams {
     pub args: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillsGetResult {
     pub skill: SkillDescriptor,
@@ -600,7 +584,7 @@ pub fn decode_skill_submission(input: &str) -> Option<(String, String, Option<St
     Some((submission.name, submission.args, submission.prompt))
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCompactParams {
     pub session_id: SessionId,
@@ -608,7 +592,7 @@ pub struct SessionCompactParams {
     #[schemars(with = "crate::NullableSchema<SafeDisplayText>", required)]
     pub focus: Option<SafeDisplayText>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCompactResult {
     pub compacted: bool,
@@ -616,14 +600,14 @@ pub struct SessionCompactResult {
     pub cancellation_reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRevertParams {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub through_seq: u64,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRevertResult {
     pub session: SessionMeta,
@@ -631,40 +615,40 @@ pub struct SessionRevertResult {
     pub instructions_override: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub through_seq: u64,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionForkResult {
     pub session_id: SessionId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionRenameChange {
     Set { title: SessionTitle },
     Clear,
     Reset,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRenameParams {
     pub session_id: SessionId,
     pub client_rename_id: ClientRenameId,
     pub change: SessionRenameChange,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRenameResult {
     pub client_rename_id: ClientRenameId,
     pub session: SessionMeta,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRenameRecord {
     pub client_rename_id: ClientRenameId,
@@ -680,14 +664,14 @@ impl SessionRenameRecord {
         self.client_rename_id == request.client_rename_id && self.change == request.change
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionRenameErrorCode {
     SessionNotFound,
     InvalidTitle,
     IdempotencyConflict,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRenameError {
     pub code: SessionRenameErrorCode,
@@ -695,7 +679,7 @@ pub struct SessionRenameError {
     pub client_rename_id: ClientRenameId,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunStartParams {
     pub session_id: SessionId,
@@ -704,96 +688,93 @@ pub struct RunStartParams {
     pub input: String,
     // An explicit model/agent/preset choice may restore a previously skipped prefix.
     #[serde(default, skip_serializing_if = "is_false")]
-    #[ts(as = "Option<bool>", optional)]
     pub reset_fallback: bool,
 }
 
 fn is_false(value: &bool) -> bool {
     !value
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStartConflictCode {
     IdempotencyConflict,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunStartConflict {
     pub code: RunStartConflictCode,
     pub session_id: SessionId,
     pub client_run_id: ClientRunId,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunStartResult {
     pub run_id: RunId,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSteerParams {
     pub run_id: RunId,
     pub input: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSteerResult {
     pub accepted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handled_reason: Option<String>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunRecallSteerParams {
     pub run_id: RunId,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunRecallSteerResult {
     #[serde(deserialize_with = "deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub recalled: Option<String>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCancelParams {
     pub run_id: RunId,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCancelResult {
     pub cancelled: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunToolStdinParams {
     pub run_id: RunId,
     pub call_id: ToolCallId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub data: Option<String>,
     pub eof: bool,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunToolStdinResult {
     pub accepted: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsSubscribeParams {
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub cursor: Option<u64>,
 }
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsSubscribeResult {
     pub events: Vec<StoredEvent>,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRespondParams {
     pub session_id: SessionId,
@@ -804,7 +785,6 @@ pub struct ApprovalRespondParams {
     pub client_response_id: ClientResponseId,
     pub decision: ApprovalUserDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub feedback: Option<ApprovalFeedback>,
 }
 impl ApprovalRespondParams {
@@ -848,13 +828,13 @@ impl<'de> Deserialize<'de> for ApprovalRespondParams {
         Ok(value)
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRespondResult {
     pub client_response_id: ClientResponseId,
     pub approval: ApprovalRecord,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalRespondErrorCode {
     ApprovalNotFound,
@@ -865,7 +845,7 @@ pub enum ApprovalRespondErrorCode {
     OperationChanged,
     IdempotencyConflict,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRespondError {
     pub code: ApprovalRespondErrorCode,
@@ -873,28 +853,25 @@ pub struct ApprovalRespondError {
     pub approval_id: ApprovalId,
     pub client_response_id: ClientResponseId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub expected_revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub found_revision: Option<u64>,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalListParams {
     pub root_session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
     pub status: Option<ApprovalStatus>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalListResult {
     pub approvals: Vec<ApprovalRecord>,
     pub tree_grants: Vec<TreeApprovalGrant>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigSource {
     UserFile,
@@ -902,14 +879,14 @@ pub enum McpConfigSource {
     Runtime,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpConfigTarget {
     UserFile,
     WorkspaceFile,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpServerState {
     Connected,
@@ -921,20 +898,16 @@ pub enum McpServerState {
     Disconnected,
 }
 
-#[derive(Clone, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpOAuthSettingsDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub client_secret: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub client_metadata_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub scopes: Option<Vec<String>>,
 }
 
@@ -953,14 +926,14 @@ impl std::fmt::Debug for McpOAuthSettingsDefinition {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum McpOAuthDefinition {
     Bool(bool),
     Settings(McpOAuthSettingsDefinition),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerDefinition {
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -976,7 +949,6 @@ pub struct McpServerDefinition {
     pub url: Option<String>,
     pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub oauth: Option<McpOAuthDefinition>,
     pub enabled: bool,
     pub lazy: bool,
@@ -985,7 +957,7 @@ pub struct McpServerDefinition {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerInfo {
     pub name: String,
@@ -997,55 +969,54 @@ pub struct McpServerInfo {
     #[schemars(with = "crate::NullableSchema<String>", required)]
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub auth_in_progress: Option<bool>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerListParams {}
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerListResult {
     pub servers: Vec<McpServerInfo>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerAddParams {
     pub name: String,
     pub definition: McpServerDefinition,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerEditParams {
     pub name: String,
     pub definition: McpServerDefinition,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerNameParams {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerSetEnabledParams {
     pub name: String,
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerPersistParams {
     pub name: String,
     pub target: McpConfigTarget,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerMutationResult {
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -1053,26 +1024,26 @@ pub struct McpServerMutationResult {
     pub server: Option<McpServerInfo>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpAuthBeginParams {
     pub server: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpAuthBeginResult {
     pub server: String,
     pub authorization_url: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpAuthCancelParams {
     pub server: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpAuthCancelResult {
     pub server: String,

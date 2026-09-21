@@ -337,7 +337,7 @@ this contract.
 - Unit: generation-loop collision behavior and the 16-attempt cap; resolution
   order; ambiguity rejection; cross-tree isolation; old-UUID-only sessions.
 - Snapshot tests (`insta`) for tool-result text and notification rendering.
-- `crates/protocol/scripts/check-bindings.sh --check` for the additive schema
+- `crates/protocol/scripts/check-schema-additive.sh` for the additive schema
   field.
 - Full `AGENTS.md` gates: locked build/test, fmt, clippy (stable + MSRV).
 

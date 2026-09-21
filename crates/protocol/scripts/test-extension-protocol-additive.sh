@@ -4,7 +4,7 @@ set -euo pipefail
 protocol_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="${protocol_root}/scripts/check-extension-protocol-additive.py"
 baseline="${protocol_root}/extension-protocol-baseline.json"
-schema_root="${1:-${protocol_root}/generated/json-schema}"
+schema_root="${1:?usage: $0 <json-schema directory>}"
 source="${protocol_root}/src/extension.rs"
 temporary_root="$(mktemp -d)"
 trap 'rm -rf "${temporary_root}"' EXIT

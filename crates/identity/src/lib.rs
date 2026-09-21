@@ -5,7 +5,6 @@ use std::{borrow::Cow, fmt, str::FromStr};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
-use ts_rs::TS;
 
 /// Identity parsing failure.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -128,8 +127,7 @@ string_identity!(
 );
 
 /// Stable lowercase machine-readable code shared by configuration and durable protocol values.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeCode(String);
 
 impl SafeCode {
@@ -158,8 +156,7 @@ impl SafeCode {
 }
 
 /// Current wildcard grammar shared by authored configuration and frozen protocol values.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WildcardPattern(String);
 
 impl WildcardPattern {

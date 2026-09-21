@@ -15,7 +15,6 @@ workspace = true
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-ts-rs = { workspace = true, features = ["no-serde-warnings"] }
 
 [dev-dependencies]
 serde_json.workspace = true

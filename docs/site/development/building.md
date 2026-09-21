@@ -46,10 +46,10 @@ cargo +stable clippy --locked --workspace --all-targets -- -D warnings
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-Check generated protocol bindings, documentation, and dependency policy:
+Check the additive protocol schema contract, documentation, and dependency policy:
 
 ```sh
-crates/protocol/scripts/check-bindings.sh --check
+crates/protocol/scripts/check-schema-additive.sh
 ./scripts/build-docs.sh
 cargo deny --locked check advisories licenses sources
 ```

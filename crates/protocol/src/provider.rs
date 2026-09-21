@@ -3,7 +3,6 @@ use std::{borrow::Cow, collections::BTreeMap, fmt};
 use jiff::Timestamp;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use zeroize::Zeroize;
 
 use crate::*;
@@ -12,9 +11,8 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 macro_rules! positive_counter {
     ($name:ident, $description:literal) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, TS)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
         #[serde(transparent)]
-        #[ts(type = "number")]
         pub struct $name(u64);
 
         impl $name {
@@ -56,8 +54,7 @@ positive_counter!(
     "Monotonic provider connection generation."
 );
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BoundedSetupString(String);
 
 impl BoundedSetupString {
@@ -104,7 +101,7 @@ impl JsonSchema for BoundedSetupString {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SafeSetupValue {
     Bool(bool),
@@ -113,7 +110,7 @@ pub enum SafeSetupValue {
     String(BoundedSetupString),
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupFieldType {
     String,
@@ -122,7 +119,7 @@ pub enum SetupFieldType {
     Bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialFieldType {
     ApiKey,
@@ -132,7 +129,7 @@ pub enum CredentialFieldType {
     SessionToken,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupFieldValidation {
     pub value_type: SetupFieldType,
@@ -150,10 +147,9 @@ pub struct SetupFieldValidation {
     pub maximum: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetupFieldDescriptor {
-    #[ts(type = "SetupFieldId")]
     pub id: SetupFieldId,
     pub display_name: SafeDisplayText,
     pub help: SafeDisplayText,
@@ -165,10 +161,9 @@ pub struct SetupFieldDescriptor {
     pub safe_to_project: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthCredentialDescriptor {
-    #[ts(type = "AuthFieldName")]
     pub id: AuthFieldName,
     pub display_name: SafeDisplayText,
     pub help: SafeDisplayText,
@@ -176,10 +171,9 @@ pub struct AuthCredentialDescriptor {
     pub credential_type: CredentialFieldType,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthMethodDescriptor {
-    #[ts(type = "AuthMethodId")]
     pub id: AuthMethodId,
     pub display_name: SafeDisplayText,
     #[schemars(length(min = 1, max = 32))]
@@ -217,14 +211,14 @@ impl<'de> Deserialize<'de> for AuthMethodDescriptor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderPresence {
     Current,
     Removed,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderSupportState {
     Supported,
@@ -232,7 +226,7 @@ pub enum ProviderSupportState {
     Quarantined,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderSupport {
     pub state: ProviderSupportState,
@@ -265,14 +259,14 @@ impl<'de> Deserialize<'de> for ProviderSupport {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuarantineDiagnostic {
     pub code: SafeCode,
     pub message: SafeErrorMessage,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderConfigurationState {
     Unconfigured,
@@ -281,7 +275,7 @@ pub enum ProviderConfigurationState {
     AuthoredAndStored,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveAuthSource {
     AuthoredApiKey,
@@ -290,7 +284,7 @@ pub enum EffectiveAuthSource {
     NoAuth,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectiveAuthState {
     AuthoredApiKey,
@@ -300,19 +294,15 @@ pub enum EffectiveAuthState {
     Unavailable,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableConnectionDescriptor {
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
-    #[ts(type = "Record<string, import(\"./SafeSetupValue.js\").SafeSetupValue>")]
     pub setup_values: BTreeMap<SetupFieldId, SafeSetupValue>,
     pub setup_fingerprint: Sha256Digest,
     pub recipe_fingerprint: Sha256Digest,
-    #[ts(type = "AuthMethodId")]
     pub auth_method: AuthMethodId,
     #[schemars(length(max = 32))]
-    #[ts(type = "Array<AuthFieldName>")]
     pub credential_fields: Vec<AuthFieldName>,
     pub connection_generation: ProviderConnectionGeneration,
     pub connected_at: Timestamp,
@@ -359,10 +349,9 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
     }
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDescriptor {
-    #[ts(type = "ProviderId")]
     pub id: ProviderId,
     pub display_name: SafeDisplayText,
     pub presence: ProviderPresence,
@@ -583,18 +572,16 @@ where
     d.deserialize_map(Visitor)
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableProviderReceipt {
     pub receipt_id: DurableProviderReceiptId,
-    #[ts(type = "ProviderStoreRevision")]
     pub store_revision: ProviderStoreRevision,
-    #[ts(type = "ProviderStateRevision")]
     pub provider_state_revision: ProviderStateRevision,
     pub committed_at: Timestamp,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConnectResult {
     pub durable_connection: DurableConnectionDescriptor,
@@ -603,14 +590,11 @@ pub struct ProviderConnectResult {
     pub replayed: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDisconnectParams {
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
-    #[ts(type = "RuntimeRevision")]
     pub expected_runtime_revision: RuntimeRevision,
-    #[ts(type = "ProviderStateRevision")]
     pub expected_provider_state_revision: ProviderStateRevision,
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<ProviderConnectionGeneration>", required)]
@@ -618,11 +602,10 @@ pub struct ProviderDisconnectParams {
     pub client_request_id: ClientRequestId,
 }
 
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDisconnectResult {
     pub durable_receipt: DurableProviderReceipt,
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
     pub disconnected: bool,
     pub effective_auth_state: EffectiveAuthState,
@@ -661,7 +644,7 @@ impl<'de> Deserialize<'de> for ProviderDisconnectResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderConnectErrorCode {
     UnknownProvider,
@@ -680,16 +663,15 @@ pub enum ProviderConnectErrorCode {
     IdempotencyConflict,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConnectError {
     pub code: ProviderConnectErrorCode,
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
     pub client_connect_id: ClientConnectId,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderDisconnectErrorCode {
     InvalidProvider,
@@ -703,11 +685,10 @@ pub enum ProviderDisconnectErrorCode {
     IdempotencyConflict,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDisconnectError {
     pub code: ProviderDisconnectErrorCode,
-    #[ts(type = "ProviderId")]
     pub provider_id: ProviderId,
     pub client_request_id: ClientRequestId,
 }

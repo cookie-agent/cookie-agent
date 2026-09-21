@@ -1,10 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::GoalId;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
     Active,
@@ -14,7 +13,7 @@ pub enum GoalStatus {
 }
 
 /// User-only transitions. Completion is derived from a nonempty finished checklist.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalLifecycleAction {
     Pause,
@@ -22,7 +21,7 @@ pub enum GoalLifecycleAction {
     Cancel,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalItem {
     pub description: String,
@@ -31,7 +30,7 @@ pub struct GoalItem {
 
 /// Root-session projection, rebuilt from goal events independently of compaction.
 /// Activation starts with an empty checklist; each subsequent event advances revision.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalState {
     pub goal_id: GoalId,
@@ -41,11 +40,11 @@ pub struct GoalState {
     pub revision: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalGetParams {}
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalGetResult {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
@@ -59,13 +58,13 @@ pub struct GoalGetResult {
 /// Replacements are serialized; the last accepted update wins. Duplicate descriptions
 /// are allowed. Empty items preserve active/paused status. A nonempty
 /// all-finished update completes even while paused, without scheduling a wake.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalUpdateParams {
     pub items: Vec<GoalItem>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalUpdateResult {
     pub goal: GoalState,
@@ -73,9 +72,7 @@ pub struct GoalUpdateResult {
 
 /// Whether a reminder introduces the objective or continues previously consumed work.
 /// Legacy reminder events always represented continuations.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS,
-)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalReminderKind {
     Started,
@@ -86,7 +83,7 @@ pub enum GoalReminderKind {
 /// Pending reminder metadata, NOT a durable send idempotency key.
 /// Coalescing uses the goal ID and revision, independently of the presentation kind.
 /// After consumption another continuation at the same revision uses a fresh send.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalReminderIdentity {
     pub goal_id: GoalId,

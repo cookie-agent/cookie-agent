@@ -2,7 +2,6 @@ use std::{borrow::Cow, fmt, str::FromStr};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,8 +114,7 @@ macro_rules! string_wire_impl {
 
 macro_rules! bounded_control_free_type {
     ($name:ident, $max:expr, $description:literal) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-        #[ts(type = "string")]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
         string_wire_impl!(
             $name,
@@ -161,8 +159,7 @@ bounded_control_free_type!(
 );
 bounded_control_free_type!(ProviderItemId, 512, "Bounded provider item identity.");
 bounded_control_free_type!(CwdIdentity, 4096, "Opaque canonical workspace identity.");
-#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SafeDisplayText(String);
 string_wire_impl!(
     SafeDisplayText,
@@ -171,8 +168,7 @@ string_wire_impl!(
     "Control-free bounded presentation text.",
     |value: &str| validate_control_free(value, SafeDisplayText::MAX_BYTES)
 );
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BoundedDisplayText(String);
 string_wire_impl!(
     BoundedDisplayText,
@@ -187,8 +183,7 @@ bounded_control_free_type!(
     "Control-free bounded safe error text."
 );
 bounded_control_free_type!(CatalogIdentifier, 1024, "Bounded catalog identity.");
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DiagnosticText(String);
 string_wire_impl!(
     DiagnosticText,
@@ -209,8 +204,7 @@ string_wire_impl!(
     }
 );
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CatalogText(String);
 string_wire_impl!(
     CatalogText,
@@ -226,8 +220,7 @@ string_wire_impl!(
     }
 );
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CredentialFieldName(String);
 
 string_wire_impl!(
@@ -255,7 +248,7 @@ struct TransparentUuid(Uuid);
 
 macro_rules! uuid_id {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, TS)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd)]
         #[schemars(transparent)]
         pub struct $name(pub Uuid);
 
@@ -313,8 +306,7 @@ uuid_id!(GoalId);
 uuid_id!(ProducerId);
 uuid_id!(ProducerMessageId);
 
-#[derive(Clone, Eq, Hash, PartialEq, TS)]
-#[ts(type = "string")]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Sha256Digest(String);
 
 impl Sha256Digest {

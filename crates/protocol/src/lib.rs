@@ -6,7 +6,6 @@ use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 mod tool_output;
 pub use tool_output::*;
@@ -140,17 +139,10 @@ pub const PROTOCOL_VERSION: u32 = 20;
 /// The only coherent runtime snapshot schema supported by this build.
 pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
-/// Returns the TypeScript generation configuration required by this JSON wire.
-#[must_use]
-pub fn typescript_config() -> ts_rs::Config {
-    ts_rs::Config::default().with_large_int("number")
-}
-
 macro_rules! exact_numeric_wire_type {
-    ($name:ident, $value:expr, $ts:literal, $description:literal) => {
+    ($name:ident, $value:expr, $description:literal) => {
         #[doc = $description]
-        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, TS)]
-        #[ts(type = $ts)]
+        #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
         pub struct $name(());
 
         impl $name {
@@ -207,16 +199,10 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(
-    ProtocolVersion,
-    20,
-    "20",
-    "The exact protocol wire version."
-);
+exact_numeric_wire_type!(ProtocolVersion, 20, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
     5,
-    "5",
     "The exact coherent runtime snapshot schema version."
 );
 
