@@ -1,0 +1,30 @@
+//! Transcript rendering tests, grouped by topic.
+
+mod approvals;
+mod assistant;
+mod attempts;
+mod chrome;
+mod commands;
+mod diagnostics;
+mod diffs;
+mod drafts;
+mod goal;
+mod hit_regions;
+mod hover;
+mod layout;
+mod markdown;
+mod pickers;
+mod producers;
+mod providers;
+mod queue;
+mod read_output;
+mod scrolling;
+mod selection;
+mod sessions_tree;
+mod streaming;
+mod support;
+mod system_prompt;
+mod thinking;
+mod tool_headers;
+mod tool_rows;
+mod user_menu;
