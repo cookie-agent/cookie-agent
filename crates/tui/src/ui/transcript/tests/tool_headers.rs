@@ -345,6 +345,61 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
 }
 
 #[test]
+fn bash_expanded_command_keeps_its_line_breaks() {
+    let mut state = read_tool_state("unused", ToolStatus::Completed, "ok\n");
+    let id = read_tool_id(&state);
+    let tool = state.tools.get_mut(&id).unwrap();
+    tool.presentation = presentation("bash", Some("python3 - <<'PY'"));
+    tool.arguments = serde_json::json!({
+        "command": "python3 - <<'PY'\nimport re\nprint(\"hi\u{1b}\")\nPY\ncat /proc/meminfo"
+    })
+    .to_string();
+    let expanded = HashSet::from([BlockId::Tool(id)]);
+    let layout = transcript_layout(&state, Some(&expanded), 80);
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::Tool(id))
+        .unwrap();
+    let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
+        .iter()
+        .map(|line| line.to_string().trim_end().to_owned())
+        .collect();
+    assert!(rows[1].ends_with("❯ python3 - <<'PY'"), "{rows:?}");
+    assert!(rows[2].ends_with("  import re"), "{rows:?}");
+    // Other control characters still flatten to the replacement character.
+    assert!(rows[3].ends_with("  print(\"hi\u{fffd}\")"), "{rows:?}");
+    assert!(rows[4].ends_with("  PY"), "{rows:?}");
+    assert!(rows[5].ends_with("  cat /proc/meminfo"), "{rows:?}");
+    let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
+    assert!(!rendered.contains("<<'PY'\u{fffd}"), "{rendered}");
+
+    // A long script is elided at the command byte budget, on the last line
+    // shown, and the lines past it are dropped rather than flattened.
+    let script = (0..400)
+        .map(|index| format!("echo line {index:03}\n"))
+        .collect::<String>();
+    let tool = state.tools.get_mut(&id).unwrap();
+    tool.arguments = serde_json::json!({ "command": script }).to_string();
+    let layout = transcript_layout(&state, Some(&expanded), 80);
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::Tool(id))
+        .unwrap();
+    let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
+        .iter()
+        .map(|line| line.to_string().trim_end().to_owned())
+        .collect();
+    let command_rows: Vec<&String> = rows.iter().filter(|row| row.contains("echo")).collect();
+    assert!(command_rows.len() > 100, "{}", command_rows.len());
+    assert!(command_rows.len() < 400, "{}", command_rows.len());
+    assert!(command_rows.last().unwrap().ends_with('…'), "{rows:?}");
+    let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
+    assert!(!rendered.contains('\u{fffd}'), "{rendered}");
+}
+
+#[test]
 fn bash_expanded_rows_sit_on_the_terminal_band() {
     let mut state = read_tool_state(
         "unused",

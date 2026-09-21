@@ -303,18 +303,20 @@ pub(super) fn tool_child_layout(
         }
         if tool_name != "read" {
             let command = arguments.as_ref().and_then(|args| args.command.as_deref());
-            let arguments_line = if tool_name == "bash"
+            if tool_name == "bash"
                 && let Some(command) = command
             {
-                let (command, complete) = sanitized_display_prefix(command, 2 * 1024);
-                format!("❯ {command}{}", if complete { "" } else { "…" })
+                body.extend(
+                    bash_command_lines(command)
+                        .into_iter()
+                        .map(|line| ToolBodyLine::wrapped(Line::from(line))),
+                );
             } else {
-                format!(
+                body.push(ToolBodyLine::wrapped(Line::from(format!(
                     "arguments: {}",
                     display_tool_arguments(tool, arguments.as_ref())
-                )
-            };
-            body.push(ToolBodyLine::wrapped(Line::from(arguments_line)));
+                ))));
+            }
         }
         if !tool.detail.is_empty() {
             remaining_sections -= 1;
@@ -407,6 +409,32 @@ pub(super) fn display_tool_arguments(
     } else {
         format!("{arguments}…")
     }
+}
+
+/// Bytes of a bash command the expanded row shows before eliding the rest.
+const MAX_COMMAND_BYTES: usize = 2 * 1024;
+
+/// The `❯ command` body of an expanded bash row: one line per command line,
+/// so a heredoc or multi-line script keeps its line breaks instead of showing
+/// each newline as a replacement character. The byte budget spans all lines,
+/// and an elided tail is marked on the last line shown.
+fn bash_command_lines(command: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut remaining = MAX_COMMAND_BYTES;
+    let mut source_lines = command.split('\n').peekable();
+    while let Some(line) = source_lines.next() {
+        let prefix = if lines.is_empty() { "❯ " } else { "  " };
+        let (text, complete) = sanitized_display_prefix(line, remaining);
+        remaining = remaining.saturating_sub(text.len());
+        let elided = !complete || (remaining == 0 && source_lines.peek().is_some());
+        lines.push(format!("{prefix}{text}{}", if elided { "…" } else { "" }));
+        if elided {
+            break;
+        }
+        // Count the newline itself so the budget matches the source length.
+        remaining = remaining.saturating_sub(1);
+    }
+    lines
 }
 
 /// Identity for a tool row: a started call or a committed placeholder index.
