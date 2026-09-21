@@ -56,7 +56,8 @@ use uuid::Uuid;
 
 use crate::events::{EventLog, EventLogError, fsync_directory};
 use crate::ownership::{
-    HeldLock, SessionOwnership, WriteAuthority, WriteCapability, owner_lock_path, try_acquire,
+    HeldLock, OWNER_LOCK_FILE, OWNER_LOCK_SUFFIX, SessionOwnership, WriteAuthority,
+    WriteCapability, owner_lock_path, try_acquire,
 };
 
 pub(crate) const WORKDIR_CWD_FILE: &str = "cwd";
@@ -88,7 +89,6 @@ pub(crate) enum SessionLocation {
 }
 
 impl SessionLocation {
-    #[allow(dead_code)] // consumed by the lazy-tree passes (P2)
     fn root_of(self) -> Option<SessionId> {
         match self {
             Self::Root => None,
@@ -212,11 +212,15 @@ impl SessionResidency {
     }
 }
 
+/// Ownership of one root session tree. Exactly one lock and one
+/// [`WriteAuthority`] exist per tree; every log in the tree writes under that
+/// authority, so dropping the tree's entry invalidates all of them at once.
 #[derive(Debug)]
-enum StoreOwnership {
-    PendingPublish {
-        authority: WriteAuthority,
-    },
+enum TreeOwnership {
+    /// The root was created in this process and has not been published yet, so
+    /// there is no directory to lock. Children may already be writing.
+    PendingPublish { authority: WriteAuthority },
+    /// The tree lock is held for an adoption that has not been committed yet.
     Adopting {
         _lock: HeldLock,
         authority: WriteAuthority,
@@ -225,7 +229,88 @@ enum StoreOwnership {
         _lock: HeldLock,
         authority: WriteAuthority,
     },
+    /// Another process holds this tree's lock (or it could not be classified).
     Foreign,
+}
+
+impl TreeOwnership {
+    /// The authority every log in the tree writes under, when this process
+    /// holds the tree at all.
+    fn authority(&self) -> Option<&WriteAuthority> {
+        match self {
+            Self::PendingPublish { authority }
+            | Self::Adopting { authority, .. }
+            | Self::Owned { authority, .. } => Some(authority),
+            Self::Foreign => None,
+        }
+    }
+
+    /// Whether the tree is held *and settled*: an uncommitted adoption is not
+    /// yet a writable tree.
+    fn is_settled(&self) -> bool {
+        matches!(self, Self::PendingPublish { .. } | Self::Owned { .. })
+    }
+}
+
+/// The store's ownership bookkeeping: one entry per root tree, plus the
+/// per-session record of which sessions this process may write. A session is
+/// writable only when its tree is held here *and* the session was created in
+/// this process or adopted (reconciled and committed) in it.
+#[derive(Debug, Default)]
+struct OwnershipState {
+    /// root session id -> the tree's ownership state.
+    trees: HashMap<SessionId, TreeOwnership>,
+    /// session id -> its root, for sessions created or adopted in this process.
+    writable: HashMap<SessionId, SessionId>,
+    /// session id -> its root, for adoptions that have not been committed.
+    adopting: HashMap<SessionId, SessionId>,
+}
+
+impl OwnershipState {
+    /// Capability for a write to `id`. `allow_adopting` admits a session whose
+    /// adoption is still in flight — the reconciliation window, which is the
+    /// only time an uncommitted session may append.
+    fn capability(
+        &self,
+        id: SessionId,
+        allow_adopting: bool,
+    ) -> Result<WriteCapability, SessionError> {
+        let root = match self.writable.get(&id) {
+            Some(root) => *root,
+            None if allow_adopting => *self
+                .adopting
+                .get(&id)
+                .ok_or(SessionError::SessionLocked(id))?,
+            None => return Err(SessionError::SessionLocked(id)),
+        };
+        let tree = self
+            .trees
+            .get(&root)
+            .ok_or(SessionError::SessionLocked(id))?;
+        if !allow_adopting && !tree.is_settled() {
+            return Err(SessionError::SessionLocked(id));
+        }
+        tree.authority()
+            .map(WriteAuthority::capability)
+            .ok_or(SessionError::SessionLocked(id))
+    }
+
+    /// Whether any session still depends on the tree's lock. Used to decide
+    /// whether a rolled-back adoption releases it.
+    fn tree_is_referenced(&self, root: SessionId) -> bool {
+        self.writable.values().any(|owner| *owner == root)
+            || self.adopting.values().any(|owner| *owner == root)
+    }
+}
+
+/// How a fork relates to the tree it publishes into.
+#[derive(Debug)]
+enum ForkTree {
+    /// A forked root opens a tree of its own, locked at publication.
+    NewRoot(WriteAuthority),
+    /// A forked child joins its root's tree, carrying the lock when this fork
+    /// is what took it.
+    Joined(Option<(HeldLock, WriteAuthority)>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,7 +337,10 @@ pub struct SessionStore {
     /// Completed tree loads waiting for the engine hook that consumes them (D5).
     pending_loads: Mutex<PendingLoads>,
     residency: Mutex<SessionResidency>,
-    ownership: Mutex<HashMap<SessionId, StoreOwnership>>,
+    /// Tree-scoped ownership: one lock per root, plus per-session writability.
+    ownership: Mutex<OwnershipState>,
+    /// Per-*tree* adoption gates, keyed by root: adopting two sessions of one
+    /// tree concurrently would race on the single tree lock.
     adoption_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     /// Serializes publication of one session directory, so the scaffold check in
     /// [`Self::publish_prepared_dir`] stays true until its entries have moved.
@@ -335,7 +423,7 @@ impl SessionStore {
             tree_locks: Mutex::new(HashMap::new()),
             pending_loads: Mutex::new(PendingLoads::default()),
             residency: Mutex::new(SessionResidency::default()),
-            ownership: Mutex::new(HashMap::new()),
+            ownership: Mutex::new(OwnershipState::default()),
             adoption_locks: Mutex::new(HashMap::new()),
             publish_locks: Mutex::new(HashMap::new()),
             mutation: Mutex::new(()),
@@ -388,17 +476,20 @@ impl SessionStore {
             .insert(id, location);
     }
 
-    /// Root a session belongs to (`None` for a root session itself). Unknown
-    ///
-    /// (consumed by the lazy-tree passes; wired up in P2)
-    /// children are located on disk first so the answer is disk-accurate.
-    #[allow(dead_code)] // wired up by the lazy-tree passes (P2)
+    /// Root of the tree `id` belongs to (`id` itself for a root session).
+    /// Unknown children are located on disk first, so the answer is
+    /// disk-accurate — it decides which `owner.lock` guards the session.
     pub(crate) fn root_of(&self, id: SessionId) -> Result<SessionId, SessionError> {
         self.resolve_dir(id)?;
-        match self.cached_location(id) {
-            Some(SessionLocation::Child { root }) => Ok(root),
-            _ => Ok(id),
-        }
+        Ok(self
+            .cached_location(id)
+            .and_then(SessionLocation::root_of)
+            .unwrap_or(id))
+    }
+
+    /// Directory whose `owner.lock` guards the tree rooted at `root`.
+    fn tree_root_dir(&self, root: SessionId) -> PathBuf {
+        self.path_for(SessionLocation::Root, root)
     }
 
     /// Resolves the on-disk directory of `id` by placement (§2.2).
@@ -615,19 +706,37 @@ impl SessionStore {
         if final_dir.exists() {
             return Err(SessionError::SessionLocked(session_id));
         }
-        let authority = WriteAuthority::new();
+        // A new root opens its own tree, unlocked until it publishes. A child
+        // joins its root's tree and writes under that tree's authority, so the
+        // tree has to be held here before the child's log exists at all.
+        let root = location.root_of().unwrap_or(session_id);
+        let (capability, opened_tree) = match location {
+            SessionLocation::Root => {
+                let authority = WriteAuthority::new();
+                (authority.capability(), Some(authority))
+            }
+            SessionLocation::Child { .. } => (self.tree_capability(root, session_id)?, None),
+        };
         let log = EventLog::create_buffered_owned(
             final_dir.join(EVENTS_FILE),
             session_id,
             origin,
             creation,
-            authority.capability(),
+            capability,
         )?;
         let result = projection(log.clone())?;
-        self.ownership
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(session_id, StoreOwnership::PendingPublish { authority });
+        {
+            let mut ownership = self
+                .ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(authority) = opened_tree {
+                ownership
+                    .trees
+                    .insert(root, TreeOwnership::PendingPublish { authority });
+            }
+            ownership.writable.insert(session_id, root);
+        }
         {
             let mut residency = self
                 .residency
@@ -830,6 +939,90 @@ impl SessionStore {
         self.get(id)
     }
 
+    /// Capability of a tree this process already holds and has settled, for a
+    /// session that is about to write inside it. This is how a child joins its
+    /// root's authority instead of minting one of its own.
+    fn tree_capability(
+        &self,
+        root: SessionId,
+        id: SessionId,
+    ) -> Result<WriteCapability, SessionError> {
+        let ownership = self
+            .ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match ownership.trees.get(&root) {
+            Some(tree) if tree.is_settled() => Ok(tree
+                .authority()
+                .expect("a settled tree has an authority")
+                .capability()),
+            _ => Err(SessionError::SessionLocked(id)),
+        }
+    }
+
+    /// Makes sure this process holds the tree rooted at `root`, taking its lock
+    /// when nobody holds it yet.
+    ///
+    /// Returns the capability every log in the tree writes under, plus the
+    /// freshly taken lock when this call is the one that took it. The caller
+    /// installs that lock only once the write it was taken for has actually
+    /// succeeded, so a failure drops it and leaves the tree free.
+    ///
+    /// A cached `Foreign` classification is re-checked rather than believed: the
+    /// owner may have exited since, exactly as the per-session classification
+    /// was retried before.
+    #[allow(clippy::type_complexity)]
+    fn hold_tree(
+        &self,
+        root: SessionId,
+        id: SessionId,
+    ) -> Result<(WriteCapability, Option<(HeldLock, WriteAuthority)>), SessionError> {
+        {
+            let ownership = self
+                .ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match ownership.trees.get(&root) {
+                Some(TreeOwnership::Foreign) | None => {}
+                Some(tree) => {
+                    return Ok((
+                        tree.authority()
+                            .expect("a held tree has an authority")
+                            .capability(),
+                        None,
+                    ));
+                }
+            }
+        }
+        let root_dir = self.tree_root_dir(root);
+        let lock = match try_acquire(&root_dir) {
+            Ok(SessionOwnership::Owned(lock)) => lock,
+            Ok(SessionOwnership::Foreign) => {
+                self.mark_tree_foreign(root);
+                return Err(SessionError::SessionLocked(id));
+            }
+            Err(error) => {
+                eprintln!("session tree {root} ownership classification failed: {error}");
+                self.mark_tree_foreign(root);
+                return Err(SessionError::SessionLocked(id));
+            }
+        };
+        let authority = WriteAuthority::new();
+        Ok((authority.capability(), Some((lock, authority))))
+    }
+
+    /// Records that another process owns this tree. The record is per root, so
+    /// it answers for every session in the tree at once: none of them is
+    /// writable, and each reports [`SessionError::SessionLocked`]. A later
+    /// acquisition still restats the lock, because the owner may have exited.
+    fn mark_tree_foreign(&self, root: SessionId) {
+        self.ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .trees
+            .insert(root, TreeOwnership::Foreign);
+    }
+
     fn begin_write_locked(&self, id: SessionId) -> Result<WriteOpen, SessionError> {
         if self.is_owned(id) {
             if let Some(session) = self.get_resident(id) {
@@ -855,27 +1048,13 @@ impl SessionStore {
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
-        let lock = match try_acquire(&session_dir) {
-            Ok(SessionOwnership::Owned(lock)) => lock,
-            Ok(SessionOwnership::Foreign) => {
-                self.ownership
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(id, StoreOwnership::Foreign);
-                return Err(SessionError::SessionLocked(id));
-            }
-            Err(error) => {
-                eprintln!("session {id} ownership classification failed: {error}");
-                self.ownership
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(id, StoreOwnership::Foreign);
-                return Err(SessionError::SessionLocked(id));
-            }
-        };
-        let authority = WriteAuthority::new();
-        let opened =
-            EventLog::open_owned(session_dir.join(EVENTS_FILE), id, authority.capability());
+        // Ownership is the tree's, so the lock that has to be free is the
+        // root's — including when the session being adopted is a child. The
+        // root itself is *not* reconciled here; it reconciles when it is first
+        // written, through its own adoption.
+        let root = self.root_of(id)?;
+        let (capability, acquired) = self.hold_tree(root, id)?;
+        let opened = EventLog::open_owned(session_dir.join(EVENTS_FILE), id, capability);
         let projection = match opened.and_then(|log| {
             projection(log).map_err(|error| match error {
                 SessionError::Event(error) => error,
@@ -884,20 +1063,28 @@ impl SessionStore {
         }) {
             Ok(projection) => projection,
             Err(error) => {
+                // `acquired` drops here: a tree this call locked is released
+                // again, so the failed adoption leaves nothing behind.
                 eprintln!("session {id} adoption failed closed: {error}");
                 return Err(SessionError::SessionLocked(id));
             }
         };
-        self.ownership
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                id,
-                StoreOwnership::Adopting {
-                    _lock: lock,
-                    authority,
-                },
-            );
+        {
+            let mut ownership = self
+                .ownership
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((lock, authority)) = acquired {
+                ownership.trees.insert(
+                    root,
+                    TreeOwnership::Adopting {
+                        _lock: lock,
+                        authority,
+                    },
+                );
+            }
+            ownership.adopting.insert(id, root);
+        }
         let mut residency = self
             .residency
             .lock()
@@ -913,19 +1100,33 @@ impl SessionStore {
             .ownership
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let state = ownership
-            .remove(&id)
+        let root = *ownership
+            .adopting
+            .get(&id)
             .ok_or(SessionError::SessionLocked(id))?;
-        match state {
-            StoreOwnership::Adopting { _lock, authority } => {
-                ownership.insert(id, StoreOwnership::Owned { _lock, authority });
-                Ok(())
+        let tree = ownership
+            .trees
+            .remove(&root)
+            .ok_or(SessionError::SessionLocked(id))?;
+        match tree {
+            // The first committed adoption settles the tree; later ones join a
+            // tree that is already owned or still pending its root's publish.
+            TreeOwnership::Adopting { _lock, authority } => {
+                ownership
+                    .trees
+                    .insert(root, TreeOwnership::Owned { _lock, authority });
             }
-            state => {
-                ownership.insert(id, state);
-                Err(SessionError::SessionLocked(id))
+            TreeOwnership::Foreign => {
+                ownership.trees.insert(root, TreeOwnership::Foreign);
+                return Err(SessionError::SessionLocked(id));
+            }
+            settled => {
+                ownership.trees.insert(root, settled);
             }
         }
+        ownership.adopting.remove(&id);
+        ownership.writable.insert(id, root);
+        Ok(())
     }
 
     pub(crate) fn rollback_adoption(&self, id: SessionId) {
@@ -943,22 +1144,34 @@ impl SessionStore {
                 .evicted
                 .insert(id, summary_from_projection(&projection));
         }
-        let removed = self
+        let mut ownership = self
             .ownership
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&id);
-        debug_assert!(
-            matches!(removed, Some(StoreOwnership::Adopting { .. }))
-                || self.closed.load(Ordering::Acquire)
-        );
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = ownership.adopting.remove(&id);
+        // A tree locked *for* this adoption and never committed by anything
+        // else goes back to unowned, so another process can adopt it.
+        if let Some(root) = removed
+            && matches!(
+                ownership.trees.get(&root),
+                Some(TreeOwnership::Adopting { .. })
+            )
+            && !ownership.tree_is_referenced(root)
+        {
+            ownership.trees.remove(&root);
+        }
+        debug_assert!(removed.is_some() || self.closed.load(Ordering::Acquire));
     }
 
+    /// Adoption gate for `id`'s *tree*. One tree lock means one adoption at a
+    /// time in a tree; an id that cannot be located keeps a gate of its own,
+    /// because its `begin_write` fails before it reaches any lock.
     pub(crate) fn adoption_lock(&self, id: SessionId) -> Arc<Mutex<()>> {
+        let root = self.root_of(id).unwrap_or(id);
         self.adoption_locks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(id)
+            .entry(root)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
@@ -968,31 +1181,27 @@ impl SessionStore {
         id: SessionId,
         allow_adopting: bool,
     ) -> Result<WriteCapability, SessionError> {
+        self.ownership
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .capability(id, allow_adopting)
+    }
+
+    /// Whether this process may write `id`: its tree is held and settled here,
+    /// and `id` itself was created or adopted in this process. A foreign root
+    /// therefore answers `false` for every session in its tree.
+    #[must_use]
+    pub fn is_owned(&self, id: SessionId) -> bool {
         let ownership = self
             .ownership
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match ownership.get(&id) {
-            Some(
-                StoreOwnership::PendingPublish { authority }
-                | StoreOwnership::Owned { authority, .. },
-            ) => Ok(authority.capability()),
-            Some(StoreOwnership::Adopting { authority, .. }) if allow_adopting => {
-                Ok(authority.capability())
-            }
-            _ => Err(SessionError::SessionLocked(id)),
-        }
-    }
-
-    #[must_use]
-    pub fn is_owned(&self, id: SessionId) -> bool {
-        matches!(
-            self.ownership
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&id),
-            Some(StoreOwnership::PendingPublish { .. } | StoreOwnership::Owned { .. })
-        )
+        ownership.writable.get(&id).is_some_and(|root| {
+            ownership
+                .trees
+                .get(root)
+                .is_some_and(TreeOwnership::is_settled)
+        })
     }
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
@@ -1298,6 +1507,23 @@ impl SessionStore {
         // A forked origin is copied verbatim from the source's `SessionCreated`
         // event, so a fork of a child stays inside the same tree.
         let location = self.placement_for(&source.meta.origin);
+        let root = location.root_of().unwrap_or(session_id);
+        // A forked root opens a tree of its own, locked when it publishes. A
+        // forked child is prepared and published *inside* its root's directory,
+        // so the root's lock has to be this process's before a byte is written
+        // there — including the temporary directory below. Nobody holding it is
+        // the cold-store fork: take it now, the way an adoption through a child
+        // would.
+        let (capability, fork_tree) = match location {
+            SessionLocation::Root => {
+                let authority = WriteAuthority::new();
+                (authority.capability(), ForkTree::NewRoot(authority))
+            }
+            SessionLocation::Child { .. } => {
+                let (capability, acquired) = self.hold_tree(root, session_id)?;
+                (capability, ForkTree::Joined(acquired))
+            }
+        };
         self.record_location(session_id, location);
         let destination_parent = self.publish_parent_for(location)?;
         let final_dir = self.dir_for_placement(location, session_id);
@@ -1317,8 +1543,6 @@ impl SessionStore {
                 source,
             }
         })?;
-        let authority = WriteAuthority::new();
-        let capability = authority.capability();
         let result = (|| {
             let log_path = temporary.join("events.jsonl");
             #[cfg(windows)]
@@ -1364,16 +1588,36 @@ impl SessionStore {
             log.suspend_writer()?;
             let fork_projection = projection(log)?;
             write_cache(&temporary.join(SESSION_META_FILE), &fork_projection.meta)?;
+            // Only a root opens a tree, and only a root takes a lock: on unix
+            // inside the temporary directory that is about to become the root,
+            // on Windows from the sidecar path derived from the final one. A
+            // forked child publishes into a tree this process already holds.
             #[cfg(unix)]
-            let lock_session_dir = &temporary;
+            let lock_root_dir = &temporary;
             #[cfg(windows)]
-            let lock_session_dir = &final_dir;
-            let lock = match try_acquire(lock_session_dir).map_err(|source| SessionError::Io {
-                path: owner_lock_path(lock_session_dir),
-                source,
-            })? {
-                SessionOwnership::Owned(lock) => lock,
-                SessionOwnership::Foreign => return Err(SessionError::SessionLocked(session_id)),
+            let lock_root_dir = &final_dir;
+            let published_tree = match fork_tree {
+                ForkTree::NewRoot(authority) => {
+                    let lock =
+                        match try_acquire(lock_root_dir).map_err(|source| SessionError::Io {
+                            path: owner_lock_path(lock_root_dir),
+                            source,
+                        })? {
+                            SessionOwnership::Owned(lock) => lock,
+                            SessionOwnership::Foreign => {
+                                return Err(SessionError::SessionLocked(session_id));
+                            }
+                        };
+                    Some(TreeOwnership::Owned {
+                        _lock: lock,
+                        authority,
+                    })
+                }
+                ForkTree::Joined(Some((lock, authority))) => Some(TreeOwnership::Owned {
+                    _lock: lock,
+                    authority,
+                }),
+                ForkTree::Joined(None) => None,
             };
             #[cfg(test)]
             if let Some(hook) = self
@@ -1388,16 +1632,22 @@ impl SessionStore {
             fsync_directory(&temporary)?;
             self.publish_prepared_dir(&temporary, &final_dir, session_id)?;
             fsync_directory(&destination_parent)?;
-            self.ownership
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(
-                    session_id,
-                    StoreOwnership::Owned {
-                        _lock: lock,
-                        authority,
+            {
+                let mut ownership = self
+                    .ownership
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match published_tree {
+                    Some(tree) => {
+                        ownership.trees.insert(root, tree);
+                    }
+                    None => match ownership.trees.get(&root) {
+                        Some(tree) if tree.is_settled() => {}
+                        _ => return Err(SessionError::SessionLocked(session_id)),
                     },
-                );
+                }
+                ownership.writable.insert(session_id, root);
+            }
             let log = EventLog::open_owned(final_dir.join("events.jsonl"), session_id, capability)?;
             let fork_projection = projection(log)?;
             let fork_origin = fork_projection.meta.origin.clone();
@@ -1425,6 +1675,9 @@ impl SessionStore {
     ) -> Result<(), SessionError> {
         self.write_capability(session_id, false)?;
         let location = self.placement_for(&projection.meta.origin);
+        // Only a root's publication takes a lock; a child publishes into a tree
+        // this process already holds, which `write_capability` just proved.
+        let root = location.root_of().unwrap_or(session_id);
         self.record_location(session_id, location);
         self.note_placed_child(&location, &projection.meta.origin, session_id);
         let destination_parent = self.publish_parent_for(location)?;
@@ -1444,15 +1697,22 @@ impl SessionStore {
             }
             write_cache(&temporary.join(SESSION_META_FILE), &projection.meta)?;
             #[cfg(unix)]
-            let lock_session_dir = &temporary;
+            let lock_root_dir = &temporary;
             #[cfg(windows)]
-            let lock_session_dir = &final_dir;
-            let lock = match try_acquire(lock_session_dir).map_err(|source| SessionError::Io {
-                path: owner_lock_path(lock_session_dir),
-                source,
-            })? {
-                SessionOwnership::Owned(lock) => lock,
-                SessionOwnership::Foreign => return Err(SessionError::SessionLocked(session_id)),
+            let lock_root_dir = &final_dir;
+            let lock = match location {
+                SessionLocation::Root => {
+                    match try_acquire(lock_root_dir).map_err(|source| SessionError::Io {
+                        path: owner_lock_path(lock_root_dir),
+                        source,
+                    })? {
+                        SessionOwnership::Owned(lock) => Some(lock),
+                        SessionOwnership::Foreign => {
+                            return Err(SessionError::SessionLocked(session_id));
+                        }
+                    }
+                }
+                SessionLocation::Child { .. } => None,
             };
             #[cfg(test)]
             if let Some(hook) = self
@@ -1471,23 +1731,34 @@ impl SessionStore {
                 .ownership
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let state = ownership
-                .remove(&session_id)
-                .ok_or(SessionError::SessionLocked(session_id))?;
-            match state {
-                StoreOwnership::PendingPublish { authority } => {
-                    ownership.insert(
-                        session_id,
-                        StoreOwnership::Owned {
-                            _lock: lock,
-                            authority,
-                        },
-                    );
+            match lock {
+                // The root's own publication settles its tree, carrying the
+                // authority its children are already writing under.
+                Some(lock) => {
+                    let state = ownership
+                        .trees
+                        .remove(&root)
+                        .ok_or(SessionError::SessionLocked(session_id))?;
+                    match state {
+                        TreeOwnership::PendingPublish { authority } => {
+                            ownership.trees.insert(
+                                root,
+                                TreeOwnership::Owned {
+                                    _lock: lock,
+                                    authority,
+                                },
+                            );
+                        }
+                        state => {
+                            ownership.trees.insert(root, state);
+                            return Err(SessionError::SessionLocked(session_id));
+                        }
+                    }
                 }
-                state => {
-                    ownership.insert(session_id, state);
-                    return Err(SessionError::SessionLocked(session_id));
-                }
+                None => match ownership.trees.get(&root) {
+                    Some(tree) if tree.is_settled() => {}
+                    _ => return Err(SessionError::SessionLocked(session_id)),
+                },
             }
             Ok::<(), SessionError>(())
         })();
@@ -1899,6 +2170,32 @@ impl SessionStore {
             .collect::<Vec<_>>();
         ids.sort_by_key(|id| id.to_string());
         ids
+    }
+
+    /// Sweeps the per-child ownership locks an older build wrote.
+    ///
+    /// Ownership is the tree's, so the only lock this build writes or reads is
+    /// the root's. Anything matching a legacy child layout directly under
+    /// `subagents/` — `<child>/owner.lock` on unix, `<child-id>.owner.lock` as
+    /// a Windows sidecar — is dead weight. The sweep is best-effort: a file
+    /// another process still holds open simply stays, and is never consulted.
+    pub(super) fn remove_legacy_child_locks(&self, root: SessionId) {
+        let Ok(entries) = fs::read_dir(self.subagents_dir(root)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                if name.parse::<SessionId>().is_ok() {
+                    let _ = fs::remove_file(entry.path().join(OWNER_LOCK_FILE));
+                }
+            } else if name
+                .strip_suffix(OWNER_LOCK_SUFFIX)
+                .is_some_and(|id| id.parse::<SessionId>().is_ok())
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Residency-only summary lookup (never opens a log, never completes a tree).
@@ -2354,10 +2651,15 @@ impl SessionStore {
         for session in residency.resident.values() {
             let _ = session.log.suspend_writer();
         }
-        self.ownership
+        // Dropping every tree entry drops every tree lock and every tree
+        // authority, which invalidates all of their logs at once.
+        let mut ownership = self
+            .ownership
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ownership.trees.clear();
+        ownership.writable.clear();
+        ownership.adopting.clear();
     }
 
     fn ensure_open(&self) -> Result<(), SessionError> {

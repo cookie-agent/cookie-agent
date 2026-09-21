@@ -7,12 +7,14 @@ use std::{
     },
 };
 
-#[cfg(any(unix, test))]
-const OWNER_LOCK_FILE: &str = "owner.lock";
+/// Lock file name in the unix layout, `<root-dir>/owner.lock`. The same name
+/// inside a child directory is a legacy artifact this build sweeps away.
+pub(crate) const OWNER_LOCK_FILE: &str = "owner.lock";
 #[cfg(windows)]
-const OWNER_LOCK_EXTENSION: &str = "owner.lock";
-#[cfg(test)]
-const OWNER_LOCK_SUFFIX: &str = ".owner.lock";
+const OWNER_LOCK_EXTENSION: &str = OWNER_LOCK_FILE;
+/// Sidecar suffix in the Windows layout, `<root-id>.owner.lock`. A sidecar
+/// inside `subagents/` is a legacy artifact this build sweeps away.
+pub(crate) const OWNER_LOCK_SUFFIX: &str = ".owner.lock";
 
 #[derive(Debug)]
 pub(crate) struct HeldLock {
@@ -67,31 +69,51 @@ pub(crate) enum SessionOwnership {
     Foreign,
 }
 
-pub(crate) fn owner_lock_path(session_dir: &Path) -> PathBuf {
+/// Path of the ownership lock guarding the tree rooted at `root_dir`.
+///
+/// `root_dir` is always a *root* session's directory. On unix the lock lives
+/// inside it; on Windows it is a sidecar beside it, so the open handle never
+/// blocks the publication rename. Children of the tree have no lock file.
+pub(crate) fn owner_lock_path(root_dir: &Path) -> PathBuf {
     #[cfg(unix)]
     {
-        session_dir.join(OWNER_LOCK_FILE)
+        root_dir.join(OWNER_LOCK_FILE)
     }
     #[cfg(windows)]
     {
-        session_dir.with_extension(OWNER_LOCK_EXTENSION)
+        root_dir.with_extension(OWNER_LOCK_EXTENSION)
     }
 }
 
+/// Whether `path` is a root tree's ownership lock in either platform layout.
+///
+/// A lock filed inside a `subagents/` directory is a legacy per-child artifact
+/// and is deliberately not recognized: this build never writes one, and the
+/// tree load removes the ones an older build left behind.
 #[cfg(test)]
 pub(crate) fn is_owner_lock_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     if name == OWNER_LOCK_FILE {
-        return path
-            .parent()
-            .and_then(Path::file_name)
+        let Some(session_dir) = path.parent() else {
+            return false;
+        };
+        return session_dir
+            .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(is_canonical_uuid);
+            .is_some_and(is_canonical_uuid)
+            && !is_subagents_dir(session_dir.parent());
     }
     name.strip_suffix(OWNER_LOCK_SUFFIX)
         .is_some_and(is_canonical_uuid)
+        && !is_subagents_dir(path.parent())
+}
+
+#[cfg(test)]
+fn is_subagents_dir(path: Option<&Path>) -> bool {
+    path.and_then(Path::file_name)
+        .is_some_and(|name| name == crate::session::SUBAGENTS_DIR)
 }
 
 #[cfg(test)]
@@ -99,8 +121,10 @@ fn is_canonical_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| id.hyphenated().to_string() == value)
 }
 
-pub(crate) fn try_acquire(session_dir: &Path) -> std::io::Result<SessionOwnership> {
-    let path = owner_lock_path(session_dir);
+/// Classifies ownership of the tree rooted at `root_dir`, taking its lock when
+/// the lock is free.
+pub(crate) fn try_acquire(root_dir: &Path) -> std::io::Result<SessionOwnership> {
+    let path = owner_lock_path(root_dir);
     #[cfg(windows)]
     let file = match cookie_agent_models::secure_store::create_windows_private_lock_file(&path) {
         Ok(file) => file,
@@ -166,18 +190,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn owner_lock_is_inside_the_session_directory_on_unix() {
-        let session_dir = Path::new("sessions").join("0198a5d4-4216-7c73-8385-6954cb683af1");
-        let lock = owner_lock_path(&session_dir);
-        assert_eq!(lock, session_dir.join("owner.lock"));
+    fn owner_lock_is_inside_the_root_directory_on_unix() {
+        let root_dir = Path::new("sessions").join("0198a5d4-4216-7c73-8385-6954cb683af1");
+        let lock = owner_lock_path(&root_dir);
+        assert_eq!(lock, root_dir.join("owner.lock"));
         assert!(is_owner_lock_path(&lock));
     }
 
     #[cfg(windows)]
     #[test]
-    fn owner_lock_is_a_session_sidecar_on_windows() {
-        let session_dir = Path::new("sessions").join("0198a5d4-4216-7c73-8385-6954cb683af1");
-        let lock = owner_lock_path(&session_dir);
+    fn owner_lock_is_a_root_sidecar_on_windows() {
+        let root_dir = Path::new("sessions").join("0198a5d4-4216-7c73-8385-6954cb683af1");
+        let lock = owner_lock_path(&root_dir);
         assert_eq!(
             lock,
             Path::new("sessions").join("0198a5d4-4216-7c73-8385-6954cb683af1.owner.lock")
@@ -202,6 +226,21 @@ mod tests {
             Path::new("sessions").join("0198a5d442167c7383856954cb683af1.owner.lock"),
             Path::new("sessions").join("0198A5D4-4216-7C73-8385-6954CB683AF1.owner.lock"),
             Path::new("sessions").join(format!("{id}.not-owner.lock")),
+        ] {
+            assert!(!is_owner_lock_path(&path), "accepted {path:?}");
+        }
+    }
+
+    /// Only roots are locked, so neither legacy per-child layout is an
+    /// ownership lock this build recognizes.
+    #[test]
+    fn legacy_child_lock_layouts_are_not_owner_locks() {
+        let root = "0198a5d4-4216-7c73-8385-6954cb683af1";
+        let child = "0198a5d4-4216-7c73-8385-6954cb683af2";
+        let subagents = Path::new("sessions").join(root).join("subagents");
+        for path in [
+            subagents.join(child).join("owner.lock"),
+            subagents.join(format!("{child}.owner.lock")),
         ] {
             assert!(!is_owner_lock_path(&path), "accepted {path:?}");
         }

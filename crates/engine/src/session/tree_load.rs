@@ -686,6 +686,9 @@ impl SessionStore {
     pub(super) fn harvest_tree(&self, root: SessionId) -> Result<TreeFold, SessionError> {
         let mut fold = TreeFold::for_root(root);
         let _reads = TreeLoadReads::begin();
+        // Ownership is the tree's: the root's lock is the only one this build
+        // keeps, so the load pass is where an older build's per-child locks go.
+        self.remove_legacy_child_locks(root);
         fold.children = self.child_dir_ids(root);
         for child in fold.children.clone() {
             // Captured before the read: an equal fingerprint afterwards proves
