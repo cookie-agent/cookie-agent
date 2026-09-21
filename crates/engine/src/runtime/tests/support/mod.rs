@@ -256,6 +256,38 @@ pub(crate) async fn await_projection(
     .await
 }
 
+/// Polls the background-delegation slot count under a root until it reaches
+/// `expected`.
+///
+/// Adoption resolves recovered delegations on its own before `resume` returns,
+/// so a settled count is what a test should see immediately. This helper is the
+/// defensive form for assertions that only care about the settled value: it
+/// keeps an unrelated scheduling hiccup from turning into a bare count
+/// mismatch, and reports the last observed count when the bound expires.
+pub(crate) async fn await_running_background_delegations(
+    engine: &Engine,
+    root: SessionId,
+    expected: usize,
+    label: &str,
+) {
+    let mut last = engine.running_background_delegations_for_test(root);
+    let timed_out = {
+        let last = &mut last;
+        tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async move {
+            while *last != expected {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                *last = engine.running_background_delegations_for_test(root);
+            }
+        })
+        .await
+        .is_err()
+    };
+    assert!(
+        !timed_out,
+        "timed out waiting for {label}: expected {expected}, last observed {last}"
+    );
+}
+
 pub(crate) async fn await_child(
     engine: &Engine,
     parent_session_id: SessionId,

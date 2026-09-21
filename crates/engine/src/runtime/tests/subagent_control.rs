@@ -464,11 +464,13 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         .resume(parent.session_id)
         .await
         .expect("adopt queued parent for recovery");
-    assert_eq!(
-        reopened.running_background_delegations_for_test(parent.session_id),
+    await_running_background_delegations(
+        &reopened,
+        parent.session_id,
         0,
-        "parent adoption releases interrupted child capacity"
-    );
+        "parent adoption releases interrupted child capacity",
+    )
+    .await;
     for child_id in reopened
         .inner
         .delegation_events
