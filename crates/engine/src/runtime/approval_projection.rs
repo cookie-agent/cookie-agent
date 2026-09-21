@@ -187,7 +187,8 @@ impl Engine {
         let (sender, receiver) = oneshot::channel();
         let replaced = self
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
@@ -334,7 +335,8 @@ impl Engine {
         if params.decision == ApprovalUserDecision::ApproveTree {
             let pending_epoch = self
                 .inner
-                .pending_approvals
+                .approvals
+                .pending
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .get(&(params.session_id, params.approval_id))
@@ -386,7 +388,7 @@ impl Engine {
                     grant: grant.clone(),
                 },
             )?;
-            self.inner.approvals.grant(grant.clone());
+            self.inner.approvals.store.grant(grant.clone());
         }
         let (outcome, reason_code, approved) = match params.decision {
             ApprovalUserDecision::ApproveOnce => (
@@ -427,7 +429,8 @@ impl Engine {
         )?;
         if let Some(pending) = self
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(params.session_id, params.approval_id))
@@ -534,7 +537,8 @@ impl Engine {
         )?;
         if let Some(pending) = self
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(params.session_id, params.approval_id))
@@ -639,7 +643,8 @@ impl Engine {
     ) {
         if let Some(pending) = self
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(session, approval_id))

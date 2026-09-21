@@ -10,9 +10,7 @@ use oven_sdk::{ModelError, Request as ModelRequest, ToolDefinition};
 use serde::Deserialize;
 
 use super::{
-    ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, InternalAgentLimits, InternalAgentTextResult,
-    UNAVAILABLE_BUILTIN_REVISION,
+    ActiveRun, Engine, EngineError, Event, PublishedRuntime, UNAVAILABLE_BUILTIN_REVISION,
     helpers::{safe_code, safe_display, safe_error},
 };
 use crate::{
@@ -21,6 +19,61 @@ use crate::{
     model_policy::summary as model_error_summary,
     policy::{self, FrozenRunPolicy},
 };
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrozenInternalAgentPolicy {
+    pub(crate) agent: cookie_agent_protocol::AgentSnapshot,
+    pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
+    pub(crate) runtime: Option<Arc<PublishedRuntime>>,
+    pub(crate) limits: InternalAgentLimits,
+    pub(crate) cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
+}
+
+impl FrozenInternalAgentPolicy {
+    pub(crate) fn cache_strategy(
+        &self,
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        session: SessionId,
+    ) -> Option<cookie_agent_models::adapters::CacheStrategyConfig> {
+        let index = self
+            .models
+            .iter()
+            .position(|candidate| candidate == binding)?;
+        let mut strategy = self.cache_strategies.get(index)?.clone()?;
+        if let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(config) = &mut strategy
+            && let Some(key) = &mut config.prompt_cache_key
+        {
+            *key = key.replace("${session_id}", &session.to_string());
+        }
+        Some(strategy)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InternalAgentLimits {
+    pub(crate) max_output_tokens: u64,
+    pub(crate) timeout_ms: u64,
+}
+
+pub(crate) struct InternalAgentTextResult {
+    pub(crate) invocation_id: InternalAgentInvocationId,
+    pub(crate) internal_run_id: InternalAgentRunId,
+    pub(crate) text: String,
+}
+
+pub(crate) struct InternalAgentHistoryInput {
+    pub(crate) history: Vec<oven_sdk::HistoryTurn>,
+    pub(crate) summary_source: String,
+    pub(crate) tools: Vec<ToolDefinition>,
+    pub(crate) reject_non_text: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct InternalAgentExecution<'a> {
+    pub(crate) cancellation: &'a CancellationToken,
+    pub(crate) actor_direct: bool,
+}
 
 const DEFAULT_INTERNAL_TIMEOUT_MS: u64 = 30_000;
 

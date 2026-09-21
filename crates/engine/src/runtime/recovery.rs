@@ -302,6 +302,7 @@ impl Engine {
                     let recovery_key = (session_id, run.id, *call);
                     if self
                         .inner
+                        .delegation
                         .recovery_waiters
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -413,6 +414,7 @@ impl Engine {
                         )?;
                     } else if entry.child_run_id.is_none() {
                         self.inner
+                            .delegation
                             .recovery_waiters
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -421,6 +423,7 @@ impl Engine {
                             Ok(run_id) => run_id,
                             Err(error) => {
                                 self.inner
+                                    .delegation
                                     .recovery_waiters
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -463,6 +466,7 @@ impl Engine {
                             }
                             engine
                                 .inner
+                                .delegation
                                 .recovery_waiters
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -516,17 +520,18 @@ impl Engine {
                 if let Event::TreeApprovalGrantCommitted { grant } = &envelope.payload
                     && crate::session::restart_stable_grant(grant)
                 {
-                    self.inner.approvals.grant(grant.clone());
+                    self.inner.approvals.store.grant(grant.clone());
                 }
             }
         }
         for grant in self.inner.store.loaded_tree_grants() {
             if crate::session::restart_stable_grant(&grant) {
-                self.inner.approvals.grant(grant);
+                self.inner.approvals.store.grant(grant);
             }
         }
         self.inner
             .approvals
+            .store
             .invalidate_grants(&self.inner.grant_journal.invalidated_ids());
     }
 }

@@ -645,7 +645,12 @@ impl crate::Engine {
         effect: PermissionEffect,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
-        let _mutation = self.inner.permission_overlay_mutation.lock().await;
+        let _mutation = self
+            .inner
+            .approvals
+            .permission_overlay_mutation
+            .lock()
+            .await;
         let session = self.inner.store.get(session_id)?;
         let policy = governing_agent(&session);
         let mut overlay = session.permission_overlay.clone();
@@ -697,7 +702,12 @@ impl crate::Engine {
         resource: &WildcardPattern,
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionPermissionMutationResult, crate::EngineError> {
-        let _mutation = self.inner.permission_overlay_mutation.lock().await;
+        let _mutation = self
+            .inner
+            .approvals
+            .permission_overlay_mutation
+            .lock()
+            .await;
         let session = self.inner.store.get(session_id)?;
         let policy = governing_agent(&session);
         let mut overlay = session.permission_overlay;
@@ -752,6 +762,7 @@ impl crate::Engine {
         let grants = self
             .inner
             .approvals
+            .store
             .for_root(root)
             .into_iter()
             .filter(|grant| {
@@ -777,7 +788,7 @@ impl crate::Engine {
         self.inner
             .grant_journal
             .invalidate(root, ids.iter().copied().collect(), digests)?;
-        self.inner.approvals.invalidate_grants(&ids);
+        self.inner.approvals.store.invalidate_grants(&ids);
         Ok(())
     }
 }

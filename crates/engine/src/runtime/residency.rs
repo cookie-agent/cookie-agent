@@ -26,6 +26,7 @@ impl Engine {
                 let engine = Engine { inner };
                 if engine
                     .inner
+                    .delegation
                     .admission_tasks_closing
                     .load(std::sync::atomic::Ordering::Acquire)
                 {
@@ -72,7 +73,8 @@ impl Engine {
     pub(crate) fn set_delegation_queued_for_test(&self, session_id: SessionId, queued: bool) {
         if let Some(record) = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .expect("delegation registry lock poisoned")
             .get_mut(&session_id)
@@ -89,7 +91,8 @@ impl Engine {
     pub(crate) fn set_notification_sent_for_test(&self, session_id: SessionId, sent: bool) {
         if let Some(record) = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .expect("delegation registry lock poisoned")
             .get_mut(&session_id)
@@ -116,7 +119,8 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn delegation_finished_for_test(&self, session_id: SessionId) -> bool {
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .expect("delegation registry lock poisoned")
             .get(&session_id)
@@ -126,7 +130,8 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn delegation_state_for_test(&self, session_id: SessionId) -> String {
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .expect("delegation registry lock poisoned")
             .get(&session_id)
@@ -161,7 +166,7 @@ impl Engine {
         cap: usize,
         idle_after: Duration,
     ) -> Result<Vec<SessionId>, EngineError> {
-        let _delegation_admission = self.inner.delegation_admission.lock().await;
+        let _delegation_admission = self.inner.delegation.admission.lock().await;
         let resident_count = self.inner.store.resident_subagent_count();
         if resident_count <= cap {
             return Ok(Vec::new());
@@ -184,7 +189,7 @@ impl Engine {
             if self.inner.store.resident_subagent_count() <= cap {
                 break;
             }
-            let _residency = self.inner.residency_mutation.lock().await;
+            let _residency = self.inner.sessions.residency_mutation.lock().await;
             let Some(session) = self.inner.store.get_resident(session_id) else {
                 continue;
             };
@@ -216,6 +221,7 @@ impl Engine {
             }
             let actor = {
                 self.inner
+                    .sessions
                     .actors
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -241,6 +247,7 @@ impl Engine {
             }
             let last_event_seq = session.meta.last_event_seq;
             self.inner
+                .sessions
                 .actors
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -270,6 +277,7 @@ impl Engine {
                 .any(|run| matches!(run.status, SessionStatus::Running | SessionStatus::Idle))
             || self
                 .inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -277,19 +285,22 @@ impl Engine {
                 .any(|active| active.session == session.meta.session_id)
             || self
                 .inner
-                .delegation_queue
+                .delegation
+                .queue
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&session.meta.session_id)
             || self
                 .inner
-                .compaction_in_progress
+                .compaction
+                .in_progress
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&session.meta.session_id)
             || self
                 .inner
-                .pending_approvals
+                .approvals
+                .pending
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .keys()
@@ -301,7 +312,8 @@ impl Engine {
         }
         if let Some(record) = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&session.meta.session_id)
@@ -333,6 +345,7 @@ impl Engine {
 
     fn clear_evicted_session_caches(&self, session_id: SessionId, origin: &SessionOrigin) {
         self.inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -341,23 +354,27 @@ impl Engine {
         // the shared mode; an evicted root no longer owns runtime-only state.
         if root_id(origin, session_id) == session_id {
             self.inner
+                .approvals
                 .permission_modes
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&session_id);
         }
         self.inner
+            .compaction
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session_id);
         self.inner
-            .compaction_in_progress
+            .compaction
+            .in_progress
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session_id);
         self.inner
-            .compaction_deferred
+            .compaction
+            .deferred
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session_id);

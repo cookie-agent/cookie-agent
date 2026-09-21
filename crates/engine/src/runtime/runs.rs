@@ -49,6 +49,7 @@ impl Engine {
     ) -> Result<RunSteerResult, EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -95,6 +96,7 @@ impl Engine {
     pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -111,6 +113,7 @@ impl Engine {
     pub async fn cancel_run(&self, run_id: RunId) -> Result<RunCancelResult, EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -126,7 +129,8 @@ impl Engine {
         let inflight_runs: Vec<_> = {
             let mut inflight = self
                 .inner
-                .inflight_delegations
+                .delegation
+                .inflight
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             inflight
@@ -153,7 +157,8 @@ impl Engine {
             let inflight_children: Vec<_> = {
                 let mut inflight = self
                     .inner
-                    .inflight_delegations
+                    .delegation
+                    .inflight
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 inflight
@@ -178,6 +183,7 @@ impl Engine {
                 }
                 let child_active = {
                     self.inner
+                        .sessions
                         .active
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -208,6 +214,7 @@ impl Engine {
     ) -> Result<bool, EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -344,6 +351,7 @@ impl Engine {
     ) -> Result<RunToolStdinResult, EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

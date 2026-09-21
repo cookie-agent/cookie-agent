@@ -16,10 +16,16 @@ impl Engine {
         params: ApprovalRespondParams,
         origin: EventOrigin,
     ) -> Result<ApprovalRespondResult, EngineError> {
-        let _permission_guard = self.inner.permission_overlay_mutation.lock().await;
+        let _permission_guard = self
+            .inner
+            .approvals
+            .permission_overlay_mutation
+            .lock()
+            .await;
         let pending = self
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&(params.session_id, params.approval_id))
@@ -96,7 +102,7 @@ impl Engine {
             .collect();
         ApprovalListResult {
             approvals,
-            tree_grants: self.inner.approvals.for_root(root_session_id),
+            tree_grants: self.inner.approvals.store.for_root(root_session_id),
         }
     }
 }

@@ -707,7 +707,8 @@ impl Engine {
             let (progress_tx, mut progress_rx) = mpsc::channel(64);
             let hub = engine
                 .inner
-                .output_hubs
+                .output
+                .hubs
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .entry(call.id)
@@ -739,7 +740,8 @@ impl Engine {
             if let Some(capture) = &capture {
                 engine
                     .inner
-                    .output_captures
+                    .output
+                    .captures
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(call.id, capture.clone());

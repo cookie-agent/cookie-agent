@@ -439,6 +439,7 @@ impl Engine {
             auto_compaction_diagnostic_emitted: AtomicBool::new(false),
         });
         self.inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -497,6 +498,7 @@ impl Engine {
         if active.cancellation.is_cancelled() {
             self.append_run_cancelled_once(&active, run_id, None)?;
             self.inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -555,6 +557,7 @@ impl Engine {
         // registration. Never resurrect a cancelled run with a live loop.
         if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -567,6 +570,7 @@ impl Engine {
         {
             self.cancel_run_durably(run_id, Some("delegate admission publication failed".into()))?;
             self.inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -575,6 +579,7 @@ impl Engine {
         }
         if self.run_cancelled_recorded(params.session_id, run_id)? {
             self.inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -617,7 +622,7 @@ impl Engine {
                         )
                         .await;
                 }
-                if let Ok(mut active_runs) = engine.inner.active.lock() {
+                if let Ok(mut active_runs) = engine.inner.sessions.active.lock() {
                     active_runs.remove(&run_id);
                 }
                 let _ = engine.reconcile_producers(session_id).await;
@@ -650,7 +655,7 @@ impl Engine {
                     return;
                 }
             }
-            if let Ok(mut active_runs) = engine.inner.active.lock() {
+            if let Ok(mut active_runs) = engine.inner.sessions.active.lock() {
                 active_runs.remove(&run_id);
             }
             let _ = engine.reconcile_producers(session_id).await;
@@ -678,6 +683,7 @@ impl Engine {
         let trigger_tokens = resolve_compaction_trigger(context_limit, &config.trigger);
         let estimator = self
             .inner
+            .compaction
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -819,6 +825,7 @@ impl Engine {
         {
             Ok(()) => {
                 self.inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -832,6 +839,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn has_active_run_for_test(&self, run_id: RunId) -> bool {
         self.inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -845,6 +853,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -863,6 +872,7 @@ impl Engine {
         )
         .await?;
         self.inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1096,7 +1106,8 @@ impl Engine {
                     .map(|tool| tool.spec.output.clone())
                     .unwrap_or_default();
                 self.inner
-                    .output_hubs
+                    .output
+                    .hubs
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .entry(*id)
@@ -2017,6 +2028,7 @@ impl Engine {
                         )
                         .await?;
                         self.inner
+                            .compaction
                             .context_token_estimators
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2257,7 +2269,7 @@ impl Engine {
             .await?;
             entry += 1;
             *sticky_entry = entry;
-            if let Ok(active_runs) = self.inner.active.lock()
+            if let Ok(active_runs) = self.inner.sessions.active.lock()
                 && let Some(active) = active_runs.get(&run)
             {
                 active.fallback_index.store(entry as u64, Ordering::Release);
@@ -2305,7 +2317,8 @@ impl Drop for ToolOutputPublication {
         if let Some(capture) = self
             .engine
             .inner
-            .output_captures
+            .output
+            .captures
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&self.call_id)

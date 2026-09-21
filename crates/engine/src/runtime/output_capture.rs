@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, VecDeque},
     fs::File,
     io::{Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
@@ -12,6 +13,15 @@ use sha2::{Digest as _, Sha256};
 
 use super::{artifacts::ArtifactRouter, blocking_io};
 use crate::{ToolCompletion, ToolError, ToolProgress, events::OutputHub};
+use cookie_agent_protocol::ToolCallId;
+
+/// Tool output capture state owned by [`super::Inner`].
+#[derive(Default)]
+pub(crate) struct OutputState {
+    pub(crate) hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
+    pub(crate) captures: Mutex<HashMap<ToolCallId, OutputCapture>>,
+    pub(crate) finalized_hubs: Mutex<VecDeque<ToolCallId>>,
+}
 
 #[derive(Debug)]
 struct Channel {

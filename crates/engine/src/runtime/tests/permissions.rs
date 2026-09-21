@@ -145,17 +145,21 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
     )
     .expect("prepared operation");
     let grant_id = TreeApprovalGrantId::new_v7();
-    fixture.engine.inner.approvals.grant(TreeApprovalGrant {
-        grant_id,
-        root_session_id: session.session_id,
-        approval_id: ApprovalId::new_v7(),
-        operation_fingerprint: cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
-            &operation,
-        ),
-        capabilities,
-        resources: vec![resource],
-        created_at: Timestamp::now(),
-    });
+    fixture
+        .engine
+        .inner
+        .approvals
+        .store
+        .grant(TreeApprovalGrant {
+            grant_id,
+            root_session_id: session.session_id,
+            approval_id: ApprovalId::new_v7(),
+            operation_fingerprint:
+                cookie_agent_protocol::OperationFingerprint::from_prepared_operation(&operation),
+            capabilities,
+            resources: vec![resource],
+            created_at: Timestamp::now(),
+        });
     fixture
         .engine
         .set_session_permission(
@@ -172,6 +176,7 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
             .engine
             .inner
             .approvals
+            .store
             .for_root(session.session_id)
             .is_empty()
     );
@@ -232,17 +237,21 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
     )
     .expect("prepared operation");
     let grant_id = TreeApprovalGrantId::new_v7();
-    fixture.engine.inner.approvals.grant(TreeApprovalGrant {
-        grant_id,
-        root_session_id: session.session_id,
-        approval_id: ApprovalId::new_v7(),
-        operation_fingerprint: cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
-            &operation,
-        ),
-        capabilities: operation.capabilities().to_vec(),
-        resources: vec![resource],
-        created_at: Timestamp::now(),
-    });
+    fixture
+        .engine
+        .inner
+        .approvals
+        .store
+        .grant(TreeApprovalGrant {
+            grant_id,
+            root_session_id: session.session_id,
+            approval_id: ApprovalId::new_v7(),
+            operation_fingerprint:
+                cookie_agent_protocol::OperationFingerprint::from_prepared_operation(&operation),
+            capabilities: operation.capabilities().to_vec(),
+            resources: vec![resource],
+            created_at: Timestamp::now(),
+        });
 
     fixture
         .engine
@@ -260,6 +269,7 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
             .engine
             .inner
             .approvals
+            .store
             .for_root(session.session_id)
             .is_empty()
     );
@@ -449,13 +459,14 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
         reopened
             .inner
             .approvals
+            .store
             .for_root(root.session_id)
             .is_empty(),
         "a grant living in a child log cannot be restored at startup"
     );
 
     let _ = reopened.children(root.session_id).expect("children");
-    let granted = reopened.inner.approvals.for_root(root.session_id);
+    let granted = reopened.inner.approvals.store.for_root(root.session_id);
     assert_eq!(
         granted
             .iter()
@@ -474,6 +485,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
         reopened
             .inner
             .approvals
+            .store
             .for_root(root.session_id)
             .iter()
             .filter(|grant| grant.grant_id == grant_id)

@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_config::{SkillContext, SkillDocument};
 use cookie_agent_protocol::{
@@ -11,6 +15,16 @@ use super::{ActiveRun, Engine, EngineError, prompt_blocks::push_prompt_block};
 use crate::{ToolCall, TurnAgentContext};
 use crate::{permissions, policy::FrozenRunPolicy};
 pub const RESERVED_STAGED_SKILL_PREFIX: &str = "\0cookie-staged-skill:";
+
+/// Skill runtime state owned by [`super::Inner`].
+#[derive(Default)]
+pub(crate) struct SkillRuntimeState {
+    pub(crate) grants: Mutex<HashMap<SessionId, BTreeMap<String, SkillGrantOverlay>>>,
+    pub(crate) models: Mutex<HashMap<SessionId, cookie_agent_protocol::ModelKey>>,
+    pub(crate) pending_forks: Mutex<HashMap<ToolCallId, PreparedSkillInvocation>>,
+    pub(crate) pending_child: Mutex<HashMap<SessionId, PreparedSkillInvocation>>,
+    pub(crate) direct_calls: Mutex<HashSet<ToolCallId>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct SkillInvocation {
@@ -88,7 +102,8 @@ impl Engine {
         session: SessionId,
     ) -> Option<SessionPermissionOverlay> {
         self.inner
-            .skill_grants
+            .skills_runtime
+            .grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&session)
@@ -301,7 +316,8 @@ impl Engine {
             .await?;
         let mut overlays = self
             .inner
-            .skill_grants
+            .skills_runtime
+            .grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let per_skill = overlays.entry(session).or_default();
@@ -324,7 +340,8 @@ impl Engine {
         drop(overlays);
         if let Some(model) = &plan.model {
             self.inner
-                .skill_models
+                .skills_runtime
+                .models
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(session, model.clone());
@@ -345,7 +362,8 @@ impl Engine {
 
     pub fn is_direct_skill_call(&self, call_id: ToolCallId) -> bool {
         self.inner
-            .direct_skill_calls
+            .skills_runtime
+            .direct_calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&call_id)
@@ -358,7 +376,8 @@ impl Engine {
         payload: &cookie_agent_protocol::StagedSkillPayload,
     ) {
         self.inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .expect("pending skill forks lock poisoned")
             .insert(call_id, prepared_skill_from_payload(payload));
@@ -374,7 +393,8 @@ impl Engine {
         self.get_user_skill(active.session, &name, &args)?;
         let call_id = ToolCallId::new_v7();
         self.inner
-            .direct_skill_calls
+            .skills_runtime
+            .direct_calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(call_id);
@@ -390,7 +410,8 @@ impl Engine {
             )
             .await;
         self.inner
-            .direct_skill_calls
+            .skills_runtime
+            .direct_calls
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&call_id);
@@ -420,12 +441,14 @@ impl Engine {
                 EngineError::ToolFailed("fork skill requires an available delegation target".into())
             })?;
         self.inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(call_id, plan.clone());
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -452,7 +475,8 @@ impl Engine {
             )
             .await;
         self.inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&call_id);
@@ -523,7 +547,8 @@ impl Engine {
         payload: &cookie_agent_protocol::StagedSkillPayload,
     ) {
         self.inner
-            .pending_child_skills
+            .skills_runtime
+            .pending_child
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session, prepared_skill_from_payload(payload));
@@ -534,7 +559,8 @@ impl Engine {
         session: SessionId,
     ) -> Option<PreparedSkillInvocation> {
         self.inner
-            .pending_child_skills
+            .skills_runtime
+            .pending_child
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&session)
@@ -546,7 +572,8 @@ impl Engine {
         session: SessionId,
     ) -> Option<PreparedSkillInvocation> {
         self.inner
-            .pending_child_skills
+            .skills_runtime
+            .pending_child
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session)
@@ -558,7 +585,8 @@ impl Engine {
         _child_session: SessionId,
     ) {
         self.inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&call_id);
@@ -569,7 +597,8 @@ impl Engine {
         session: SessionId,
     ) -> Option<cookie_agent_protocol::ModelKey> {
         self.inner
-            .skill_models
+            .skills_runtime
+            .models
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session)
@@ -577,12 +606,14 @@ impl Engine {
 
     pub(crate) fn clear_skill_turn_state(&self, session: SessionId) {
         self.inner
-            .skill_grants
+            .skills_runtime
+            .grants
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session);
         self.inner
-            .skill_models
+            .skills_runtime
+            .models
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session);

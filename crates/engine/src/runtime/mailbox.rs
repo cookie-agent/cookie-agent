@@ -1,6 +1,6 @@
 use std::{
-    collections::{HashSet, VecDeque},
-    sync::atomic::Ordering,
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex, atomic::Ordering},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -26,6 +26,17 @@ use super::{
     model_loop,
 };
 use crate::{actor::SessionActor, events, session::SessionError, tool_api::StdinWrite};
+
+use super::{ActiveRun, producers};
+
+/// Per-session mailbox and run state owned by [`super::Inner`].
+#[derive(Default)]
+pub(crate) struct SessionRuntimeState {
+    pub(super) actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
+    pub(super) active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
+    pub(super) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
+    pub(crate) residency_mutation: tokio::sync::Mutex<()>,
+}
 
 impl Engine {
     pub async fn subscribe(
@@ -75,7 +86,8 @@ impl Engine {
         mpsc::Receiver<events::OutputMessage>,
     )> {
         self.inner
-            .output_hubs
+            .output
+            .hubs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&call)
@@ -88,7 +100,8 @@ impl Engine {
         call_id: ToolCallId,
     ) -> Option<Vec<cookie_agent_protocol::OutputStream>> {
         self.inner
-            .output_hubs
+            .output
+            .hubs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&call_id)
@@ -99,7 +112,8 @@ impl Engine {
         const FINALIZED_HUB_RETENTION: usize = 128;
         let mut finalized = self
             .inner
-            .finalized_output_hubs
+            .output
+            .finalized_hubs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         finalized.push_back(call);
@@ -107,7 +121,8 @@ impl Engine {
             && let Some(expired) = finalized.pop_front()
         {
             self.inner
-                .output_hubs
+                .output
+                .hubs
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&expired);
@@ -124,7 +139,7 @@ impl Engine {
         self.request(session, |reply| SessionCommand::Append {
             run,
             origin,
-            event,
+            event: Box::new(event),
             reply,
         })
         .await
@@ -138,11 +153,12 @@ impl Engine {
         event: Event,
     ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
         let (reply, receiver) = oneshot::channel();
-        let _residency = self.inner.residency_mutation.lock().await;
+        let _residency = self.inner.sessions.residency_mutation.lock().await;
         self.ensure_session_owned(session)?;
         self.spawn_actor(session)?;
         let actor = self
             .inner
+            .sessions
             .actors
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -153,7 +169,7 @@ impl Engine {
             .send(SessionCommand::Append {
                 run,
                 origin,
-                event,
+                event: Box::new(event),
                 reply,
             })
             .await
@@ -172,7 +188,7 @@ impl Engine {
         self.request_blocking(session, |reply| SessionCommand::Append {
             run,
             origin,
-            event,
+            event: Box::new(event),
             reply,
         })
     }
@@ -262,6 +278,7 @@ impl Engine {
             // Freeze status and retained-output state together at this append boundary.
             let cancelled = run.is_some_and(|run| {
                 self.inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -391,6 +408,7 @@ impl Engine {
         let message = cookie_agent_protocol::diagnostics::detail(&message).to_string();
         self.inner
             .plugin_diagnostics
+            .accumulator
             .record((session_id, plugin, kind, message), count);
     }
 
@@ -520,11 +538,12 @@ impl Engine {
     ) -> Result<T, EngineError> {
         let (reply, receiver) = oneshot::channel();
         {
-            let _residency = self.inner.residency_mutation.lock().await;
+            let _residency = self.inner.sessions.residency_mutation.lock().await;
             self.ensure_session_owned(session)?;
             self.spawn_actor(session)?;
             let actor = self
                 .inner
+                .sessions
                 .actors
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -639,7 +658,8 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn compaction_reserved_for_test(&self, session: SessionId) -> bool {
         self.inner
-            .compaction_in_progress
+            .compaction
+            .in_progress
             .lock()
             .expect("compaction reservation lock poisoned")
             .contains(&session)
@@ -648,6 +668,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn run_active_for_test(&self, run: RunId) -> bool {
         self.inner
+            .sessions
             .active
             .lock()
             .expect("active runs lock poisoned")
@@ -657,6 +678,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn actor_resident_for_test(&self, session: SessionId) -> bool {
         self.inner
+            .sessions
             .actors
             .lock()
             .expect("actor registry lock poisoned")
@@ -692,6 +714,7 @@ impl Engine {
     > {
         let actor = self
             .inner
+            .sessions
             .actors
             .lock()
             .expect("actor registry lock poisoned")
@@ -717,11 +740,12 @@ impl Engine {
     ) -> Result<T, EngineError> {
         let (reply, receiver) = oneshot::channel();
         {
-            let _residency = self.inner.residency_mutation.blocking_lock();
+            let _residency = self.inner.sessions.residency_mutation.blocking_lock();
             self.ensure_session_owned(session)?;
             self.spawn_actor(session)?;
             let actor = self
                 .inner
+                .sessions
                 .actors
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -740,6 +764,7 @@ impl Engine {
     pub(crate) fn spawn_actor(&self, session: SessionId) -> Result<(), EngineError> {
         let mut actors = self
             .inner
+            .sessions
             .actors
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -751,6 +776,7 @@ impl Engine {
             return Ok(());
         }
         self.inner
+            .compaction
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -822,6 +848,7 @@ impl Engine {
     pub(super) fn ensure_not_shutting_down(&self) -> Result<(), EngineError> {
         if self
             .inner
+            .delegation
             .admission_tasks_closing
             .load(std::sync::atomic::Ordering::Acquire)
         {
@@ -833,7 +860,8 @@ impl Engine {
 
     pub(super) fn reserve_compaction(&self, session: SessionId) -> bool {
         self.inner
-            .compaction_in_progress
+            .compaction
+            .in_progress
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(session)
@@ -849,6 +877,7 @@ impl Engine {
     async fn release_compaction_direct(&self, session: SessionId) {
         if let Some(state) = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -857,13 +886,15 @@ impl Engine {
             state.starting = false;
         }
         self.inner
-            .compaction_in_progress
+            .compaction
+            .in_progress
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session);
         let deferred = self
             .inner
-            .compaction_deferred
+            .compaction
+            .deferred
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session)
@@ -878,6 +909,7 @@ impl Engine {
             {
                 let mut registry = self
                     .inner
+                    .sessions
                     .producers
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
@@ -890,7 +922,8 @@ impl Engine {
         if let Some(kind) = command.compaction_deferred_kind()
             && self
                 .inner
-                .compaction_in_progress
+                .compaction
+                .in_progress
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&session)
@@ -898,7 +931,8 @@ impl Engine {
             let rejected = {
                 let mut deferred = self
                     .inner
-                    .compaction_deferred
+                    .compaction
+                    .deferred
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let queue = deferred.entry(session).or_default();
@@ -922,7 +956,7 @@ impl Engine {
         let reconcile = match &command {
             SessionCommand::EvictionBarrier { .. } => false,
             SessionCommand::Append { event, .. } => matches!(
-                event,
+                &**event,
                 Event::ModelTurnCommitted { .. }
                     | Event::RunCompleted { .. }
                     | Event::RunFailed { .. }
@@ -962,7 +996,7 @@ impl Engine {
             } => {
                 #[cfg(test)]
                 if matches!(
-                    &event,
+                    &*event,
                     Event::MessageInjected { .. }
                         | Event::UserInputTransformed { .. }
                         | Event::UserInputSubmitted { .. }
@@ -976,7 +1010,7 @@ impl Engine {
                     })
                     .is_ok()
                 {
-                    let event_name = match &event {
+                    let event_name = match &*event {
                         Event::MessageInjected { .. } => "message injected",
                         Event::UserInputTransformed { .. } => "user input transformed",
                         Event::UserInputSubmitted { .. } => "user input submitted",
@@ -988,9 +1022,9 @@ impl Engine {
                     ))));
                     return;
                 }
-                let reverted = matches!(&event, Event::SessionReverted { .. });
+                let reverted = matches!(&*event, Event::SessionReverted { .. });
                 let result = self
-                    .append_direct(session, run, origin, event)
+                    .append_direct(session, run, origin, *event)
                     .and_then(|result| {
                         if reverted {
                             self.inner.delegation_events.reconcile_parent(session)?;
@@ -1090,6 +1124,7 @@ impl Engine {
             } => {
                 let active = self
                     .inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1146,6 +1181,7 @@ impl Engine {
             SessionCommand::AdmitDelegatedResume { run, input, reply } => {
                 let active = self
                     .inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1224,6 +1260,7 @@ impl Engine {
             SessionCommand::RecallSteer { run, reply } => {
                 let result = (|| {
                     self.inner
+                        .sessions
                         .active
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1390,6 +1427,7 @@ impl Engine {
                             Event::SessionReverted { through_seq },
                         )?;
                         self.inner
+                            .compaction
                             .context_token_estimators
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1414,6 +1452,7 @@ impl Engine {
                 let result = (|| {
                     let active = self
                         .inner
+                        .sessions
                         .active
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1454,6 +1493,7 @@ impl Engine {
                 let result = (|| {
                     let active = self
                         .inner
+                        .sessions
                         .active
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1665,7 +1705,8 @@ impl Engine {
                 };
                 if let Some(capture) = self
                     .inner
-                    .output_captures
+                    .output
+                    .captures
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&tool_call_id)
@@ -1722,6 +1763,7 @@ impl Engine {
                     };
                 let active = self
                     .inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1843,6 +1885,7 @@ impl Engine {
             SessionCommand::PromotePendingInputs { run, reply } => {
                 let result = self
                     .inner
+                    .sessions
                     .active
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())

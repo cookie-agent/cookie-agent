@@ -1,7 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use cookie_agent_config::ContextCompactionTrigger;
@@ -29,6 +29,83 @@ use crate::{
     model_history::{self, assemble_model_context},
     policy::{self, FrozenRunPolicy},
 };
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ContextTokenEstimator {
+    pub(crate) tokens_per_byte: f64,
+    pub(crate) last_committed_input_tokens: u64,
+}
+
+pub(crate) struct PredictiveCompactionInput<'a> {
+    pub(crate) session: SessionId,
+    pub(crate) run: RunId,
+    pub(crate) serialized_message_bytes: usize,
+    pub(crate) policy: &'a FrozenRunPolicy,
+    pub(crate) fallback_index: usize,
+    pub(crate) cancellation: &'a CancellationToken,
+    pub(crate) actor_direct: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum CompactionDeferredKind {
+    Start,
+    PromotePendingInputs,
+    PromotePendingOrComplete,
+    Resume,
+}
+
+impl ContextTokenEstimator {
+    pub(crate) fn record_committed_turn(
+        &mut self,
+        serialized_context_bytes: usize,
+        input_tokens: Option<u64>,
+    ) {
+        self.last_committed_input_tokens = input_tokens.unwrap_or(0);
+        if serialized_context_bytes > 0
+            && let Some(input_tokens) = input_tokens.filter(|tokens| *tokens > 0)
+        {
+            self.tokens_per_byte = input_tokens as f64 / serialized_context_bytes as f64;
+        }
+    }
+
+    pub(crate) fn projected_tokens(self, serialized_message_bytes: usize) -> Option<u64> {
+        (self.tokens_per_byte > 0.0).then(|| {
+            self.last_committed_input_tokens
+                .saturating_add((serialized_message_bytes as f64 * self.tokens_per_byte) as u64)
+        })
+    }
+
+    pub(crate) fn estimated_context_tokens(self, serialized_context_bytes: usize) -> Option<u64> {
+        (self.tokens_per_byte > 0.0)
+            .then(|| (serialized_context_bytes as f64 * self.tokens_per_byte).ceil() as u64)
+    }
+
+    pub(crate) fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
+        self.projected_tokens(serialized_message_bytes)
+            .is_some_and(|projected| projected >= soft_tokens)
+    }
+
+    pub(crate) fn record_compaction(&mut self, estimated_input_tokens: u64) {
+        self.last_committed_input_tokens = estimated_input_tokens;
+    }
+}
+
+pub(crate) fn should_run_predictive_compaction(
+    estimator: ContextTokenEstimator,
+    serialized_message_bytes: usize,
+    soft_tokens: u64,
+    session_persisted: bool,
+) -> bool {
+    session_persisted && estimator.should_compact(serialized_message_bytes, soft_tokens)
+}
+
+/// Compaction runtime state owned by [`super::Inner`].
+#[derive(Default)]
+pub(crate) struct CompactionState {
+    pub(crate) in_progress: Mutex<HashSet<SessionId>>,
+    pub(super) deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
+    pub(crate) context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
+}
 
 pub(crate) const COMPACTION_INSTRUCTION: &str = "Create a detailed technical summary of the conversation so work can continue without the earlier context. Include: the goal/objective; decisions and their rationale; files changed and current code state; commands run and their outcomes; errors encountered and fixes applied; and the pending next step. Preserve exact identifiers, paths, constraints, and unresolved questions. Return summary text only and do not call tools.";
 pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
@@ -157,6 +234,7 @@ impl Engine {
         }
         let active_run = self
             .inner
+            .sessions
             .active
             .lock()
             .ok()
@@ -704,6 +782,7 @@ impl Engine {
         input_tokens_after: u64,
     ) -> Result<Arc<[StoredEvent]>, EngineError> {
         self.inner
+            .compaction
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -792,6 +871,7 @@ impl Engine {
         let bytes = serialized_fit_request_bytes(history, tools)?;
         let calibrated = self
             .inner
+            .compaction
             .context_token_estimators
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

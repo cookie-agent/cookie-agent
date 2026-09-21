@@ -1,8 +1,8 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
@@ -17,9 +17,8 @@ use cookie_agent_models::{
 use cookie_agent_protocol::{
     AgentId, ApprovalId, ApprovalInternalDecisionKind, ApprovalRequest, ApprovalRespondErrorCode,
     ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, EventPayload as Event,
-    EventSubscriptionMessage, EventsSubscribeResult, InternalAgentInvocationId, InternalAgentRunId,
-    InvocationId, OperationFingerprint, PermissionMode, PersistedModelTurn,
-    PersistedToolResult as ToolResult, PreparedOperationIdentity, ProviderConnectParams,
+    EventSubscriptionMessage, EventsSubscribeResult, InvocationId, OperationFingerprint,
+    PermissionMode, PersistedModelTurn, PersistedToolResult as ToolResult, ProviderConnectParams,
     ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelResult,
     RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
     RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason, RuntimeChangedNotification,
@@ -37,13 +36,12 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    actor::SessionActor,
     delegation_events::{DelegationEventError, DelegationEventStore},
-    events::{self, EventLogError, OutputHub},
+    events::{self, EventLogError},
     grant_journal::{GrantInvalidationJournal, GrantJournalError},
     model_history,
     model_snapshots::{prepare_runtime_manifest, validate_referenced_binding},
-    permissions::{ApprovalStore, PermissionPipeline},
+    permissions::PermissionPipeline,
     policy::FrozenRunPolicy,
     runtime_snapshot::{
         AgentRegistry, PublishedRuntime, RuntimePublication, build_runtime_snapshot,
@@ -70,6 +68,7 @@ mod mailbox;
 pub(crate) mod messaging_api;
 mod model_loop;
 mod output_capture;
+pub(crate) mod plugin_diagnostics;
 mod producer_claims;
 pub(crate) mod producers;
 mod prompt_blocks;
@@ -87,7 +86,6 @@ pub(crate) mod tool_execution;
 mod tool_prompts;
 mod working_directory;
 
-use admission::InflightDelegation;
 pub use artifact_reads::ArtifactReadPage;
 pub(crate) use artifact_reads::read_artifact_async;
 pub(crate) use artifacts::ArtifactRouter;
@@ -98,17 +96,36 @@ pub(crate) use delegation::render_subagent_notification;
 pub(crate) fn test_session_id() -> cookie_agent_protocol::SessionId {
     cookie_agent_protocol::SessionId::new_v7()
 }
+use approval_flow::{
+    ApprovalEvaluationTransition, ApprovalRuntimeState, ApprovalTerminal, ApprovalToolInput,
+    ModelApprovalInput, PreparedApprovalInvalidation,
+};
+pub(crate) use approval_flow::{ApprovalOutcome, PendingApproval};
 #[cfg(test)]
 pub(crate) use artifacts::ArtifactStore;
 #[cfg(test)]
 pub(crate) use blocking_io::gate as block_artifact_io_for_test;
-use delegation::DelegationRecord;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use compaction::ContextTokenEstimator;
+use compaction::{
+    CompactionDeferredKind, CompactionState, PredictiveCompactionInput,
+    should_run_predictive_compaction,
+};
+use delegation::DelegationRuntimeState;
 pub use get_history::EngineHistoryView;
 use helpers::safe_code;
+pub(crate) use internal_agents::FrozenInternalAgentPolicy;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use internal_agents::InternalAgentLimits;
+use internal_agents::{InternalAgentExecution, InternalAgentHistoryInput};
+use mailbox::SessionRuntimeState;
 pub use messaging_api::{AgentMessageHandle, AgentMessageInvocation, AgentRecipientState};
 pub(crate) use output_capture::OutputCapture;
+use output_capture::OutputState;
 pub(crate) use output_capture::finish_page;
+use plugin_diagnostics::{PluginDiagnosticsState, run_plugin_diagnostic_aggregator};
 pub use skills::SkillInvocation;
+use skills::SkillRuntimeState;
 #[cfg(test)]
 pub(crate) use test_hooks::*;
 
@@ -306,22 +323,6 @@ struct AttemptTurn {
     normalized_tool_calls: HashSet<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct ContextTokenEstimator {
-    tokens_per_byte: f64,
-    last_committed_input_tokens: u64,
-}
-
-struct PredictiveCompactionInput<'a> {
-    session: SessionId,
-    run: RunId,
-    serialized_message_bytes: usize,
-    policy: &'a FrozenRunPolicy,
-    fallback_index: usize,
-    cancellation: &'a CancellationToken,
-    actor_direct: bool,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingInput {
     admission_seq: u64,
@@ -348,93 +349,6 @@ pub(super) enum UserInputInterception {
     Handled {
         reason: String,
     },
-}
-
-impl ContextTokenEstimator {
-    fn record_committed_turn(
-        &mut self,
-        serialized_context_bytes: usize,
-        input_tokens: Option<u64>,
-    ) {
-        self.last_committed_input_tokens = input_tokens.unwrap_or(0);
-        if serialized_context_bytes > 0
-            && let Some(input_tokens) = input_tokens.filter(|tokens| *tokens > 0)
-        {
-            self.tokens_per_byte = input_tokens as f64 / serialized_context_bytes as f64;
-        }
-    }
-
-    fn projected_tokens(self, serialized_message_bytes: usize) -> Option<u64> {
-        (self.tokens_per_byte > 0.0).then(|| {
-            self.last_committed_input_tokens
-                .saturating_add((serialized_message_bytes as f64 * self.tokens_per_byte) as u64)
-        })
-    }
-
-    fn estimated_context_tokens(self, serialized_context_bytes: usize) -> Option<u64> {
-        (self.tokens_per_byte > 0.0)
-            .then(|| (serialized_context_bytes as f64 * self.tokens_per_byte).ceil() as u64)
-    }
-
-    fn should_compact(self, serialized_message_bytes: usize, soft_tokens: u64) -> bool {
-        self.projected_tokens(serialized_message_bytes)
-            .is_some_and(|projected| projected >= soft_tokens)
-    }
-
-    fn record_compaction(&mut self, estimated_input_tokens: u64) {
-        self.last_committed_input_tokens = estimated_input_tokens;
-    }
-}
-
-fn should_run_predictive_compaction(
-    estimator: ContextTokenEstimator,
-    serialized_message_bytes: usize,
-    soft_tokens: u64,
-    session_persisted: bool,
-) -> bool {
-    session_persisted && estimator.should_compact(serialized_message_bytes, soft_tokens)
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ApprovalOutcome {
-    pub(crate) approved: bool,
-    pub(crate) feedback: Option<String>,
-}
-
-pub(crate) struct PendingApproval {
-    pub(crate) sender: oneshot::Sender<ApprovalOutcome>,
-    pub(crate) executor: PreparedExecutorCell,
-    pub(crate) permission_overlay_epoch: u64,
-}
-
-#[derive(Clone, Copy)]
-enum PreparedApprovalInvalidation {
-    OperationChanged,
-    PreparedCapabilityLost,
-}
-
-#[derive(Clone, Copy)]
-enum ApprovalTerminal {
-    Cancelled,
-    Expired,
-}
-
-enum ApprovalEvaluationTransition {
-    Resolved(ApprovalOutcome),
-    Escalated(oneshot::Receiver<ApprovalOutcome>),
-}
-
-struct ApprovalToolInput<'a> {
-    name: &'a str,
-    normalized_parameters: &'a Value,
-}
-
-struct ModelApprovalInput<'a> {
-    operation: &'a PreparedOperationIdentity,
-    policy_labels: &'a [Option<String>],
-    executor: PreparedExecutorCell,
-    message: Option<String>,
-    tool: ApprovalToolInput<'a>,
 }
 
 struct PreparedToolCall {
@@ -531,199 +445,12 @@ impl From<ToolError> for ToolFailure {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct FrozenInternalAgentPolicy {
-    pub(crate) agent: cookie_agent_protocol::AgentSnapshot,
-    pub(crate) models: Vec<cookie_agent_protocol::FrozenModelBinding>,
-    pub(crate) runtime: Option<Arc<PublishedRuntime>>,
-    pub(crate) limits: InternalAgentLimits,
-    pub(crate) cache_strategies: Vec<Option<cookie_agent_models::adapters::CacheStrategyConfig>>,
-}
-
-impl FrozenInternalAgentPolicy {
-    pub(crate) fn cache_strategy(
-        &self,
-        binding: &cookie_agent_protocol::FrozenModelBinding,
-        session: SessionId,
-    ) -> Option<cookie_agent_models::adapters::CacheStrategyConfig> {
-        let index = self
-            .models
-            .iter()
-            .position(|candidate| candidate == binding)?;
-        let mut strategy = self.cache_strategies.get(index)?.clone()?;
-        if let cookie_agent_models::adapters::CacheStrategyConfig::OpenAi(config) = &mut strategy
-            && let Some(key) = &mut config.prompt_cache_key
-        {
-            *key = key.replace("${session_id}", &session.to_string());
-        }
-        Some(strategy)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct InternalAgentLimits {
-    pub(crate) max_output_tokens: u64,
-    pub(crate) timeout_ms: u64,
-}
-
-struct InternalAgentTextResult {
-    invocation_id: InternalAgentInvocationId,
-    internal_run_id: InternalAgentRunId,
-    text: String,
-}
-
-struct InternalAgentHistoryInput {
-    history: Vec<oven_sdk::HistoryTurn>,
-    summary_source: String,
-    tools: Vec<ToolDefinition>,
-    reject_non_text: bool,
-}
-
-#[derive(Clone, Copy)]
-struct InternalAgentExecution<'a> {
-    cancellation: &'a CancellationToken,
-    actor_direct: bool,
-}
-
 enum PendingTool {
     Prepared {
         prepared: Box<PreparedToolCall>,
         permission: crate::permissions::PermissionDecision,
     },
     ImmediateFailure(ToolFailure),
-}
-
-type PluginDiagnosticKey = (
-    SessionId,
-    String,
-    cookie_agent_protocol::PluginDiagnosticKind,
-    String,
-);
-type PluginDiagnosticGroup = (
-    SessionId,
-    String,
-    cookie_agent_protocol::PluginDiagnosticKind,
-);
-
-const PLUGIN_DIAGNOSTIC_MESSAGE_CHARS: usize = 200;
-const PLUGIN_DIAGNOSTIC_DETAIL_KEYS: usize = 256;
-const PLUGIN_DIAGNOSTIC_OVERFLOW_MESSAGE: &str = "(overflow)";
-const PLUGIN_DIAGNOSTIC_APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-#[cfg(not(all(test, windows)))]
-const PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-// Windows CI's coalescing test drains up to 257 synced appends under parallel load.
-#[cfg(all(test, windows))]
-const PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-#[derive(Debug, Default)]
-struct PendingPluginDiagnostics {
-    details: HashMap<PluginDiagnosticKey, u64>,
-    overflow: HashMap<PluginDiagnosticGroup, u64>,
-}
-
-#[derive(Debug, Default)]
-struct PluginDiagnosticAccumulator {
-    pending: Mutex<PendingPluginDiagnostics>,
-    notify: tokio::sync::Notify,
-    shutdown: AtomicBool,
-    active_plugin: Mutex<Option<String>>,
-}
-
-impl PluginDiagnosticAccumulator {
-    fn record(&self, key: PluginDiagnosticKey, count: u64) {
-        let (session_id, plugin, kind, message) = key;
-        let message = normalize_plugin_diagnostic_message(&message);
-        let key = (session_id, plugin.clone(), kind, message);
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let total = if pending.details.contains_key(&key)
-            || pending.details.len() < PLUGIN_DIAGNOSTIC_DETAIL_KEYS
-        {
-            pending.details.entry(key).or_default()
-        } else {
-            pending
-                .overflow
-                .entry((session_id, plugin, kind))
-                .or_default()
-        };
-        *total = total.saturating_add(count);
-        drop(pending);
-        self.notify.notify_one();
-    }
-
-    fn take(&self) -> Vec<(PluginDiagnosticKey, u64)> {
-        let pending = std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        let mut records = pending.details.into_iter().collect::<Vec<_>>();
-        records.extend(
-            pending
-                .overflow
-                .into_iter()
-                .map(|((session_id, plugin, kind), count)| {
-                    (
-                        (
-                            session_id,
-                            plugin,
-                            kind,
-                            PLUGIN_DIAGNOSTIC_OVERFLOW_MESSAGE.into(),
-                        ),
-                        count,
-                    )
-                }),
-        );
-        records
-    }
-
-    fn is_empty(&self) -> bool {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.details.is_empty() && pending.overflow.is_empty()
-    }
-
-    #[cfg(test)]
-    fn key_count(&self) -> usize {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        pending.details.len() + pending.overflow.len()
-    }
-
-    fn offenders(&self) -> HashSet<String> {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut offenders = pending
-            .details
-            .keys()
-            .map(|(_, plugin, _, _)| plugin.clone())
-            .chain(pending.overflow.keys().map(|(_, plugin, _)| plugin.clone()))
-            .collect::<HashSet<_>>();
-        drop(pending);
-        if let Some(plugin) = self
-            .active_plugin
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-        {
-            offenders.insert(plugin);
-        }
-        offenders
-    }
-}
-
-fn normalize_plugin_diagnostic_message(message: &str) -> String {
-    cookie_agent_protocol::diagnostics::sanitize(message, PLUGIN_DIAGNOSTIC_MESSAGE_CHARS)
-        .replace(['\n', '\t'], " ")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -793,7 +520,6 @@ impl RuntimeRevisionIndex {
 
 const SESSION_MAILBOX_CAPACITY: usize = 256;
 const MAX_PENDING_PREPARED_TOOLS: usize = 64;
-const PLUGIN_DIAGNOSTIC_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 /// Semantic revision of the no-model builtin runtime contract.
 /// This is intentionally independent of the protocol and event schema version.
 pub(crate) const UNAVAILABLE_BUILTIN_REVISION: &str = "internal-agent.unavailable.runtime.1";
@@ -802,83 +528,12 @@ pub(super) fn event_origin(value: &'static str) -> cookie_agent_protocol::EventO
     cookie_agent_protocol::EventOrigin::new(value).expect("static event origin is valid")
 }
 
-async fn run_plugin_diagnostic_aggregator(
-    inner: Weak<Inner>,
-    diagnostics: Arc<PluginDiagnosticAccumulator>,
-) {
-    loop {
-        let notified = diagnostics.notify.notified();
-        if diagnostics.is_empty() && !diagnostics.shutdown.load(Ordering::Acquire) {
-            notified.await;
-            continue;
-        }
-        if !diagnostics.shutdown.load(Ordering::Acquire) {
-            tokio::time::sleep(PLUGIN_DIAGNOSTIC_BATCH_DELAY).await;
-        }
-        let batch = diagnostics.take();
-        let Some(inner) = inner.upgrade() else {
-            return;
-        };
-        #[cfg(test)]
-        let append_block = inner
-            .test_hooks
-            .plugin_diagnostic_append_block
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let engine = Engine { inner };
-        for ((session_id, plugin, kind, message), count) in batch {
-            *diagnostics
-                .active_plugin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(plugin.clone());
-            let append = async {
-                #[cfg(test)]
-                if let Some(block) = &append_block {
-                    block.notified().await;
-                }
-                engine
-                    .request(session_id, |reply| SessionCommand::Append {
-                        run: None,
-                        origin: cookie_agent_protocol::EventOrigin::new("engine:plugin-host")
-                            .expect("static event origin is valid"),
-                        event: Event::PluginDiagnostic {
-                            plugin: plugin.clone(),
-                            kind,
-                            message,
-                            count,
-                        },
-                        reply,
-                    })
-                    .await
-            };
-            if tokio::time::timeout(PLUGIN_DIAGNOSTIC_APPEND_TIMEOUT, append)
-                .await
-                .is_err()
-            {
-                engine.inner.plugins.note_offender_diagnostic(
-                    &plugin,
-                    "plugin diagnostic drain incomplete: append timed out".into(),
-                );
-            }
-            *diagnostics
-                .active_plugin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        }
-        if diagnostics.shutdown.load(Ordering::Acquire) && diagnostics.is_empty() {
-            return;
-        }
-    }
-}
-
-#[allow(clippy::large_enum_variant)]
 enum SessionCommand {
     Producer(producers::ProducerCommand),
     Append {
         run: Option<RunId>,
         origin: cookie_agent_protocol::EventOrigin,
-        event: Event,
+        event: Box<Event>,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
     EnsureToolCallLinked {
@@ -1057,14 +712,6 @@ impl SessionCommand {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CompactionDeferredKind {
-    Start,
-    PromotePendingInputs,
-    PromotePendingOrComplete,
-    Resume,
-}
-
 const MAX_COMPACTION_DEFERRED_COMMANDS: usize = 4;
 
 pub(crate) struct Inner {
@@ -1080,52 +727,24 @@ pub(crate) struct Inner {
     runtime_mutation: Mutex<()>,
     runtime_notifications: broadcast::Sender<RuntimeChangedNotification>,
     engine_events: broadcast::Sender<crate::EngineEvent>,
-    plugin_diagnostics: Arc<PluginDiagnosticAccumulator>,
-    plugin_diagnostic_task: Mutex<Option<JoinHandle<()>>>,
+    plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
     manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     pub(crate) plugins: Arc<crate::PluginRegistry>,
-    producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
     pub(crate) mcp_mutation: tokio::sync::Mutex<()>,
-    pub(crate) approvals: ApprovalStore,
     permissions: PermissionPipeline,
-    active: Mutex<HashMap<RunId, Arc<ActiveRun>>>,
-    inflight_delegations: Mutex<HashMap<InvocationId, HashMap<u64, InflightDelegation>>>,
-    delegations_by_session: Mutex<HashMap<SessionId, DelegationRecord>>,
-    delegation_queue: Mutex<VecDeque<SessionId>>,
-    delegation_admission: tokio::sync::Mutex<()>,
-    delegation_reconciliation_running: AtomicBool,
-    delegation_reconciliation_requested: AtomicBool,
-    delegation_recovery_stale_producers:
-        Mutex<Vec<(SessionId, InvocationId, cookie_agent_protocol::ProducerId)>>,
-    next_admission_generation: AtomicU64,
-    actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
-    residency_mutation: tokio::sync::Mutex<()>,
-    output_hubs: Mutex<HashMap<ToolCallId, OutputHub>>,
-    output_captures: Mutex<HashMap<ToolCallId, OutputCapture>>,
-    finalized_output_hubs: Mutex<VecDeque<ToolCallId>>,
-    pub(crate) pending_approvals: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
-    // Runtime-only permission modes keyed by delegation-tree root.
-    permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
-    pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
     pub(crate) skills: Arc<cookie_agent_config::SkillRegistry>,
-    pub(crate) skill_grants: Mutex<HashMap<SessionId, BTreeMap<String, skills::SkillGrantOverlay>>>,
-    pub(crate) skill_models: Mutex<HashMap<SessionId, cookie_agent_protocol::ModelKey>>,
-    pending_skill_forks: Mutex<HashMap<ToolCallId, skills::PreparedSkillInvocation>>,
-    pending_child_skills: Mutex<HashMap<SessionId, skills::PreparedSkillInvocation>>,
-    direct_skill_calls: Mutex<HashSet<ToolCallId>>,
-    compaction_in_progress: Mutex<HashSet<SessionId>>,
-    compaction_deferred: Mutex<HashMap<SessionId, VecDeque<SessionCommand>>>,
-    context_token_estimators: Mutex<HashMap<SessionId, ContextTokenEstimator>>,
+    pub(crate) sessions: SessionRuntimeState,
+    pub(crate) delegation: DelegationRuntimeState,
+    pub(crate) approvals: ApprovalRuntimeState,
+    pub(crate) skills_runtime: SkillRuntimeState,
+    pub(crate) output: OutputState,
+    pub(crate) compaction: CompactionState,
     runtime: Option<tokio::runtime::Handle>,
     janitor_task: Mutex<Option<JoinHandle<()>>>,
-    admission_tasks: Mutex<Vec<JoinHandle<()>>>,
-    admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
-    admission_tasks_closing: AtomicBool,
-    recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
     #[cfg(test)]
     pub(crate) test_hooks: test_hooks::TestHooks,
 }
@@ -1202,7 +821,8 @@ impl Engine {
         )?;
         let (runtime_notifications, _) = broadcast::channel(64);
         let (engine_events, _) = broadcast::channel(256);
-        let plugin_diagnostics = Arc::new(PluginDiagnosticAccumulator::default());
+        let plugin_diagnostics =
+            Arc::new(plugin_diagnostics::PluginDiagnosticAccumulator::default());
         let mut runtime_revision_index = RuntimeRevisionIndex::open(
             store.workdir_dir_path().join("runtime-revisions-v8.jsonl"),
         )?;
@@ -1224,50 +844,27 @@ impl Engine {
                 runtime_mutation: Mutex::new(()),
                 runtime_notifications,
                 engine_events,
-                plugin_diagnostics: Arc::clone(&plugin_diagnostics),
-                plugin_diagnostic_task: Mutex::new(None),
+                plugin_diagnostics: PluginDiagnosticsState {
+                    accumulator: Arc::clone(&plugin_diagnostics),
+                    task: Mutex::new(None),
+                },
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 manifest_store,
                 tools: Mutex::new(tools),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 plugins,
-                producers: Mutex::new(HashMap::new()),
                 mcp_mutation: tokio::sync::Mutex::new(()),
-                approvals: ApprovalStore::default(),
                 permissions: PermissionPipeline::default(),
-                active: Mutex::new(HashMap::new()),
-                inflight_delegations: Mutex::new(HashMap::new()),
-                delegations_by_session: Mutex::new(HashMap::new()),
-                delegation_queue: Mutex::new(VecDeque::new()),
-                delegation_admission: tokio::sync::Mutex::new(()),
-                delegation_reconciliation_running: AtomicBool::new(false),
-                delegation_reconciliation_requested: AtomicBool::new(false),
-                delegation_recovery_stale_producers: Mutex::new(Vec::new()),
-                next_admission_generation: AtomicU64::new(1),
-                actors: Mutex::new(HashMap::new()),
-                residency_mutation: tokio::sync::Mutex::new(()),
-                output_hubs: Mutex::new(HashMap::new()),
-                output_captures: Mutex::new(HashMap::new()),
-                finalized_output_hubs: Mutex::new(VecDeque::new()),
-                pending_approvals: Mutex::new(HashMap::new()),
-                permission_modes: Mutex::new(HashMap::new()),
-                permission_overlay_mutation: tokio::sync::Mutex::new(()),
                 skills,
-                skill_grants: Mutex::new(HashMap::new()),
-                skill_models: Mutex::new(HashMap::new()),
-                pending_skill_forks: Mutex::new(HashMap::new()),
-                pending_child_skills: Mutex::new(HashMap::new()),
-                direct_skill_calls: Mutex::new(HashSet::new()),
-                compaction_in_progress: Mutex::new(HashSet::new()),
-                compaction_deferred: Mutex::new(HashMap::new()),
-                context_token_estimators: Mutex::new(HashMap::new()),
+                sessions: SessionRuntimeState::default(),
+                delegation: DelegationRuntimeState::default(),
+                approvals: ApprovalRuntimeState::default(),
+                skills_runtime: SkillRuntimeState::default(),
+                output: OutputState::default(),
+                compaction: CompactionState::default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
                 janitor_task: Mutex::new(None),
-                admission_tasks: Mutex::new(Vec::new()),
-                admission_blocking_tasks: Mutex::new(Vec::new()),
-                admission_tasks_closing: AtomicBool::new(false),
-                recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
                 test_hooks: test_hooks::TestHooks::default(),
             }),
@@ -1296,7 +893,8 @@ impl Engine {
             });
             *engine
                 .inner
-                .plugin_diagnostic_task
+                .plugin_diagnostics
+                .task
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
@@ -1725,7 +1323,7 @@ impl Engine {
         let invalidated = self.inner.grant_journal.invalidated_ids();
         for grant in &products.grants {
             if !invalidated.contains(&grant.grant_id) {
-                self.inner.approvals.grant(grant.clone());
+                self.inner.approvals.store.grant(grant.clone());
             }
         }
         self.reconcile_loaded_tree_producers(products.producer_projections.clone());
@@ -1890,7 +1488,7 @@ impl Engine {
 
     #[cfg(test)]
     pub(crate) fn pending_plugin_diagnostic_keys_for_test(&self) -> usize {
-        self.inner.plugin_diagnostics.key_count()
+        self.inner.plugin_diagnostics.accumulator.key_count()
     }
 
     pub async fn ping_plugin(&self, name: &str) -> Result<(), String> {
@@ -1901,6 +1499,7 @@ impl Engine {
     /// client clones may keep a session mailbox alive.
     pub async fn shutdown(&self) {
         self.inner
+            .delegation
             .admission_tasks_closing
             .store(true, Ordering::Release);
         let janitor = self
@@ -1915,6 +1514,7 @@ impl Engine {
         }
         let tasks = self
             .inner
+            .delegation
             .admission_tasks
             .lock()
             .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
@@ -1931,6 +1531,7 @@ impl Engine {
         }
         let blocking_tasks = self
             .inner
+            .delegation
             .admission_blocking_tasks
             .lock()
             .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
@@ -1942,6 +1543,7 @@ impl Engine {
         }
         let active: Vec<_> = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1955,21 +1557,30 @@ impl Engine {
         self.inner.mcp.shutdown().await;
         self.inner
             .plugin_diagnostics
+            .accumulator
             .shutdown
             .store(true, Ordering::Release);
-        self.inner.plugin_diagnostics.notify.notify_one();
+        self.inner
+            .plugin_diagnostics
+            .accumulator
+            .notify
+            .notify_one();
         let diagnostic_task = self
             .inner
-            .plugin_diagnostic_task
+            .plugin_diagnostics
+            .task
             .lock()
             .ok()
             .and_then(|mut task| task.take());
         if let Some(mut task) = diagnostic_task
-            && tokio::time::timeout(PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT, &mut task)
-                .await
-                .is_err()
+            && tokio::time::timeout(
+                plugin_diagnostics::PLUGIN_DIAGNOSTIC_SHUTDOWN_TIMEOUT,
+                &mut task,
+            )
+            .await
+            .is_err()
         {
-            for plugin in self.inner.plugin_diagnostics.offenders() {
+            for plugin in self.inner.plugin_diagnostics.accumulator.offenders() {
                 self.inner.plugins.note_offender_diagnostic(
                     &plugin,
                     "plugin diagnostic drain incomplete: shutdown deadline exceeded".into(),
@@ -1979,6 +1590,7 @@ impl Engine {
             let _ = task.await;
         }
         self.inner
+            .sessions
             .actors
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

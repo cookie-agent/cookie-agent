@@ -1306,7 +1306,8 @@ pub(crate) async fn wait_for_escalated_approval(
             let ready = engine.inner.test_hooks.pending_approval_ready.notified();
             if engine
                 .inner
-                .pending_approvals
+                .approvals
+                .pending
                 .lock()
                 .expect("pending approvals lock")
                 .contains_key(&(session_id, approval.request.approval_id()))
@@ -1344,7 +1345,8 @@ pub(crate) async fn wait_for_tree_escalated_approval(
             let ready = engine.inner.test_hooks.pending_approval_ready.notified();
             if engine
                 .inner
-                .pending_approvals
+                .approvals
+                .pending
                 .lock()
                 .expect("pending approvals lock")
                 .contains_key(&(child_session_id, approval.request.approval_id()))

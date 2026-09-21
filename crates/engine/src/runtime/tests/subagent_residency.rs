@@ -740,7 +740,8 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     fixture
         .engine
         .inner
-        .pending_approvals
+        .approvals
+        .pending
         .lock()
         .expect("pending approval lock")
         .insert(
@@ -762,7 +763,8 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
     fixture
         .engine
         .inner
-        .pending_approvals
+        .approvals
+        .pending
         .lock()
         .expect("pending approval lock")
         .remove(&(children[0], pending_approval_id));

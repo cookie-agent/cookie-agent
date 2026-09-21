@@ -257,6 +257,7 @@ impl Engine {
         let running = projection.status == SessionStatus::Running
             || self
                 .inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())

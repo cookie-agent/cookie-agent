@@ -47,7 +47,7 @@ impl Engine {
                 .into_iter()
                 .filter(|grant| !invalidated.contains(&grant.grant_id)),
         );
-        self.inner.approvals.replace(grants);
+        self.inner.approvals.store.replace(grants);
     }
 
     pub fn create_session(&self, selection: RunSelection) -> Result<SessionMeta, EngineError> {
@@ -260,6 +260,7 @@ impl Engine {
         let session = self.inner.store.get(id)?;
         let active = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -501,6 +502,7 @@ impl Engine {
         let session = self.inner.store.get(session_id)?;
         let root = root_id(&session.meta.origin, session_id);
         self.inner
+            .approvals
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -515,6 +517,7 @@ impl Engine {
             .map(|session| root_id(&session.meta.origin, session_id))
             .unwrap_or(session_id);
         self.inner
+            .approvals
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

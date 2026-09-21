@@ -256,6 +256,7 @@ impl Engine {
     async fn reconcile_plugin_producer_sessions(&self) {
         let mut sessions: HashSet<_> = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -313,6 +314,7 @@ impl Engine {
             ProducerCommand::Inspect { reply } => {
                 let producers = self
                     .inner
+                    .sessions
                     .producers
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -410,6 +412,7 @@ impl Engine {
                     .require_registration(session, producer_id, &authority)
                     .map(|()| {
                         self.inner
+                            .sessions
                             .producers
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -453,6 +456,7 @@ impl Engine {
                 let preempted = {
                     let mut registry = self
                         .inner
+                        .sessions
                         .producers
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
@@ -485,6 +489,7 @@ impl Engine {
         {
             let mut registry = self
                 .inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -511,6 +516,7 @@ impl Engine {
         self.record_recovery_diagnostics(session)?;
         if self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -519,7 +525,8 @@ impl Engine {
             || self.inner.store.get(session)?.status == SessionStatus::Running
             || self
                 .inner
-                .compaction_in_progress
+                .compaction
+                .in_progress
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .contains(&session)
@@ -617,6 +624,7 @@ impl Engine {
         {
             let mut registry = self
                 .inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -635,6 +643,7 @@ impl Engine {
                 .await;
         }) {
             self.inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -651,7 +660,8 @@ impl Engine {
         }
         if self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
@@ -665,6 +675,7 @@ impl Engine {
         }
         let registry = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -685,6 +696,7 @@ impl Engine {
         if projection.status == SessionStatus::Running
             || self
                 .inner
+                .sessions
                 .active
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -693,6 +705,7 @@ impl Engine {
             || !self.reserve_compaction(session)
         {
             self.inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -716,6 +729,7 @@ impl Engine {
         {
             let mut registry = self
                 .inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -761,6 +775,7 @@ impl Engine {
     /// Complements the durable pending-mail signal while a wake is in flight.
     pub(super) fn producer_wake_in_flight(&self, session: SessionId) -> bool {
         self.inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -817,6 +832,7 @@ impl Engine {
         self.reconcile_goal_registration(session, None)?;
         if self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -880,6 +896,7 @@ impl Engine {
             let key = format!("{}:{:?}", state.plugin, state.status);
             if self
                 .inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -892,6 +909,7 @@ impl Engine {
             }
             self.append_direct(session, None, event_origin("engine:plugin-host"), Event::PluginDiagnostic { plugin: state.plugin, kind, message: "Producer recovery is unavailable; external work is unknown and goal continuation is held.".into(), count: 1 })?;
             self.inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1164,6 +1182,7 @@ impl Engine {
     fn invalidate_pending_goal_admission(&self, session: SessionId) {
         if let Some(state) = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1186,6 +1205,7 @@ impl Engine {
         {
             let registry = self
                 .inner
+                .sessions
                 .producers
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
@@ -1259,6 +1279,7 @@ impl Engine {
         // This registration exists only during the serialized control operation.
         // Its durable message remains pending even if the run ends before promotion.
         self.inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1336,6 +1357,7 @@ impl Engine {
         self.validate_producer_authority(&authority)?;
         let id = ProducerId::new_v7();
         self.inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1383,6 +1405,7 @@ impl Engine {
         self.validate_producer_authority(authority)?;
         if !self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1603,6 +1626,7 @@ impl Engine {
             if let (Some(producer_id), Some(state)) = (
                 producer_id,
                 self.inner
+                    .sessions
                     .producers
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
@@ -1773,6 +1797,7 @@ impl Engine {
         });
         let mut registry = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1935,6 +1960,7 @@ impl Engine {
 
     pub(super) fn producers_pin_session(&self, session: SessionId) -> bool {
         self.inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1960,7 +1986,8 @@ impl Engine {
         let removed_children = {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let removed: HashSet<_> = records
@@ -1975,12 +2002,14 @@ impl Engine {
             removed
         };
         self.inner
-            .delegation_queue
+            .delegation
+            .queue
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|child| !removed_children.contains(child));
         if let Some(state) = self
             .inner
+            .sessions
             .producers
             .lock()
             .unwrap_or_else(|e| e.into_inner())

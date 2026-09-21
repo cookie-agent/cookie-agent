@@ -1,18 +1,20 @@
+use std::{collections::HashMap, sync::Mutex};
+
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision,
     ApprovalFinalOutcome, ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind,
     ApprovalReasonCode, ApprovalRequest, ApprovalTrigger, PermissionMode,
-    PreparedOperationIdentity, RunId, StoredEvent,
+    PreparedOperationIdentity, RunId, SessionId, StoredEvent,
 };
 use serde_json::Value;
+use tokio::sync::oneshot;
 
 use super::{
-    ActiveRun, ApprovalEvaluationTransition, ApprovalOutcome, ApprovalTerminal, ApprovalToolInput,
-    Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, ModelApprovalInput, SessionCommand,
-    approval_projection::doom_loop_repetitions, helpers::root_id,
-    internal_agents::parse_internal_approval,
+    ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
+    InternalAgentHistoryInput, SessionCommand, approval_projection::doom_loop_repetitions,
+    helpers::root_id, internal_agents::parse_internal_approval,
 };
+use crate::permissions::ApprovalStore;
 use crate::tool_api::{PreparedExecutorCell, UNSCOPED_PERMISSION_RESOURCE_DISPLAY};
 use cookie_agent_protocol::InternalAgentKind;
 
@@ -21,6 +23,58 @@ pub(super) const APPROVAL_USER_REQUEST_SUFFIX: &str = "\n</latest_user_request>"
 pub(super) const APPROVAL_TOOL_CALL_PREFIX: &str = "\n\n<tool_call>\n";
 pub(super) const APPROVAL_TOOL_CALL_SUFFIX: &str = "\n</tool_call>";
 pub(super) const APPROVAL_NO_USER_MESSAGE: &str = "[no user message]";
+
+#[derive(Clone, Debug)]
+pub(crate) struct ApprovalOutcome {
+    pub(crate) approved: bool,
+    pub(crate) feedback: Option<String>,
+}
+
+pub(crate) struct PendingApproval {
+    pub(crate) sender: oneshot::Sender<ApprovalOutcome>,
+    pub(crate) executor: PreparedExecutorCell,
+    pub(crate) permission_overlay_epoch: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PreparedApprovalInvalidation {
+    OperationChanged,
+    PreparedCapabilityLost,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ApprovalTerminal {
+    Cancelled,
+    Expired,
+}
+
+pub(crate) enum ApprovalEvaluationTransition {
+    Resolved(ApprovalOutcome),
+    Escalated(oneshot::Receiver<ApprovalOutcome>),
+}
+
+pub(crate) struct ApprovalToolInput<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) normalized_parameters: &'a Value,
+}
+
+pub(crate) struct ModelApprovalInput<'a> {
+    pub(crate) operation: &'a PreparedOperationIdentity,
+    pub(crate) policy_labels: &'a [Option<String>],
+    pub(crate) executor: PreparedExecutorCell,
+    pub(crate) message: Option<String>,
+    pub(crate) tool: ApprovalToolInput<'a>,
+}
+
+/// Approval runtime state owned by [`super::Inner`].
+#[derive(Default)]
+pub(crate) struct ApprovalRuntimeState {
+    pub(crate) store: ApprovalStore,
+    pub(crate) pending: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
+    /// Runtime-only permission modes keyed by delegation-tree root.
+    pub(crate) permission_modes: Mutex<HashMap<SessionId, PermissionMode>>,
+    pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
+}
 
 impl Engine {
     pub(super) async fn request_model_approval(
@@ -122,7 +176,11 @@ impl Engine {
         }
 
         if allow_prior_grant
-            && let Some(grant) = self.inner.approvals.matching(root, request.operation())
+            && let Some(grant) = self
+                .inner
+                .approvals
+                .store
+                .matching(root, request.operation())
         {
             let decision = ApprovalInternalDecision {
                 decision: ApprovalInternalDecisionKind::Allow,
@@ -206,6 +264,7 @@ impl Engine {
 
         let permission_mode = self
             .inner
+            .approvals
             .permission_modes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

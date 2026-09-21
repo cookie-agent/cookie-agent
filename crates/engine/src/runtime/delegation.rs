@@ -1,4 +1,10 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 use cookie_agent_protocol::{
     DelegateRequestPayload, DelegatedContextRole, DelegatedContextTurn, InvocationId,
@@ -7,12 +13,12 @@ use cookie_agent_protocol::{
     ToolCallTermination, ToolTerminationOutcome,
 };
 use serde_json::Value;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     Engine, EngineError, Event, SessionCommand,
-    admission::AdmissionGuard,
+    admission::{AdmissionGuard, InflightDelegation},
     handles::SubagentScope,
     helpers::{
         invocation_id, safe_code, safe_display, safe_error, sanitize_safe_text, session_depth,
@@ -26,6 +32,42 @@ use crate::{
     policy::{self, FrozenRunPolicy, freeze_delegated_agent_policy, resolve_agent},
     session,
 };
+
+/// Delegation runtime state owned by [`super::Inner`].
+pub(crate) struct DelegationRuntimeState {
+    pub(super) inflight: Mutex<HashMap<InvocationId, HashMap<u64, InflightDelegation>>>,
+    pub(super) by_session: Mutex<HashMap<SessionId, DelegationRecord>>,
+    pub(crate) queue: Mutex<VecDeque<SessionId>>,
+    pub(crate) admission: tokio::sync::Mutex<()>,
+    pub(crate) reconciliation_running: AtomicBool,
+    pub(crate) reconciliation_requested: AtomicBool,
+    pub(crate) recovery_stale_producers: Mutex<Vec<(SessionId, InvocationId, ProducerId)>>,
+    pub(crate) next_admission_generation: AtomicU64,
+    pub(crate) admission_tasks: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) admission_tasks_closing: AtomicBool,
+    pub(crate) recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
+}
+
+impl Default for DelegationRuntimeState {
+    fn default() -> Self {
+        Self {
+            inflight: Mutex::new(HashMap::new()),
+            by_session: Mutex::new(HashMap::new()),
+            queue: Mutex::new(VecDeque::new()),
+            admission: tokio::sync::Mutex::new(()),
+            reconciliation_running: AtomicBool::new(false),
+            reconciliation_requested: AtomicBool::new(false),
+            recovery_stale_producers: Mutex::new(Vec::new()),
+            // Generation zero is the "never admitted" sentinel.
+            next_admission_generation: AtomicU64::new(1),
+            admission_tasks: Mutex::new(Vec::new()),
+            admission_blocking_tasks: Mutex::new(Vec::new()),
+            admission_tasks_closing: AtomicBool::new(false),
+            recovery_waiters: Mutex::new(HashSet::new()),
+        }
+    }
+}
 
 impl Engine {
     pub(crate) fn validate_resume_target(
@@ -87,7 +129,8 @@ impl Engine {
         }
         if let Some(record) = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&resume_session_id)
@@ -269,7 +312,7 @@ impl Engine {
         invocation_id: InvocationId,
         generation: u64,
     ) -> Result<DelegateHandle, EngineError> {
-        let admission_guard = self.inner.delegation_admission.lock().await;
+        let admission_guard = self.inner.delegation.admission.lock().await;
         if invocation
             .prompt
             .starts_with(super::skills::RESERVED_STAGED_SKILL_PREFIX)
@@ -280,7 +323,8 @@ impl Engine {
         }
         let staged_skill = self
             .inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&invocation.parent_tool_call_id)
@@ -322,7 +366,8 @@ impl Engine {
             }
             let registry_owns_invocation = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(&existing.reservation.child_session_id)
@@ -331,7 +376,8 @@ impl Engine {
                 if existing.request.background && registry_owns_invocation {
                     let producer_missing = self
                         .inner
-                        .delegations_by_session
+                        .delegation
+                        .by_session
                         .lock()
                         .map_err(|_| EngineError::ActorStopped)?
                         .get(&existing.reservation.child_session_id)
@@ -347,7 +393,8 @@ impl Engine {
                             .await?;
                         let mut records = self
                             .inner
-                            .delegations_by_session
+                            .delegation
+                            .by_session
                             .lock()
                             .map_err(|_| EngineError::ActorStopped)?;
                         if let Some(record) = records
@@ -382,6 +429,7 @@ impl Engine {
         }
         let active_parent = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -506,7 +554,8 @@ impl Engine {
         {
             let record = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(
@@ -601,7 +650,8 @@ impl Engine {
         if let Some(guard) = producer_guard.as_mut() {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             if let Some(record) = records.get_mut(&child.session_id).filter(|record| {
@@ -636,7 +686,8 @@ impl Engine {
         }
         if resume_child.is_some() {
             self.inner
-                .delegation_queue
+                .delegation
+                .queue
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .retain(|session_id| *session_id != child.session_id);
@@ -790,7 +841,7 @@ impl Engine {
                 ));
             }
             let registry_failed = {
-                match self.inner.delegations_by_session.lock() {
+                match self.inner.delegation.by_session.lock() {
                     Ok(mut records) => {
                         let record = DelegationRecord {
                             parent_session_id: invocation.parent_session_id,
@@ -879,7 +930,8 @@ impl Engine {
         };
         debug_assert!(record.background || record.producer_id.is_none());
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .insert(child.session_id, record);
@@ -890,7 +942,8 @@ impl Engine {
             let position = {
                 let mut queue = self
                     .inner
-                    .delegation_queue
+                    .delegation
+                    .queue
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?;
                 queue.push_back(child.session_id);
@@ -909,7 +962,8 @@ impl Engine {
                 .await
             {
                 self.inner
-                    .delegation_queue
+                    .delegation
+                    .queue
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .retain(|session_id| *session_id != child.session_id);
@@ -928,7 +982,8 @@ impl Engine {
                     .await;
                 if let Some(record) = self
                     .inner
-                    .delegations_by_session
+                    .delegation
+                    .by_session
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .get_mut(&child.session_id)
@@ -986,7 +1041,8 @@ impl Engine {
                     .await;
                 if let Some(record) = self
                     .inner
-                    .delegations_by_session
+                    .delegation
+                    .by_session
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?
                     .get_mut(&child.session_id)
@@ -1007,7 +1063,8 @@ impl Engine {
         };
         if let Some(record) = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get_mut(&child.session_id)
@@ -1073,6 +1130,7 @@ impl Engine {
                 SessionStatus::Running | SessionStatus::Idle => {
                     let active = {
                         self.inner
+                            .sessions
                             .active
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1102,7 +1160,8 @@ impl Engine {
                     let result = terminal_delegate_result(&child, handle.child_run_id, status);
                     let mut records = self
                         .inner
-                        .delegations_by_session
+                        .delegation
+                        .by_session
                         .lock()
                         .map_err(|_| EngineError::ActorStopped)?;
                     if let Some(record) = records
@@ -1159,7 +1218,8 @@ impl Engine {
 
     pub(super) fn clear_delegate_admissions(&self, invocation_id: InvocationId) {
         self.inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&invocation_id);
@@ -1235,7 +1295,8 @@ impl Engine {
     ) -> Result<bool, EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let still_abandoned = admissions.get(&invocation_id).is_some_and(|entries| {
@@ -1419,7 +1480,8 @@ impl Engine {
         };
         let running = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .values()
@@ -1439,7 +1501,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut records = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         for record in records.values_mut() {
@@ -1459,7 +1522,8 @@ impl Engine {
         root_session_id: SessionId,
     ) -> usize {
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .expect("delegation registry")
             .values()
@@ -1477,7 +1541,8 @@ impl Engine {
         };
         let queued = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .values()
@@ -1508,6 +1573,7 @@ impl Engine {
                     Err(error) => {
                         if monitor
                             .inner
+                            .delegation
                             .admission_tasks_closing
                             .load(Ordering::Acquire)
                         {
@@ -1584,6 +1650,7 @@ impl Engine {
                     Err(error) => {
                         if monitor
                             .inner
+                            .delegation
                             .admission_tasks_closing
                             .load(Ordering::Acquire)
                         {
@@ -1624,7 +1691,7 @@ impl Engine {
             delegation_events.mark_finished(invocation_id, status)
         })
         .await?;
-        if let Ok(mut records) = self.inner.delegations_by_session.lock()
+        if let Ok(mut records) = self.inner.delegation.by_session.lock()
             && records
                 .get(&child_session_id)
                 .is_some_and(|record| record.invocation_id == invocation_id)
@@ -1682,7 +1749,12 @@ impl Engine {
                 {
                     Ok(()) => break,
                     Err(error) => {
-                        if retry.inner.admission_tasks_closing.load(Ordering::Acquire) {
+                        if retry
+                            .inner
+                            .delegation
+                            .admission_tasks_closing
+                            .load(Ordering::Acquire)
+                        {
                             break;
                         }
                         eprintln!("background delegate completion retrying: {error}");
@@ -1744,7 +1816,8 @@ impl Engine {
         let (owns_registry, mut producer_id) = {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             if let Some(record) = records
@@ -1809,7 +1882,8 @@ impl Engine {
             if owns_registry {
                 let mut records = self
                     .inner
-                    .delegations_by_session
+                    .delegation
+                    .by_session
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?;
                 if let Some(record) = records
@@ -1843,7 +1917,8 @@ impl Engine {
                 if owns_registry {
                     let mut records = self
                         .inner
-                        .delegations_by_session
+                        .delegation
+                        .by_session
                         .lock()
                         .map_err(|_| EngineError::ActorStopped)?;
                     if let Some(record) = records
@@ -1877,7 +1952,8 @@ impl Engine {
             && (already_accepted || already_logged)
             && let Some(record) = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get_mut(&child_session_id)
@@ -1900,7 +1976,8 @@ impl Engine {
                     if owns_registry
                         && let Some(record) = self
                             .inner
-                            .delegations_by_session
+                            .delegation
+                            .by_session
                             .lock()
                             .map_err(|_| EngineError::ActorStopped)?
                             .get_mut(&child_session_id)
@@ -2024,19 +2101,21 @@ impl Engine {
     }
 
     async fn start_queued_delegation(&self, root_session_id: SessionId) -> Result<(), EngineError> {
-        let admission_guard = self.inner.delegation_admission.lock().await;
+        let admission_guard = self.inner.delegation.admission.lock().await;
         if self.background_slot_unavailable(root_session_id)? {
             return Ok(());
         }
         let child_session_id = {
             let records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let queue = self
                 .inner
-                .delegation_queue
+                .delegation
+                .queue
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let position = queue.iter().position(|session_id| {
@@ -2052,7 +2131,8 @@ impl Engine {
         };
         let invocation_id = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2070,7 +2150,8 @@ impl Engine {
         let removed = {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let record = records.get_mut(&child_session_id).ok_or_else(|| {
@@ -2081,7 +2162,8 @@ impl Engine {
             record.monitor_started = true;
             let mut queue = self
                 .inner
-                .delegation_queue
+                .delegation
+                .queue
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             queue
@@ -2154,7 +2236,8 @@ impl Engine {
         };
         let registry_record = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2261,10 +2344,11 @@ impl Engine {
         let handle = self
             .ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
-        let admission_guard = self.inner.delegation_admission.lock().await;
+        let admission_guard = self.inner.delegation.admission.lock().await;
         let record = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2346,10 +2430,11 @@ impl Engine {
         let handle = self
             .ensure_subagent_owned(caller_session_id, child_session_id)
             .await?;
-        let admission_guard = self.inner.delegation_admission.lock().await;
+        let admission_guard = self.inner.delegation.admission.lock().await;
         let record = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2357,7 +2442,8 @@ impl Engine {
             .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
         if record.state == DelegationState::Queued {
             self.inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(&child_session_id)
@@ -2382,13 +2468,15 @@ impl Engine {
             )
             .await?;
             self.inner
-                .delegation_queue
+                .delegation
+                .queue
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .retain(|session_id| *session_id != child_session_id);
             if let Some(record) = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get_mut(&child_session_id)
@@ -2440,7 +2528,8 @@ impl Engine {
     ) -> Result<bool, EngineError> {
         Ok(self
             .inner
-            .delegation_queue
+            .delegation
+            .queue
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .contains(&child_session_id))
@@ -2450,11 +2539,13 @@ impl Engine {
     pub(crate) async fn wait_for_delegation_reconciliation_for_test(&self) {
         while self
             .inner
-            .delegation_reconciliation_running
+            .delegation
+            .reconciliation_running
             .load(Ordering::Acquire)
             || self
                 .inner
-                .delegation_reconciliation_requested
+                .delegation
+                .reconciliation_requested
                 .load(Ordering::Acquire)
         {
             tokio::task::yield_now().await;
@@ -2467,7 +2558,8 @@ impl Engine {
         child_session_id: SessionId,
     ) -> Result<(InvocationId, Option<SessionStatus>, bool), EngineError> {
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2598,7 +2690,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut records = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let record = records
@@ -2620,7 +2713,8 @@ impl Engine {
         let (parent_session_id, invocation_id) = {
             let records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let record = records.get(&child_session_id).ok_or_else(|| {
@@ -2635,7 +2729,8 @@ impl Engine {
         {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let record = records
@@ -2662,7 +2757,8 @@ impl Engine {
         child_session_id: SessionId,
     ) -> Result<(bool, Option<ProducerId>), EngineError> {
         self.inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .get(&child_session_id)
@@ -2682,7 +2778,8 @@ impl Engine {
         let mut stale_producers = {
             let mut records = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             let stale = records
@@ -2706,7 +2803,8 @@ impl Engine {
             stale
         };
         self.inner
-            .delegation_queue
+            .delegation
+            .queue
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .retain(|child_session_id| latest.contains_key(child_session_id));
@@ -2778,7 +2876,8 @@ impl Engine {
             let counts_slot = background && !facts.delegated;
             let (mut producer_id, mut monitor_started) = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .get(&child_id)
@@ -2799,7 +2898,8 @@ impl Engine {
             let parent_session_id = entry.reservation.parent_session_id;
             let invocation_id = entry.reservation.invocation_id;
             self.inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?
                 .insert(
@@ -2825,7 +2925,8 @@ impl Engine {
             if state == DelegationState::Queued {
                 let mut queue = self
                     .inner
-                    .delegation_queue
+                    .delegation
+                    .queue
                     .lock()
                     .map_err(|_| EngineError::ActorStopped)?;
                 if !queue.contains(&child_id) {
@@ -2851,16 +2952,19 @@ impl Engine {
         stale_producers: Vec<(SessionId, InvocationId, ProducerId)>,
     ) -> Result<(), EngineError> {
         self.inner
-            .delegation_recovery_stale_producers
+            .delegation
+            .recovery_stale_producers
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .extend(stale_producers);
         self.inner
-            .delegation_reconciliation_requested
+            .delegation
+            .reconciliation_requested
             .store(true, Ordering::Release);
         if self
             .inner
-            .delegation_reconciliation_running
+            .delegation
+            .reconciliation_running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
@@ -2872,7 +2976,8 @@ impl Engine {
             reconcile.run_delegation_reconciliation().await;
         }) {
             self.inner
-                .delegation_reconciliation_running
+                .delegation
+                .reconciliation_running
                 .store(false, Ordering::Release);
             return Err(EngineError::ActorStopped);
         }
@@ -2882,12 +2987,14 @@ impl Engine {
     async fn run_delegation_reconciliation(&self) {
         loop {
             self.inner
-                .delegation_reconciliation_requested
+                .delegation
+                .reconciliation_requested
                 .store(false, Ordering::Release);
             let stale_producers = std::mem::take(
                 &mut *self
                     .inner
-                    .delegation_recovery_stale_producers
+                    .delegation
+                    .recovery_stale_producers
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
@@ -2896,21 +3003,25 @@ impl Engine {
             }
             if self
                 .inner
-                .delegation_reconciliation_requested
+                .delegation
+                .reconciliation_requested
                 .load(Ordering::Acquire)
             {
                 continue;
             }
             self.inner
-                .delegation_reconciliation_running
+                .delegation
+                .reconciliation_running
                 .store(false, Ordering::Release);
             if !self
                 .inner
-                .delegation_reconciliation_requested
+                .delegation
+                .reconciliation_requested
                 .load(Ordering::Acquire)
                 || self
                     .inner
-                    .delegation_reconciliation_running
+                    .delegation
+                    .reconciliation_running
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_err()
             {
@@ -2943,7 +3054,8 @@ impl Engine {
         }
         let records = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .iter()
@@ -2966,7 +3078,8 @@ impl Engine {
                 .await?;
             let mut current = self
                 .inner
-                .delegations_by_session
+                .delegation
+                .by_session
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
             if let Some(current_record) = current.get_mut(child_session_id).filter(|current| {
@@ -2979,7 +3092,8 @@ impl Engine {
 
         let records = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?
             .iter()
@@ -3036,7 +3150,8 @@ impl Engine {
                             })?;
                     if let Some(current) = self
                         .inner
-                        .delegations_by_session
+                        .delegation
+                        .by_session
                         .lock()
                         .map_err(|_| EngineError::ActorStopped)?
                         .get_mut(&child_session_id)
@@ -3075,7 +3190,8 @@ impl Engine {
     ) -> Result<bool, EngineError> {
         let mut records = self
             .inner
-            .delegations_by_session
+            .delegation
+            .by_session
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let Some(record) = records
@@ -3097,7 +3213,7 @@ impl Engine {
     }
 
     fn release_recovered_monitor(&self, child_session_id: SessionId, invocation_id: InvocationId) {
-        if let Ok(mut records) = self.inner.delegations_by_session.lock()
+        if let Ok(mut records) = self.inner.delegation.by_session.lock()
             && let Some(record) = records
                 .get_mut(&child_session_id)
                 .filter(|record| record.invocation_id == invocation_id)

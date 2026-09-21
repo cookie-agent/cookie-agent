@@ -22,10 +22,15 @@ impl Engine {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let Ok(mut tasks) = self.inner.admission_tasks.lock() else {
+        let Ok(mut tasks) = self.inner.delegation.admission_tasks.lock() else {
             return false;
         };
-        if self.inner.admission_tasks_closing.load(Ordering::Acquire) {
+        if self
+            .inner
+            .delegation
+            .admission_tasks_closing
+            .load(Ordering::Acquire)
+        {
             return false;
         }
         tasks.retain(|task| !task.is_finished());
@@ -43,10 +48,16 @@ impl Engine {
         {
             let mut tasks = self
                 .inner
+                .delegation
                 .admission_blocking_tasks
                 .lock()
                 .map_err(|_| EngineError::ActorStopped)?;
-            if self.inner.admission_tasks_closing.load(Ordering::Acquire) {
+            if self
+                .inner
+                .delegation
+                .admission_tasks_closing
+                .load(Ordering::Acquire)
+            {
                 return Err(EngineError::ActorStopped);
             }
             tasks.retain(|task| !task.is_finished());
@@ -94,7 +105,8 @@ impl Engine {
             .and_then(|run| run.pending_calls.get(&parent_tool_call_id));
         let staged_skill_fork = self
             .inner
-            .pending_skill_forks
+            .skills_runtime
+            .pending_forks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains_key(&parent_tool_call_id);
@@ -104,7 +116,8 @@ impl Engine {
             && staged_skill_fork
             && self
                 .inner
-                .direct_skill_calls
+                .skills_runtime
+                .direct_calls
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&parent_tool_call_id);
@@ -126,6 +139,7 @@ impl Engine {
         }
         let parent_policy = self
             .inner
+            .sessions
             .active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -514,7 +528,8 @@ impl Engine {
         generation: u64,
     ) -> bool {
         self.inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .ok()
             .and_then(|admissions| {
@@ -534,7 +549,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let entries = admissions
@@ -554,7 +570,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let admission = admissions
@@ -574,7 +591,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let admission = admissions
@@ -597,7 +615,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let admission = admissions
@@ -621,7 +640,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let admission = admissions
@@ -639,7 +659,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let admission = admissions
@@ -652,7 +673,7 @@ impl Engine {
     }
 
     pub(super) fn clear_admission_starting(&self, invocation_id: InvocationId, generation: u64) {
-        if let Ok(mut admissions) = self.inner.inflight_delegations.lock()
+        if let Ok(mut admissions) = self.inner.delegation.inflight.lock()
             && let Some(admission) = admissions
                 .get_mut(&invocation_id)
                 .and_then(|entries| entries.get_mut(&generation))
@@ -672,7 +693,8 @@ impl Engine {
     ) -> Result<Option<AbandonedAdmission>, EngineError> {
         let admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let Some(entries) = admissions.get(&invocation_id) else {
@@ -719,7 +741,8 @@ impl Engine {
     ) -> Result<Option<AbandonedAdmission>, EngineError> {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .map_err(|_| EngineError::ActorStopped)?;
         let Some(entries) = admissions.get_mut(&invocation_id) else {
@@ -895,10 +918,12 @@ impl AdmissionGuard {
         parent_run_id: RunId,
     ) -> Self {
         let generation = inner
+            .delegation
             .next_admission_generation
             .fetch_add(1, Ordering::Relaxed);
         let mut admissions = inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entries = admissions.entry(invocation_id).or_default();
@@ -944,7 +969,8 @@ impl AdmissionGuard {
     pub(super) fn set_parent(&self, parent_session_id: SessionId, parent_tool_call_id: ToolCallId) {
         if let Some(admission) = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_mut(&self.invocation_id)
@@ -958,7 +984,8 @@ impl AdmissionGuard {
     pub(super) fn remove(&self) {
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(entries) = admissions.get_mut(&self.invocation_id) {
@@ -977,7 +1004,8 @@ impl Drop for AdmissionGuard {
         }
         let mut admissions = self
             .inner
-            .inflight_delegations
+            .delegation
+            .inflight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let abandoned = if let Some(entries) = admissions.get_mut(&self.invocation_id)

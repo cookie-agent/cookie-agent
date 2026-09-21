@@ -322,7 +322,8 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         fixture
             .engine
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .expect("pending approvals lock")
             .contains_key(&(session.session_id, approval_id))
@@ -420,6 +421,7 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
             .engine
             .inner
             .approvals
+            .store
             .for_root(session.session_id)
             .is_empty()
     );
@@ -427,7 +429,8 @@ async fn overlay_epoch_change_rejects_pending_tree_grant_commit() {
         !fixture
             .engine
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .expect("pending approvals")
             .contains_key(&(session.session_id, approval.request.approval_id()))
@@ -791,7 +794,8 @@ async fn auto_approve_n_rejects_classifier_escalation_with_feedback_without_prom
         fixture
             .engine
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .expect("pending approvals lock")
             .is_empty()
@@ -863,7 +867,8 @@ async fn auto_approve_y_approves_classifier_escalation_once_without_prompting() 
         fixture
             .engine
             .inner
-            .pending_approvals
+            .approvals
+            .pending
             .lock()
             .expect("pending approvals lock")
             .is_empty()
