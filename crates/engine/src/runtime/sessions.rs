@@ -12,6 +12,7 @@ use cookie_agent_protocol::{
 
 use super::{
     Engine, EngineError, Event, SessionCommand,
+    delegation::DELEGATION_RECOVERY_SETTLE_BOUND,
     helpers::{cwd_identity, root_id, session_depth},
 };
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
@@ -344,9 +345,32 @@ impl Engine {
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
+    /// Adopts `id` and resolves the work its adoption found interrupted.
+    ///
+    /// Adoption schedules delegation recovery instead of running it inline, so
+    /// the wait below is what makes the ordering observable: when this returns,
+    /// every delegation record under the session's root that the adoption
+    /// classified as running without a live run here has been resolved, and the
+    /// root's background-delegation capacity reads settled rather than
+    /// transiently over-counted.
+    ///
+    /// The wait happens here, after the actor has replied, and never inside the
+    /// `Resume` handler: resolving a recovered delegate goes through its parent
+    /// session's mailbox, which is the very mailbox that handler occupies.
     pub async fn resume(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
-        self.request(id, |reply| SessionCommand::Resume { reply })
+        let meta = self
+            .request(id, |reply| SessionCommand::Resume { reply })
+            .await?;
+        let root = self.inner.store.root_of(id).unwrap_or(id);
+        if !self
+            .await_delegation_recovery(root, DELEGATION_RECOVERY_SETTLE_BOUND)
             .await
+        {
+            eprintln!(
+                "session {id} delegation recovery still settling after {DELEGATION_RECOVERY_SETTLE_BOUND:?}"
+            );
+        }
+        Ok(meta)
     }
     pub async fn revert_session(
         &self,

@@ -336,7 +336,10 @@ these records from root logs while it recovers nonterminal delegations, and
 completes the projection for a tree during that tree's single load pass.
 The reservation fingerprint is recomputed from the replayed request, child
 agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
-rejects recovery. A delegation event skipped by best-effort reading is absent
+rejects recovery. A background delegation the durable facts leave nonterminal is
+recovered by adopting the child, whose own reconciliation terminalizes the run
+that died with the previous process; the completion monitor then releases the
+parent's slot and promotes whatever was queued behind it. A delegation event skipped by best-effort reading is absent
 from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.
 
@@ -352,6 +355,10 @@ Session discovery ignores the sidecar because it scans only directories.
 Session listing reads `metadata` without locking. Opening an existing session
 for mutation attempts the lock; success enters a non-writable adoption state,
 reconciles only that session's interrupted work, and then publishes ownership.
+Adoption also schedules delegation recovery for the session's tree, and a resume
+waits — bounded, a few seconds — for that recovery to settle before it returns,
+so background-delegation capacity never reads transiently over-counted; if the
+bound expires the resume still succeeds and recovery finishes in the background.
 Reconciliation failure revokes the log's write capability and releases the lock
 so a later attempt can retry. A retained event-log projection cannot append
 after its store drops ownership. A live foreign owner produces `session is

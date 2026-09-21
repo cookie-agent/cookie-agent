@@ -33,6 +33,16 @@ use crate::{
     session,
 };
 
+/// How long [`Engine::resume`] waits for the delegation recovery its adoption
+/// scheduled before giving up on the ordering guarantee.
+///
+/// Recovery is a handful of local appends and mailbox round-trips per recovered
+/// child, so this is generous. Exceeding it is not an error: the wait degrades
+/// to the eventually-consistent behaviour, logs once, and lets the resume
+/// succeed.
+pub(super) const DELEGATION_RECOVERY_SETTLE_BOUND: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 /// Delegation runtime state owned by [`super::Inner`].
 pub(crate) struct DelegationRuntimeState {
     pub(super) inflight: Mutex<HashMap<InvocationId, HashMap<u64, InflightDelegation>>>,
@@ -47,6 +57,16 @@ pub(crate) struct DelegationRuntimeState {
     pub(crate) admission_blocking_tasks: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) admission_tasks_closing: AtomicBool,
     pub(crate) recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
+    /// Recovered background monitors claimed but not yet resolved, per root.
+    ///
+    /// A claim is made under [`Engine::claim_recovered_monitor`] and released
+    /// when the monitor that took it has finished resolving its delegation
+    /// record. [`Engine::await_delegation_recovery`] reads this to decide when
+    /// an adoption's recovery has settled.
+    pub(crate) recovery_pending: Mutex<HashMap<SessionId, usize>>,
+    /// Woken whenever a recovery claim is released or a reconciliation pass
+    /// ends, so a settling waiter need not poll on its own.
+    pub(crate) recovery_settled: tokio::sync::Notify,
 }
 
 impl Default for DelegationRuntimeState {
@@ -65,6 +85,8 @@ impl Default for DelegationRuntimeState {
             admission_blocking_tasks: Mutex::new(Vec::new()),
             admission_tasks_closing: AtomicBool::new(false),
             recovery_waiters: Mutex::new(HashSet::new()),
+            recovery_pending: Mutex::new(HashMap::new()),
+            recovery_settled: tokio::sync::Notify::new(),
         }
     }
 }
@@ -1079,7 +1101,7 @@ impl Engine {
             child_run_id: Some(child_run_id),
         };
         if invocation.background
-            && let Err(error) = self.spawn_background_monitor(handle)
+            && let Err(error) = self.spawn_background_monitor(handle, None)
         {
             self.release_recovered_monitor(child.session_id, invocation_id);
             let _ = self.cancel_run_durably(
@@ -1553,7 +1575,16 @@ impl Engine {
         Ok(background_queue_limit_reached(limit, queued))
     }
 
-    fn spawn_background_monitor(&self, handle: DelegateHandle) -> Result<(), EngineError> {
+    /// Spawns the completion monitor for one background delegate.
+    ///
+    /// `recovery` carries the settling ticket when this monitor was claimed by
+    /// startup or adoption recovery; the task holds it until the record is
+    /// resolved so `resume` can wait for exactly that work.
+    fn spawn_background_monitor(
+        &self,
+        handle: DelegateHandle,
+        recovery: Option<RecoveryMonitorTicket>,
+    ) -> Result<(), EngineError> {
         let runtime = self
             .inner
             .runtime
@@ -1563,6 +1594,7 @@ impl Engine {
         let engine = self.clone();
         let monitor = engine.clone();
         if !self.spawn_admission_task(&runtime, async move {
+            let _recovery = recovery;
             let _ = monitor.await_delegate_inner(handle).await;
             loop {
                 match monitor
@@ -2187,7 +2219,10 @@ impl Engine {
             child_session_id,
             child_run_id: Some(child_run_id),
         };
-        if let Err(error) = self.spawn_background_monitor(handle) {
+        // A promotion starts fresh work rather than recovering an abandoned
+        // record, so it carries no settling ticket: `resume` has no reason to
+        // wait for a delegate it just started.
+        if let Err(error) = self.spawn_background_monitor(handle, None) {
             self.release_recovered_monitor(child_session_id, invocation_id);
             let _ = self.cancel_run_durably(
                 child_run_id,
@@ -2979,6 +3014,7 @@ impl Engine {
                 .delegation
                 .reconciliation_running
                 .store(false, Ordering::Release);
+            self.inner.delegation.recovery_settled.notify_waiters();
             return Err(EngineError::ActorStopped);
         }
         Ok(())
@@ -3025,6 +3061,9 @@ impl Engine {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_err()
             {
+                // Every claim this pass made is now owned by its monitor, so a
+                // settling waiter can make progress.
+                self.inner.delegation.recovery_settled.notify_waiters();
                 break;
             }
         }
@@ -3111,22 +3150,34 @@ impl Engine {
                 }
                 DelegationState::Queued => queued_roots.push(record.root_session_id),
                 DelegationState::Running if record.child_run_id.is_some() => {
-                    if !self.claim_recovered_monitor(child_session_id, record.invocation_id)? {
+                    let Some(ticket) =
+                        self.claim_recovered_monitor(child_session_id, record.invocation_id)?
+                    else {
                         continue;
-                    }
-                    if let Err(error) = self.spawn_background_monitor(DelegateHandle {
-                        invocation_id: record.invocation_id,
+                    };
+                    self.terminalize_abandoned_delegate_run(
                         child_session_id,
-                        child_run_id: record.child_run_id,
-                    }) {
+                        record.child_run_id.expect("checked child run"),
+                    )
+                    .await;
+                    if let Err(error) = self.spawn_background_monitor(
+                        DelegateHandle {
+                            invocation_id: record.invocation_id,
+                            child_session_id,
+                            child_run_id: record.child_run_id,
+                        },
+                        Some(ticket),
+                    ) {
                         self.release_recovered_monitor(child_session_id, record.invocation_id);
                         return Err(error);
                     }
                 }
                 DelegationState::Running | DelegationState::Starting => {
-                    if !self.claim_recovered_monitor(child_session_id, record.invocation_id)? {
+                    let Some(ticket) =
+                        self.claim_recovered_monitor(child_session_id, record.invocation_id)?
+                    else {
                         continue;
-                    }
+                    };
                     let entry = self
                         .delegation_event_get(record.invocation_id)
                         .await
@@ -3160,11 +3211,14 @@ impl Engine {
                         current.child_run_id = Some(child_run_id);
                         current.state = DelegationState::Running;
                     }
-                    if let Err(error) = self.spawn_background_monitor(DelegateHandle {
-                        invocation_id: record.invocation_id,
-                        child_session_id,
-                        child_run_id: Some(child_run_id),
-                    }) {
+                    if let Err(error) = self.spawn_background_monitor(
+                        DelegateHandle {
+                            invocation_id: record.invocation_id,
+                            child_session_id,
+                            child_run_id: Some(child_run_id),
+                        },
+                        Some(ticket),
+                    ) {
                         self.release_recovered_monitor(child_session_id, record.invocation_id);
                         return Err(error);
                     }
@@ -3183,11 +3237,49 @@ impl Engine {
         Ok(())
     }
 
+    /// Adopts a recovered background delegate whose run is not live here.
+    ///
+    /// A record the rebuild read as `Running` from durable facts alone may
+    /// belong to a run that died with the previous process: the child log has a
+    /// `RunStarted` and no terminal event, and nothing in this process is going
+    /// to append one. Adopting the child runs its own reconciliation, which
+    /// terminalizes the run as interrupted, so the monitor spawned next
+    /// observes a terminal state instead of waiting forever and leaking the
+    /// parent's background-delegation slot.
+    ///
+    /// Best-effort by design: a child owned by another process, or one this
+    /// process already adopted, is left to that owner.
+    async fn terminalize_abandoned_delegate_run(
+        &self,
+        child_session_id: SessionId,
+        child_run_id: RunId,
+    ) {
+        let live = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&child_run_id);
+        if live {
+            return;
+        }
+        let _residency = self.inner.sessions.residency_mutation.lock().await;
+        if let Err(error) = self.ensure_session_owned(child_session_id) {
+            eprintln!("session {child_session_id} delegate recovery deferred: {error}");
+        }
+    }
+
+    /// Claims the one recovered monitor for `child_session_id`.
+    ///
+    /// The returned ticket keeps the record's root marked as still settling
+    /// until it is dropped, which is what lets [`Engine::resume`] return only
+    /// after the recovery its adoption scheduled has run to a conclusion.
     fn claim_recovered_monitor(
         &self,
         child_session_id: SessionId,
         invocation_id: InvocationId,
-    ) -> Result<bool, EngineError> {
+    ) -> Result<Option<RecoveryMonitorTicket>, EngineError> {
         let mut records = self
             .inner
             .delegation
@@ -3198,7 +3290,7 @@ impl Engine {
             .get_mut(&child_session_id)
             .filter(|record| record.invocation_id == invocation_id)
         else {
-            return Ok(false);
+            return Ok(None);
         };
         if record.monitor_started
             || !matches!(
@@ -3206,10 +3298,92 @@ impl Engine {
                 DelegationState::Running | DelegationState::Starting
             )
         {
-            return Ok(false);
+            return Ok(None);
         }
         record.monitor_started = true;
-        Ok(true)
+        let root_session_id = record.root_session_id;
+        drop(records);
+        *self
+            .inner
+            .delegation
+            .recovery_pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(root_session_id)
+            .or_insert(0) += 1;
+        Ok(Some(RecoveryMonitorTicket {
+            engine: self.clone(),
+            root_session_id,
+        }))
+    }
+
+    fn release_recovery_claim(&self, root_session_id: SessionId) {
+        {
+            let mut pending = self
+                .inner
+                .delegation
+                .recovery_pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(count) = pending.get_mut(&root_session_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    pending.remove(&root_session_id);
+                }
+            }
+        }
+        self.inner.delegation.recovery_settled.notify_waiters();
+    }
+
+    fn delegation_recovery_settled(&self, root_session_id: SessionId) -> bool {
+        if self
+            .inner
+            .delegation
+            .reconciliation_running
+            .load(Ordering::Acquire)
+            || self
+                .inner
+                .delegation
+                .reconciliation_requested
+                .load(Ordering::Acquire)
+        {
+            return false;
+        }
+        !self
+            .inner
+            .delegation
+            .recovery_pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&root_session_id)
+    }
+
+    /// Waits until the delegation recovery scheduled for `root_session_id` has
+    /// settled, or `bound` expires.
+    ///
+    /// Returns `false` when the bound expired, which leaves the caller with the
+    /// pre-existing eventually-consistent behaviour rather than a failure.
+    ///
+    /// This must never be awaited from inside a session actor: resolving a
+    /// recovered delegation goes through its parent session's mailbox.
+    pub(crate) async fn await_delegation_recovery(
+        &self,
+        root_session_id: SessionId,
+        bound: std::time::Duration,
+    ) -> bool {
+        let settle = async {
+            while !self.delegation_recovery_settled(root_session_id) {
+                // A bounded wait on the notification, so a wakeup that lands
+                // between the check and the registration costs a short delay
+                // rather than the whole deadline.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    self.inner.delegation.recovery_settled.notified(),
+                )
+                .await;
+            }
+        };
+        tokio::time::timeout(bound, settle).await.is_ok()
     }
 
     fn release_recovered_monitor(&self, child_session_id: SessionId, invocation_id: InvocationId) {
@@ -3220,6 +3394,23 @@ impl Engine {
         {
             record.monitor_started = false;
         }
+    }
+}
+
+/// Keeps a root marked as "recovery still settling" for the lifetime of one
+/// recovered background monitor.
+///
+/// Dropping it is the single release point: the monitor task owns the ticket
+/// for as long as it is resolving its record, and every early-return path in
+/// the reconciliation drops it on the spot.
+pub(super) struct RecoveryMonitorTicket {
+    engine: Engine,
+    root_session_id: SessionId,
+}
+
+impl Drop for RecoveryMonitorTicket {
+    fn drop(&mut self) {
+        self.engine.release_recovery_claim(self.root_session_id);
     }
 }
 

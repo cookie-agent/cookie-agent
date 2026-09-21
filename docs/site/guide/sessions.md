@@ -25,6 +25,13 @@ and tolerates the resulting sequence gaps. The derived `metadata` file is only a
 cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
 the event history.
 
+Reopening a session adopts it: the engine reconciles that session's interrupted
+work and then waits, under a short bound, for the delegation recovery the
+adoption scheduled. Background subagents whose runs died with the previous
+process are therefore already settled — marked interrupted, reported to their
+parent, and their concurrency slots released — by the time the session is usable
+again.
+
 Use `/new` to create a fresh root session and `/sessions` to search and switch
 between sessions. Delegated sessions form a tree beneath the root that created
 them. Accepted runs retain their frozen model binding even if catalog,
