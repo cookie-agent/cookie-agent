@@ -1422,6 +1422,34 @@ pub(crate) async fn wait_for_run_inactive(engine: &Engine, run_id: cookie_agent_
     .expect("run task termination");
 }
 
+/// Drain every command already queued on a session's actor, including the
+/// post-reply producer reconcile that follows producer commands, so a test may
+/// mutate that session's log directly without racing the actor.
+pub(crate) async fn settle_session_actor(engine: &Engine, session: SessionId) {
+    let actor = {
+        engine
+            .inner
+            .sessions
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned()
+    };
+    let Some(actor) = actor else {
+        return;
+    };
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    actor
+        .send(crate::runtime::SessionCommand::EvictionBarrier { reply })
+        .await
+        .expect("session actor accepts the barrier");
+    receiver
+        .await
+        .expect("session actor replies to the barrier")
+        .expect("session actor barrier succeeds");
+}
+
 pub(crate) fn interception_plugin(name: &str, extra_env: &[(&str, String)]) -> PluginConfig {
     let mut env = BTreeMap::from([
         ("FIXTURE_NAME".into(), name.to_owned()),

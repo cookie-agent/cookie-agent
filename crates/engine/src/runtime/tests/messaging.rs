@@ -140,6 +140,7 @@ async fn agent_message_inflight_window_is_directed_and_idempotent() {
         .register_producer(recipient, authority.clone())
         .await
         .expect("producer");
+    super::support::settle_session_actor(&fixture.engine, recipient).await;
     let description = cookie_agent_protocol::SafeDisplayText::new("test message").unwrap();
     let send = |key: &str| {
         fixture.engine.accept_agent_message_direct_for_test(
@@ -171,6 +172,7 @@ async fn agent_message_inflight_window_is_directed_and_idempotent() {
         .register_producer(recipient, other_authority.clone())
         .await
         .expect("other producer");
+    super::support::settle_session_actor(&fixture.engine, recipient).await;
     fixture
         .engine
         .accept_agent_message_direct_for_test(
@@ -225,6 +227,7 @@ async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
         .register_producer(recipient, authority.clone())
         .await
         .expect("producer");
+    super::support::settle_session_actor(&fixture.engine, recipient).await;
     let description = cookie_agent_protocol::SafeDisplayText::new("test message").unwrap();
     let send = |key: &str, hop| {
         fixture.engine.accept_agent_message_direct_for_test(
@@ -267,6 +270,7 @@ async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
         .register_producer(recipient, authority.clone())
         .await
         .expect("producer");
+    super::support::settle_session_actor(&fixture.engine, recipient).await;
     let admitted = fixture
         .engine
         .accept_agent_message_direct_for_test(
@@ -310,6 +314,7 @@ async fn agent_message_hop_is_inherited_by_the_send_path() {
         .register_producer(sender.session_id, previous_authority.clone())
         .await
         .expect("previous producer");
+    super::support::settle_session_actor(&fixture.engine, sender.session_id).await;
     let observed_run = RunId::new_v7();
     let observed = fixture
         .engine
