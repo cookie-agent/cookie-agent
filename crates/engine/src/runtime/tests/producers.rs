@@ -1,17 +1,28 @@
-use super::*;
+use std::{fs, sync::Arc};
+
+use async_trait::async_trait;
 
 use cookie_agent_protocol::{
-    EventOrigin, GoalItem, GoalLifecycleAction, GoalReminderKind, GoalStatus, ProducerDeliveryMode,
+    ClientRunId, EventPayload, InvocationId, ProducerDeliveryMode, RunStartParams, SessionId,
+    SessionStatus,
+};
+
+use crate::{
+    Engine, EngineError, PreparedTool, SessionToolContext, ToolCall, ToolError,
+    ToolPreparationContext, ToolProvider, ToolSpec,
+};
+
+use super::support::*;
+
+use cookie_agent_protocol::{
+    EventOrigin, GoalItem, GoalLifecycleAction, GoalReminderKind, GoalStatus,
     ProducerIdempotencyKey, ProducerOwner, SessionGoalGetParams, SessionGoalLifecycleParams,
     SessionGoalSetParams, SessionProducersParams,
 };
 
 use crate::runtime::producers::ProducerAuthority;
 
-#[path = "goal_reminder_runtime_tests.rs"]
-mod goal_reminder_runtime_tests;
-
-fn producer_authority() -> ProducerAuthority {
+pub(crate) fn producer_authority() -> ProducerAuthority {
     ProducerAuthority {
         owner: ProducerOwner::Delegation {
             invocation_id: InvocationId::new_v7(),
@@ -20,15 +31,15 @@ fn producer_authority() -> ProducerAuthority {
     }
 }
 
-fn producer_key(value: &str) -> ProducerIdempotencyKey {
+pub(crate) fn producer_key(value: &str) -> ProducerIdempotencyKey {
     ProducerIdempotencyKey::new(value).expect("producer idempotency key")
 }
 
-fn client_origin() -> EventOrigin {
+pub(crate) fn client_origin() -> EventOrigin {
     EventOrigin::new("client:producer-runtime-test").expect("event origin")
 }
 
-fn producer_events(
+pub(crate) fn producer_events(
     engine: &Engine,
     session_id: SessionId,
 ) -> Vec<cookie_agent_protocol::StoredEvent> {
@@ -41,7 +52,7 @@ fn producer_events(
         .events()
 }
 
-fn producer_projection(
+pub(crate) fn producer_projection(
     engine: &Engine,
     session_id: SessionId,
 ) -> crate::goal_projection::GoalProducerProjection {
@@ -50,7 +61,7 @@ fn producer_projection(
     ))
 }
 
-struct GoalVisibilityProvider;
+pub(crate) struct GoalVisibilityProvider;
 
 #[async_trait]
 impl ToolProvider for GoalVisibilityProvider {
@@ -147,7 +158,7 @@ impl ToolProvider for GoalVisibilityProvider {
     }
 }
 
-fn request_tool_names(request: &str) -> Vec<String> {
+pub(crate) fn request_tool_names(request: &str) -> Vec<String> {
     request_body(request)["tools"]
         .as_array()
         .into_iter()
@@ -156,7 +167,7 @@ fn request_tool_names(request: &str) -> Vec<String> {
         .collect()
 }
 
-fn request_tool_parameters(request: &str, name: &str) -> serde_json::Value {
+pub(crate) fn request_tool_parameters(request: &str, name: &str) -> serde_json::Value {
     request_body(request)["tools"]
         .as_array()
         .into_iter()
@@ -166,7 +177,7 @@ fn request_tool_parameters(request: &str, name: &str) -> serde_json::Value {
         .expect("request tool parameters")
 }
 
-fn assert_no_notification_run_abort(engine: &Engine, session_id: SessionId) {
+pub(crate) fn assert_no_notification_run_abort(engine: &Engine, session_id: SessionId) {
     assert!(!producer_events(engine, session_id).iter().any(|event| {
         matches!(
             event.payload,
@@ -231,7 +242,7 @@ pub(super) async fn cancelled_request_boundary_server() -> (
     )
 }
 
-async fn hold_compaction(
+pub(crate) async fn hold_compaction(
     engine: &Engine,
     session_id: SessionId,
 ) -> (
@@ -252,7 +263,7 @@ async fn hold_compaction(
     (completion, release)
 }
 
-async fn release_compaction(
+pub(crate) async fn release_compaction(
     completion: tokio::sync::oneshot::Receiver<
         Result<cookie_agent_protocol::SessionCompactResult, EngineError>,
     >,

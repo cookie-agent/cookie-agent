@@ -58,7 +58,7 @@ fn invocation(sender: SessionId, recipient: SessionId) -> AgentMessageInvocation
 
 #[tokio::test]
 async fn ac1_running_and_queued_delivery_paths_are_producer_backed() {
-    let (fixture, selection) = super::custom_fixture();
+    let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -119,11 +119,11 @@ fn ac2_relationship_labels_are_used_for_all_tree_edges() {
 
 #[tokio::test]
 async fn agent_message_inflight_window_is_directed_and_idempotent() {
-    let (mut fixture, selection) = super::custom_fixture();
+    let (mut fixture, selection) = super::support::custom_fixture();
     fixture.config.runtime.messaging.max_inflight_per_pair = 2;
     fixture.engine.shutdown().await;
     fixture.engine =
-        super::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+        super::support::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -204,11 +204,11 @@ async fn agent_message_inflight_window_is_directed_and_idempotent() {
 
 #[tokio::test]
 async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
-    let (mut fixture, selection) = super::custom_fixture();
+    let (mut fixture, selection) = super::support::custom_fixture();
     fixture.config.runtime.messaging.max_hops = 1;
     fixture.engine.shutdown().await;
     fixture.engine =
-        super::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+        super::support::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -261,7 +261,7 @@ async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
     fixture.engine.shutdown().await;
     fixture.config.runtime.messaging.max_hops = 0;
     fixture.engine =
-        super::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+        super::support::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     let producer = fixture
         .engine
         .register_producer(recipient, authority.clone())
@@ -288,11 +288,11 @@ async fn agent_message_hop_guard_rejects_above_limit_and_zero_disables_it() {
 
 #[tokio::test]
 async fn agent_message_hop_is_inherited_by_the_send_path() {
-    let (mut fixture, selection) = super::custom_fixture();
+    let (mut fixture, selection) = super::support::custom_fixture();
     fixture.config.runtime.messaging.max_hops = 1;
     fixture.engine.shutdown().await;
     fixture.engine =
-        super::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+        super::support::reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -421,7 +421,7 @@ fn ac10_guard_codes_are_stable_and_distinct() {
 
 #[tokio::test]
 async fn ac3_finished_recipient_is_rejected_only_when_not_a_tree_peer() {
-    let (fixture, selection) = super::custom_fixture();
+    let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -438,7 +438,7 @@ async fn ac3_finished_recipient_is_rejected_only_when_not_a_tree_peer() {
 
 #[tokio::test]
 async fn ac4_tree_authorization_rejects_self_and_foreign_roots() {
-    let (fixture, selection) = super::custom_fixture();
+    let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture
         .engine
         .create_session(selection.clone())
@@ -455,7 +455,7 @@ async fn ac4_tree_authorization_rejects_self_and_foreign_roots() {
 
 #[tokio::test]
 async fn ac5_send_result_is_durable_and_keyed_by_tool_call() {
-    let (fixture, selection) = super::custom_fixture();
+    let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture.engine.create_session(selection).expect("sender");
     let error = fixture
         .engine
@@ -468,7 +468,7 @@ async fn ac5_send_result_is_durable_and_keyed_by_tool_call() {
 
 #[tokio::test]
 async fn ac6_body_limits_are_enforced_before_acceptance() {
-    let (fixture, selection) = super::custom_fixture();
+    let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture.engine.create_session(selection).expect("sender");
     let mut request = invocation(sender.session_id, sender.session_id);
     request.body.clear();
@@ -483,7 +483,9 @@ async fn ac6_body_limits_are_enforced_before_acceptance() {
 
 #[test]
 fn ac7_delegate_tool_surface_has_no_steer_subagent() {
-    assert!(!include_str!("../../tools/src/delegate.rs").contains("name: \"steer_subagent\""));
+    assert!(
+        !include_str!("../../../../tools/src/delegate.rs").contains("name: \"steer_subagent\"")
+    );
 }
 
 #[test]

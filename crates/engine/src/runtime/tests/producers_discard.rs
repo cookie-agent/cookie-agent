@@ -1,8 +1,18 @@
-use super::*;
+use std::{collections::BTreeMap, fs, sync::Arc};
+
+use cookie_agent_config::PluginConfig;
 
 use cookie_agent_protocol::{
-    EventOrigin, GoalId, PluginRecoveryStatus, ProducerDeliveryMode, ProducerIdempotencyKey,
-    ProducerMessageId, ProducerOwner, SessionProducersParams,
+    ClientRunId, EventPayload, InvocationId, ProducerDeliveryMode, RunStartParams, SessionId,
+};
+
+use crate::{Engine, runtime::ModelRetrySleepMode};
+
+use super::support::*;
+
+use cookie_agent_protocol::{
+    EventOrigin, GoalId, PluginRecoveryStatus, ProducerIdempotencyKey, ProducerMessageId,
+    ProducerOwner, SessionProducersParams,
 };
 
 use crate::runtime::producers::ProducerAuthority;
@@ -481,7 +491,7 @@ async fn inflight_steer_is_too_late_once_claimed_and_after_commit() {
 #[tokio::test]
 async fn cancelling_a_claimed_request_releases_only_that_request_lease() {
     let (endpoint, first_seen, release_first, captured) =
-        super::producer_runtime_tests::cancelled_request_boundary_server().await;
+        super::producers::cancelled_request_boundary_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let session_id = fixture.engine.create_session(selection).unwrap().session_id;
     let owner = delegation_authority();

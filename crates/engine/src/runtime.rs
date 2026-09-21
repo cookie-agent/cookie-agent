@@ -81,6 +81,8 @@ mod residency;
 mod runs;
 mod sessions;
 mod skills;
+#[cfg(test)]
+mod tests;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;

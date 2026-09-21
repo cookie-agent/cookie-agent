@@ -19,8 +19,6 @@ mod plugin;
 mod policy;
 pub(crate) mod runtime;
 mod runtime_snapshot;
-#[cfg(test)]
-mod runtime_tests;
 pub mod session;
 #[cfg(test)]
 mod test_support;

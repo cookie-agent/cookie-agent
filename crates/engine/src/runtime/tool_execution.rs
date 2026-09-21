@@ -1280,8 +1280,8 @@ mod tests {
 
         use super::ToolCallFailureCode;
 
-        let (fixture, selection) = crate::runtime_tests::custom_fixture();
-        let policy = crate::runtime_tests::frozen_root_policy(&fixture, &selection);
+        let (fixture, selection) = crate::runtime::tests::support::custom_fixture();
+        let policy = crate::runtime::tests::support::frozen_root_policy(&fixture, &selection);
         let binding = policy
             .selected_suffix
             .first()

@@ -1,4 +1,11 @@
-use super::*;
+use cookie_agent_protocol::{EventPayload, ProducerDeliveryMode};
+
+use super::producers::*;
+use super::support::*;
+use cookie_agent_protocol::{
+    GoalItem, GoalLifecycleAction, GoalStatus, ProducerOwner, SessionGoalLifecycleParams,
+    SessionGoalSetParams,
+};
 
 use cookie_agent_protocol::GoalReminderKind;
 
