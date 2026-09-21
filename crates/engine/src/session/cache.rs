@@ -178,6 +178,12 @@ pub(super) fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), Sessio
     result
 }
 
+/// Retries a replacement that lost a race for the staged source or the target.
+/// `replace_windows_path` prefers a superseding POSIX rename, which tolerates an
+/// open target, so the remaining contention is an antivirus scanner or indexer
+/// holding the staged temporary open, plus the same open-target contention as
+/// before on hosts that fall back to `MoveFileExW`. The retryable set is
+/// therefore unchanged.
 #[cfg(windows)]
 pub(crate) fn replace_windows_path_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
     const ATTEMPTS: usize = 50;

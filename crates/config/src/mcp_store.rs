@@ -193,39 +193,11 @@ fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let wide = |path: &Path| {
-        let mut value = path.as_os_str().encode_wide().collect::<Vec<_>>();
-        if value.contains(&0) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "configuration path contains an invalid character",
-            ));
-        }
-        value.push(0);
-        Ok(value)
-    };
-    let source = wide(source)?;
-    let destination = wide(destination)?;
-    // MoveFileExW with WRITE_THROUGH returns only after the move reaches storage.
-    // The subsequent directory flush preserves the Unix commit ordering where
-    // Windows permits directory handles to be flushed.
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    // One shared primitive for every durable Windows replacement: a superseding
+    // POSIX rename, so a concurrent reader opening the destination by name never
+    // finds it absent mid-replacement, with the classic write-through
+    // `MoveFileExW` as the fallback where that rename is unavailable.
+    cookie_agent_models::secure_store::replace_windows_path(source, destination)
 }
 
 #[cfg(unix)]
@@ -245,9 +217,10 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
         .and_then(|directory| match directory.sync_all() {
             Ok(()) => Ok(()),
             Err(error) if matches!(error.raw_os_error(), Some(1 | 5 | 6 | 50)) => {
-                // MOVEFILE_WRITE_THROUGH has already made the replacement
-                // durable. Windows does not consistently support flushing a
-                // directory handle across filesystems and host policies.
+                // `replace_file` already committed the replacement, and Windows
+                // does not consistently support flushing a directory handle
+                // across filesystems and host policies. This second flush keeps
+                // the `ParentSynced` commit step observable on hosts that do.
                 Ok(())
             }
             Err(error) => Err(error),

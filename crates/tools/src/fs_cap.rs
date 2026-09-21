@@ -2143,6 +2143,16 @@ mod windows {
     fn move_file(source: &Path, target: &Path, replace: bool) -> Result<(), ToolError> {
         let source_wide = wide_path(source)?;
         let target_wide = wide_path(target)?;
+        // A replacing publish prefers the superseding POSIX rename: classic
+        // MoveFileExW unlinks the target before linking the source, so a reader
+        // outside the sandbox that opens the published path by name can find it
+        // absent mid-write. Every failure falls through to the classic call
+        // below, which keeps the existing error reporting and its own
+        // ERROR_ACCESS_DENIED retry. A non-replacing publish must fail when the
+        // target exists, which this rename cannot express, so it is unchanged.
+        if replace && rename_over_open_target(source, &target_wide).is_ok() {
+            return Ok(());
+        }
         let flags = MOVEFILE_WRITE_THROUGH
             | if replace {
                 MOVEFILE_REPLACE_EXISTING

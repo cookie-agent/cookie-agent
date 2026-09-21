@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
-    mem::size_of,
+    mem::{offset_of, size_of, size_of_val},
     os::windows::{
         ffi::OsStrExt,
         fs::OpenOptionsExt,
@@ -16,8 +16,8 @@ use std::{
 use uuid::Uuid;
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_LOCK_VIOLATION, ERROR_SUCCESS, HANDLE,
-        INVALID_HANDLE_VALUE, LocalFree,
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_INVALID_PARAMETER, ERROR_LOCK_VIOLATION,
+        ERROR_NOT_SUPPORTED, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
     },
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
@@ -31,11 +31,13 @@ use windows_sys::Win32::{
         SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
-        CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, UnlockFileEx,
-        WRITE_DAC, WRITE_OWNER,
+        CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
+        FILE_GENERIC_WRITE, FILE_RENAME_INFO, FILE_RENAME_INFO_0, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx, FlushFileBuffers,
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING, READ_CONTROL,
+        SetFileInformationByHandle, UnlockFileEx, WRITE_DAC, WRITE_OWNER,
     },
     System::{
         IO::OVERLAPPED,
@@ -210,22 +212,152 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
+/// `FILE_RENAME_INFO::Flags` bits, which `windows-sys` does not export.
+const FILE_RENAME_FLAG_REPLACE_IF_EXISTS: u32 = 0x1;
+const FILE_RENAME_FLAG_POSIX_SEMANTICS: u32 = 0x2;
+
 /// Atomically replaces one Windows path with another file from the same volume.
+///
+/// Windows 10 1607+ on NTFS supersedes the target through
+/// `SetFileInformationByHandle(FileRenameInfoEx)` with POSIX semantics, and that
+/// keeps the target *name* resolvable for the whole operation: a concurrent
+/// open-by-name observes the old file or the new one, never a gap. Classic
+/// `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` instead unlinks the target and then
+/// links the source, so a by-name read racing a replacement can fail with
+/// `ERROR_FILE_NOT_FOUND`. `std::fs::rename` does not help: it reaches for the
+/// same POSIX rename only after `MoveFileExW` returns `ERROR_ACCESS_DENIED`.
+/// The classic call therefore stays only as the fallback for kernels and
+/// filesystems that reject the newer information class.
 pub fn replace_path(source: &Path, target: &Path) -> io::Result<()> {
-    let source = wide_path(source)?;
-    let target = wide_path(target)?;
-    // SAFETY: both paths are NUL-terminated for the duration of the call.
-    if unsafe {
-        MoveFileExW(
+    let source_wide = wide_path(source)?;
+    let target_wide = wide_path(target)?;
+    match posix_replace_path(&source_wide, &target_wide) {
+        // The POSIX rename carries no write-through flag, so the durability
+        // MOVEFILE_WRITE_THROUGH used to provide comes from flushing the
+        // target's parent directory, mirroring the Unix `fsync` after `rename`.
+        Ok(()) => flush_parent_directory(target),
+        Err(error) if unsupported_rename_information(&error) => {
+            // SAFETY: both paths are NUL-terminated for the duration of the call.
+            if unsafe {
+                MoveFileExW(
+                    source_wide.as_ptr(),
+                    target_wide.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            } == 0
+            {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Pre-1607 kernels and filesystems without `FileRenameInfoEx` reject the class
+/// itself rather than the request, so only these two codes fall back.
+fn unsupported_rename_information(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_INVALID_PARAMETER as i32 || code == ERROR_NOT_SUPPORTED as i32
+    )
+}
+
+/// Supersedes `target` with `source` in one metadata transaction. Both paths are
+/// NUL-terminated wide strings in the verbatim form [`wide_path`] produces.
+fn posix_replace_path(source: &[u16], target: &[u16]) -> io::Result<()> {
+    // DELETE is the right the rename consumes; sharing everything keeps readers
+    // and the target's own openers from turning the replacement into a sharing
+    // violation. Callers replace files, so no FILE_FLAG_BACKUP_SEMANTICS.
+    // SAFETY: the path is NUL-terminated and the handle is closed by OwnedHandle.
+    let handle = unsafe {
+        CreateFileW(
             source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
         )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let handle = OwnedHandle(handle);
+
+    // FILE_RENAME_INFO ends in a variable-length UTF-16 name. Allocating whole
+    // structs gives the buffer the struct's alignment and enough storage for the
+    // name plus its terminator; FileNameLength excludes the terminator.
+    let name_length = u32::try_from(size_of_val(&target[..target.len() - 1]))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let buffer_bytes = offset_of!(FILE_RENAME_INFO, FileName) + size_of_val(target);
+    let buffer_length = u32::try_from(buffer_bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let mut buffer =
+        vec![FILE_RENAME_INFO::default(); buffer_bytes.div_ceil(size_of::<FILE_RENAME_INFO>())];
+    let info = buffer.as_mut_ptr();
+    // SAFETY: the vector is FILE_RENAME_INFO-aligned and holds at least
+    // `buffer_bytes` writable bytes, which covers the name and its terminator.
+    unsafe {
+        (*info).Anonymous = FILE_RENAME_INFO_0 {
+            Flags: FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS,
+        };
+        (*info).RootDirectory = null_mut();
+        (*info).FileNameLength = name_length;
+        std::ptr::copy_nonoverlapping(
+            target.as_ptr(),
+            (&raw mut (*info).FileName).cast::<u16>(),
+            target.len(),
+        );
+        if SetFileInformationByHandle(handle.0, FileRenameInfoEx, info.cast(), buffer_length) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Commits the replaced directory entry, the Windows counterpart of the parent
+/// `fsync` the Unix path performs after `rename`. Windows does not consistently
+/// permit flushing a directory handle across filesystems and host policies, so
+/// a refusal leaves the replacement as durable as the volume allows instead of
+/// failing an operation that already committed.
+fn flush_parent_directory(target: &Path) -> io::Result<()> {
+    let Some(parent) = target.parent() else {
+        return Ok(());
+    };
+    let wide = wide_path(parent)?;
+    // SAFETY: the path is NUL-terminated and the handle is closed by OwnedHandle.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return tolerate_refused_directory_flush(io::Error::last_os_error());
+    }
+    let handle = OwnedHandle(handle);
+    // SAFETY: the handle is a valid open directory handle.
+    if unsafe { FlushFileBuffers(handle.0) } == 0 {
+        return tolerate_refused_directory_flush(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn tolerate_refused_directory_flush(error: io::Error) -> io::Result<()> {
+    // ERROR_INVALID_FUNCTION, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, and
+    // ERROR_NOT_SUPPORTED all mean "this volume will not flush a directory".
+    match error.raw_os_error() {
+        Some(1 | 5 | 6 | 50) => Ok(()),
+        _ => Err(error),
     }
 }
 
