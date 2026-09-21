@@ -83,6 +83,9 @@ rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "clie
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dist]
 inherits = "release"
 lto = "thin"
