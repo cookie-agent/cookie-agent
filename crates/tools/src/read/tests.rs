@@ -1,0 +1,783 @@
+use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+
+use cookie_agent_engine::{
+    SessionToolContext, ToolCall, ToolError, ToolExecutionContext, ToolPreparationContext,
+    ToolProvider, ToolResultTruncationPolicy, TurnAgentContext,
+};
+use cookie_agent_protocol::{
+    AdaptorId, MediaCapability, MediaKind, MimeType, Modality, OperationFingerprint,
+    PermissionAction, RunId, SessionId, ToolCallId, ToolEmittedContent,
+};
+
+use super::{ReadTool, directory_page, text_page, text_result};
+
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+    0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0xf8, 0x0f, 0x00,
+    0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
+
+fn pdf() -> Vec<u8> {
+    let mut bytes = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for object in [
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>\nendobj\n",
+    ] {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(object.as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    bytes
+}
+
+fn turn_context(
+    adapter: AdaptorId,
+    media: Option<(MediaKind, Modality, &str, u64)>,
+) -> Arc<TurnAgentContext> {
+    let base = crate::test_turn_context();
+    let mut capabilities = base.capabilities.clone();
+    if let Some((kind, modality, mime_type, max_bytes)) = media {
+        capabilities.input.insert(modality);
+        capabilities.media = BTreeMap::from([(
+            kind,
+            MediaCapability {
+                mime_types: [MimeType::new(mime_type).unwrap()].into_iter().collect(),
+                max_bytes,
+                max_count: 1,
+            },
+        )]);
+    }
+    Arc::new(TurnAgentContext {
+        agent: base.agent.clone(),
+        model: base.model.clone(),
+        adapter,
+        adapter_family: match adapter {
+            AdaptorId::Anthropic => {
+                cookie_agent_models::adapters::OvenAdapterFamily::AnthropicCompatible
+            }
+            AdaptorId::OpenaiCompatible => {
+                cookie_agent_models::adapters::OvenAdapterFamily::OpenaiCompatible
+            }
+            AdaptorId::AwsBedrockConverse => {
+                cookie_agent_models::adapters::OvenAdapterFamily::AwsBedrockConverse
+            }
+            AdaptorId::GoogleGemini => {
+                cookie_agent_models::adapters::OvenAdapterFamily::GoogleGemini
+            }
+            AdaptorId::GoogleVertexGemini => {
+                cookie_agent_models::adapters::OvenAdapterFamily::GoogleVertexGemini
+            }
+            _ => cookie_agent_models::adapters::OvenAdapterFamily::OpenaiChat,
+        },
+        capabilities,
+    })
+}
+
+#[test]
+fn large_single_line_read_is_full_and_declares_absolute_opt_out() {
+    let root = tempfile::tempdir().unwrap();
+    let text = "x".repeat(60 * 1024);
+    fs::write(root.path().join("large.txt"), &text).unwrap();
+    let target = crate::fs_cap::prepare_existing(root.path(), Path::new("large.txt")).unwrap();
+    let bytes = target.verified_bytes().unwrap();
+    let result = text_result(
+        &target.display_path,
+        std::str::from_utf8(&bytes).unwrap(),
+        0,
+        super::DEFAULT_LIMIT,
+    );
+    assert!(result.output.contains(&text));
+    assert!(result.output.len() > 50 * 1024);
+    assert!(result.truncation.is_none());
+    let spec = ReadTool::new("/tmp")
+        .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
+        .unwrap()
+        .remove(0);
+    assert_eq!(spec.result_truncation, ToolResultTruncationPolicy::OptOut);
+}
+
+#[test]
+fn permission_resource_is_the_file_path() {
+    let tool = ReadTool::new("/tmp");
+    assert_eq!(
+        tool.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("permission resource"),
+        ("read", Some("src/lib.rs".into()))
+    );
+    assert!(matches!(
+        tool.get_permission_resource("read", &serde_json::json!({})),
+        Err(ToolError::Failed(_))
+    ));
+    assert!(matches!(
+        tool.get_permission_resource(
+            "read",
+            &serde_json::json!({"filePath":"src/lib.rs","byteOffset":0})
+        ),
+        Err(ToolError::Failed(_))
+    ));
+}
+
+#[test]
+fn display_argument_abbreviates_paths_and_includes_explicit_window() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let tool = ReadTool::new(workspace.path());
+    assert_eq!(
+        tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+            .expect("relative"),
+        "src/lib.rs"
+    );
+    assert_eq!(
+            tool.get_display_argument(
+                "read",
+                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":0,"limit":100})
+            )
+            .expect("workspace"),
+            "src/lib.rs [offset=0, limit=100]"
+        );
+    let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
+    assert_eq!(
+        tool.get_display_argument(
+            "read",
+            &serde_json::json!({"filePath": home.join(".bashrc"),"offset":4})
+        )
+        .expect("home"),
+        "~/.bashrc [offset=4]"
+    );
+    assert_eq!(
+        tool.get_display_argument(
+            "read",
+            &serde_json::json!({"filePath":"src/lib.rs","limit":25})
+        )
+        .expect("limit"),
+        "src/lib.rs [limit=25]"
+    );
+    assert!(matches!(
+        tool.get_display_argument("read", &serde_json::json!({})),
+        Err(ToolError::Failed(_))
+    ));
+    let presentation = tool.presentation(&ToolCall {
+        id: ToolCallId::new_v7(),
+        name: "read".into(),
+        arguments: serde_json::json!({"filePath":workspace.path().join("src/lib.rs")}),
+    });
+    assert_eq!(presentation.title.as_str(), "read");
+    assert_eq!(
+        presentation
+            .primary_argument
+            .as_ref()
+            .map(cookie_agent_protocol::BoundedDisplayText::as_str),
+        Some("src/lib.rs")
+    );
+}
+
+#[test]
+fn schema_documents_zero_based_offset_and_limit_default() {
+    let tool = ReadTool::new("/workspace");
+    let parameters = &tool
+        .tools_for_session(&cookie_agent_engine::SessionToolContext::new(
+            SessionId::new_v7(),
+        ))
+        .expect("read spec")[0]
+        .parameters;
+    assert_eq!(
+        parameters["properties"]["offset"]["description"],
+        "Zero-based entry or line offset. Defaults to 0."
+    );
+    assert_eq!(
+        parameters["properties"]["limit"]["description"],
+        "Maximum number of entries or lines to return. Defaults to 2000."
+    );
+}
+
+#[test]
+fn text_pagination_handles_zero_based_boundaries() {
+    let empty = Vec::<&str>::new();
+    assert!(text_page(&empty, 0, usize::MAX).next().is_none());
+
+    let lines = ["first", "second", "third"];
+    assert_eq!(
+        text_page(&lines, 0, 2).collect::<Vec<_>>(),
+        [(0, "first"), (1, "second")]
+    );
+    assert_eq!(text_page(&lines, 1, 1).collect::<Vec<_>>(), [(1, "second")]);
+    assert!(text_page(&lines, lines.len(), usize::MAX).next().is_none());
+    assert!(
+        text_page(&lines, lines.len() + 1, usize::MAX)
+            .next()
+            .is_none()
+    );
+    assert!(text_page(&lines, usize::MAX, usize::MAX).next().is_none());
+    assert_eq!(
+        text_page(&lines, 0, usize::MAX).collect::<Vec<_>>(),
+        [(0, "first"), (1, "second"), (2, "third")]
+    );
+}
+
+#[test]
+fn directory_pagination_handles_zero_based_boundaries() {
+    let empty = Vec::<(String, bool)>::new();
+    assert!(directory_page(&empty, 0, usize::MAX).next().is_none());
+
+    let entries = [
+        ("alpha".to_owned(), false),
+        ("beta".to_owned(), true),
+        ("gamma".to_owned(), false),
+    ];
+    assert_eq!(
+        directory_page(&entries, 0, 2).collect::<Vec<_>>(),
+        [&entries[0], &entries[1]]
+    );
+    assert_eq!(
+        directory_page(&entries, 1, usize::MAX).collect::<Vec<_>>(),
+        [&entries[1], &entries[2]]
+    );
+    assert!(
+        directory_page(&entries, entries.len(), usize::MAX)
+            .next()
+            .is_none()
+    );
+    assert!(
+        directory_page(&entries, entries.len() + 1, usize::MAX)
+            .next()
+            .is_none()
+    );
+    assert!(
+        directory_page(&entries, usize::MAX, usize::MAX)
+            .next()
+            .is_none()
+    );
+}
+
+fn context_with_turn(root: &Path, turn_context: Arc<TurnAgentContext>) -> ToolPreparationContext {
+    ToolPreparationContext {
+        session: SessionId::new_v7(),
+        run: RunId::new_v7(),
+        cwd: root.to_owned(),
+        workspace_root: root.to_owned(),
+        turn_context,
+    }
+}
+
+fn context(root: &Path) -> ToolPreparationContext {
+    context_with_turn(root, crate::test_turn_context())
+}
+
+async fn prepared(root: &Path, path: &str) -> cookie_agent_engine::PreparedTool {
+    ReadTool::new(root)
+        .prepare(
+            context(root),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":path}),
+            },
+        )
+        .await
+        .expect("prepare read")
+}
+
+async fn execute_media(
+    root: &Path,
+    path: &str,
+    turn_context: Arc<TurnAgentContext>,
+) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+    let prepared = ReadTool::new(root)
+        .prepare(
+            context_with_turn(root, Arc::clone(&turn_context)),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":path}),
+            },
+        )
+        .await?;
+    prepared
+        .execute_for_test(ToolExecutionContext::for_test(
+            root.join("artifacts"),
+            turn_context,
+        )?)
+        .await
+}
+
+#[tokio::test]
+async fn media_reads_follow_capability_family_and_size_gates() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("pixel.png"), PNG).unwrap();
+    let pdf = pdf();
+    fs::write(root.path().join("page.pdf"), &pdf).unwrap();
+    let mut video = 16_u32.to_be_bytes().to_vec();
+    video.extend_from_slice(b"ftypisom");
+    video.extend_from_slice(&[0; 4]);
+    fs::write(root.path().join("clip.mp4"), &video).unwrap();
+
+    let image_capable = turn_context(
+        AdaptorId::Anthropic,
+        Some((
+            MediaKind::Image,
+            Modality::Image,
+            "image/png",
+            PNG.len() as u64,
+        )),
+    );
+    let image = execute_media(root.path(), "pixel.png", image_capable)
+        .await
+        .unwrap();
+    assert_eq!(image.attachments.len(), 1);
+    assert_eq!(image.attachments[0].mime_type.as_str(), "image/png");
+
+    let image_incapable = execute_media(
+        root.path(),
+        "pixel.png",
+        turn_context(AdaptorId::Anthropic, None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        image_incapable.message(),
+        "Cannot attach image/png: the active model \"test/model\" does not accept image inputs"
+    );
+
+    let pdf_capable = turn_context(
+        AdaptorId::Anthropic,
+        Some((
+            MediaKind::Pdf,
+            Modality::Pdf,
+            "application/pdf",
+            pdf.len() as u64,
+        )),
+    );
+    let document = execute_media(root.path(), "page.pdf", pdf_capable)
+        .await
+        .unwrap();
+    assert_eq!(document.attachments.len(), 1);
+    assert_eq!(
+        document.attachments[0].mime_type.as_str(),
+        "application/pdf"
+    );
+
+    let pdf_incapable = execute_media(
+        root.path(),
+        "page.pdf",
+        turn_context(AdaptorId::Anthropic, None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        pdf_incapable.message(),
+        "Cannot attach application/pdf: the active model \"test/model\" does not accept PDF inputs"
+    );
+
+    let family_rejected = execute_media(
+        root.path(),
+        "pixel.png",
+        turn_context(
+            AdaptorId::OpenaiCompatible,
+            Some((
+                MediaKind::Image,
+                Modality::Image,
+                "image/png",
+                PNG.len() as u64,
+            )),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        family_rejected.message(),
+        "Cannot attach image/png: not deliverable in tool results via the openai-compatible family API"
+    );
+
+    let size_rejected = execute_media(
+        root.path(),
+        "pixel.png",
+        turn_context(
+            AdaptorId::Anthropic,
+            Some((
+                MediaKind::Image,
+                Modality::Image,
+                "image/png",
+                PNG.len() as u64 - 1,
+            )),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        size_rejected
+            .message()
+            .contains("inline limit for this provider")
+    );
+
+    for family in [
+        AdaptorId::OpenaiCompatible,
+        AdaptorId::Anthropic,
+        AdaptorId::GoogleGemini,
+        AdaptorId::GoogleVertexGemini,
+    ] {
+        let result = execute_media(
+            root.path(),
+            "clip.mp4",
+            turn_context(
+                family,
+                Some((
+                    MediaKind::Video,
+                    Modality::Video,
+                    "video/mp4",
+                    video.len() as u64,
+                )),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.attachments.is_empty(), "{family:?}");
+        assert_eq!(
+            result.output,
+            format!(
+                "Attached video/mp4 ({} bytes), delivered in the following message.",
+                video.len()
+            )
+        );
+        assert!(matches!(
+            result.additional_messages[0].content.as_slice(),
+            [ToolEmittedContent::File(attachment)]
+                if attachment.mime_type.as_str() == "video/mp4"
+        ));
+    }
+
+    let video_incapable = execute_media(
+        root.path(),
+        "clip.mp4",
+        turn_context(AdaptorId::OpenaiCompatible, None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        video_incapable.message(),
+        "Cannot attach video/mp4: the active model \"test/model\" does not accept video inputs"
+    );
+}
+
+#[tokio::test]
+async fn malformed_media_still_errors_and_text_path_is_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("bad.png"), b"not a PNG").unwrap();
+    let malformed = execute_media(
+        root.path(),
+        "bad.png",
+        turn_context(
+            AdaptorId::Anthropic,
+            Some((MediaKind::Image, Modality::Image, "image/png", 1024)),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        malformed
+            .message()
+            .contains("malformed image, PDF, audio, or video")
+    );
+    assert!(!malformed.message().contains("Cannot attach"));
+
+    fs::write(root.path().join("note.txt"), "plain text\n").unwrap();
+    let text = execute_media(
+        root.path(),
+        "note.txt",
+        turn_context(AdaptorId::OpenaiCompatible, None),
+    )
+    .await
+    .unwrap();
+    assert!(text.output.contains("1: plain text"));
+    assert!(text.attachments.is_empty());
+}
+
+#[tokio::test]
+async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() {
+    let root = tempfile::TempDir::new().expect("temp directory");
+    std::fs::create_dir(root.path().join("safe")).expect("safe directory");
+    std::fs::write(root.path().join(".env"), "secret").expect("env file");
+    let prepared = prepared(root.path(), "safe/../.env").await;
+    let normalized = prepared
+        .normalized_arguments()
+        .get("filePath")
+        .and_then(serde_json::Value::as_str)
+        .expect("normalized file path");
+    let expected = root.path().join(".env");
+    assert_eq!(Path::new(normalized), expected);
+    assert!(
+        !prepared
+            .normalized_arguments()
+            .to_string()
+            .contains("safe/..")
+    );
+    assert_eq!(prepared.normalized_arguments()["offset"], 0);
+    assert_eq!(prepared.normalized_arguments()["limit"], 2_000);
+}
+
+async fn fingerprint(root: &Path, path: &str) -> OperationFingerprint {
+    OperationFingerprint::from_prepared_operation(prepared(root, path).await.operation())
+}
+
+#[tokio::test]
+async fn outside_workspace_read_has_one_absolute_labeled_resource() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let external = tempfile::NamedTempFile::new().expect("external file");
+    fs::write(external.path(), "external").expect("fixture");
+    let prepared = ReadTool::new(workspace.path())
+        .prepare(
+            ToolPreparationContext {
+                session: SessionId::new_v7(),
+                run: RunId::new_v7(),
+                cwd: workspace.path().to_owned(),
+                workspace_root: workspace.path().to_owned(),
+                turn_context: crate::test_turn_context(),
+            },
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":external.path()}),
+            },
+        )
+        .await
+        .expect("prepare external read");
+    let expected_label = external
+        .path()
+        .canonicalize()
+        .expect("canonical external path")
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("//?/")
+        .to_owned();
+    assert_eq!(prepared.operation().capabilities().len(), 1);
+    assert_eq!(
+        prepared.operation().resources()[0].capability,
+        PermissionAction::Read
+    );
+    assert_eq!(prepared.policy_labels(), [Some(expected_label.clone())]);
+    assert_eq!(
+        ReadTool::new(workspace.path())
+            .get_permission_resource("read", prepared.normalized_arguments())
+            .expect("resource from prepared args"),
+        ("read", Some(expected_label))
+    );
+}
+
+#[tokio::test]
+async fn workspace_read_label_is_canonical_workspace_relative() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir(workspace.path().join("nested")).expect("nested");
+    fs::write(workspace.path().join("nested/value.txt"), "value").expect("fixture");
+    let prepared = prepared(workspace.path(), "nested/value.txt").await;
+    assert_eq!(prepared.policy_labels(), [Some("nested/value.txt".into())]);
+    assert_eq!(
+        ReadTool::new(workspace.path())
+            .get_permission_resource("read", prepared.normalized_arguments())
+            .expect("resource from prepared args"),
+        ("read", Some("nested/value.txt".into()))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hard_link_through_distinct_parent_capabilities_has_distinct_fingerprint() {
+    let root = tempfile::tempdir().expect("root");
+    fs::create_dir(root.path().join("left")).expect("left");
+    fs::create_dir(root.path().join("right")).expect("right");
+    fs::write(root.path().join("left/value"), "same inode").expect("fixture");
+    fs::hard_link(
+        root.path().join("left/value"),
+        root.path().join("right/value"),
+    )
+    .expect("hard link");
+
+    let left_capability = crate::fs_cap::prepare_existing(root.path(), Path::new("left/value"))
+        .expect("left capability");
+    let right_capability = crate::fs_cap::prepare_existing(root.path(), Path::new("right/value"))
+        .expect("right capability");
+    assert_eq!(left_capability.identity, right_capability.identity);
+    assert_ne!(
+        left_capability.manifest_bytes().expect("left manifest"),
+        right_capability.manifest_bytes().expect("right manifest")
+    );
+
+    let left = prepared(root.path(), "left/value").await;
+    let right = prepared(root.path(), "right/value").await;
+    assert_ne!(
+        left.operation().resources()[0].binding_digest,
+        right.operation().resources()[0].binding_digest
+    );
+    assert_ne!(
+        OperationFingerprint::from_prepared_operation(left.operation()),
+        OperationFingerprint::from_prepared_operation(right.operation())
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("root");
+    let workspace = root.path().join("workspace");
+    let external = root.path().join("external");
+    fs::create_dir(&workspace).expect("workspace");
+    fs::create_dir(workspace.join("routes")).expect("routes");
+    fs::create_dir(&external).expect("external");
+    fs::write(external.join("value.txt"), "external value").expect("fixture");
+    symlink(
+        "../../external/value.txt",
+        workspace.join("routes/relative-leaf"),
+    )
+    .expect("relative leaf");
+    symlink(
+        external.join("value.txt"),
+        workspace.join("routes/absolute-leaf"),
+    )
+    .expect("absolute leaf");
+    symlink(
+        "absolute-ancestor",
+        workspace.join("routes/relative-ancestor"),
+    )
+    .expect("relative ancestor");
+    symlink(&external, workspace.join("routes/absolute-ancestor")).expect("absolute ancestor");
+
+    let tool = ReadTool::new(&workspace);
+    for requested in [
+        "routes/relative-leaf",
+        "routes/absolute-leaf",
+        "routes/relative-ancestor/value.txt",
+        "routes/absolute-ancestor/value.txt",
+    ] {
+        let prepared = tool
+            .prepare(
+                context(&workspace),
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({"filePath":requested}),
+                },
+            )
+            .await
+            .expect("prepare symlink read");
+        let expected_path = workspace.join(requested);
+        assert_eq!(prepared.operation().resources().len(), 1);
+        assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
+        assert_eq!(
+            prepared.normalized_arguments()["filePath"],
+            expected_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            tool.get_permission_resource("read", prepared.normalized_arguments())
+                .expect("normalized permission resource"),
+            ("read", Some(requested.to_owned()))
+        );
+        crate::assert_workspace_rule_allows(
+            &prepared,
+            &workspace,
+            PermissionAction::Read,
+            "routes/*",
+        );
+        let result = prepared
+            .execute_for_test(
+                ToolExecutionContext::for_test(
+                    root.path().join("artifacts"),
+                    crate::test_turn_context(),
+                )
+                .expect("execution context"),
+            )
+            .await
+            .expect("execute symlink read");
+        assert!(result.output.contains("external value"));
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dangling_symlink_read_errors_and_route_swaps_are_operation_changed() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("root");
+    fs::write(root.path().join("value.txt"), "value").expect("fixture");
+    symlink("missing.txt", root.path().join("dangling")).expect("dangling link");
+    let dangling = ReadTool::new(root.path())
+        .prepare(
+            context(root.path()),
+            ToolCall {
+                id: ToolCallId::new_v7(),
+                name: "read".into(),
+                arguments: serde_json::json!({"filePath":"dangling"}),
+            },
+        )
+        .await;
+    assert!(matches!(dangling, Err(ToolError::Failed(_))));
+
+    symlink("value.txt", root.path().join("route")).expect("route");
+    let prepared = prepared(root.path(), "route").await;
+    fs::remove_file(root.path().join("route")).expect("remove route");
+    symlink("value.txt", root.path().join("route")).expect("replace route");
+    let error = prepared
+        .execute_for_test(
+            ToolExecutionContext::for_test(
+                root.path().join("artifacts"),
+                crate::test_turn_context(),
+            )
+            .expect("execution context"),
+        )
+        .await
+        .expect_err("route swap must fail");
+    assert!(matches!(error, ToolError::OperationChanged(_)));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_routes_to_the_same_read_target_have_distinct_fingerprints() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("root");
+    fs::write(root.path().join("value.txt"), "value").expect("fixture");
+    symlink("value.txt", root.path().join("left")).expect("left route");
+    symlink("value.txt", root.path().join("right")).expect("right route");
+
+    let left = prepared(root.path(), "left").await;
+    let right = prepared(root.path(), "right").await;
+    assert_ne!(
+        left.operation().resources()[0].binding_digest,
+        right.operation().resources()[0].binding_digest
+    );
+    assert_ne!(
+        OperationFingerprint::from_prepared_operation(left.operation()),
+        OperationFingerprint::from_prepared_operation(right.operation())
+    );
+}
+
+#[tokio::test]
+async fn leaf_and_parent_swaps_change_read_fingerprint() {
+    let root = tempfile::tempdir().expect("root");
+    fs::create_dir(root.path().join("tree")).expect("tree");
+    fs::write(root.path().join("tree/value"), "same bytes").expect("fixture");
+    let original = fingerprint(root.path(), "tree/value").await;
+
+    fs::rename(
+        root.path().join("tree/value"),
+        root.path().join("tree/old-value"),
+    )
+    .expect("swap leaf");
+    fs::write(root.path().join("tree/value"), "same bytes").expect("replacement leaf");
+    let leaf_swapped = fingerprint(root.path(), "tree/value").await;
+    assert_ne!(original, leaf_swapped);
+
+    fs::rename(root.path().join("tree"), root.path().join("old-tree")).expect("swap parent");
+    fs::create_dir(root.path().join("tree")).expect("replacement parent");
+    fs::write(root.path().join("tree/value"), "same bytes").expect("replacement content");
+    assert_ne!(leaf_swapped, fingerprint(root.path(), "tree/value").await);
+}
