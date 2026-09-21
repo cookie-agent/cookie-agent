@@ -211,7 +211,7 @@ fn built_in_internal_documents() -> Result<BTreeMap<AgentId, AgentDocument>, Eng
             "Built-in session title agent",
             "Generate a concise plain-text title from the supplied first user message. Return title text only.\n",
             AgentLimits {
-                timeout_ms: 10_000,
+                timeout_ms: 30_000,
                 max_output_tokens: 0,
             },
         ),
@@ -546,7 +546,7 @@ mod tests {
         };
         assert_eq!(timeout(BUILT_IN_APPROVAL_AGENT_ID), 30_000);
         assert_eq!(timeout(BUILT_IN_COMPACTION_AGENT_ID), 180_000);
-        assert_eq!(timeout(BUILT_IN_TITLE_AGENT_ID), 10_000);
+        assert_eq!(timeout(BUILT_IN_TITLE_AGENT_ID), 30_000);
     }
 
     fn test_agent(id: &str, mode: AgentMode, enabled: bool) -> ResolvedAgent {
