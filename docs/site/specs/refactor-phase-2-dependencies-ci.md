@@ -1,6 +1,6 @@
 # Refactor Phase 2: Dependencies, Bindings, CI, and Syntect
 
-Status: draft, implementation authorized on 2026-09-21. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md). Update the status here and in the [specification index](index.md) when the phase lands on `main`.
+Status: implemented on 2026-09-21. Part of the architecture refresh recorded in [Refactor phase 1](refactor-phase-1-test-layout.md), [phase 2](refactor-phase-2-dependencies-ci.md), and [phase 3](refactor-phase-3-module-splits.md).
 
 Repository: this workspace (paths below are relative to the workspace root).
 Sibling repo (author-owned): `../oven_sdk` (sibling checkout of cookie-agent/oven-sdk) (GitHub cookie-agent/oven-sdk), currently at rev 1b99edc930651a82930ab4de475a82a33ba6cdd5 which is exactly what cookie-agent pins.
