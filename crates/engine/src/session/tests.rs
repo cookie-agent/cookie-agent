@@ -557,20 +557,89 @@ fn metadata_cache_reads_never_observe_partial_replacements() {
     let cache_path = meta_path(&session_dir);
     let event_path = session_dir.join("events.jsonl");
     let meta = store.get(session_id).expect("projection").meta;
+    // The replacement window is short, so a low iteration count hides a
+    // non-atomic replace. Windows CI reproduced the spurious `NotFound` within a
+    // few hundred rewrites; 2,000 keeps the reader inside the window long enough
+    // to fail loudly rather than flake.
+    const REPLACEMENTS: usize = 2_000;
     let writer = thread::spawn({
         let cache_path = cache_path.clone();
         let meta = meta.clone();
         move || {
-            for _ in 0..100 {
+            for _ in 0..REPLACEMENTS {
                 super::write_cache(&cache_path, &meta).expect("replace metadata cache");
             }
         }
     });
-    for _ in 0..100 {
-        let read = super::read_cache(&cache_path, &event_path).expect("read complete cache");
-        assert_eq!(read.session_id, session_id);
+    for _ in 0..REPLACEMENTS {
+        match super::read_cache(&cache_path, &event_path) {
+            Ok(read) => assert_eq!(read.session_id, session_id),
+            Err(SessionError::Io { path, source })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                panic!(
+                    "metadata cache at {} vanished mid-replacement: {source}",
+                    path.display()
+                )
+            }
+            Err(error) => panic!("read of a replaced metadata cache failed: {error}"),
+        }
     }
     writer.join().expect("metadata writer");
+}
+
+/// A root directory without a `metadata` cache is a transient discovery state,
+/// not a fault: `<root>/subagents/` exists on its own whenever a child publishes
+/// before its root, and the same shape appears mid-merge in
+/// `publish_prepared_dir`. Listing must skip it and pick the root up once its
+/// metadata lands.
+#[test]
+fn bare_root_scaffolds_are_skipped_until_their_metadata_exists() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let session_id = persist_test_session(&owner);
+    let session_dir = owner.session_dir(session_id);
+    drop(owner);
+
+    // A root whose only content is the child scaffold, never published further.
+    let orphan_id = SessionId::new_v7();
+    let orphan_dir = workdir_dir(&data, &cwd).join(orphan_id.to_string());
+    create_private_test_dir_all(&orphan_dir.join(SUBAGENTS_DIR));
+
+    // The published root, reduced to the same scaffold shape.
+    let cache_path = meta_path(&session_dir);
+    let withheld = fs::read(&cache_path).expect("published metadata cache");
+    fs::remove_file(&cache_path).expect("withhold the metadata cache");
+    create_private_test_dir_all(&session_dir.join(SUBAGENTS_DIR));
+
+    let scaffolded = SessionStore::open(&data, &cwd).expect("store opens over bare scaffolds");
+    let listed = scaffolded
+        .all_summaries()
+        .into_iter()
+        .map(|summary| summary.meta.session_id)
+        .collect::<Vec<_>>();
+    assert!(
+        !listed.contains(&session_id) && !listed.contains(&orphan_id),
+        "bare scaffolds must not be listed: {listed:?}"
+    );
+    assert!(
+        scaffolded.get(orphan_id).is_err(),
+        "a scaffold without an event log is not a loadable session"
+    );
+    drop(scaffolded);
+
+    write_private_test_file(&cache_path, &withheld);
+    let restored = SessionStore::open(&data, &cwd).expect("store reopens");
+    assert!(
+        restored
+            .all_summaries()
+            .into_iter()
+            .any(|summary| summary.meta.session_id == session_id),
+        "a root is discovered once its metadata cache exists"
+    );
 }
 
 #[test]
