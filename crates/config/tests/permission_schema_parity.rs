@@ -124,19 +124,34 @@ fn permissions_field_defaults_to_empty() {
 }
 
 #[test]
-fn internal_limits_keep_defaults_but_explicit_zero_removes_the_output_cap() {
+fn internal_limits_keep_the_timeout_default_but_inherit_the_output_cap() {
     let defaults: AgentFrontmatter =
         serde_yaml::from_str("description: Internal\nmode: internal\nenabled: true\nmodels: []\n")
             .unwrap();
     assert_eq!(defaults.limits.timeout_ms, 30_000);
-    assert_eq!(defaults.limits.max_output_tokens, 2_048);
+    // Zero is the "inherit the owner run's cap" sentinel, not a 2,048-token default.
+    assert_eq!(defaults.limits.max_output_tokens, 0);
 
-    let uncapped: AgentFrontmatter = serde_yaml::from_str(
+    let explicit_zero: AgentFrontmatter = serde_yaml::from_str(
         "description: Internal\nmode: internal\nenabled: true\nmodels: []\nlimits: { max_output_tokens: 0 }\n",
     )
     .unwrap();
-    assert_eq!(uncapped.limits.timeout_ms, 30_000);
-    assert_eq!(uncapped.limits.max_output_tokens, 0);
+    assert_eq!(explicit_zero.limits.timeout_ms, 30_000);
+    assert_eq!(explicit_zero.limits.max_output_tokens, 0);
+
+    let capped: AgentFrontmatter = serde_yaml::from_str(
+        "description: Internal\nmode: internal\nenabled: true\nmodels: []\nlimits: { max_output_tokens: 64 }\n",
+    )
+    .unwrap();
+    assert_eq!(capped.limits.timeout_ms, 30_000);
+    assert_eq!(capped.limits.max_output_tokens, 64);
+
+    // Non-internal modes keep their own zero default and their timeout rejection.
+    let subagent: AgentFrontmatter =
+        serde_yaml::from_str("description: Worker\nmode: subagent\nenabled: true\nmodels: []\n")
+            .unwrap();
+    assert_eq!(subagent.limits.timeout_ms, 0);
+    assert_eq!(subagent.limits.max_output_tokens, 0);
 }
 
 #[test]

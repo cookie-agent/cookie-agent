@@ -1864,3 +1864,68 @@ async fn escalated_approval_finalized_externally_still_wakes_the_waiter() {
     captured.abort();
     fixture.engine.shutdown().await;
 }
+
+fn scripted_request_max_tokens(request: &str) -> Option<u64> {
+    let body = request.split_once("\r\n\r\n").expect("HTTP request body").1;
+    serde_json::from_str::<serde_json::Value>(body)
+        .expect("request JSON")
+        .get("max_tokens")
+        .and_then(serde_json::Value::as_u64)
+}
+
+#[tokio::test]
+async fn built_in_approval_agent_request_inherits_the_parent_run_output_cap() {
+    let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Output-capped approval primary\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nlimits: { max_output_tokens: 128 }\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+    );
+    let executed = Arc::new(TestFlag::default());
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestWriteProvider {
+            executed: Arc::clone(&executed),
+        }));
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("approval session");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("inherited-output-cap").expect("run ID"),
+                selection,
+                input: "request the write tool".to_owned(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("accepted approval run");
+
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "approval flow completion",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    assert!(executed.is_set());
+
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("approval server task");
+    assert_eq!(requests.len(), 3);
+    // The middle request is the built-in approval agent; it declares no document
+    // cap of its own and inherits the parent run's 128-token cap.
+    for (index, request) in requests.iter().enumerate() {
+        assert_eq!(
+            scripted_request_max_tokens(request),
+            Some(128),
+            "request {index} output cap"
+        );
+    }
+    fixture.engine.shutdown().await;
+}

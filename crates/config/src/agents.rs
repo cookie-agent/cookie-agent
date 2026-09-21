@@ -206,11 +206,10 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
                     .limits
                     .timeout_ms
                     .unwrap_or(if internal { 30_000 } else { 0 }),
-                max_output_tokens: raw.limits.max_output_tokens.unwrap_or(if internal {
-                    2_048
-                } else {
-                    0
-                }),
+                // Internal agents default to no document cap: at run time a zero
+                // document cap inherits the owner run's cap, mirroring how they
+                // inherit `${parent_model}`.
+                max_output_tokens: raw.limits.max_output_tokens.unwrap_or(0),
             },
             permissions: raw.permissions,
         })

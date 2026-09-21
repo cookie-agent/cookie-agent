@@ -240,6 +240,7 @@ fn compaction_budget_uses_harness_or_native_limit_and_reserves_output() {
         runtime: None,
         limits: InternalAgentLimits {
             max_output_tokens: 2_048,
+            inherited_max_output_tokens: 0,
             timeout_ms: 30_000,
         },
         cache_strategies: vec![None],
@@ -285,6 +286,7 @@ fn compaction_raw_fit_accepts_any_fitting_fallback_order() {
         runtime: None,
         limits: InternalAgentLimits {
             max_output_tokens: 2_048,
+            inherited_max_output_tokens: 0,
             timeout_ms: 30_000,
         },
         cache_strategies: vec![None, None],
