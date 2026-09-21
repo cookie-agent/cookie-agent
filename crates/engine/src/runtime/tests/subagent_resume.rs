@@ -161,20 +161,19 @@ async fn terminal_child_resume_reuses_identity_refreshes_link_and_notifies_again
             scripted_text_body("parent after resumed delegation"),
         ))
         .expect("second parent response");
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: parent.session_id,
-                client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
-                selection,
-                input: "resume the existing child".into(),
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("second parent run");
+    start_run_when_idle(
+        &fixture.engine,
+        RunStartParams {
+            reset_fallback: false,
+            session_id: parent.session_id,
+            client_run_id: ClientRunId::new("resume-terminal-second").expect("run ID"),
+            selection,
+            input: "resume the existing child".into(),
+        },
+        cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+    )
+    .await
+    .expect("second parent run");
     await_projection(
         &fixture.engine,
         parent.session_id,

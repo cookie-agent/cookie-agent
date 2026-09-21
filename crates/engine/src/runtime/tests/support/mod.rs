@@ -1412,6 +1412,31 @@ pub(crate) async fn wait_for_session_not_running(engine: &Engine, session_id: Se
     .await;
 }
 
+/// Start a run, waiting out a start latch the previous run has not yet dropped.
+///
+/// A session projection reports a terminal status as soon as the terminal
+/// event is appended, but the actor clears the latch that guards
+/// `SessionCommand::Start` only once it finishes tearing the run down. A test
+/// that starts a second run right after observing completion therefore races
+/// that release under load and sees `SessionRunning`. Nothing was started when
+/// the latch rejects, so retrying is the whole fix.
+pub(crate) async fn start_run_when_idle(
+    engine: &Engine,
+    params: RunStartParams,
+    origin: cookie_agent_protocol::EventOrigin,
+) -> Result<cookie_agent_protocol::RunStartResult, EngineError> {
+    let deadline = tokio::time::Instant::now() + test_timeout(EVENT_WATCHDOG_SECONDS);
+    loop {
+        match engine.start_run(params.clone(), origin.clone()).await {
+            Err(EngineError::SessionRunning(session)) if tokio::time::Instant::now() < deadline => {
+                debug_assert_eq!(session, params.session_id);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 pub(crate) async fn wait_for_run_inactive(engine: &Engine, run_id: cookie_agent_protocol::RunId) {
     tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
         while engine.run_active_for_test(run_id) {
