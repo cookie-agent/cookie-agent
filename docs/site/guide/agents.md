@@ -309,7 +309,7 @@ family (`internal_agent_started`, `internal_agent_completed`, ...).
 |---|---|---|---|
 | `approval` | Stateless approval classifier for `auto_approve` mode | `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 | `compaction` | Summarizes context into a checkpoint | `${parent_model}` | 3 min timeout; model-derived input budget; max output tokens inherit the parent run's cap |
-| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 10 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
+| `title` | Generates a concise session title from the opening user messages (the first `session_title.max_input_messages`, default 4) | `${parent_model}` | 30 s timeout; model-derived input budget; max output tokens inherit the parent run's cap |
 
 All three default to `${parent_model}`, so they run on the model the parent run
 is currently using — including its position in the fallback chain: if the run
