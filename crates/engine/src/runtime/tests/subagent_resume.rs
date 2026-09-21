@@ -1440,6 +1440,7 @@ async fn running_resume_monitor_install_failure_never_admits_the_prompt() {
     fixture
         .engine
         .inner
+        .test_hooks
         .resume_monitor_failures
         .store(1, Ordering::Release);
     resume_id

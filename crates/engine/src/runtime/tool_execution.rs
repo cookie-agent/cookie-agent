@@ -72,6 +72,7 @@ async fn enqueue_cleanup_tool_progress(
     #[cfg(test)]
     let block = engine
         .inner
+        .test_hooks
         .tool_progress_append_block
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

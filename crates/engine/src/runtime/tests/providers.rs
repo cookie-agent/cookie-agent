@@ -697,6 +697,7 @@ fn failed_publication_preparation_commits_nothing_and_publishes_nothing() {
     fixture
         .engine
         .inner
+        .test_hooks
         .publication_failure
         .store(true, Ordering::Release);
     let result = fixture

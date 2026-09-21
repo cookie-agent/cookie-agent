@@ -258,6 +258,7 @@ impl Engine {
                 #[cfg(test)]
                 let hook = {
                     self.inner
+                        .test_hooks
                         .approval_evaluation_hook
                         .lock()
                         .expect("approval evaluation hook lock poisoned")

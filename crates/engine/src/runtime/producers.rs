@@ -776,6 +776,7 @@ impl Engine {
         let release = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .producer_wake_hook
             .lock()
             .expect("producer wake hook lock poisoned") = Some(Arc::new(super::PagingRaceHook {
@@ -789,6 +790,7 @@ impl Engine {
     async fn wait_for_producer_wake_hook(&self) {
         let hook = self
             .inner
+            .test_hooks
             .producer_wake_hook
             .lock()
             .expect("producer wake hook lock poisoned")

@@ -2282,7 +2282,13 @@ impl Engine {
 
     async fn sleep_before_model_retry(&self, delay: std::time::Duration) {
         #[cfg(test)]
-        if self.inner.model_retry_sleep_hook.sleep(delay).await {
+        if self
+            .inner
+            .test_hooks
+            .model_retry_sleep_hook
+            .sleep(delay)
+            .await
+        {
             return;
         }
         tokio::time::sleep(delay).await;

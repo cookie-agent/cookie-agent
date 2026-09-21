@@ -97,6 +97,7 @@ impl Engine {
             #[cfg(test)]
             if self
                 .inner
+                .test_hooks
                 .adoption_reconcile_failures
                 .fetch_update(
                     std::sync::atomic::Ordering::AcqRel,

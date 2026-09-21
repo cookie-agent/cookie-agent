@@ -1303,7 +1303,7 @@ pub(crate) async fn wait_for_escalated_approval(
     .await;
     tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
         loop {
-            let ready = engine.inner.pending_approval_ready.notified();
+            let ready = engine.inner.test_hooks.pending_approval_ready.notified();
             if engine
                 .inner
                 .pending_approvals
@@ -1341,7 +1341,7 @@ pub(crate) async fn wait_for_tree_escalated_approval(
         .expect("delegated child escalated approval");
     tokio::time::timeout(test_timeout(EVENT_WATCHDOG_SECONDS), async {
         loop {
-            let ready = engine.inner.pending_approval_ready.notified();
+            let ready = engine.inner.test_hooks.pending_approval_ready.notified();
             if engine
                 .inner
                 .pending_approvals

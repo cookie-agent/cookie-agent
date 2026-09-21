@@ -145,6 +145,7 @@ impl Engine {
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .janitor_before_barrier_hook
             .lock()
             .expect("janitor barrier hook lock poisoned") =
@@ -196,6 +197,7 @@ impl Engine {
             #[cfg(test)]
             let hook = self
                 .inner
+                .test_hooks
                 .janitor_before_barrier_hook
                 .lock()
                 .expect("janitor barrier hook lock poisoned")

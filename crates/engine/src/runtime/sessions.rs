@@ -122,6 +122,7 @@ impl Engine {
         #[cfg(test)]
         let hook = self
             .inner
+            .test_hooks
             .read_only_reopen_hook
             .lock()
             .expect("read-only reopen hook lock poisoned")
@@ -156,6 +157,7 @@ impl Engine {
         let (release, release_receiver) = std::sync::mpsc::channel();
         *self
             .inner
+            .test_hooks
             .read_only_reopen_hook
             .lock()
             .expect("read-only reopen hook lock poisoned") = Some(super::ReadOnlyReopenHook {

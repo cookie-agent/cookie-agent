@@ -429,6 +429,7 @@ pub(crate) async fn assert_retry_budget_and_fallback(
     fixture
         .engine
         .inner
+        .test_hooks
         .model_retry_sleep_hook
         .set_mode(ModelRetrySleepMode::Immediate);
     let session = fixture.engine.create_session(selection.clone()).unwrap();
@@ -453,7 +454,12 @@ pub(crate) async fn assert_retry_budget_and_fallback(
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let delays = fixture.engine.inner.model_retry_sleep_hook.delays();
+    let delays = fixture
+        .engine
+        .inner
+        .test_hooks
+        .model_retry_sleep_hook
+        .delays();
     assert_eq!(delays.len(), expected_attempts_on_first - 1);
     assert!(
         delays

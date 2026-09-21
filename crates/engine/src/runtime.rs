@@ -7,9 +7,6 @@ use std::{
     },
 };
 
-#[cfg(test)]
-use std::sync::mpsc as std_mpsc;
-
 use arc_swap::ArcSwap;
 use cookie_agent_config::LoadedConfiguration;
 use cookie_agent_identity::ModelKey;
@@ -81,6 +78,8 @@ mod residency;
 mod runs;
 mod sessions;
 mod skills;
+/// Test-only hooks; the module body is `#![cfg(test)]`.
+pub(crate) mod test_hooks;
 #[cfg(test)]
 mod tests;
 mod titles;
@@ -110,6 +109,8 @@ pub use messaging_api::{AgentMessageHandle, AgentMessageInvocation, AgentRecipie
 pub(crate) use output_capture::OutputCapture;
 pub(crate) use output_capture::finish_page;
 pub use skills::SkillInvocation;
+#[cfg(test)]
+pub(crate) use test_hooks::*;
 
 // A terminal result was finalized successfully before cancellation won its commit.
 pub(crate) const CANCELLED_AFTER_COMPLETION: &str = "cancelled_after_completion";
@@ -592,126 +593,6 @@ enum PendingTool {
     ImmediateFailure(ToolFailure),
 }
 
-#[cfg(test)]
-struct PromptSnapshotHook {
-    reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(test)]
-struct PagingRaceHook {
-    reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(test)]
-struct ToolProgressAppendBlock {
-    reached: Arc<tokio::sync::Notify>,
-    release: tokio::sync::Notify,
-}
-
-#[cfg(test)]
-struct ReadOnlyReopenHook {
-    reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: Mutex<std_mpsc::Receiver<()>>,
-}
-
-#[cfg(test)]
-struct ApprovalEvaluationHook {
-    reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: tokio::sync::Notify,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-pub(crate) enum ModelRetrySleepMode {
-    #[default]
-    Real,
-    Immediate,
-    Blocked,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct ModelRetrySleepHook {
-    mode: Mutex<ModelRetrySleepMode>,
-    delays: Mutex<Vec<std::time::Duration>>,
-    reached: tokio::sync::Notify,
-}
-
-#[cfg(test)]
-impl ModelRetrySleepHook {
-    pub(crate) fn set_mode(&self, mode: ModelRetrySleepMode) {
-        *self
-            .mode
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
-    }
-
-    pub(crate) fn delays(&self) -> Vec<std::time::Duration> {
-        self.delays
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    pub(crate) async fn wait_until_reached(&self, count: usize) {
-        loop {
-            let reached = self.reached.notified();
-            if self.delays().len() >= count {
-                return;
-            }
-            reached.await;
-        }
-    }
-
-    pub(crate) async fn sleep(&self, delay: std::time::Duration) -> bool {
-        let mode = *self
-            .mode
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if mode == ModelRetrySleepMode::Real {
-            return false;
-        }
-        self.delays
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(delay);
-        self.reached.notify_waiters();
-        match mode {
-            ModelRetrySleepMode::Real => false,
-            ModelRetrySleepMode::Immediate => true,
-            ModelRetrySleepMode::Blocked => std::future::pending().await,
-        }
-    }
-}
-
-#[cfg(test)]
-struct AdmissionConfirmationHook {
-    reached: mpsc::UnboundedSender<()>,
-    release: Arc<tokio::sync::Barrier>,
-}
-
-#[cfg(test)]
-struct ResumeAdmissionHook {
-    reached: Mutex<Option<oneshot::Sender<()>>>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-#[cfg(test)]
-struct AdmissionBlockingHook {
-    reached: std_mpsc::Sender<()>,
-    release: std_mpsc::Receiver<()>,
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-struct AbandonedSweepHook {
-    reached: mpsc::UnboundedSender<()>,
-    captured: mpsc::UnboundedSender<Vec<RunId>>,
-    release: Arc<tokio::sync::Notify>,
-}
-
 type PluginDiagnosticKey = (
     SessionId,
     String,
@@ -940,6 +821,7 @@ async fn run_plugin_diagnostic_aggregator(
         };
         #[cfg(test)]
         let append_block = inner
+            .test_hooks
             .plugin_diagnostic_append_block
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1245,57 +1127,7 @@ pub(crate) struct Inner {
     admission_tasks_closing: AtomicBool,
     recovery_waiters: Mutex<HashSet<(SessionId, RunId, ToolCallId)>>,
     #[cfg(test)]
-    prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
-    #[cfg(test)]
-    prompt_before_claim_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
-    #[cfg(test)]
-    janitor_before_barrier_hook: Mutex<Option<Arc<PagingRaceHook>>>,
-    #[cfg(test)]
-    compaction_execution_hook: Mutex<Option<Arc<PagingRaceHook>>>,
-    #[cfg(test)]
-    read_only_reopen_hook: Mutex<Option<ReadOnlyReopenHook>>,
-    #[cfg(test)]
-    approval_evaluation_hook: Mutex<Option<Arc<ApprovalEvaluationHook>>>,
-    #[cfg(test)]
-    pub(crate) model_retry_sleep_hook: ModelRetrySleepHook,
-    #[cfg(test)]
-    pub(crate) pending_approval_ready: tokio::sync::Notify,
-    #[cfg(test)]
-    admission_confirmation_hook: Mutex<Option<Arc<AdmissionConfirmationHook>>>,
-    #[cfg(test)]
-    resume_admission_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
-    #[cfg(test)]
-    resume_attachment_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
-    #[cfg(test)]
-    skill_fork_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
-    #[cfg(test)]
-    producer_wake_hook: Mutex<Option<Arc<PagingRaceHook>>>,
-    #[cfg(test)]
-    delegation_reservation_hook: Mutex<Option<Arc<PagingRaceHook>>>,
-    #[cfg(test)]
-    resume_rollback_hook: Mutex<Option<Arc<ResumeAdmissionHook>>>,
-    #[cfg(test)]
-    admission_blocking_hook: Mutex<Option<AdmissionBlockingHook>>,
-    #[cfg(test)]
-    abandoned_sweep_hook: Mutex<Option<AbandonedSweepHook>>,
-    #[cfg(test)]
-    plugin_diagnostic_append_block: Mutex<Option<Arc<tokio::sync::Notify>>>,
-    #[cfg(test)]
-    tool_progress_append_block: Mutex<Option<Arc<ToolProgressAppendBlock>>>,
-    #[cfg(test)]
-    pub(crate) publication_failure: AtomicBool,
-    #[cfg(test)]
-    pub(crate) delegate_start_failures: AtomicU64,
-    #[cfg(test)]
-    pub(crate) delegate_start_failure_observed: tokio::sync::Notify,
-    #[cfg(test)]
-    pub(crate) delegate_terminal_append_failures: AtomicU64,
-    #[cfg(test)]
-    pub(crate) run_setup_append_failures: AtomicU64,
-    #[cfg(test)]
-    pub(crate) resume_monitor_failures: AtomicU64,
-    #[cfg(test)]
-    pub(crate) adoption_reconcile_failures: AtomicU64,
+    pub(crate) test_hooks: test_hooks::TestHooks,
 }
 
 /// Cloneable in-process engine handle. It contains no transport concerns and
@@ -1437,57 +1269,7 @@ impl Engine {
                 admission_tasks_closing: AtomicBool::new(false),
                 recovery_waiters: Mutex::new(HashSet::new()),
                 #[cfg(test)]
-                prompt_snapshot_hook: Mutex::new(None),
-                #[cfg(test)]
-                prompt_before_claim_hook: Mutex::new(None),
-                #[cfg(test)]
-                janitor_before_barrier_hook: Mutex::new(None),
-                #[cfg(test)]
-                compaction_execution_hook: Mutex::new(None),
-                #[cfg(test)]
-                read_only_reopen_hook: Mutex::new(None),
-                #[cfg(test)]
-                approval_evaluation_hook: Mutex::new(None),
-                #[cfg(test)]
-                model_retry_sleep_hook: ModelRetrySleepHook::default(),
-                #[cfg(test)]
-                pending_approval_ready: tokio::sync::Notify::new(),
-                #[cfg(test)]
-                admission_confirmation_hook: Mutex::new(None),
-                #[cfg(test)]
-                resume_admission_hook: Mutex::new(None),
-                #[cfg(test)]
-                resume_attachment_hook: Mutex::new(None),
-                #[cfg(test)]
-                skill_fork_reservation_hook: Mutex::new(None),
-                #[cfg(test)]
-                producer_wake_hook: Mutex::new(None),
-                #[cfg(test)]
-                delegation_reservation_hook: Mutex::new(None),
-                #[cfg(test)]
-                resume_rollback_hook: Mutex::new(None),
-                #[cfg(test)]
-                admission_blocking_hook: Mutex::new(None),
-                #[cfg(test)]
-                abandoned_sweep_hook: Mutex::new(None),
-                #[cfg(test)]
-                plugin_diagnostic_append_block: Mutex::new(None),
-                #[cfg(test)]
-                tool_progress_append_block: Mutex::new(None),
-                #[cfg(test)]
-                publication_failure: AtomicBool::new(false),
-                #[cfg(test)]
-                delegate_start_failures: AtomicU64::new(0),
-                #[cfg(test)]
-                delegate_start_failure_observed: tokio::sync::Notify::new(),
-                #[cfg(test)]
-                delegate_terminal_append_failures: AtomicU64::new(0),
-                #[cfg(test)]
-                run_setup_append_failures: AtomicU64::new(0),
-                #[cfg(test)]
-                resume_monitor_failures: AtomicU64::new(0),
-                #[cfg(test)]
-                adoption_reconcile_failures: AtomicU64::new(0),
+                test_hooks: test_hooks::TestHooks::default(),
             }),
         };
         let weak = Arc::downgrade(&engine.inner);
@@ -1786,7 +1568,12 @@ impl Engine {
         mut reasons: Vec<RuntimeChangeReason>,
     ) -> Result<RuntimePublication, EngineError> {
         #[cfg(test)]
-        if self.inner.publication_failure.swap(false, Ordering::AcqRel) {
+        if self
+            .inner
+            .test_hooks
+            .publication_failure
+            .swap(false, Ordering::AcqRel)
+        {
             return Err(EngineError::RuntimeCompileFailed);
         }
         let (agents, agent_presets) = resolve_agent_registries(&self.inner.config, models)?;
@@ -2078,6 +1865,7 @@ impl Engine {
     pub(crate) fn block_plugin_diagnostic_appends_for_test(&self) {
         *self
             .inner
+            .test_hooks
             .plugin_diagnostic_append_block
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =
@@ -2089,6 +1877,7 @@ impl Engine {
         let reached = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .tool_progress_append_block
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) =

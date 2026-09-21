@@ -18,6 +18,7 @@ async fn background_startup_failure_releases_capacity_and_notifies() {
     fixture
         .engine
         .inner
+        .test_hooks
         .delegate_start_failures
         .store(1, Ordering::Release);
     let parent = fixture
@@ -236,6 +237,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
     fixture
         .engine
         .inner
+        .test_hooks
         .delegate_terminal_append_failures
         .store(1, Ordering::Release);
     let error = fixture
@@ -323,11 +325,13 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
     fixture
         .engine
         .inner
+        .test_hooks
         .delegate_start_failures
         .store(100, Ordering::Release);
     let failure_observed = fixture
         .engine
         .inner
+        .test_hooks
         .delegate_start_failure_observed
         .notified();
     let running_id = fixture
@@ -359,6 +363,7 @@ async fn background_delegation_rejects_when_four_x_queue_is_full() {
     fixture
         .engine
         .inner
+        .test_hooks
         .delegate_start_failures
         .store(0, Ordering::Release);
     await_session_change(

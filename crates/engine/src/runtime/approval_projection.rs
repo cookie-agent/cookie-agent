@@ -202,7 +202,7 @@ impl Engine {
             return Err(EngineError::ApprovalConflict);
         }
         #[cfg(test)]
-        self.inner.pending_approval_ready.notify_one();
+        self.inner.test_hooks.pending_approval_ready.notify_one();
         Ok(ApprovalEvaluationTransition::Escalated(receiver))
     }
 

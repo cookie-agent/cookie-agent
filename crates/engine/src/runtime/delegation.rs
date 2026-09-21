@@ -614,6 +614,7 @@ impl Engine {
         #[cfg(test)]
         let skill_fork_hook = if entry.request.staged_skill.is_some() {
             self.inner
+                .test_hooks
                 .skill_fork_reservation_hook
                 .lock()
                 .expect("skill fork reservation hook lock poisoned")
@@ -656,7 +657,7 @@ impl Engine {
             })
             .await?;
             #[cfg(test)]
-            self.wait_for_resume_test_hook(&self.inner.resume_attachment_hook)
+            self.wait_for_resume_test_hook(&self.inner.test_hooks.resume_attachment_hook)
                 .await;
             if let Err(error) = self.publish_resume_admission_target(
                 invocation_id,
@@ -695,6 +696,7 @@ impl Engine {
             #[cfg(test)]
             if let Some(hook) = {
                 self.inner
+                    .test_hooks
                     .resume_admission_hook
                     .lock()
                     .expect("resume admission hook lock poisoned")
@@ -770,7 +772,7 @@ impl Engine {
                 return Err(error);
             }
             #[cfg(test)]
-            self.wait_for_resume_test_hook(&self.inner.resume_rollback_hook)
+            self.wait_for_resume_test_hook(&self.inner.test_hooks.resume_rollback_hook)
                 .await;
             if !self.admission_generation_live(invocation_id, generation) {
                 drop(monitor_release);
@@ -1268,13 +1270,17 @@ impl Engine {
         #[cfg(test)]
         if self
             .inner
+            .test_hooks
             .delegate_start_failures
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 (remaining > 0).then(|| remaining - 1)
             })
             .is_ok()
         {
-            self.inner.delegate_start_failure_observed.notify_one();
+            self.inner
+                .test_hooks
+                .delegate_start_failure_observed
+                .notify_one();
             return Err(EngineError::ToolFailed(
                 "injected delegate startup failure".into(),
             ));
@@ -1369,6 +1375,7 @@ impl Engine {
         #[cfg(test)]
         let confirmation_hook = self
             .inner
+            .test_hooks
             .admission_confirmation_hook
             .lock()
             .expect("admission confirmation hook lock poisoned")
@@ -1545,6 +1552,7 @@ impl Engine {
         #[cfg(test)]
         if self
             .inner
+            .test_hooks
             .resume_monitor_failures
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 (remaining > 0).then(|| remaining - 1)
@@ -1945,6 +1953,7 @@ impl Engine {
         #[cfg(test)]
         if self
             .inner
+            .test_hooks
             .delegate_terminal_append_failures
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 (remaining > 0).then(|| remaining - 1)
@@ -2483,6 +2492,7 @@ impl Engine {
         let release = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .resume_admission_hook
             .lock()
             .expect("resume admission hook lock poisoned") =
@@ -2501,6 +2511,7 @@ impl Engine {
         let release = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .skill_fork_reservation_hook
             .lock()
             .expect("skill fork reservation hook lock poisoned") =
@@ -2519,6 +2530,7 @@ impl Engine {
         let release = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .delegation_reservation_hook
             .lock()
             .expect("delegation reservation hook lock poisoned") =
@@ -2533,14 +2545,14 @@ impl Engine {
     pub(crate) fn install_resume_attachment_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        self.install_resume_test_hook(&self.inner.resume_attachment_hook)
+        self.install_resume_test_hook(&self.inner.test_hooks.resume_attachment_hook)
     }
 
     #[cfg(test)]
     pub(crate) fn install_resume_rollback_hook(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        self.install_resume_test_hook(&self.inner.resume_rollback_hook)
+        self.install_resume_test_hook(&self.inner.test_hooks.resume_rollback_hook)
     }
 
     #[cfg(test)]

@@ -53,6 +53,7 @@ impl Engine {
             #[cfg(test)]
             let hook = self
                 .inner
+                .test_hooks
                 .admission_blocking_hook
                 .lock()
                 .expect("admission blocking hook lock poisoned")
@@ -177,6 +178,7 @@ impl Engine {
         #[cfg(test)]
         let reservation_hook = self
             .inner
+            .test_hooks
             .delegation_reservation_hook
             .lock()
             .expect("delegation reservation hook lock poisoned")
@@ -787,6 +789,7 @@ impl Engine {
         #[cfg(test)]
         let hook = self
             .inner
+            .test_hooks
             .abandoned_sweep_hook
             .lock()
             .expect("abandoned sweep hook lock poisoned")

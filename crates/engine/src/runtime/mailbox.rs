@@ -547,6 +547,7 @@ impl Engine {
         #[cfg(test)]
         if let Some(hook) = {
             self.inner
+                .test_hooks
                 .prompt_before_claim_hook
                 .lock()
                 .expect("prompt before-claim hook lock poisoned")
@@ -571,6 +572,7 @@ impl Engine {
         #[cfg(test)]
         if let Some(hook) = {
             self.inner
+                .test_hooks
                 .prompt_snapshot_hook
                 .lock()
                 .expect("prompt snapshot hook lock poisoned")
@@ -597,6 +599,7 @@ impl Engine {
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .prompt_before_claim_hook
             .lock()
             .expect("before-claim hook lock") =
@@ -615,6 +618,7 @@ impl Engine {
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .prompt_snapshot_hook
             .lock()
             .expect("snapshot hook lock") = Some(std::sync::Arc::new(super::PromptSnapshotHook {
@@ -667,6 +671,7 @@ impl Engine {
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self
             .inner
+            .test_hooks
             .compaction_execution_hook
             .lock()
             .expect("compaction execution hook lock poisoned") =
@@ -964,6 +969,7 @@ impl Engine {
                         | Event::RunFailed { .. }
                 ) && self
                     .inner
+                    .test_hooks
                     .run_setup_append_failures
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                         remaining.checked_sub(1)
@@ -1322,6 +1328,7 @@ impl Engine {
                         #[cfg(test)]
                         let hook = engine
                             .inner
+                            .test_hooks
                             .compaction_execution_hook
                             .lock()
                             .expect("compaction execution hook lock poisoned")

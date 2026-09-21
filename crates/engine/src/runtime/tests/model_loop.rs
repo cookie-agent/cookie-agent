@@ -31,6 +31,7 @@ async fn mid_stream_failure_still_consumes_standard_retries_before_fallback() {
     fixture
         .engine
         .inner
+        .test_hooks
         .model_retry_sleep_hook
         .set_mode(ModelRetrySleepMode::Immediate);
     let session = fixture.engine.create_session(selection.clone()).unwrap();
@@ -116,6 +117,7 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
     fixture
         .engine
         .inner
+        .test_hooks
         .model_retry_sleep_hook
         .set_mode(ModelRetrySleepMode::Blocked);
     let session = fixture.engine.create_session(selection.clone()).unwrap();
@@ -136,6 +138,7 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
     fixture
         .engine
         .inner
+        .test_hooks
         .model_retry_sleep_hook
         .wait_until_reached(1)
         .await;

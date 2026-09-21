@@ -98,6 +98,7 @@ async fn adopting_a_session_reconciles_its_dead_run_before_resume() {
     let reopened = reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
     reopened
         .inner
+        .test_hooks
         .adoption_reconcile_failures
         .store(1, Ordering::Release);
     assert!(matches!(
@@ -176,6 +177,7 @@ async fn setup_append_terminal_failure_retains_active_tombstone_until_retry() {
         fixture
             .engine
             .inner
+            .test_hooks
             .run_setup_append_failures
             .store(2, Ordering::Release);
         let error = fixture

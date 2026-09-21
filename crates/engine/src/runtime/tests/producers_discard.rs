@@ -558,6 +558,7 @@ async fn failed_request_releases_claim_so_owner_can_discard_before_retry() {
     fixture
         .engine
         .inner
+        .test_hooks
         .model_retry_sleep_hook
         .set_mode(ModelRetrySleepMode::Blocked);
     let session_id = fixture.engine.create_session(selection).unwrap().session_id;
@@ -585,6 +586,7 @@ async fn failed_request_releases_claim_so_owner_can_discard_before_retry() {
         fixture
             .engine
             .inner
+            .test_hooks
             .model_retry_sleep_hook
             .wait_until_reached(1),
     )
