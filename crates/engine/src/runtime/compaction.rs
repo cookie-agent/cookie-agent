@@ -5,6 +5,7 @@ use std::{
 };
 
 use cookie_agent_config::ContextCompactionTrigger;
+use cookie_agent_models::adapters::with_native_compaction_instructions;
 use cookie_agent_protocol::{
     ContextCheckpoint, ContextCheckpointBoundaries, ContextCheckpointBudgets,
     ContextCheckpointCommit, ExtensionSessionBeforeCompactParams, InternalAgentKind,
@@ -15,8 +16,6 @@ use cookie_agent_protocol::{
 use oven_sdk::{
     CompactionCapability, CompactionRequest, ModelError, Request as ModelRequest, ToolDefinition,
 };
-use oven_sdk_azure::{AzureOpenAiCompactionOptions, AzureOpenAiCompactionRequestExt as _};
-use oven_sdk_openai::{OpenAiResponsesCompactionOptions, OpenAiResponsesCompactionRequestExt as _};
 use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 
@@ -398,23 +397,11 @@ impl Engine {
                     .cache_strategy(input.binding, input.session);
                 let request =
                     model.prepare_request_with_cache_strategy(request, cache_strategy.as_ref());
-                let mut compact_request = CompactionRequest::new(request);
-                let instructions = compaction_focus.clone();
-                compact_request = match input.binding.descriptor.adapter_id.as_str() {
-                    "oven.openai.responses" => compact_request
-                        .with_openai_responses_compaction_options(
-                            OpenAiResponsesCompactionOptions {
-                                instructions,
-                                ..OpenAiResponsesCompactionOptions::default()
-                            },
-                        ),
-                    "oven.azure.openai.responses" => compact_request
-                        .with_azure_openai_compaction_options(AzureOpenAiCompactionOptions {
-                            instructions,
-                            ..AzureOpenAiCompactionOptions::default()
-                        }),
-                    _ => compact_request,
-                };
+                let compact_request = with_native_compaction_instructions(
+                    CompactionRequest::new(request),
+                    input.binding.descriptor.adapter_id.as_str(),
+                    compaction_focus.clone(),
+                );
                 if model.model().supports_compaction(&compact_request) {
                     let abort = AbortBridge::new(input.cancellation.child_token());
                     match model.model().compact(compact_request, abort.signal()).await {

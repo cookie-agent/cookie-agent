@@ -649,7 +649,6 @@ dependencies = [
  "libc",
  "lopdf",
  "oven-sdk",
- "oven-sdk-azure",
  "oven-sdk-openai",
  "process-wrap",
  "reqwest",

@@ -30,8 +30,6 @@ jiff.workspace = true
 jsonschema = { version = "0.49.9", default-features = false }
 lopdf = { version = "0.44.0", default-features = false }
 oven-sdk.workspace = true
-oven-sdk-azure.workspace = true
-oven-sdk-openai.workspace = true
 http.workspace = true
 process-wrap.workspace = true
 reqwest.workspace = true
@@ -54,6 +52,7 @@ rustix.workspace = true
 cookie_agent_models = { version = "=0.2.0", path = "../models", features = ["test-support"] }
 flate2.workspace = true
 insta.workspace = true
+oven-sdk-openai.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 toml.workspace = true
