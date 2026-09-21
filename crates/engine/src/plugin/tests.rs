@@ -57,9 +57,10 @@ const PYTHON: &str = "python3";
 #[cfg(windows)]
 const PYTHON: &str = "python";
 
-#[cfg(unix)]
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-#[cfg(windows)]
+/// Upper bound on how long the Python fixture may take to hand-shake. This is
+/// a liveness bound, not a latency assertion: an oversubscribed test run needs
+/// far longer than a quiet one, and the host's own `startup_timeout_ms` is
+/// 10_000, so anything shorter fails the test before the host gives up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Harness {
@@ -349,7 +350,7 @@ async fn crash_during_call_invalidates_prepared_tool_and_listing() {
         .await
         .expect_err("crash");
     assert!(error.to_string().contains("stopped during tool call"));
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while harness.registry.statuses()[0].state != PluginState::Failed {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -436,7 +437,7 @@ async fn streams_ordered_events_and_bus_without_self_echo() {
             )
             .is_empty()
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while !event_file.exists()
             || std::fs::read_to_string(&event_file).map_or(0, |contents| contents.lines().count())
                 < 2
