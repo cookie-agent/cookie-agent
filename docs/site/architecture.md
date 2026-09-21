@@ -276,13 +276,12 @@ working directory:
     <root-session-id>/             # root sessions live directly inside
       metadata                     # derived session cache
       events.jsonl                 # append-only root log
-      owner.lock                   # Unix in-directory ownership lock
+      owner.lock                   # Unix in-directory lock for the whole tree
       artifacts/                   # artifacts owned by this root's tree
-      <root-session-id>.owner.lock # Windows sidecar for a root
+      <root-session-id>.owner.lock # Windows sidecar, also for the whole tree
       subagents/
         index.json                 # child-summary cache, {"version":1,...}
-        <child-session-id>/        # metadata, events.jsonl, owner.lock
-        <child-session-id>.owner.lock # Windows sidecar for a child
+        <child-session-id>/        # metadata, events.jsonl — no lock file
 ```
 
 `<workdirkey>` is `<16-hex-hash>-<sanitized-basename>`, where the hash is the
@@ -352,20 +351,32 @@ from the recovery projection and appears in the session's skipped-event
 diagnostics, while other delegations continue to load.
 
 Multiple cookie processes may share this project data directory. Ownership is
-per session, not per work dir: the process that successfully locks `owner.lock`
-is the only writer and retains that lock until process exit, including while an
-idle session is evicted from memory. On Unix the lock is
-`<session-dir>/owner.lock`; on Windows it is the adjacent
-`<session-id>.owner.lock` sidecar so its open handle does not prevent
-directory renames. New-session and fork publication acquire the Windows sidecar
-derived from the final directory path before renaming the temporary directory.
-Session discovery ignores the sidecar because it scans only directories.
-Session listing reads `metadata` without locking, which is safe because every
-rewrite of that cache stages a sibling temporary and publishes it with a
-replacement that keeps the name resolvable throughout: `rename` on Unix, and a
-superseding POSIX rename on Windows. Opening an existing session
-for mutation attempts the lock; success enters a non-writable adoption state,
-reconciles only that session's interrupted work, and then publishes ownership.
+per root session tree, not per session and not per work dir: one `owner.lock`
+guards a root and every delegated session filed under it, and the process that
+locks it is the only writer anywhere inside that root's directory. It retains
+the lock until process exit, including while every session in the tree is
+evicted from memory. On Unix the lock is `<root-dir>/owner.lock`; on Windows it
+is the adjacent `<root-session-id>.owner.lock` sidecar, so its open handle does
+not prevent directory renames. Children have no lock file of their own in
+either layout, and locks an older build wrote under `subagents/` are ignored
+and swept away by the tree's load pass. New-root and fork publication acquire
+the Windows sidecar derived from the final directory path before renaming the
+temporary directory; publishing a child takes no lock, because its tree is
+already held. Session discovery ignores the sidecar because it scans only
+directories. Session listing reads `metadata` without locking, which is safe
+because every rewrite of that cache stages a sibling temporary and publishes it
+with a replacement that keeps the name resolvable throughout: `rename` on Unix,
+and a superseding POSIX rename on Windows.
+
+One tree lock does not make a whole tree writable. Opening a session for
+mutation resolves its root and attempts that root's lock — which is where an
+adoption reached through a child starts — and then adopts the session itself:
+success enters a non-writable adoption state, reconciles only that session's
+interrupted work, and then publishes ownership. Taking the tree through a child
+therefore does not reconcile the root; the root reconciles when it is first
+written, through its own adoption, which needs no second lock. A session is
+writable only once its tree is held by this process *and* the session was
+created here or adopted here.
 Adoption also schedules delegation recovery for the session's tree, and a resume
 waits — bounded, a few seconds — for that recovery to settle before it returns,
 so background-delegation capacity never reads transiently over-counted; if the
@@ -375,16 +386,21 @@ runs and then waits, under its own bound, for those run tasks to record
 `RunCancelled` while the actors and the store are still up. Only a crash, or a
 task still wedged when that bound expires and is aborted, leaves a run for the
 next startup to repair as interrupted by daemon restart.
-Reconciliation failure revokes the log's write capability and releases the lock
-so a later attempt can retry. A retained event-log projection cannot append
-after its store drops ownership. A live foreign owner produces `session is
-owned by another cookie process`. Classification failures fail closed as
-foreign-owned.
+Reconciliation failure revokes the tree's write capability for that session and,
+when the failed adoption is the only thing holding the tree, releases the tree
+lock so a later attempt can retry. Because one authority serves the whole tree,
+dropping it invalidates every log in the tree at once: a retained event-log
+projection cannot append after its store drops ownership. A live foreign owner
+produces `session is owned by another cookie process` for every session in its
+tree. Classification failures fail closed as foreign-owned.
 
 Foreign sessions remain inspectable as read-only snapshots. The TUI disables
 input for them and refreshes the snapshot when reopened; there is no live event
-tail. Forking a foreign snapshot is allowed because the new fork has its own
-lock. Grants and grant invalidations committed by another process become
+tail. Forking a foreign *root* is allowed because the fork is a new root with a
+tree and lock of its own; forking a delegated session publishes into its
+source's tree and therefore needs that tree's lock, taking it when it is free
+and failing as foreign-owned when it is not. Grants and grant invalidations
+committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
 wins. Ownership failures in protocol 20 use an ordinary fault
 message rather than a new wire error.
