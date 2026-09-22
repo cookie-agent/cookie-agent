@@ -26,6 +26,20 @@ impl App {
         self.retire_composer_selection();
     }
 
+    /// Delete a non-empty composer selection, as Backspace and Delete do in
+    /// any editor. Returns whether there was one to delete.
+    fn delete_composer_selection(&mut self) -> bool {
+        let Some(selection @ TextSelection::Composer { .. }) = self.selection else {
+            return false;
+        };
+        let (start, end) = selection.byte_range();
+        if start == end {
+            return false;
+        }
+        self.mutate_input(|input| input.delete_byte_range(start, end));
+        true
+    }
+
     pub(super) fn read_only_input_allowed(&self) -> bool {
         if self.new_session_draft.is_some() {
             return true;
@@ -83,6 +97,13 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+        // A selection is deleted whole, with or without Ctrl, rather than
+        // retired in favor of a one-character or one-word delete.
+        if matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+            && self.delete_composer_selection()
+        {
             return;
         }
         match key.code {
