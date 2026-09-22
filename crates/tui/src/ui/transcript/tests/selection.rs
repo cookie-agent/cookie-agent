@@ -328,6 +328,58 @@ async fn composer_drag_and_ctrl_x_cuts_the_selected_draft_text() {
 }
 
 #[tokio::test]
+async fn composer_selection_is_deleted_by_backspace_and_delete() {
+    for (code, modifiers) in [
+        (KeyCode::Backspace, KeyModifiers::NONE),
+        (KeyCode::Delete, KeyModifiers::NONE),
+        (KeyCode::Backspace, KeyModifiers::CONTROL),
+        (KeyCode::Delete, KeyModifiers::CONTROL),
+    ] {
+        let mut app = test_app().await;
+        let copied = Arc::new(Mutex::new(Vec::new()));
+        app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+        app.selected = Some(SessionId::new_v7());
+        app.input.set_buffer("hello world".to_owned());
+        rendered_frame(&mut app, 80, 24);
+        let text_rect = app.hit_map.input.expect("input").text_rect;
+        // Drag right to left this time: the range is normalized either way.
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            let column = if matches!(kind, MouseEventKind::Down(_)) {
+                9
+            } else {
+                6
+            };
+            app.handle_mouse(mouse(kind, text_rect.x + column, text_rect.y))
+                .await;
+        }
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            text_rect.x + 6,
+            text_rect.y,
+        ))
+        .await;
+        assert_eq!(
+            app.selection,
+            Some(TextSelection::Composer { anchor: 9, head: 6 })
+        );
+        app.handle_key(KeyEvent::new(code, modifiers)).await;
+        assert_eq!(app.input.as_str(), "hello ld", "{code:?} {modifiers:?}");
+        assert!(app.selection.is_none());
+        assert!(
+            copied.lock().expect("capture").is_empty(),
+            "deleting is not cutting"
+        );
+        // The cursor sits in the gap, so typing fills it.
+        app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+            .await;
+        assert_eq!(app.input.as_str(), "hello Xld");
+    }
+}
+
+#[tokio::test]
 async fn composer_click_without_drag_places_the_cursor_as_before() {
     let mut app = test_app().await;
     app.selected = Some(SessionId::new_v7());
