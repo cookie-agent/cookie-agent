@@ -517,6 +517,21 @@ fn the_band_covers_tree_shaped_output_and_spares_the_block_gutter() {
             .all(|span| span.style.bg == Some(background)),
         "every column of output sits on the band: {row}"
     );
+    // Short output still reads as one panel: every banded row runs to the
+    // block's full width, not just to its widest row.
+    let banded_widths = layout.lines[region.start_line..region.end_line]
+        .iter()
+        .filter(|row| {
+            row.spans
+                .iter()
+                .any(|span| span.style.bg == Some(background))
+        })
+        .map(Line::width)
+        .collect::<Vec<_>>();
+    assert!(
+        banded_widths.iter().all(|width| *width >= 60),
+        "the band spans the block, not the text: {banded_widths:?}"
+    );
 }
 
 #[test]
