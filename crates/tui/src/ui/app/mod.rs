@@ -70,7 +70,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListState, Paragraph, Wrap},
+    widgets::{Block, List, ListState, Paragraph, Wrap},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -1645,10 +1645,7 @@ fn render_connect_button(frame: &mut ratatui::Frame, area: Rect, label: &str, st
         return;
     }
     if area.height > 1 {
-        frame.render_widget(
-            Block::default().borders(Borders::ALL).border_style(style),
-            area,
-        );
+        frame.render_widget(crate::ui::panel_block().border_style(style), area);
         let label_area = Rect::new(
             area.x.saturating_add(1),
             area.y.saturating_add(1),

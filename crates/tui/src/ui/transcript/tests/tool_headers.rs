@@ -21,11 +21,18 @@ fn tool_icons_map_core_tools_and_keep_hammer_for_plugins() {
         ("edit", "✏️"),
         ("delegate_subagent", "🤖"),
         ("get_subagent_result", "🤖"),
-        ("steer_subagent", "🤖"),
         ("cancel_subagent", "🤖"),
         ("skill", "✨"),
         ("goal_get", "🎯"),
         ("goal_update", "🎯"),
+        ("webfetch", "🌐"),
+        ("send_message", "📨"),
+        ("brave_web_search", "🔍"),
+        ("tavily_websearch", "🔍"),
+        ("docs-Search", "🔍"),
+        ("browser_fetch_url", "🌐"),
+        ("web_Browse", "🌐"),
+        ("curl_tool", "🔨"),
         ("plugin.build", "🔨"),
         ("mcp__server__read", "🔨"),
         ("unknown", "🔨"),
@@ -51,14 +58,14 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
     let path = "src/very/deeply/nested/module/transcript.rs";
     let long_command = format!("command {} done", "long-argument ".repeat(12));
     // A 40-column row keeps 38 columns of content behind its 2-column
-    // gutter, the `{icon} {chevron} ` markers take 5 of those, and `Read `
+    // gutter, the `{icon} {chevron} ` markers take 5 of those, and `read `
     // takes 5 more: 28 columns are left for the argument.
     assert_eq!(tool_header_content_width(40), 38);
     assert_eq!(
         UnicodeWidthStr::width(tool_header_chrome("📖", '▸', 40).as_str()),
         5
     );
-    let read_budget = header_argument_width("Read", 33);
+    let read_budget = header_argument_width("read", 33);
     assert_eq!(read_budget, 28);
     assert_eq!(
         abbreviate_tool_argument("read", path, read_budget),
@@ -91,7 +98,6 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         "edit",
         "delegate_subagent",
         "get_subagent_result",
-        "steer_subagent",
         "cancel_subagent",
         "skill",
         "goal_get",
@@ -108,13 +114,12 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
         tool.presentation = presentation(name, Some(&argument));
         tool.arguments = serde_json::json!({"command": argument, "filePath": path}).to_string();
         let expanded = HashSet::from([BlockId::Tool(id)]);
-        let label = if name == "read" { "Read" } else { name };
         for width in [8, 12, 20, 40, 80, 160] {
             // A zero budget means the label alone fills the row and the
             // header drops the argument entirely; `.max(1)` keeps the
             // abbreviation helper comparable here.
             let budget = header_argument_width(
-                label,
+                name,
                 tool_header_content_width(width)
                     - UnicodeWidthStr::width(
                         tool_header_chrome(tool_icon(name), '▸', width).as_str(),
@@ -152,7 +157,7 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
     }
     let unicode = "src/目录/文件/文件👩‍💻.rs";
     for width in [8, 16, 24, 40] {
-        let budget = header_argument_width("Read", tool_header_content_width(width) - 5).max(1);
+        let budget = header_argument_width("read", tool_header_content_width(width) - 5).max(1);
         let short = abbreviate_tool_argument("read", unicode, budget);
         assert!(UnicodeWidthStr::width(short.as_str()) <= budget);
         assert!(!short.starts_with("…\u{200d}"));
@@ -301,7 +306,7 @@ fn expanded_read_path_renders_embedded_tabs_as_spaces() {
     // tab would silently vanish from the buffer row. Both the collapsed
     // header and the expanded `path:` row must show the flattened space.
     assert!(
-        rows.iter().any(|row| row.ends_with("Read src/my file.rs")),
+        rows.iter().any(|row| row.ends_with("read src/my file.rs")),
         "{rows:?}"
     );
     assert!(
@@ -332,7 +337,7 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
     let id = read_tool_id(&read);
     read.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/lib\u{1b}.rs"));
     let rendered = snapshot_lines(&transcript_layout(&read, None, 80).lines);
-    assert!(rendered.contains("📖 ▸ Read src/lib .rs"), "{rendered:?}");
+    assert!(rendered.contains("📖 ▸ read src/lib .rs"), "{rendered:?}");
     assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
     let rendered = snapshot_lines(
         &transcript_layout(&read, Some(&HashSet::from([BlockId::Tool(id)])), 80).lines,
@@ -727,11 +732,11 @@ fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
     let id = read_tool_id(&state);
     state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some("src/main.rs"));
     let collapsed = transcript_layout(&state, None, 80);
-    assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ Read src/main.rs"));
+    assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ read src/main.rs"));
     let expanded = HashSet::from([BlockId::Tool(id)]);
     let layout = transcript_layout(&state, Some(&expanded), 80);
     let text = snapshot_lines(&layout.lines);
-    assert!(text.contains("📖 ▾ Read src/main.rs"));
+    assert!(text.contains("📖 ▾ read src/main.rs"));
     assert!(!text.contains("arguments:"));
     assert!(!text.contains("Read file src/main.rs"));
     assert_eq!(text.matches("src/main.rs").count(), 1);
@@ -749,7 +754,7 @@ fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
         (layout.lines.len(), 0),
         &Theme::default(),
     );
-    assert!(copied.contains("📖 ▾ Read src/main.rs"));
+    assert!(copied.contains("📖 ▾ read src/main.rs"));
 }
 
 #[tokio::test]

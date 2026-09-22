@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -620,9 +620,7 @@ pub(crate) fn render(
 ) -> RenderedInput {
     let title = title.into();
     let border_style = theme.input_border(focused);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style);
+    let block = crate::ui::panel_block().border_style(border_style);
     // The focused composer paints the shared cream panel beneath its text;
     // the bold accent border, not a second fill, marks the active editing
     // surface.
@@ -654,8 +652,17 @@ pub(crate) fn render(
         *first = Line::from(Span::styled(fitted, theme.muted()));
     }
     let title_width = line_width(&title);
-    let title_layout = overflow_title(title, rows_above, rows_below, area.width);
+    // The title's blank pad columns come out of the width it may fill, and
+    // the left one shifts where the clickable title starts.
+    let pad = crate::ui::PANEL_TITLE_PAD;
+    let title_layout = overflow_title(
+        title,
+        rows_above,
+        rows_below,
+        area.width.saturating_sub(2 * pad),
+    );
     let title_rect = title_layout.original_offset.and_then(|offset| {
+        let offset = offset.saturating_add(pad);
         let available = area.width.saturating_sub(2);
         let visible_width = available.saturating_sub(offset).min(title_width);
         (visible_width > 0).then(|| {
@@ -667,7 +674,7 @@ pub(crate) fn render(
             )
         })
     });
-    let block = block.title(title_layout.text);
+    let block = block.title(crate::ui::panel_title(title_layout.text));
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(Text::from(lines)), text_area);
     // The track lives in the rightmost reserved column, one blank margin away

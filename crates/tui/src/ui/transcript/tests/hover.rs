@@ -238,7 +238,7 @@ async fn first_launch_and_fresh_session_show_guidance_without_system_prompt() {
     assert!(app.store.apply_event(session_created(session, 1)));
     app.selected = Some(session);
     let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(!rendered.contains("⚙ ▸ system prompt"), "{rendered}");
+    assert!(!rendered.contains("📜  ▸ system prompt"), "{rendered}");
     assert!(rendered.contains("Fresh session"), "{rendered}");
 
     // Once content exists the guidance is gone.

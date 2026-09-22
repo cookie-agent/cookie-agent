@@ -538,17 +538,16 @@ pub(crate) fn render(
     );
     super::app::paint_panel(frame, area, theme);
     frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
+        crate::ui::panel_block()
             .border_style(theme.panel_border())
-            .title("Commands")
-            .title_bottom(
+            .title(crate::ui::panel_title("Commands"))
+            .title_bottom(crate::ui::panel_title(
                 ratatui::text::Line::from(ratatui::text::Span::styled(
                     "↑↓ move · enter: choose · esc: dismiss",
                     theme.internal(),
                 ))
                 .right_aligned(),
-            ),
+            )),
         area,
     );
     frame.render_widget(

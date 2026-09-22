@@ -9,6 +9,6 @@ expression: rendered
 │ model call: call-a
 │ 💭 ▾ thought
 │ ┆ waiting on both
-│ 📖 ▾ Read src/lib.rs
+│ 📖 ▾ read src/lib.rs
 │ ran true
 │ done

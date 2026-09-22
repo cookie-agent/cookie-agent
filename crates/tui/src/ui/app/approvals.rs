@@ -303,9 +303,7 @@ pub(super) fn render_approval_actions(
         );
         let inner = inner_rect(visual);
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
+            crate::ui::panel_block()
                 .border_style(tone)
                 .style(theme.panel()),
             visual,
@@ -711,11 +709,12 @@ impl App {
             )
         };
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(ratatui::widgets::BorderType::Rounded)
+            crate::ui::panel_block()
                 .border_style(self.theme.warning())
-                .title(Span::styled(title, self.theme.heading()))
+                .title(crate::ui::panel_title(Span::styled(
+                    title,
+                    self.theme.heading(),
+                )))
                 .style(self.theme.panel()),
             area,
         );

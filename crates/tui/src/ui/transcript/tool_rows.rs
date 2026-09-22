@@ -7,10 +7,35 @@ pub(super) fn tool_icon(title: &str) -> &'static str {
         "bash" => "💻",
         "read" => "📖",
         "write" | "edit" => "✏️",
-        "delegate_subagent" | "get_subagent_result" | "steer_subagent" | "cancel_subagent" => "🤖",
+        "webfetch" => "🌐",
+        "send_message" => "📨",
+        "delegate_subagent" | "get_subagent_result" | "cancel_subagent" => "🤖",
         "skill" => "✨",
         "goal_get" | "goal_update" => "🎯",
-        _ => "🔨",
+        _ => external_tool_icon(title),
+    }
+}
+
+/// MCP and plugin tools arrive as `{server}_{tool}` with no fixed vocabulary,
+/// so the common web tools are recognised by the words in their name.
+fn external_tool_icon(title: &str) -> &'static str {
+    let lowered = title.to_ascii_lowercase();
+    let words = || {
+        lowered
+            .split(['_', '-', '.'])
+            .filter(|word| !word.is_empty())
+    };
+    if words().any(|word| word.contains("search")) {
+        "🔍"
+    } else if words().any(|word| {
+        matches!(
+            word,
+            "web" | "fetch" | "http" | "https" | "url" | "browse" | "browser" | "scrape"
+        )
+    }) {
+        "🌐"
+    } else {
+        "🔨"
     }
 }
 
@@ -174,18 +199,17 @@ pub(super) fn abbreviate_tool_argument(title: &str, argument: &str, cap: usize) 
 
 pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usize) -> String {
     let title = tool.presentation.title.as_str();
-    let label = if title == "read" { "Read" } else { title };
-    let argument_width = header_argument_width(label, budget);
+    let argument_width = header_argument_width(title, budget);
     let Some(argument) = tool.presentation.primary_argument.as_ref() else {
-        return crate::ui::app::truncate_with_ellipsis(label, budget);
+        return crate::ui::app::truncate_with_ellipsis(title, budget);
     };
     if argument_width == 0 {
         // The label alone fills the row (long plugin names at narrow widths):
         // keep the label legible and drop the argument rather than wrap.
-        return crate::ui::app::truncate_with_ellipsis(label, budget);
+        return crate::ui::app::truncate_with_ellipsis(title, budget);
     }
     format!(
-        "{label} {}",
+        "{title} {}",
         abbreviate_tool_argument(title, argument.as_str(), argument_width)
     )
 }
@@ -293,7 +317,7 @@ pub(super) fn tool_child_layout(
     if is_expanded {
         if tool_name == "read"
             && let Some(path) = tool.presentation.primary_argument.as_ref()
-            && title != format!("Read {path}")
+            && title != format!("{tool_name} {path}")
         {
             // Tabs survive `safe_display_text` but the renderer drops control
             // characters outright, so flatten them first: the expanded path must

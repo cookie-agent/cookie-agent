@@ -28,12 +28,15 @@ fn internal_blocks_are_headerless_without_changing_other_role_headers() {
     let theme = Theme::default();
     let lines = role_block(
         Role::Internal,
-        vec![Line::from("⚙ ▸ system prompt"), Line::from("expanded body")],
+        vec![
+            Line::from("📜 ▸ system prompt"),
+            Line::from("expanded body"),
+        ],
         80,
         &theme,
     );
     insta::assert_snapshot!(snapshot_lines(&lines), @"
-        · ⚙ ▸ system prompt
+        · 📜 ▸ system prompt
         · expanded body
         ");
     assert_eq!(
@@ -151,7 +154,7 @@ async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
                 assert!(
                     app.layout_cache.layout.lines[region.start_line]
                         .to_string()
-                        .starts_with("· ⚙")
+                        .starts_with("· 📜")
                 );
                 assert!(!snapshot_lines(&app.layout_cache.layout.lines).contains("EVENT [I]"));
                 assert_eq!(header_lines > 1, width == 24);
@@ -188,6 +191,12 @@ async fn system_prompt_hover_covers_wrapped_item_rows_but_not_expanded_body() {
                     let after = terminal.backend().buffer();
                     for y in hit.rect.y..hit.rect.bottom() {
                         for x in hit.rect.x..hit.rect.right() {
+                            // Wide glyph continuation cells are reset by the test backend.
+                            if x > hit.rect.x
+                                && UnicodeWidthStr::width(after[(x - 1, y)].symbol()) > 1
+                            {
+                                continue;
+                            }
                             let cell = &after[(x, y)];
                             if hit.hover_rect.is_some_and(|rect| {
                                 rect.contains(ratatui::layout::Position::new(x, y))
@@ -280,7 +289,7 @@ fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
     let rendered = snapshot_lines(&collapsed.lines);
     assert!(!rendered.contains("EVENT [I]"));
     assert!(
-        rendered.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
+        rendered.contains("📜 ▸ system prompt · primary (last run) (2 lines)"),
         "{rendered}"
     );
     assert!(
@@ -288,10 +297,13 @@ fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
         "{rendered}"
     );
     assert!(
-        rendered.contains("🗜 ▸ context compacted (internal summary, 9000→1200 tokens)"),
+        rendered.contains("🧹 ▸ context compacted (internal summary, 9000→1200 tokens)"),
         "{rendered}"
     );
-    assert!(rendered.contains("🖼 ▸ image/png · chart.png"), "{rendered}");
+    assert!(
+        rendered.contains("📎 ▸ image/png · chart.png"),
+        "{rendered}"
+    );
     assert!(!rendered.contains("plugin first"), "{rendered}");
     assert!(!rendered.contains("summary first"), "{rendered}");
     assert!(!rendered.contains("byte size: 4096"), "{rendered}");
@@ -533,7 +545,7 @@ fn system_prompt_is_hidden_until_first_run_then_uses_latest_snapshot() {
     let latest =
         snapshot_lines(&transcript_layout(&store.sessions[&session], Some(&expanded), 80).lines);
     assert!(
-        latest.contains("⚙ ▾ system prompt · primary (last run) (1 lines)"),
+        latest.contains("📜 ▾ system prompt · primary (last run) (1 lines)"),
         "{latest}"
     );
     assert!(latest.contains("latest run prompt"), "{latest}");
@@ -562,7 +574,7 @@ async fn system_prompt_provenance_tracks_draft_agent_across_cache_reuse() {
 
     let initial = rendered_frame(&mut app, 100, 24);
     assert!(
-        initial.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
+        initial.contains("📜  ▸ system prompt · primary (last run) (2 lines)"),
         "{initial}"
     );
     assert!(!initial.contains("next:"), "{initial}");
@@ -575,7 +587,7 @@ async fn system_prompt_provenance_tracks_draft_agent_across_cache_reuse() {
     let next = rendered_frame(&mut app, 100, 24);
     assert_eq!(app.layout_cache.key, cache_key);
     assert!(
-        next.contains("⚙ ▸ system prompt · primary (last run) · next: reviewer (2 lines)"),
+        next.contains("📜  ▸ system prompt · primary (last run) · next: reviewer (2 lines)"),
         "{next}"
     );
 
@@ -583,7 +595,7 @@ async fn system_prompt_provenance_tracks_draft_agent_across_cache_reuse() {
     let restored = rendered_frame(&mut app, 100, 24);
     assert_eq!(app.layout_cache.key, cache_key);
     assert!(
-        restored.contains("⚙ ▸ system prompt · primary (last run) (2 lines)"),
+        restored.contains("📜  ▸ system prompt · primary (last run) (2 lines)"),
         "{restored}"
     );
     assert!(!restored.contains("next:"), "{restored}");
@@ -603,7 +615,7 @@ async fn new_session_draft_does_not_leak_into_selected_prompt_provenance() {
     )));
     app.selected = Some(session);
 
-    let expected = "⚙ ▸ system prompt · primary (last run) (2 lines)";
+    let expected = "📜  ▸ system prompt · primary (last run) (2 lines)";
     let before = rendered_frame(&mut app, 100, 30);
     assert!(before.contains(expected), "{before}");
 
@@ -727,7 +739,7 @@ async fn failed_then_repeated_new_never_replaces_selected_session_draft() {
     )));
     app.selected = Some(session);
     app.set_draft_agent(AgentId::new("reviewer").expect("reviewer"));
-    let expected = "⚙ ▸ system prompt · primary (last run) · next: reviewer (2 lines)";
+    let expected = "📜  ▸ system prompt · primary (last run) · next: reviewer (2 lines)";
     let before = rendered_frame(&mut app, 100, 30);
     assert!(before.contains(expected), "{before}");
 

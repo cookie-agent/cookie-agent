@@ -330,7 +330,7 @@ async fn chrome_stays_coherent_across_themes_and_tiny_terminals() {
             // command hint. State never depends on color alone.
             if width >= 100 {
                 assert!(
-                    rendered.contains("Fresh session") && !rendered.contains("⚙ ▸ system prompt"),
+                    rendered.contains("Fresh session") && !rendered.contains("📜  ▸ system prompt"),
                     "{kind:?}: {rendered}"
                 );
                 assert!(rendered.contains("ctrl+p"), "{kind:?}: {rendered}");

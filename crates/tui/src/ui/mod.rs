@@ -11,7 +11,50 @@ mod transcript;
 
 pub use app::{App, run_with_client, run_with_new_session};
 
-use ratatui::layout::Rect;
+use ratatui::{
+    layout::Rect,
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders},
+};
+
+/// Blank columns a panel title keeps from the border on each side, so it
+/// never butts against the corner: `╭ Conversation ───╮`.
+pub(crate) const PANEL_TITLE_PAD: u16 = 1;
+
+/// Every bordered panel, dialog, and button: rounded corners, echoing the
+/// transcript's `╭─` message gutters.
+pub(crate) fn panel_block<'a>() -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+}
+
+/// A border title with [`PANEL_TITLE_PAD`] blank columns either side. The pad
+/// spans carry no style of their own, so a highlighted title's color stops at
+/// its text. An empty title stays empty rather than leaving a gap.
+pub(crate) fn panel_title<'a>(title: impl Into<Line<'a>>) -> Line<'a> {
+    let mut title = title.into();
+    if title.width() == 0 {
+        return title;
+    }
+    let pad = " ".repeat(usize::from(PANEL_TITLE_PAD));
+    title.spans.insert(0, Span::raw(pad.clone()));
+    title.spans.push(Span::raw(pad));
+    title
+}
+
+/// [`panel_title`] for a title that may fill a border `area_width` columns
+/// wide. One too wide for its pads keeps none, so it sits flush at both ends
+/// instead of losing just the pad on the side the border clips.
+pub(crate) fn fitted_panel_title<'a>(title: impl Into<Line<'a>>, area_width: u16) -> Line<'a> {
+    let title = title.into();
+    let room = usize::from(area_width.saturating_sub(2));
+    if title.width() + 2 * usize::from(PANEL_TITLE_PAD) > room {
+        title
+    } else {
+        panel_title(title)
+    }
+}
 
 /// The most Agents rows the panel ever shows at once; a longer tree scrolls
 /// within this viewport instead of growing the panel.

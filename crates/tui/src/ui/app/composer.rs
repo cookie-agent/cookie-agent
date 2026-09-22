@@ -566,10 +566,16 @@ impl App {
             .max(0);
         let title = truncate_with_ellipsis(
             &format!("Pending · oldest {}", queue_age_label(oldest_age)),
-            usize::from(area.width.saturating_sub(2)),
+            usize::from(
+                area.width
+                    .saturating_sub(2 + 2 * crate::ui::PANEL_TITLE_PAD),
+            ),
         );
-        let block = Block::bordered()
-            .title(Span::styled(title, self.theme.muted()))
+        let block = crate::ui::panel_block()
+            .title(crate::ui::panel_title(Span::styled(
+                title,
+                self.theme.muted(),
+            )))
             .border_style(self.theme.panel_border())
             .style(self.theme.panel());
         let inner = block.inner(area);
@@ -898,10 +904,9 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(self.theme.panel_border())
-                    .title("Confirm revert"),
+                    .title(crate::ui::panel_title("Confirm revert")),
             ),
             area,
         );

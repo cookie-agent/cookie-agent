@@ -12,7 +12,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{List, ListItem, ListState},
 };
 
 use crate::{state::SessionState, theme::Theme};
@@ -289,23 +289,21 @@ pub(crate) fn render_lines(
             },
             |message| Line::from(Span::styled(message.to_owned(), theme.muted())),
         );
-        let mut block = Block::default()
-            .borders(Borders::ALL)
+        let mut block = crate::ui::panel_block()
             .border_style(theme.panel_border())
-            .title(chrome.title);
+            .title(crate::ui::fitted_panel_title(chrome.title, area.width));
         if let Some(hint) = footer_hint(theme, chrome.hint) {
-            block = block.title_bottom(hint);
+            block = block.title_bottom(crate::ui::fitted_panel_title(hint, area.width));
         }
         frame.render_widget(ratatui::widgets::Paragraph::new(content).block(block), area);
         return Vec::new();
     }
     let inner = inner_rect(area);
-    let mut block = Block::default()
-        .borders(Borders::ALL)
+    let mut block = crate::ui::panel_block()
         .border_style(theme.panel_border())
-        .title(chrome.title);
+        .title(crate::ui::fitted_panel_title(chrome.title, area.width));
     if let Some(hint) = footer_hint(theme, chrome.hint) {
-        block = block.title_bottom(hint);
+        block = block.title_bottom(crate::ui::fitted_panel_title(hint, area.width));
     }
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
