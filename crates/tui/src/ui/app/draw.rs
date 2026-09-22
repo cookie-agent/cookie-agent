@@ -377,6 +377,8 @@ impl App {
         // Hover is the very last pass: a pure cell-style patch over whatever
         // was rendered, so it can never change layout or hit geometry.
         self.apply_hover(frame);
+        narrow_emoji_presentation(frame.buffer_mut());
+        fence_emoji_spill(frame.buffer_mut());
     }
 
     pub(super) fn bottom_bar_line(&self, width: u16) -> BottomBarRender {
@@ -1379,5 +1381,111 @@ impl App {
         .into_iter()
         .map(|(rect, index)| PaletteRowHit { rect, index })
         .collect();
+    }
+}
+
+/// Drops VS16 (U+FE0F) from glyphs that are one cell wide without it (`✏️`,
+/// `⚠️`, `❤️`). The buffer counts such a sequence as two cells, but VTE,
+/// xterm, and Alacritty draw it in one, so the shadow cell behind it is never
+/// painted and whatever the terminal showed there last lingers until
+/// something restyles it. Rewritten as the bare one-cell glyph, the shadow
+/// cell becomes an ordinary blank the diff repaints, and the layout keeps its
+/// two columns on every terminal.
+fn narrow_emoji_presentation(buffer: &mut ratatui::buffer::Buffer) {
+    for cell in &mut buffer.content {
+        if !cell.symbol().contains('\u{FE0F}') {
+            continue;
+        }
+        let bare = cell.symbol().replace('\u{FE0F}', "");
+        if UnicodeWidthStr::width(bare.as_str()) == 1 {
+            cell.set_symbol(&bare);
+        }
+    }
+}
+
+/// Marks the cells a joined emoji (`👩‍💻`, `👍🏽`, `🏳️‍🌈`) may spill over as
+/// always-redrawn. The buffer gives such a grapheme two cells, but a terminal
+/// without grapheme clustering draws each of its parts, so it runs over the
+/// cells after it; the diff never resends those while they are unchanged, and
+/// the spill lingers. Resent every frame at explicit positions, they clip the
+/// emoji back to the two cells the layout reserved: on such terminals it may
+/// lose its tail, but the text beside it stays put. Only emoji sequences are
+/// fenced — CJK is wide on every terminal and never spills.
+fn fence_emoji_spill(buffer: &mut ratatui::buffer::Buffer) {
+    use ratatui::buffer::{CellDiffOption, CellWidth};
+    use unicode_properties::UnicodeEmoji;
+    use unicode_width::UnicodeWidthChar;
+
+    let width = usize::from(buffer.area.width);
+    if width == 0 {
+        return;
+    }
+    let mut fences = Vec::new();
+    for (index, cell) in buffer.content.iter().enumerate() {
+        let symbol = cell.symbol();
+        if symbol.chars().nth(1).is_none() || !symbol.chars().any(UnicodeEmoji::is_emoji_char) {
+            continue;
+        }
+        // The widest the terminal may draw it: every part on its own, a
+        // presentation selector widening the part before it, and one more
+        // cell for a wide part straddling the fence's end.
+        let spill = symbol
+            .chars()
+            .map(|character| character.width().unwrap_or(0))
+            .sum::<usize>()
+            + symbol.matches('\u{FE0F}').count()
+            + 1;
+        // The fence stops at the row's end: a spill that autowraps onto the
+        // next row is rare enough to leave alone.
+        let row_end = (index / width + 1) * width;
+        let start = (index + usize::from(cell.cell_width().max(1))).min(row_end);
+        let end = (index + spill).min(row_end);
+        if start < end {
+            fences.push(start..end);
+        }
+    }
+    for range in fences {
+        for cell in &mut buffer.content[range] {
+            if matches!(cell.diff_option, CellDiffOption::None) {
+                cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod emoji_width_tests {
+    use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+
+    #[test]
+    fn text_default_glyphs_lose_vs16_and_their_shadow_cell_is_a_plain_blank() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
+        buffer.set_string(0, 0, "✏️x💻y", Style::default());
+        super::narrow_emoji_presentation(&mut buffer);
+        let symbols = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>();
+        // `✏` keeps its two columns as glyph + blank; `💻` is wide everywhere
+        // and is left alone.
+        assert_eq!(symbols, ["✏", " ", "x", "💻", " ", "y", " ", " "]);
+    }
+
+    #[test]
+    fn cells_after_a_joined_emoji_are_resent_even_when_unchanged() {
+        let mut previous = Buffer::empty(Rect::new(0, 0, 8, 2));
+        previous.set_string(0, 0, "👩‍💻abcdef", Style::default());
+        previous.set_string(0, 1, "界abcdef", Style::default());
+        let mut next = previous.clone();
+        super::fence_emoji_spill(&mut next);
+        // `👩` and `💻` drawn apart take four cells, plus one for a straddling
+        // part: columns 2..5 are fenced. The CJK row, wide everywhere, is not.
+        let resent = previous
+            .diff(&next)
+            .into_iter()
+            .map(|(x, y, _)| (x, y))
+            .collect::<Vec<_>>();
+        assert_eq!(resent, [(2, 0), (3, 0), (4, 0)]);
     }
 }

@@ -28,6 +28,7 @@ thiserror.workspace = true
 toml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+unicode-properties = { version = "0.1", default-features = false, features = ["emoji"] }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 uuid.workspace = true
