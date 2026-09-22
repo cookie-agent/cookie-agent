@@ -11,9 +11,11 @@ def send(message):
 
 pid_file = os.environ.get("FIXTURE_PID_FILE")
 if pid_file:
-    with open(pid_file, "w", encoding="utf-8") as output:
+    # Published by rename: a reader sees no file or a whole pid, never the
+    # empty file a kill between open and write would leave behind.
+    with open(pid_file + ".tmp", "w", encoding="utf-8") as output:
         output.write(str(os.getpid()))
-        output.flush()
+    os.replace(pid_file + ".tmp", pid_file)
 
 env_file = os.environ.get("FIXTURE_ENV_FILE")
 if env_file:
