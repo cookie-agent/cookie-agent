@@ -197,11 +197,30 @@ async fn wait_for_mcp_connected(engine: &Engine, server: &str) {
     .expect("MCP state timeout");
 }
 
+/// The fixture publishes its pid atomically once Python is running, so a
+/// missing file means the plugin was killed before it got that far.
+fn read_pid(pid_file: &std::path::Path) -> Option<u32> {
+    let pid = fs::read_to_string(pid_file).ok()?;
+    Some(pid.trim().parse().expect("fixture pid is a number"))
+}
+
+async fn wait_for_pid(pid_file: &std::path::Path) -> u32 {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(pid) = read_pid(pid_file) {
+                break pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("plugin never published its pid")
+}
+
 // Process reaping is observed through Linux procfs.
 #[cfg(target_os = "linux")]
-async fn assert_process_reaped(pid_file: &std::path::Path) {
-    let pid = fs::read_to_string(pid_file).expect("plugin pid");
-    let proc_path = std::path::PathBuf::from(format!("/proc/{}", pid.trim()));
+async fn assert_process_reaped(pid: u32) {
+    let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
     tokio::time::timeout(Duration::from_secs(3), async {
         while proc_path.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -366,8 +385,12 @@ async fn timeout_and_malformed_handshakes_fail_without_panicking() {
     );
     #[cfg(target_os = "linux")]
     {
-        assert_process_reaped(&slow_pid).await;
-        assert_process_reaped(&malformed_pid).await;
+        // A loaded machine can hit the 50 ms handshake timeout before Python
+        // starts; that plugin never ran far enough to publish a pid.
+        if let Some(pid) = read_pid(&slow_pid) {
+            assert_process_reaped(pid).await;
+        }
+        assert_process_reaped(read_pid(&malformed_pid).expect("malformed plugin pid")).await;
     }
     harness.engine.shutdown().await;
 }
@@ -494,9 +517,9 @@ async fn crash_clears_claims_and_leaves_other_plugin_connected() {
     let harness = open_engine(&config);
     wait_for_state(&harness.engine, "crasher", PluginState::Connected).await;
     wait_for_state(&harness.engine, "steady", PluginState::Connected).await;
-    let pid = fs::read_to_string(pid_file).expect("plugin pid");
+    let pid = read_pid(&pid_file).expect("plugin pid").to_string();
     let exit = std::process::Command::new("kill")
-        .args(["-KILL", pid.trim()])
+        .args(["-KILL", pid.as_str()])
         .status()
         .expect("kill plugin");
     assert!(exit.success());
@@ -665,9 +688,14 @@ async fn shutdown_during_pending_initialize_is_bounded() {
     );
     let harness = open_engine(&config);
     wait_for_state(&harness.engine, "slow", PluginState::Connecting).await;
+    // `Connecting` is published before the spawn; the pid proves Python is
+    // running and parked in its delayed initialize.
+    let pid = wait_for_pid(&pid_file).await;
     tokio::time::timeout(Duration::from_secs(1), harness.engine.shutdown())
         .await
         .expect("bounded shutdown");
     #[cfg(target_os = "linux")]
-    assert_process_reaped(&pid_file).await;
+    assert_process_reaped(pid).await;
+    #[cfg(not(target_os = "linux"))]
+    let _ = pid;
 }

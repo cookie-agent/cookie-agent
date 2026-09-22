@@ -5,9 +5,11 @@ import time
 
 
 if os.environ.get("MCP_FIXTURE_PID_FILE"):
-    with open(os.environ["MCP_FIXTURE_PID_FILE"], "w", encoding="utf-8") as pid_file:
+    # Published by rename so a reader never sees an empty pid file.
+    pid_path = os.environ["MCP_FIXTURE_PID_FILE"]
+    with open(pid_path + ".tmp", "w", encoding="utf-8") as pid_file:
         pid_file.write(str(os.getpid()))
-        pid_file.flush()
+    os.replace(pid_path + ".tmp", pid_path)
 
 
 def send(message):
