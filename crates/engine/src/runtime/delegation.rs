@@ -20,9 +20,7 @@ use super::{
     Engine, EngineError, Event, SessionCommand,
     admission::{AdmissionGuard, InflightDelegation},
     handles::SubagentScope,
-    helpers::{
-        invocation_id, safe_code, safe_display, safe_error, sanitize_safe_text, session_depth,
-    },
+    helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
     producers::ProducerAuthority,
 };
 use crate::{
@@ -3496,11 +3494,41 @@ pub(crate) fn render_delegate_teaser_body(
     total_lines: u64,
     handle: &str,
 ) -> String {
+    // Only a cut preview points at `get_subagent_result`; a complete one
+    // would send the model to re-read what it already has.
+    let more = if preview_is_truncated(preview, total_lines) {
+        format!("; use get_subagent_result with session_id \"{handle}\" for the full output")
+    } else {
+        "; full output shown".to_owned()
+    };
+    // Line breaks and tabs survive so lists, tables, and code in the report
+    // keep their shape; every other control character is folded away.
+    let preview = crate::tool_api::sanitize_tool_display(preview, PREVIEW_MAX_BYTES);
+    let preview = if preview.trim().is_empty() {
+        "(no output)"
+    } else {
+        preview.as_str()
+    };
     format!(
-        "{}\n\n[subagent session {handle}; {}; {total_lines} lines; use get_subagent_result with session_id \"{handle}\" for the full output]",
-        sanitize_safe_text(preview, 2048),
+        "{preview}\n\n[subagent session {handle}; {}; {total_lines} lines{more}]",
         session_status_name(status),
     )
+}
+
+/// Whether [`preview_text`] cut the output, judged from the preview and line
+/// count alone so history replay, which keeps only those, renders the same
+/// body. A byte cut lands within a character of the cap, so a complete
+/// preview of 2045..=2048 bytes also counts as cut: that errs toward the hint.
+fn preview_is_truncated(preview: &str, total_lines: u64) -> bool {
+    let preview_lines = if preview.is_empty() {
+        0
+    } else {
+        // Counted by separator, not `lines()`, which drops a trailing empty
+        // line the full count kept.
+        preview.split('\n').count() as u64
+    };
+    // A UTF-8 character is at most four bytes, so a cut ends past this.
+    preview_lines < total_lines || preview.len() > PREVIEW_MAX_BYTES - 4
 }
 
 /// The pushed `<subagent_notification>` envelope, shared by the runtime and
@@ -3696,12 +3724,19 @@ fn last_assistant_message(child: &session::SessionProjection) -> String {
         .unwrap_or_default()
 }
 
+const PREVIEW_MAX_LINES: usize = 20;
+const PREVIEW_MAX_BYTES: usize = 2048;
+
 fn preview_text(text: &str) -> String {
-    let first_lines = text.lines().take(20).collect::<Vec<_>>().join("\n");
-    if first_lines.len() <= 2048 {
+    let first_lines = text
+        .lines()
+        .take(PREVIEW_MAX_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if first_lines.len() <= PREVIEW_MAX_BYTES {
         return first_lines;
     }
-    let mut end = 2048;
+    let mut end = PREVIEW_MAX_BYTES;
     while !first_lines.is_char_boundary(end) {
         end -= 1;
     }
@@ -3923,8 +3958,8 @@ mod concurrency_tests {
         DELEGATED_CONTEXT_MAX_BYTES, DelegateTeaser, background_queue_limit_reached,
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
         context_seed_from_history, delegate_failure_result, paginated_subagent_result,
-        preview_text, render_background_completion, render_delegate_teaser_body,
-        steered_delegate_result, validate_redelivery_mode,
+        preview_is_truncated, preview_text, render_background_completion,
+        render_delegate_teaser_body, steered_delegate_result, validate_redelivery_mode,
     };
 
     #[test]
@@ -4015,12 +4050,12 @@ mod concurrency_tests {
             preview: "first line\nsecond line".into(),
             total_lines: 79,
         };
-        // `sanitize_safe_text` folds control characters (including newlines) to
-        // spaces, exactly as the foreground result does.
+        // Line breaks survive, exactly as in the foreground result.
         insta::assert_snapshot!(
             render_background_completion(&teaser),
             @r###"
-<subagent_notification>first line second line
+<subagent_notification>first line
+second line
 
 [subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]</subagent_notification>
 "###
@@ -4039,7 +4074,8 @@ mod concurrency_tests {
                 "explore_1a2b3c4d",
             ),
             @r###"
-first line second line
+first line
+second line
 
 [subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
 "###
@@ -4093,6 +4129,73 @@ first line second line
             .to_string();
         assert!(background_to_foreground.contains("durable invocation is background"));
         assert!(background_to_foreground.contains("requested foreground"));
+    }
+
+    #[test]
+    fn complete_preview_drops_the_full_output_hint() {
+        insta::assert_snapshot!(
+            render_delegate_teaser_body(
+                "first line\nsecond line",
+                cookie_agent_protocol::SessionStatus::Completed,
+                2,
+                "explore_1a2b3c4d",
+            ),
+            @r###"
+first line
+second line
+
+[subagent session explore_1a2b3c4d; completed; 2 lines; full output shown]
+"###
+        );
+    }
+
+    #[test]
+    fn preview_keeps_its_shape_but_not_other_control_characters() {
+        let body = render_delegate_teaser_body(
+            "- item\n\tindented\x1b[31m red\x07",
+            cookie_agent_protocol::SessionStatus::Completed,
+            2,
+            "explore_1a2b3c4d",
+        );
+        assert!(body.starts_with("- item\n\tindented [31m red \n\n[subagent session"));
+        let empty = render_delegate_teaser_body(
+            "",
+            cookie_agent_protocol::SessionStatus::Completed,
+            0,
+            "explore_1a2b3c4d",
+        );
+        assert!(empty.starts_with("(no output)\n\n[subagent session"));
+    }
+
+    #[test]
+    fn truncation_is_judged_from_the_preview_the_output_produced() {
+        let cases = [
+            ("", false),
+            ("one line", false),
+            ("trailing blank\n\n", false),
+            ("two\nlines", false),
+        ]
+        .into_iter()
+        .map(|(text, cut)| (text.to_owned(), cut))
+        .chain([
+            // Line cap: 21 lines keep 20.
+            (vec!["line"; 21].join("\n"), true),
+            (vec!["line"; 20].join("\n"), false),
+            // Byte cap inside the last kept line.
+            ("é".repeat(1100), true),
+            // A multibyte cut backs off below the cap and still counts.
+            (format!("a{}", "€".repeat(700)), true),
+        ]);
+        for (text, cut) in cases {
+            let preview = preview_text(&text);
+            let total_lines = text.lines().count() as u64;
+            assert_eq!(
+                preview_is_truncated(&preview, total_lines),
+                cut,
+                "{} bytes, {total_lines} lines",
+                text.len()
+            );
+        }
     }
 
     #[test]

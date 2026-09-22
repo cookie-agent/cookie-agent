@@ -305,6 +305,10 @@ error that lists the live candidates as
 pre-wrap the handle, for example
 `Subagent started. [subagent session explore_1a2b3c4d]` and
 `[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]`.
+The completion notice carries a preview of at most 20 lines and 2048 bytes,
+with its line breaks and tabs kept and other control characters folded to
+spaces. It points at `get_subagent_result` only when that preview is cut, and
+otherwise ends in `full output shown`.
 Terminal and lifecycle results keep the UUID under the unified `session_id`
 metadata key and add `handle`. `resume_session_id` accepts the same two forms,
 and a terminal child woken by `send_message` reports as running until its new

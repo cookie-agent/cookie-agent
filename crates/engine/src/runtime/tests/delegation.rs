@@ -249,10 +249,10 @@ async fn foreground_delegate_spawns_from_one_turn_run_in_parallel() {
             assert_eq!(
                 result.output,
                 format!(
-                    "{preview}\n\n[subagent session {handle}; completed; 1 lines; use get_subagent_result with session_id \"{handle}\" for the full output]"
+                    "{preview}\n\n[subagent session {handle}; completed; 1 lines; full output shown]"
                 )
             );
-            assert_eq!(result.output.matches(handle).count(), 2);
+            assert_eq!(result.output.matches(handle).count(), 1);
             assert_eq!(result.output.matches(preview).count(), 1);
         }
     }
