@@ -239,33 +239,18 @@ pub(super) fn transcript_item_layout(
             mode,
             body,
             summary,
-            reminder,
             status,
             ..
         } => match status {
-            // The initial start must precede streaming, without duplicating its
-            // queue preview. Claims leave the queue before the request starts;
-            // the row was already anchored at admission by the reducer.
-            ProducerMessageStatus::Claimed
-                if matches!(producer_owner, ProducerOwner::Goal { .. })
-                    && reminder.is_some_and(|reminder| {
-                        reminder.kind == cookie_agent_protocol::GoalReminderKind::Started
-                    }) =>
-            {
-                producer_message_layout(
-                    *message_id,
-                    producer_owner,
-                    *mode,
-                    body,
-                    &producer_summary(producer_owner, *mode, summary.as_deref()),
-                    *status,
-                    context,
-                )
-            }
+            // A claim means the running request already carries the message,
+            // so it shows before the response streams in, not after the turn
+            // commits. Claims leave the queue before the request starts, and
+            // the reducer anchored the row at admission, so it lands above
+            // the response and never shows twice.
             crate::state::ProducerMessageStatus::Pending
-            | crate::state::ProducerMessageStatus::Admitted
-            | crate::state::ProducerMessageStatus::Claimed => ItemLayout::default(),
-            crate::state::ProducerMessageStatus::Consumed => producer_message_layout(
+            | crate::state::ProducerMessageStatus::Admitted => ItemLayout::default(),
+            crate::state::ProducerMessageStatus::Claimed
+            | crate::state::ProducerMessageStatus::Consumed => producer_message_layout(
                 *message_id,
                 producer_owner,
                 *mode,

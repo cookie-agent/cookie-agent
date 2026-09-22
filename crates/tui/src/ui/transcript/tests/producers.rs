@@ -504,7 +504,7 @@ fn goal_control_messages_move_from_queue_to_transcript_when_consumed() {
 }
 
 #[test]
-fn producer_lifecycle_only_renders_consumed_content_and_debug_discard_diagnostic() {
+fn producer_lifecycle_renders_claimed_and_consumed_content_and_debug_discard_diagnostic() {
     let goal = test_goal(GoalStatus::Active, vec![goal_item("Keep going", false)]);
     for status in [
         crate::state::ProducerMessageStatus::Pending,
@@ -544,11 +544,18 @@ fn producer_lifecycle_only_renders_consumed_content_and_debug_discard_diagnostic
             crate::state::EventLevel::Info,
         );
         let rendered = snapshot_lines(&layout.lines);
-        if status == crate::state::ProducerMessageStatus::Consumed {
+        let label = match status {
+            crate::state::ProducerMessageStatus::Claimed => Some("claimed"),
+            crate::state::ProducerMessageStatus::Consumed => Some("consumed"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            // Claimed already shows: the running request carries it, so it
+            // must not wait for the turn to commit.
             assert_eq!(rendered.matches("◇ ▸ GoalContinue:").count(), 1);
             let expanded = HashSet::from([layout.regions[0].id]);
             let expanded = snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).lines);
-            assert!(expanded.contains("· goal controller · steer · consumed"));
+            assert!(expanded.contains(&format!("· goal controller · steer · {label}")));
             assert!(expanded.contains("FULL REMINDER BODY RENDERS WHEN EXPANDED"));
         } else {
             assert!(rendered.is_empty(), "{status:?}: {rendered}");
@@ -652,4 +659,56 @@ fn cached_producer_layout_stays_hidden_until_consumed_then_stabilizes() {
     assert_eq!(cache.item_layout_passes, 2);
     assert!(render(&mut cache, &state));
     assert_eq!(cache.item_layout_passes, 2);
+}
+
+#[tokio::test]
+async fn claimed_delegation_result_shows_above_the_reply_while_it_streams() {
+    let (mut app, session, run) = app_with_active_run().await;
+    let message_id = ProducerMessageId::new_v7();
+    let attempt = AttemptId::new_v7();
+    for stored in [
+        producer_accepted(
+            session,
+            1,
+            message_id,
+            ProducerOwner::Delegation {
+                invocation_id: InvocationId::new_v7(),
+            },
+            ProducerDeliveryMode::Steer,
+            "delegation finished",
+            None,
+        ),
+        event(
+            session,
+            2,
+            run,
+            EventPayload::ProducerMessageAdmitted { message_id },
+        ),
+        event(
+            session,
+            3,
+            run,
+            EventPayload::ProducerMessagesClaimed {
+                message_ids: vec![message_id],
+            },
+        ),
+        attempt_started(session, 4, run, attempt, None),
+        text_delta(session, 5, run, attempt, "streaming reply"),
+    ] {
+        assert!(app.store.apply_event(stored));
+    }
+    // No `ModelTurnCommitted` yet: the result the reply answers is already
+    // on screen, above the reply, not deferred until the turn commits.
+    let layout = transcript_layout(&app.store.sessions[&session], None, 80);
+    let row = layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::ProducerMessage(message_id))
+        .expect("claimed delegation result renders");
+    let reply = layout
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("streaming reply"))
+        .expect("the reply streams");
+    assert!(row.end_line <= reply, "result above the reply");
 }

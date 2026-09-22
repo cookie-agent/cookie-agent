@@ -402,8 +402,10 @@ async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics(
                 0,
             );
             let rendered = snapshot_lines(&cache.layout.lines);
-            let visible = status == ProducerMessageStatus::Consumed
-                || (kind == GoalReminderKind::Started && status == ProducerMessageStatus::Claimed);
+            let visible = matches!(
+                status,
+                ProducerMessageStatus::Claimed | ProducerMessageStatus::Consumed
+            );
             assert_eq!(rendered.matches(label).count(), usize::from(visible));
             assert!(
                 !rendered.contains(body),
@@ -415,7 +417,7 @@ async fn goal_reminder_kind_drives_queue_and_transcript_without_body_heuristics(
             if visible {
                 assert!(
                     entries.is_empty(),
-                    "start cannot appear twice across queue and transcript"
+                    "a reminder cannot appear twice across queue and transcript"
                 );
                 assert!(!rendered.contains(" · claimed"));
                 assert!(!rendered.contains(" · consumed"));
