@@ -798,12 +798,9 @@ pub(super) fn tool_block_lines(
         }
     }
     if let Some(background) = theme.terminal_background() {
-        let band_width = banded_rows
-            .iter()
-            .map(|(index, _)| lines[*index].width())
-            .max()
-            .unwrap_or(0)
-            .min(usize::from(width));
+        // The band spans the block's full width, not its widest row, so short
+        // output still reads as one solid panel.
+        let band_width = usize::from(width);
         for (index, chrome) in banded_rows {
             let line = &mut lines[index];
             // The band stops at the block's own gutter: those spans keep their
