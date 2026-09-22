@@ -95,7 +95,7 @@ pub(super) fn producer_message_layout(
     let status = match status {
         ProducerMessageStatus::Claimed => "claimed",
         ProducerMessageStatus::Consumed => "consumed",
-        _ => unreachable!("only claimed starts or consumed messages enter the transcript"),
+        _ => unreachable!("only claimed or consumed messages enter the transcript"),
     };
     if expanded {
         let mut body_lines = vec![Line::styled(
