@@ -194,7 +194,7 @@ pub(super) fn system_prompt_layout(
         .unwrap_or_default();
     let mut body = vec![Line::styled(
         format!(
-            "⚙ {chevron} system prompt · {} (last run){next_agent} ({line_count} lines)",
+            "📜 {chevron} system prompt · {} (last run){next_agent} ({line_count} lines)",
             snapshot.agent
         ),
         theme.internal(),
@@ -226,7 +226,7 @@ pub(super) fn compaction_layout(
     };
     let mut body = vec![Line::styled(
         format!(
-            "🗜 {chevron} context compacted ({kind}, {}→{} tokens)",
+            "🧹 {chevron} context compacted ({kind}, {}→{} tokens)",
             commit.budgets.input_tokens_before, commit.budgets.input_tokens_after
         ),
         context.theme.internal(),
@@ -342,7 +342,7 @@ pub(super) fn media_file_layout(
     let chevron = if is_expanded { '▾' } else { '▸' };
     let filename = safe_display_text(file.filename.as_deref().unwrap_or("unnamed"));
     let mut body = vec![Line::styled(
-        format!("🖼 {chevron} {} · {filename}", file.media_type),
+        format!("📎 {chevron} {} · {filename}", file.media_type),
         context.theme.internal(),
     )];
     if is_expanded {

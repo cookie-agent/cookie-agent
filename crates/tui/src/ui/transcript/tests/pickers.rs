@@ -57,6 +57,8 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
         .find(|hit| hit.segment == TitleSegment::Variant)
         .expect("variant segment")
         .rect;
+    // Border, then the title's blank pad column, then the agent name.
+    assert_eq!(agent_rect.x, 1 + crate::ui::PANEL_TITLE_PAD);
     assert_eq!(agent_rect.width, 7);
     assert_eq!(model_rect.width, 23);
     assert_eq!(variant_rect.width, 6);
@@ -80,7 +82,7 @@ async fn message_title_is_exact_agent_model_variant_with_hit_regions() {
         .find(|hit| hit.segment == TitleSegment::Model)
         .expect("clipped model segment");
     assert_eq!(narrow_model.rect.x, agent_rect.x + agent_rect.width + 3);
-    assert_eq!(narrow_model.rect.width, 16);
+    assert_eq!(narrow_model.rect.width, 15);
     assert!(
         app.hit_map
             .title_segments

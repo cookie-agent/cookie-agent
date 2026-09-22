@@ -10,8 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Wrap,
+        List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 
@@ -503,17 +502,16 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             .highlight_symbol("> ")
             .highlight_style(theme.selected())
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title("MCP servers")
-                    .title_bottom(
+                    .title(crate::ui::panel_title("MCP servers"))
+                    .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
                             "n add | e edit | d remove | space toggle | r reconnect | esc close",
                             theme.internal(),
                         ))
                         .right_aligned(),
-                    ),
+                    )),
             ),
         chunks[0],
         &mut panel.selection,
@@ -551,13 +549,13 @@ pub(super) fn render_mcp(frame: &mut Frame, area: Rect, panel: &mut McpPanel, th
             None
         }
     });
-    let mut block = Block::default()
-        .borders(Borders::ALL)
+    let mut block = crate::ui::panel_block()
         .border_style(theme.panel_border())
-        .title("Connection details");
+        .title(crate::ui::panel_title("Connection details"));
     if let Some(hint) = hint {
-        block =
-            block.title_bottom(Line::from(Span::styled(hint, theme.internal())).right_aligned());
+        block = block.title_bottom(crate::ui::panel_title(
+            Line::from(Span::styled(hint, theme.internal())).right_aligned(),
+        ));
     }
     frame.render_widget(
         Paragraph::new(detail)
@@ -629,21 +627,20 @@ fn render_mcp_form(frame: &mut Frame, area: Rect, form: &McpForm, theme: &Theme)
         .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
+            crate::ui::panel_block()
                 .border_style(theme.panel_border())
-                .title(if form.editing {
+                .title(crate::ui::panel_title(if form.editing {
                     "Edit MCP server"
                 } else {
                     "Add MCP server"
-                })
-                .title_bottom(
+                }))
+                .title_bottom(crate::ui::panel_title(
                     Line::from(Span::styled(
                         "tab fields | arrows choices | enter save | esc cancel",
                         theme.internal(),
                     ))
                     .right_aligned(),
-                ),
+                )),
         ),
         area,
     );
@@ -666,17 +663,16 @@ pub(super) fn render_permissions(
                 Line::from(format!("Effect: {effect}")),
             ])
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title("Add permission pattern")
-                    .title_bottom(
+                    .title(crate::ui::panel_title("Add permission pattern"))
+                    .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
                             "tab field | arrows action/effect | enter add | esc cancel",
                             theme.internal(),
                         ))
                         .right_aligned(),
-                    ),
+                    )),
             ),
             area,
         );
@@ -700,17 +696,16 @@ pub(super) fn render_permissions(
             .highlight_symbol("> ")
             .highlight_style(theme.selected())
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title("Session permissions")
-                    .title_bottom(
+                    .title(crate::ui::panel_title("Session permissions"))
+                    .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
                             "arrows effect | n add pattern | d clear overlay | esc close",
                             theme.internal(),
                         ))
                         .right_aligned(),
-                    ),
+                    )),
             ),
         area,
         &mut panel.selection,
@@ -748,14 +743,13 @@ pub(super) fn render_skills(frame: &mut Frame, area: Rect, panel: &mut SkillPane
             .highlight_symbol("> ")
             .highlight_style(theme.selected())
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(theme.panel_border())
-                    .title("Skills")
-                    .title_bottom(
+                    .title(crate::ui::panel_title("Skills"))
+                    .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled("arrows move | esc close", theme.internal()))
                             .right_aligned(),
-                    ),
+                    )),
             ),
         area,
         &mut panel.selection,
@@ -764,10 +758,12 @@ pub(super) fn render_skills(frame: &mut Frame, area: Rect, panel: &mut SkillPane
 
 pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &mut UsagePanel, theme: &Theme) {
     paint_panel(frame, area, theme);
-    let base_block = Block::default()
-        .borders(Borders::ALL)
+    let base_block = crate::ui::panel_block()
         .border_style(theme.panel_border())
-        .title(Line::from(Span::styled("Usage", theme.heading())));
+        .title(crate::ui::panel_title(Line::from(Span::styled(
+            "Usage",
+            theme.heading(),
+        ))));
     let inner = base_block.inner(area);
     let mut content_width = usize::from(inner.width);
     let mut lines = usage_panel_lines(panel, content_width, theme);
@@ -788,8 +784,9 @@ pub(super) fn render_usage(frame: &mut Frame, area: Rect, panel: &mut UsagePanel
     } else {
         "esc close"
     };
-    let block =
-        base_block.title_bottom(Line::from(Span::styled(hint, theme.internal())).right_aligned());
+    let block = base_block.title_bottom(crate::ui::panel_title(
+        Line::from(Span::styled(hint, theme.internal())).right_aligned(),
+    ));
     frame.render_widget(block, area);
 
     let paragraph_area = Rect {

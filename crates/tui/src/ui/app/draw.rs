@@ -279,10 +279,9 @@ impl App {
                     Paragraph::new(DURABLE_PROVIDER_COPY)
                         .wrap(Wrap { trim: false })
                         .block(
-                            Block::default()
-                                .borders(Borders::ALL)
+                            crate::ui::panel_block()
                                 .border_style(self.theme.panel_border())
-                                .title("Global provider store"),
+                                .title(crate::ui::panel_title("Global provider store")),
                         ),
                     copy,
                 );
@@ -634,10 +633,9 @@ impl App {
                 List::new(vec!["No sessions yet · /new starts one"])
                     .style(self.theme.muted())
                     .block(
-                        Block::default()
-                            .borders(Borders::ALL)
+                        crate::ui::panel_block()
                             .border_style(self.theme.panel_border())
-                            .title("Agents"),
+                            .title(crate::ui::panel_title("Agents")),
                     ),
                 panel,
             );
@@ -645,10 +643,9 @@ impl App {
         }
         frame.render_widget(
             List::new(rows).block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(self.theme.panel_border())
-                    .title("Agents"),
+                    .title(crate::ui::panel_title("Agents")),
             ),
             panel,
         );
@@ -975,10 +972,9 @@ impl App {
         let session_count = rows.iter().filter(|row| row.session_id().is_some()).count();
         let title = format!("Sessions ({session_count}/{picker_total})");
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
+            crate::ui::panel_block()
                 .border_style(self.theme.panel_border())
-                .title(title)
+                .title(crate::ui::panel_title(title))
                 .style(self.theme.panel()),
             picker,
         );
@@ -1113,10 +1109,9 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(self.theme.panel_border())
-                    .title("Provider details"),
+                    .title(crate::ui::panel_title("Provider details")),
             ),
             area,
         );
@@ -1127,10 +1122,9 @@ impl App {
         let Some(form) = self.provider_form.as_mut() else {
             return;
         };
-        let outer = Block::default()
-            .borders(Borders::ALL)
+        let outer = crate::ui::panel_block()
             .border_style(self.theme.panel_border())
-            .title("Connect provider");
+            .title(crate::ui::panel_title("Connect provider"));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
         let auth_label = form.selected_auth().map_or_else(
@@ -1169,13 +1163,14 @@ impl App {
             let auth_area = Rect::new(inner.x, y, inner.width, 3.min(inner.bottom() - y));
             frame.render_widget(
                 Paragraph::new(format!("← {auth_label} →")).block(
-                    Block::default()
-                        .borders(Borders::ALL)
+                    crate::ui::panel_block()
                         .border_style(
                             self.theme
                                 .input_border(focus == ProviderFormFocus::AuthMethod),
                         )
-                        .title("Authentication method · Left/Right/Space: change"),
+                        .title(crate::ui::panel_title(
+                            "Authentication method · Left/Right/Space: change",
+                        )),
                 ),
                 auth_area,
             );
@@ -1332,10 +1327,9 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(self.theme.panel_border())
-                    .title("Provider connection error"),
+                    .title(crate::ui::panel_title("Provider connection error")),
             ),
             area,
         );
@@ -1352,10 +1346,9 @@ impl App {
         );
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::ALL)
+                crate::ui::panel_block()
                     .border_style(self.theme.panel_border())
-                    .title("Confirm provider disconnect"),
+                    .title(crate::ui::panel_title("Confirm provider disconnect")),
             ),
             area,
         );

@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -419,17 +419,16 @@ impl App {
             Paragraph::new(lines)
                 .scroll((self.goal_detail.scroll.min(usize::from(u16::MAX)) as u16, 0))
                 .block(
-                    Block::default()
-                        .borders(Borders::ALL)
+                    crate::ui::panel_block()
                         .border_style(self.theme.panel_border())
-                        .title(Span::styled(
+                        .title(crate::ui::panel_title(Span::styled(
                             truncate_with_ellipsis(
                                 &title,
                                 usize::from(area.width.saturating_sub(2)),
                             ),
                             self.theme.heading(),
-                        ))
-                        .title_bottom(
+                        )))
+                        .title_bottom(crate::ui::panel_title(
                             Line::from(Span::styled(
                                 truncate_with_ellipsis(
                                     "Enter/Esc: close",
@@ -438,7 +437,7 @@ impl App {
                                 self.theme.internal(),
                             ))
                             .right_aligned(),
-                        ),
+                        )),
                 ),
             area,
         );

@@ -740,9 +740,7 @@ pub(super) fn reduce_event(
                     start.owner.model_turn_seq,
                     start.owner.model_call_id.as_str().to_owned(),
                 ))
-                .is_some_and(|tool| {
-                    matches!(tool.name.as_str(), "delegate_subagent" | "steer_subagent")
-                })
+                .is_some_and(|tool| tool.name.as_str() == "delegate_subagent")
             {
                 state.last_agent_activity = Some(timestamp);
             }

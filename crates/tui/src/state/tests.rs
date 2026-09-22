@@ -2882,7 +2882,7 @@ fn session_revert_rebuilds_transcript_across_a_persisted_sequence_gap() {
 }
 
 #[test]
-fn delegate_and_steer_tool_starts_update_agent_activity() {
+fn delegate_tool_starts_update_agent_activity() {
     let session_id = SessionId::new_v7();
     let mut state = SessionState::default();
     let fingerprint = || {
@@ -2918,13 +2918,6 @@ fn delegate_and_steer_tool_starts_update_agent_activity() {
         },
     );
     state.turn_tool_index.insert(
-        (2, "steer-call".into()),
-        IndexedToolCall {
-            name: SafeCode::new("steer_subagent").expect("tool name"),
-            arguments: "{}".into(),
-        },
-    );
-    state.turn_tool_index.insert(
         (3, "read-call".into()),
         IndexedToolCall {
             name: SafeCode::new("read").expect("tool name"),
@@ -2945,19 +2938,6 @@ fn delegate_and_steer_tool_starts_update_agent_activity() {
     );
     assert_eq!(state.last_agent_activity, Some(delegated_at));
 
-    let steered_at = "2026-08-06T12:00:00Z".parse().expect("timestamp");
-    reduce_event(
-        &mut state,
-        session_id,
-        None,
-        2,
-        steered_at,
-        EventPayload::ToolCallStarted {
-            start: start(2, "steer-call"),
-        },
-    );
-    assert_eq!(state.last_agent_activity, Some(steered_at));
-
     reduce_event(
         &mut state,
         session_id,
@@ -2968,5 +2948,5 @@ fn delegate_and_steer_tool_starts_update_agent_activity() {
             start: start(3, "read-call"),
         },
     );
-    assert_eq!(state.last_agent_activity, Some(steered_at));
+    assert_eq!(state.last_agent_activity, Some(delegated_at));
 }

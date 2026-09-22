@@ -35,7 +35,6 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -1081,7 +1080,7 @@ impl App {
             u16::from(area.height > 0),
         );
         self.hit_map.event_level_filter = {
-            let mut column = title_area.x;
+            let mut column = title_area.x.saturating_add(crate::ui::PANEL_TITLE_PAD);
             title_spans.iter().enumerate().find_map(|(index, span)| {
                 let width =
                     UnicodeWidthStr::width(span.content.as_ref()).min(usize::from(u16::MAX)) as u16;
@@ -1097,16 +1096,15 @@ impl App {
                 hit.flatten()
             })
         };
-        let mut block = Block::default()
-            .borders(Borders::ALL)
+        let mut block = crate::ui::panel_block()
             .border_style(self.theme.panel_border())
-            .title(Line::from(title_spans));
+            .title(crate::ui::panel_title(title_spans));
         // A viewport that no longer follows live output says so loudly, in
         // the title row, with the truthful way back — never buried in the
         // muted status line.
         if !self.conversation_scroll.following {
             block = block.title(
-                Line::from(Span::styled(
+                crate::ui::panel_title(Span::styled(
                     "↑ scrolled · PgDn: bottom",
                     self.theme.warning(),
                 ))

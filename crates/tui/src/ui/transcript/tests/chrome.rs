@@ -871,9 +871,9 @@ async fn agent_panel_text_rows_are_clamped_1_to_4_with_borders_outside() {
             .draw(|frame| app.render_tree(frame, layout.agent, &entries))
             .expect("render");
         let buffer = terminal.backend().buffer().clone();
-        let top = buffer[(0, 0)].symbol() == "┌";
-        let bottom = buffer[(0, expected_rows - 1)].symbol() == "└";
-        let below = buffer[(0, expected_rows)].symbol() == "└";
+        let top = buffer[(0, 0)].symbol() == "╭";
+        let bottom = buffer[(0, expected_rows - 1)].symbol() == "╰";
+        let below = buffer[(0, expected_rows)].symbol() == "╰";
         assert!(top, "sessions {sessions}");
         assert!(bottom, "sessions {sessions}");
         assert!(!below, "sessions {sessions}");
