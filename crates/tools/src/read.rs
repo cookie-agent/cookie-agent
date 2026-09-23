@@ -29,6 +29,7 @@ struct ReadArgs {
         rename = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
+    /// Path to the file or directory. Relative paths resolve against the session working directory.
     file_path: String,
     /// Maximum number of entries or lines to return. Defaults to 2000.
     limit: Option<usize>,

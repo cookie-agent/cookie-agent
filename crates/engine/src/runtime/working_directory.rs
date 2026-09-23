@@ -10,7 +10,11 @@ impl Engine {
     pub(crate) fn compose_working_directory_section(&self, policy: &mut FrozenRunPolicy) {
         let cwd = self.inner.store.cwd().display().to_string();
         let block = format!(
-            "<working_directory>{}</working_directory>",
+            concat!(
+                "<working_directory>{}</working_directory>\n",
+                "File tools and bash resolve relative paths against this directory. ",
+                "Use workspace-relative paths for files inside it.",
+            ),
             escape_xml_text(&cwd)
         );
         let Some(composed_bytes) = policy

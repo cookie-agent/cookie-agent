@@ -448,13 +448,11 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
 
     // Sources come from the engine's canonical cwd, which differs from the
     // temp dir spelling on Windows (`\\?\` prefix, expanded 8.3 names).
+    // Model-facing sources are workspace-relative to reinforce relative path
+    // style; skipped warnings keep absolute paths for UI display.
     let engine_root = fixture.engine.inner.store.cwd().to_path_buf();
-    let engine_agents = engine_root.join(".cookie-agent").join("agents");
-    let project_source = engine_agents
-        .join("AGENTS.md")
-        .to_string_lossy()
-        .into_owned();
-    let cwd_source = engine_root.join("AGENTS.md").to_string_lossy().into_owned();
+    let project_source = ".cookie-agent/agents/AGENTS.md";
+    let cwd_source = "AGENTS.md";
     let (entries, skipped) = fixture
         .engine
         .load_agent_md(None, None)
@@ -477,10 +475,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     assert!(skipped.is_empty());
     assert_eq!(
         entries[0].source.as_str(),
-        engine_agents
-            .join("python")
-            .join("AGENTS.md")
-            .to_string_lossy()
+        ".cookie-agent/agents/python/AGENTS.md"
     );
     assert_eq!(entries[0].content, "preset AGENTS.md context");
     assert!(
@@ -739,17 +734,7 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
-        fixture
-            .engine
-            .inner
-            .store
-            .cwd()
-            .join(".cookie-agent")
-            .join("agents")
-            .join("python")
-            .join("AGENTS.md")
-            .to_string_lossy()
-            .as_ref()
+        ".cookie-agent/agents/python/AGENTS.md"
     );
     assert_eq!(entries[0].content, "preset replay context");
 

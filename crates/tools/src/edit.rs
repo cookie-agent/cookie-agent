@@ -22,6 +22,7 @@ struct EditArgs {
         rename = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
+    /// Path to the file. Relative paths resolve against the session working directory.
     file_path: String,
     #[serde(rename = "oldString")]
     old_string: String,

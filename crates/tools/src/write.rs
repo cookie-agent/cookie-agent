@@ -22,6 +22,7 @@ struct WriteArgs {
         rename = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
+    /// Path to the file. Relative paths resolve against the session working directory.
     file_path: String,
     content: String,
 }
