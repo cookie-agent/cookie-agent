@@ -95,7 +95,7 @@ impl Engine {
             }
         };
         Ok(Some(AgentMdEntry {
-            source: SafeDisplayText::new(relative_display_path(path, &self.inner.store.cwd()))
+            source: SafeDisplayText::new(relative_display_path(path, self.inner.store.cwd()))
                 .expect("AGENTS.md relative path is bounded"),
             byte_length: observed_bytes,
             content,
@@ -116,6 +116,8 @@ pub(crate) fn skipped_agent_md_file(path: &Path) -> Option<AgentMdSkipped> {
 /// model-facing context (e.g. AGENTS.md `from=` attributes) reinforces
 /// workspace-relative path style.
 fn relative_display_path(path: &Path, cwd: &Path) -> String {
-    path.strip_prefix(cwd)
-        .map_or_else(|_| path.to_string_lossy().into_owned(), |rel| rel.display().to_string())
+    path.strip_prefix(cwd).map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |rel| rel.display().to_string(),
+    )
 }
