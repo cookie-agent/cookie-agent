@@ -204,8 +204,7 @@ impl Theme {
         let requested = std::env::var("COOKIE_THEME").unwrap_or_default();
         let no_color = std::env::var_os("NO_COLOR").is_some();
         let term = std::env::var("TERM").unwrap_or_default();
-        let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-        Self::from_environment(&requested, no_color, &term, &colorterm)
+        Self::from_environment(&requested, no_color, &term, &env_colorterm())
     }
 
     /// Apply a theme kind chosen by the TUI config file while still honoring
@@ -213,8 +212,7 @@ impl Theme {
     pub fn with_kind_from_env(kind: ThemeKind) -> Self {
         let no_color = std::env::var_os("NO_COLOR").is_some();
         let term = std::env::var("TERM").unwrap_or_default();
-        let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-        Self::from_kind_environment(kind, no_color, &term, &colorterm)
+        Self::from_kind_environment(kind, no_color, &term, &env_colorterm())
     }
 
     pub fn from_environment(requested: &str, no_color: bool, term: &str, colorterm: &str) -> Self {
@@ -743,6 +741,29 @@ impl Theme {
             || Style::default().add_modifier(modifier),
             |color| Style::default().fg(color).add_modifier(modifier),
         )
+    }
+}
+
+/// `COLORTERM`, or `truecolor` for a terminal known to render 24-bit colour
+/// that does not advertise it there: Windows Terminal (`WT_SESSION`, which it
+/// also shares into WSL) and a few `TERM_PROGRAM` identities.
+fn env_colorterm() -> String {
+    let colorterm = std::env::var("COLORTERM").unwrap_or_default();
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    colorterm_with_hints(
+        colorterm,
+        std::env::var_os("WT_SESSION").is_some(),
+        &term_program,
+    )
+}
+
+fn colorterm_with_hints(colorterm: String, windows_terminal: bool, term_program: &str) -> String {
+    let known_truecolor =
+        windows_terminal || matches!(term_program, "vscode" | "iTerm.app" | "WezTerm" | "ghostty");
+    if colorterm.is_empty() && known_truecolor {
+        "truecolor".to_owned()
+    } else {
+        colorterm
     }
 }
 

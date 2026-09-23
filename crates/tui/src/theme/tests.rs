@@ -797,3 +797,28 @@ fn inline_code_ink_is_muted_but_readable_on_its_tint() {
         );
     }
 }
+
+#[test]
+fn known_truecolor_terminals_fill_in_a_missing_colorterm() {
+    use super::colorterm_with_hints;
+    // Windows Terminal (and WSL inside it) never sets COLORTERM.
+    assert_eq!(colorterm_with_hints(String::new(), true, ""), "truecolor");
+    assert_eq!(
+        colorterm_with_hints(String::new(), false, "vscode"),
+        "truecolor"
+    );
+    assert_eq!(
+        colorterm_with_hints(String::new(), false, "Apple_Terminal"),
+        ""
+    );
+    assert_eq!(colorterm_with_hints(String::new(), false, ""), "");
+    // An explicit COLORTERM always wins.
+    assert_eq!(colorterm_with_hints("256".into(), true, "vscode"), "256");
+    let theme = Theme::from_kind_environment(
+        ThemeKind::Default,
+        false,
+        "xterm-256color",
+        &colorterm_with_hints(String::new(), true, ""),
+    );
+    assert_eq!(theme.key().colors, ColorLevel::TrueColor);
+}
