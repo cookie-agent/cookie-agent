@@ -612,7 +612,6 @@ pub struct App {
     pub(super) last_escape: Option<Instant>,
     pub(super) input: InputState,
     pub(super) modal: Modal,
-    pub(super) input_focused: bool,
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
     pub(super) status: String,
     session_errors: SessionErrorSummary,
@@ -1100,7 +1099,6 @@ impl App {
             last_escape: None,
             input: InputState::default(),
             modal: Modal::None,
-            input_focused: true,
             stdin_target: None,
             status: "Connected. Press / or Ctrl-P for commands.".into(),
             session_errors: SessionErrorSummary::default(),
@@ -1174,9 +1172,7 @@ impl App {
             .insert(session_id, generation);
         if !self.owned_sessions.contains(&session_id) {
             self.read_only_sessions.insert(session_id);
-            if self.selected == Some(session_id) {
-                self.input_focused = false;
-            }
+            if self.selected == Some(session_id) {}
         }
         generation
     }
@@ -1239,7 +1235,6 @@ impl App {
                 self.pending_live_subscriptions.insert(session_id);
                 self.replay_ended_for_live_subscription.remove(&session_id);
                 if self.selected == Some(session_id) {
-                    self.input_focused = true;
                     self.status = "Session is writable.".into();
                 }
                 self.start_pending_live_subscription(session_id);
@@ -1251,7 +1246,6 @@ impl App {
                 self.live_subscription_attempts.remove(&session_id);
                 self.replay_ended_for_live_subscription.remove(&session_id);
                 if self.selected == Some(session_id) {
-                    self.input_focused = false;
                     self.status =
                         "Session is owned by another cookie process; read-only snapshot.".into();
                 }
@@ -1264,7 +1258,6 @@ impl App {
                 self.replay_ended_for_live_subscription.remove(&session_id);
                 self.session_errors.record(&error);
                 if self.selected == Some(session_id) {
-                    self.input_focused = false;
                     self.status = error;
                 }
             }

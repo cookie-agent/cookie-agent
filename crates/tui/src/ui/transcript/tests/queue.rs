@@ -1165,7 +1165,6 @@ async fn up_in_an_empty_composer_recalls_instead_of_moving_the_cursor() {
         },
     );
     assert!(app.store.apply_event(admitted(session, 1, run, "pending")));
-    app.input_focused = true;
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
         .await;
     wait_for_recorded_request(&recorded, "run.recall_steer", 1).await;

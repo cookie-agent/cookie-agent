@@ -40,6 +40,18 @@ impl App {
         true
     }
 
+    /// The composer holds keyboard focus whenever nothing sits on top of it:
+    /// no modal, palette, or approval panel, and no goal-bar focus (F6). A
+    /// read-only snapshot never takes input, so it is never focused. Clicks
+    /// elsewhere in the conversation do not move focus.
+    pub(in crate::ui) fn composer_focused(&self) -> bool {
+        self.modal == Modal::None
+            && self.palette.is_none()
+            && self.current_approval().is_none()
+            && self.goal_focus.is_none()
+            && self.session_writable()
+    }
+
     /// Whether the composer may send to the current view: a read-only
     /// snapshot accepts a message only as the first one of a pending new
     /// root session.
@@ -63,7 +75,6 @@ impl App {
             return;
         }
         if !self.session_writable() {
-            self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
@@ -80,19 +91,7 @@ impl App {
             return;
         }
         if is_newline_key(key) {
-            self.input_focused = true;
             self.mutate_input(|input| input.insert_newline());
-            return;
-        }
-        if !self.input_focused {
-            match key.code {
-                KeyCode::Enter => self.input_focused = true,
-                KeyCode::Char(character) if is_printable_key(key) => {
-                    self.input_focused = true;
-                    self.mutate_input(|input| input.insert(character));
-                }
-                _ => {}
-            }
             return;
         }
         // A selection is deleted whole, with or without Ctrl, rather than
@@ -158,13 +157,24 @@ impl App {
                 self.navigate_input(|input| input.move_buffer_end());
             }
             KeyCode::End => self.navigate_input(|input| input.move_end()),
+            // Select the whole draft, cursor at its end, ready for Ctrl-C,
+            // Ctrl-X, Backspace, a paste, or typing over it.
             KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                self.navigate_input(|input| input.move_home());
+                let len = self.input.as_str().len();
+                self.navigate_input(|input| input.move_buffer_end());
+                if len > 0 {
+                    self.selection = Some(TextSelection::Composer {
+                        anchor: 0,
+                        head: len,
+                    });
+                }
             }
             KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
                 self.navigate_input(|input| input.move_end());
             }
             KeyCode::Char(character) if is_printable_key(key) => {
+                // Typing over a selection replaces it, as a paste does.
+                self.delete_composer_selection();
                 self.mutate_input(|input| input.insert(character));
             }
             _ => {}
@@ -252,11 +262,12 @@ impl App {
             return;
         }
         if !self.session_writable() {
-            self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
-        self.input_focused = true;
+        // A paste over a composer selection replaces it, as in any editor;
+        // the deletion leaves the cursor in the gap the text fills.
+        self.delete_composer_selection();
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         self.mutate_input(|input| input.insert_text(&normalized));
     }
@@ -591,7 +602,6 @@ impl App {
             restored.push_str(existing);
         }
         self.mutate_input(|input| input.set_buffer(restored));
-        self.input_focused = true;
     }
 
     /// Restore any voided pending inputs of the viewed session into the

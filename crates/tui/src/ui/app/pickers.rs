@@ -156,12 +156,10 @@ impl App {
     /// left exactly as it was.
     pub(in crate::ui) fn open_command_palette(&mut self) {
         self.palette = Some(CommandPalette::new());
-        self.input_focused = true;
     }
 
     pub(in crate::ui) fn close_command_palette(&mut self) {
         self.palette = None;
-        self.input_focused = true;
     }
 
     fn push_palette_step(&mut self, step: PaletteStep) {

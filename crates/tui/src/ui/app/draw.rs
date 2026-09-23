@@ -81,17 +81,12 @@ impl App {
         self.render_queue_strip(frame, layout.queue);
         self.render_goal_bar(frame, layout.goal);
         let title_spans = self.message_title_spans();
+        let composer_focused = self.composer_focused();
         let rendered_input = crate::ui::input::render(
             frame,
             layout.input,
             &mut self.input,
-            self.input_focused
-                && self.goal_focus.is_none()
-                && self.modal == Modal::None
-                && self.palette.is_none()
-                && self.selected.is_none_or(|session| {
-                    !self.read_only_sessions.contains(&session) || self.new_session_draft.is_some()
-                }),
+            composer_focused,
             Line::from(title_spans.clone()),
             Some(
                 if self

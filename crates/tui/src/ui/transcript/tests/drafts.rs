@@ -927,3 +927,57 @@ async fn model_command_continues_to_a_variant_step_that_applies_both_together() 
     run_palette_command(&mut app, "agent").await;
     assert_eq!(app.modal, Modal::Agents);
 }
+
+#[tokio::test]
+async fn ctrl_t_cycles_the_draft_variant_and_explains_a_variantless_model() {
+    let (client, _requests) = recording_client();
+    let mut app = App::new(client).await.expect("test app");
+    let with_variants = model_descriptor();
+    let plain = catalog_model("other/plain", &[], None);
+    app.install_initial_runtime(runtime_snapshot(
+        "1",
+        Vec::new(),
+        vec![with_variants.clone(), plain.clone()],
+        vec![descriptor("primary", true)],
+    ));
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    app.sessions.push(session_meta(session));
+    assert!(app.store.apply_event(session_created(session, 1)));
+    let draft = |model: &cookie_agent_protocol::ModelKey| RunSelection {
+        agent: agent_id(),
+        model: ModelSelection {
+            model: model.clone(),
+            variant: None,
+        },
+        preset: None,
+    };
+    app.draft = Some(draft(&with_variants.key));
+    let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        app.handle_key(ctrl_t).await;
+        seen.push(
+            app.draft
+                .as_ref()
+                .and_then(|draft| draft.model.variant.as_ref())
+                .map(ToString::to_string),
+        );
+    }
+    // base → fast → high → base, in the descriptor's declared order.
+    assert_eq!(
+        seen,
+        [Some("fast".to_owned()), Some("high".to_owned()), None]
+    );
+    assert_eq!(app.input.as_str(), "", "Ctrl-T never types into the draft");
+
+    app.draft = Some(draft(&plain.key));
+    app.handle_key(ctrl_t).await;
+    assert_eq!(
+        app.draft.as_ref().map(|draft| draft.model.variant.clone()),
+        Some(None)
+    );
+    assert!(app.status.contains("no other variants"), "{}", app.status);
+}

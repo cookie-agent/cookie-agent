@@ -223,7 +223,7 @@ async fn hovering_a_block_only_repaints_its_own_content_columns() {
 }
 
 #[tokio::test]
-async fn mouse_clicks_focus_blur_and_toggle_blocks() {
+async fn mouse_clicks_toggle_blocks_while_the_composer_keeps_focus() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();
     app.selected = Some(session);
@@ -245,7 +245,16 @@ async fn mouse_clicks_focus_blur_and_toggle_blocks() {
             .get(&session)
             .is_some_and(|set| set.contains(&block.id))
     );
-    assert!(!app.input_focused);
+    // Clicking conversation content never takes focus from the composer:
+    // typing right after the click still lands in the draft.
+    assert!(app.composer_focused());
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('x'),
+        crossterm::event::KeyModifiers::NONE,
+    ))
+    .await;
+    assert_eq!(app.input.as_str(), "x");
+    app.input.set_buffer(String::new());
     rendered_frame(&mut app, 80, 24);
     let block = app.hit_map.blocks.first().copied().unwrap();
     let body_row = block.toggle_rect.unwrap().bottom();
@@ -402,4 +411,49 @@ async fn raw_streams_do_not_create_implicit_display_click_regions() {
             .contains(&tool_output_id(call_id, ToolOutputSection::Stderr))
     );
     assert!(app.expanded_blocks[&session].contains(&BlockId::Tool(call_id)));
+}
+
+#[tokio::test]
+async fn composer_loses_focus_only_under_an_overlay_or_in_a_read_only_view() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    assert!(app.composer_focused());
+
+    app.open_command_palette();
+    assert!(!app.composer_focused());
+    app.close_command_palette();
+    assert!(app.composer_focused());
+
+    app.run_command(crate::ui::slash::SlashCommand::Sessions)
+        .await;
+    assert_eq!(app.modal, Modal::Sessions);
+    assert!(!app.composer_focused());
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+    .await;
+    assert_eq!(app.modal, Modal::None);
+    assert!(app.composer_focused());
+
+    let approval = bash_approval_state();
+    app.selected = Some(approval.session_id);
+    app.store
+        .sessions
+        .entry(approval.session_id)
+        .or_default()
+        .approvals
+        .push(approval.clone());
+    assert!(!app.composer_focused());
+    app.store
+        .sessions
+        .get_mut(&approval.session_id)
+        .expect("session")
+        .approvals
+        .clear();
+    assert!(app.composer_focused());
+
+    app.read_only_sessions.insert(approval.session_id);
+    assert!(!app.composer_focused());
 }

@@ -414,14 +414,12 @@ impl App {
                     self.status = "Goal details".into();
                     Some(GoalBarAction::Details)
                 };
-                self.input_focused = self.goal_focus.is_none();
                 return;
             }
             if let Some(action) = self.goal_focus {
                 match key.code {
                     KeyCode::Esc => {
                         self.goal_focus = None;
-                        self.input_focused = true;
                         self.last_escape = None;
                         return;
                     }
@@ -438,7 +436,6 @@ impl App {
                     }
                     _ => {
                         self.goal_focus = None;
-                        self.input_focused = true;
                     }
                 }
             }
@@ -473,6 +470,20 @@ impl App {
                     && agent_cycle_backward(key).is_some() =>
             {
                 self.cycle_agent(agent_cycle_backward(key).expect("agent cycle key"));
+            }
+            Modal::None
+                if self.current_approval().is_none()
+                    && !self.command_palette_visible()
+                    && key.code == KeyCode::Char('t')
+                    && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                // Ctrl-T cycles the draft model's variants, like clicking the
+                // bracketed variant suffix in the composer title.
+                if self.draft_variants().len() > 1 {
+                    self.cycle_draft_variant();
+                } else {
+                    self.status = "this model has no other variants".into();
+                }
             }
             Modal::None if self.command_palette_visible() => self.handle_palette_key(key).await,
             Modal::None if self.current_approval().is_some() => self.handle_approval_key(key).await,
@@ -595,7 +606,6 @@ impl App {
                     .scrollbar
                     .is_some_and(|geometry| contains(geometry.track, column, row));
                 if !on_scrollbar && contains(hit.text_rect, column, row) {
-                    self.input_focused = true;
                     self.pending_press = Some(PendingPress {
                         column,
                         row,
@@ -1261,7 +1271,6 @@ impl App {
             .find(|hit| contains(hit.rect, column, row))
             .copied()
         {
-            self.input_focused = false;
             match hit.segment {
                 TitleSegment::Agent => self.open_selection_modal(Modal::Agents),
                 TitleSegment::Model => self.open_selection_modal(Modal::Models),
@@ -1274,7 +1283,6 @@ impl App {
             .input
             .filter(|hit| contains(hit.rect, column, row))
         {
-            self.input_focused = true;
             // The composer's reserved scrollbar column mirrors the
             // conversation's exactly: a press on the thumb captures a drag,
             // a press on the bare track pages to the matching offset — all
@@ -1310,7 +1318,6 @@ impl App {
             .find(|hit| contains(hit.rect, column, row))
         {
             if hit.kind == QueueEntryKind::User {
-                self.input_focused = true;
                 self.recall_newest_pending();
             }
             return;
@@ -1323,7 +1330,6 @@ impl App {
             .filter(|track| contains(*track, column, row))
             && let Some(geometry) = self.scrollbar_geometry
         {
-            self.input_focused = false;
             if contains(geometry.thumb, column, row) {
                 self.scrollbar_drag = Some(ScrollbarDrag {
                     grab_row: row.saturating_sub(geometry.thumb.y),
@@ -1336,7 +1342,6 @@ impl App {
             let _ = track;
             return;
         }
-        self.input_focused = false;
         // Past user-message rows open the copy/revert/fork menu — never
         // assistant/tool rows, which keep their expand/collapse toggle.
         if let Some(hit) = self

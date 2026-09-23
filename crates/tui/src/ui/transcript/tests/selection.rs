@@ -424,6 +424,35 @@ async fn composer_selection_is_deleted_by_backspace_and_delete() {
 }
 
 #[tokio::test]
+async fn paste_over_a_composer_selection_replaces_it() {
+    let mut app = test_app().await;
+    app.selected = Some(SessionId::new_v7());
+    app.input.set_buffer("hello world".to_owned());
+    rendered_frame(&mut app, 80, 24);
+    let text_rect = app.hit_map.input.expect("input").text_rect;
+    // Select "wor" right to left; the range is normalized either way.
+    composer_drag_selection(&mut app, text_rect, 9, 6).await;
+    assert_eq!(
+        app.selection,
+        Some(TextSelection::Composer { anchor: 9, head: 6 })
+    );
+    app.handle_paste("brave new\r\nwo");
+    assert_eq!(app.input.as_str(), "hello brave new\nwold");
+    assert!(app.selection.is_none());
+    // The cursor ends after the pasted text, so typing continues there.
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.input.as_str(), "hello brave new\nwoXld");
+
+    // Without a selection a paste still inserts at the cursor.
+    let mut plain = test_app().await;
+    plain.selected = Some(SessionId::new_v7());
+    plain.input.set_buffer("ab".to_owned());
+    plain.handle_paste("-");
+    assert_eq!(plain.input.as_str(), "ab-");
+}
+
+#[tokio::test]
 async fn composer_click_without_drag_places_the_cursor_as_before() {
     let mut app = test_app().await;
     app.selected = Some(SessionId::new_v7());
@@ -444,7 +473,7 @@ async fn composer_click_without_drag_places_the_cursor_as_before() {
     .await;
     assert!(app.selection.is_none());
     assert_eq!(app.input.cursor_byte(), 5, "the click moved the cursor");
-    assert!(app.input_focused);
+    assert!(app.composer_focused());
 }
 
 #[tokio::test]
@@ -678,7 +707,7 @@ async fn composer_selection_survives_a_watch_and_retires_on_mutation() {
 }
 
 #[tokio::test]
-async fn composer_selection_retires_on_multibyte_type_then_cut_is_sane() {
+async fn composer_selection_is_replaced_by_multibyte_typing_then_cut_is_sane() {
     let mut app = test_app().await;
     let copied = Arc::new(Mutex::new(Vec::new()));
     app.clipboard_sink = ClipboardSink::Capture(copied.clone());
@@ -692,19 +721,20 @@ async fn composer_selection_retires_on_multibyte_type_then_cut_is_sane() {
         Some(TextSelection::Composer { anchor: 6, head: 9 }),
         "the drag selected \"wor\""
     );
-    // A multibyte insertion shifts every later byte offset: the stale
-    // range 6..9 must retire, not silently retarget.
+    // Typing replaces the selection. The multibyte replacement shifts every
+    // later byte offset, so the range must be gone afterwards, not
+    // silently retargeted.
     app.handle_input_key(KeyEvent::new(KeyCode::Char('é'), KeyModifiers::NONE))
         .await;
     assert!(
         app.selection.is_none(),
-        "multibyte insertion retired the stale byte range"
+        "the replaced byte range is retired"
     );
-    assert_eq!(app.input.as_str(), "hello worldé");
+    assert_eq!(app.input.as_str(), "hello éld");
     // ctrl+x with no selection cuts and copies nothing.
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
         .await;
-    assert_eq!(app.input.as_str(), "hello worldé", "nothing was cut");
+    assert_eq!(app.input.as_str(), "hello éld", "nothing was cut");
     assert!(
         copied.lock().expect("capture").is_empty(),
         "nothing was copied"
@@ -814,4 +844,46 @@ async fn selection_overlay_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(overlay);
+}
+
+#[tokio::test]
+async fn ctrl_a_selects_the_whole_draft_for_copy_typing_and_paste() {
+    let ctrl = |character| KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL);
+    let mut app = test_app().await;
+    let copied = Arc::new(Mutex::new(Vec::new()));
+    app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+    app.selected = Some(SessionId::new_v7());
+
+    // An empty draft has nothing to select.
+    app.handle_key(ctrl('a')).await;
+    assert!(app.selection.is_none());
+
+    type_input(&mut app, "héllo wörld").await;
+    app.handle_key(ctrl('a')).await;
+    let len = app.input.as_str().len();
+    assert_eq!(
+        app.selection,
+        Some(TextSelection::Composer {
+            anchor: 0,
+            head: len
+        })
+    );
+    app.handle_key(ctrl('c')).await;
+    assert_eq!(
+        copied.lock().expect("capture").as_slice(),
+        ["héllo wörld".to_owned()]
+    );
+    assert_eq!(app.input.as_str(), "héllo wörld", "copying keeps the draft");
+
+    // Typing over the selection replaces the whole draft.
+    app.handle_key(ctrl('a')).await;
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.input.as_str(), "X");
+    assert!(app.selection.is_none());
+
+    // So does a paste.
+    app.handle_key(ctrl('a')).await;
+    app.handle_paste("pasted");
+    assert_eq!(app.input.as_str(), "pasted");
 }

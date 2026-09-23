@@ -76,6 +76,11 @@ Enter submits the composer. Use Ctrl-J or modified Enter to insert a newline.
 Arrow keys move by character or visual line; Ctrl-Left and Ctrl-Right move by
 word. Ctrl-Backspace and Ctrl-Delete remove a word. Home and End move within a
 line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.
+Tab and Shift-Tab cycle the draft agent; Ctrl-T cycles the draft model's
+variants, like clicking the bracketed variant in the composer title. Ctrl-A
+selects the whole draft; typing or pasting over a selection replaces it. The
+composer keeps keyboard focus while you click around the conversation; only a
+panel, the command palette, or an approval on top of it takes focus away.
 
 The agent and model panels include search fields. Agent search matches agent IDs
 and descriptions; model search matches display names and `provider/model_id`.

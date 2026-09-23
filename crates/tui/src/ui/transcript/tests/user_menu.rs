@@ -150,7 +150,7 @@ async fn reverted_update_restores_the_message_text_into_the_composer() {
         text: "second question".into(),
     });
     assert_eq!(app.input.as_str(), "second question");
-    assert!(app.input_focused);
+    assert!(app.composer_focused());
 }
 
 #[test]

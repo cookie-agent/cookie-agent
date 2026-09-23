@@ -800,13 +800,12 @@ async fn watching_a_descendant_keeps_the_stable_root() {
         }],
     });
     app.owned_sessions.insert(root);
-    app.input_focused = true;
     app.watch_session(child);
     assert_eq!(app.tree_root, Some(root));
     assert_eq!(app.selected, Some(child));
     assert!(app.tree.is_some());
     assert!(app.read_only_sessions.contains(&child));
-    assert!(!app.input_focused);
+    assert!(!app.composer_focused());
     let child_generation = app.ownership_classifications[&child];
     app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
         session_id: child,
@@ -817,12 +816,11 @@ async fn watching_a_descendant_keeps_the_stable_root() {
     assert!(rendered_frame(&mut app, 100, 30).contains("Read-only snapshot"));
     // Watching a session outside the tree is the intentional reroot.
     let outside = SessionId::new_v7();
-    app.input_focused = true;
     app.watch_session(outside);
     assert_eq!(app.tree_root, Some(outside));
     assert!(app.tree.is_none());
     assert!(app.read_only_sessions.contains(&outside));
-    assert!(!app.input_focused);
+    assert!(!app.composer_focused());
     let outside_generation = app.ownership_classifications[&outside];
     app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
         session_id: outside,
@@ -831,7 +829,7 @@ async fn watching_a_descendant_keeps_the_stable_root() {
     });
     assert!(app.owned_sessions.contains(&outside));
     assert!(!app.read_only_sessions.contains(&outside));
-    assert!(app.input_focused);
+    assert!(app.composer_focused());
 }
 
 #[test]
@@ -915,7 +913,6 @@ async fn tree_children_use_their_own_ownership_classification() {
     });
     assert!(app.read_only_sessions.contains(&child));
 
-    app.input_focused = true;
     app.watch_session(grandchild);
     let grandchild_generation = app.ownership_classifications[&grandchild];
     app.handle_rpc_update(RpcUpdate::SessionOwnershipClassified {
@@ -926,7 +923,7 @@ async fn tree_children_use_their_own_ownership_classification() {
     assert_eq!(app.selected, Some(grandchild));
     assert!(app.owned_sessions.contains(&grandchild));
     assert!(!app.read_only_sessions.contains(&grandchild));
-    assert!(app.input_focused);
+    assert!(app.composer_focused());
     assert!(rendered_frame(&mut app, 100, 30).contains("Type a message · / for commands"));
 }
 
