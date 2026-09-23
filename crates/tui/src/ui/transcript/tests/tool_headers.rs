@@ -941,3 +941,78 @@ async fn tool_rows_never_underline_across_themes_and_hover() {
         }
     }
 }
+
+/// Draw rows the way the terminal will and return every banded cell's
+/// background, right of the row's own gutter.
+fn banded_cell_backgrounds(
+    rows: &[Line<'static>],
+    width: u16,
+    background: ratatui::style::Color,
+) -> Vec<(u16, u16, ratatui::style::Color)> {
+    use ratatui::widgets::Widget as _;
+    let area = ratatui::layout::Rect::new(0, 0, width, rows.len() as u16);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Paragraph::new(rows.to_vec()).render(area, &mut buffer);
+    let mut cells = Vec::new();
+    for (y, row) in rows.iter().enumerate() {
+        if !row
+            .spans
+            .iter()
+            .any(|span| span.style.bg == Some(background))
+        {
+            continue;
+        }
+        // The second cell of a wide glyph is painted with the glyph itself,
+        // so only cells that start a glyph are checked.
+        let chrome = leading_gutter_columns(row);
+        let mut x = 0;
+        while x < width {
+            let cell = &buffer[(x, y as u16)];
+            if x >= chrome {
+                cells.push((x, y as u16, cell.bg));
+            }
+            x += UnicodeWidthStr::width(cell.symbol()).max(1) as u16;
+        }
+    }
+    cells
+}
+
+#[test]
+fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
+    let theme = Theme::default();
+    let background = theme
+        .terminal_background()
+        .expect("the parchment theme bands the terminal");
+    let mut state = read_tool_state(
+        "unused",
+        ToolStatus::Completed,
+        "\tmodified:   crates/tools/src/edit.rs\nab\tc\n",
+    );
+    let id = read_tool_id(&state);
+    let tool = state.tools.get_mut(&id).unwrap();
+    tool.presentation = presentation("bash", Some("git status"));
+    tool.arguments = r#"{"command":"git status"}"#.into();
+    let expanded = HashSet::from([BlockId::Tool(id)]);
+    let layout = transcript_layout_with(&state, Some(&expanded), 60, &theme, &PlainHighlighter);
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::Tool(id))
+        .unwrap();
+    let rows = &layout.lines[region.start_line..region.end_line];
+    let rendered = snapshot_lines(rows);
+    assert!(!rendered.contains('\t'), "{rendered}");
+    // Tab stops every eight columns, counted from the start of the output line.
+    assert!(
+        rendered.contains("        modified:   crates/tools/src/edit.rs"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("ab      c"), "{rendered}");
+    // Measured and drawn widths agree, so no cell at a row's end is left
+    // off the band (the renderer used to drop a tab that counted as one).
+    let unpainted = banded_cell_backgrounds(rows, 60, background)
+        .into_iter()
+        .filter(|(_, _, bg)| *bg != background)
+        .collect::<Vec<_>>();
+    assert!(unpainted.is_empty(), "{unpainted:?}\n{rendered}");
+}

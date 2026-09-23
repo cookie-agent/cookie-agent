@@ -140,3 +140,35 @@ fn inline_code_spans_sit_on_the_code_tint_and_high_contrast_keeps_its_chip() {
     ));
     assert_eq!(contrast.bg, Some(ratatui::style::Color::LightYellow));
 }
+
+#[test]
+fn tab_indented_code_expands_to_tab_stops_on_a_solid_band() {
+    let theme = Theme::default();
+    let background = theme
+        .code_background()
+        .expect("the parchment theme bands code");
+    let state = assistant_state(vec![AssistantChild::Text {
+        id: 1,
+        version: 0,
+        markdown: MarkdownDocument::new("```go\nfunc f() {\n\treturn\n}\n```".to_owned()),
+    }]);
+    let layout = transcript_layout(&state, None, 40);
+    let rendered = snapshot_lines(&layout.lines);
+    assert!(!rendered.contains('\t'), "{rendered}");
+    assert!(rendered.contains("        return"), "{rendered}");
+    let code_rows = layout
+        .lines
+        .iter()
+        .filter(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.style.bg == Some(background))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(code_rows.len(), 3, "{rendered}");
+    let widths = code_rows
+        .iter()
+        .map(|line| line.width())
+        .collect::<Vec<_>>();
+    assert!(widths.iter().all(|width| *width == widths[0]), "{widths:?}");
+}

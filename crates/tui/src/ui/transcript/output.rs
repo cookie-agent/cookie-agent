@@ -88,10 +88,23 @@ pub(super) fn safe_display_text(text: &str) -> String {
     sanitized_display_prefix(text, usize::MAX).0
 }
 
+/// Control characters become U+FFFD and tabs expand to the next tab stop
+/// (see [`crate::markdown::expand_tabs_in_spans`]), so measured and drawn
+/// widths agree. `max_bytes` bounds the expanded output.
 pub(super) fn sanitized_display_prefix(text: &str, max_bytes: usize) -> (String, bool) {
     let mut sanitized = String::with_capacity(text.len().min(max_bytes));
+    let mut column = 0;
     for character in text.chars() {
-        let character = if character.is_control() && character != '\t' {
+        if character == '\t' {
+            let advance = crate::markdown::tab_advance(column);
+            if sanitized.len().saturating_add(advance) > max_bytes {
+                return (sanitized, false);
+            }
+            sanitized.extend(std::iter::repeat_n(' ', advance));
+            column += advance;
+            continue;
+        }
+        let character = if character.is_control() {
             '\u{FFFD}'
         } else {
             character
@@ -100,6 +113,7 @@ pub(super) fn sanitized_display_prefix(text: &str, max_bytes: usize) -> (String,
             return (sanitized, false);
         }
         sanitized.push(character);
+        column += unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
     }
     (sanitized, true)
 }

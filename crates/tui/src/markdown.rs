@@ -1015,7 +1015,7 @@ fn pad_cell(
 /// the parser) render as the replacement character so terminal control
 /// sequences can never be injected through table content.
 fn sanitize_cell(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
-    spans
+    let sanitized = spans
         .into_iter()
         .map(|span| {
             let content = span
@@ -1031,7 +1031,8 @@ fn sanitize_cell(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
                 .collect::<String>();
             Span::styled(content, span.style)
         })
-        .collect()
+        .collect();
+    expand_tabs_in_spans(sanitized)
 }
 
 fn border_row(
@@ -1794,10 +1795,13 @@ impl<'a> MarkdownRenderer<'a> {
         let content_width = self.width.saturating_sub(quote_width + 1).max(1);
         let mut rows = Vec::new();
         for line in highlighted {
-            for (index, content) in
-                wrap_code_spans(line.spans.clone(), content_width, content_width)
-                    .into_iter()
-                    .enumerate()
+            for (index, content) in wrap_code_spans(
+                expand_tabs_in_spans(line.spans.clone()),
+                content_width,
+                content_width,
+            )
+            .into_iter()
+            .enumerate()
             {
                 let mut spans = vec![Span::styled(if index == 0 { " " } else { "↪" }, marker)];
                 spans.extend(content.into_iter().map(|mut span| {
@@ -1841,10 +1845,13 @@ impl<'a> MarkdownRenderer<'a> {
         let continuation_width = self.width.saturating_sub(quote_width + 1).max(1);
         for line in highlighted {
             let line_style = line.style;
-            for (index, content) in
-                wrap_code_spans(line.spans.clone(), first_width, continuation_width)
-                    .into_iter()
-                    .enumerate()
+            for (index, content) in wrap_code_spans(
+                expand_tabs_in_spans(line.spans.clone()),
+                first_width,
+                continuation_width,
+            )
+            .into_iter()
+            .enumerate()
             {
                 let mut spans = vec![
                     Span::styled(quote_prefix.clone(), self.theme.quote()),
@@ -1900,6 +1907,43 @@ impl<'a> MarkdownRenderer<'a> {
         }
         self.lines
     }
+}
+
+/// Terminal tab stops: every eight columns.
+pub(crate) const TAB_WIDTH: usize = 8;
+
+/// Spaces that take a tab at `column` to the next tab stop.
+pub(crate) fn tab_advance(column: usize) -> usize {
+    TAB_WIDTH - column % TAB_WIDTH
+}
+
+/// Expand tabs to the next tab stop, counting columns across spans. Ratatui
+/// draws nothing for a tab while unicode-width counts it as one column, so an
+/// unexpanded tab both loses its alignment and leaves an unpainted cell at
+/// the end of every padded band row.
+pub(crate) fn expand_tabs_in_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let mut column = 0;
+    spans
+        .into_iter()
+        .map(|span| {
+            if !span.content.contains('\t') {
+                column += span.width();
+                return span;
+            }
+            let mut content = String::with_capacity(span.content.len());
+            for character in span.content.chars() {
+                if character == '\t' {
+                    let advance = tab_advance(column);
+                    content.extend(std::iter::repeat_n(' ', advance));
+                    column += advance;
+                } else {
+                    content.push(character);
+                    column += unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+                }
+            }
+            Span::styled(content, span.style)
+        })
+        .collect()
 }
 
 pub(crate) fn wrap_code_spans(
