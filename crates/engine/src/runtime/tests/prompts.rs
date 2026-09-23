@@ -451,7 +451,15 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     // Model-facing sources are workspace-relative to reinforce relative path
     // style; skipped warnings keep absolute paths for UI display.
     let engine_root = fixture.engine.inner.store.cwd().to_path_buf();
-    let project_source = ".cookie-agent/agents/AGENTS.md";
+    // Relative sources use the platform separator (`\\` on Windows).
+    let relative = |parts: &[&str]| -> String {
+        parts
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let project_source = relative(&[".cookie-agent", "agents", "AGENTS.md"]);
     let cwd_source = "AGENTS.md";
     let (entries, skipped) = fixture
         .engine
@@ -459,7 +467,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
         .expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
-    assert_eq!(entries[0].source.as_str(), project_source);
+    assert_eq!(entries[0].source.as_str(), project_source.as_str());
     assert_eq!(entries[0].content, "default AGENTS.md context");
     assert_eq!(entries[1].source.as_str(), cwd_source);
     assert_eq!(entries[1].content, "cwd AGENTS.md context");
@@ -475,7 +483,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     assert!(skipped.is_empty());
     assert_eq!(
         entries[0].source.as_str(),
-        ".cookie-agent/agents/python/AGENTS.md"
+        relative(&[".cookie-agent", "agents", "python", "AGENTS.md"])
     );
     assert_eq!(entries[0].content, "preset AGENTS.md context");
     assert!(
@@ -734,7 +742,10 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
-        ".cookie-agent/agents/python/AGENTS.md"
+        [".cookie-agent", "agents", "python", "AGENTS.md"]
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
     );
     assert_eq!(entries[0].content, "preset replay context");
 
