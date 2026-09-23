@@ -887,3 +887,24 @@ async fn ctrl_a_selects_the_whole_draft_for_copy_typing_and_paste() {
     app.handle_paste("pasted");
     assert_eq!(app.input.as_str(), "pasted");
 }
+
+#[test]
+fn inline_code_caps_never_reach_copied_text() {
+    let theme = Theme::default();
+    let lines = crate::markdown::render_markdown_width(
+        &MarkdownDocument::new("run `cargo test` or `a``b` now".into()),
+        &theme,
+        &PlainHighlighter,
+        58,
+    )
+    .into_iter()
+    .flat_map(|line| assistant_body_line(line, 60, &theme))
+    .collect::<Vec<_>>();
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert!(rendered[0].contains("▐cargo test▌"), "{rendered:?}");
+    assert_eq!(
+        extract_selection(&lines, (0, 0), (0, u16::MAX), &theme),
+        // `a``b` is one code span whose text keeps its inner backticks.
+        "run cargo test or a``b now"
+    );
+}

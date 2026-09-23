@@ -138,7 +138,17 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
     assert_eq!(
         strings(&heading_lines),
         [
-            "One code", "", "Two", "", "Three", "", "Four", "", "Five", "", "Six"
+            "One ▐code▌",
+            "",
+            "Two",
+            "",
+            "Three",
+            "",
+            "Four",
+            "",
+            "Five",
+            "",
+            "Six"
         ]
     );
     let heading_lines = heading_lines
@@ -866,7 +876,7 @@ fn markdown_terminal_snapshot_covers_required_block_aesthetics() {
     assert_snapshot!(rendered, @r#"
 Result
 
-bold and italic, code, link <https://example.test>.
+bold and italic, ▐code▌, link <https://example.test>.
 
 • [x] done
 • [ ] next
@@ -1148,12 +1158,25 @@ fn inline_code_is_marked_by_a_tint_or_by_backticks() {
             theme.key()
         );
         assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
-        // A tinted background replaces the backticks; without one the
-        // backticks stay and bold carries the distinction in mono
-        // terminals, so inline code never depends on color alone.
+        // A tinted chip replaces the backticks, widened by half-block caps
+        // drawn in the chip colour; without a tint the backticks stay and
+        // bold carries the distinction in mono terminals, so inline code
+        // never depends on color alone.
         let rendered = strings(&lines).join("");
         if has_background {
-            assert_eq!(rendered, "before let x = 1; after");
+            assert_eq!(rendered, "before ▐let x = 1;▌ after");
+            let cap = theme.inline_code_cap().expect("cap style");
+            assert_eq!(cap.fg, code_span.style.bg, "{:?}", theme.key());
+            for glyph in ["▐", "▌"] {
+                assert!(
+                    lines
+                        .iter()
+                        .flat_map(|line| line.spans.iter())
+                        .any(|span| span.content == glyph && span.style == cap),
+                    "{glyph} cap: {:?}",
+                    theme.key()
+                );
+            }
         } else {
             assert!(rendered.contains("`let x = 1;`"));
         }

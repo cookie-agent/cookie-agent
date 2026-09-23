@@ -1345,6 +1345,12 @@ pub(crate) fn normalized_language(language: &str) -> String {
     }
 }
 
+/// Half-block caps around a tinted inline-code chip: the right half of the
+/// cell before the code and the left half of the cell after it are filled
+/// with the chip colour. Copy extraction drops them by their cap style.
+pub(crate) const INLINE_CODE_OPEN: &str = "▐";
+pub(crate) const INLINE_CODE_CLOSE: &str = "▌";
+
 struct MarkdownRenderer<'a> {
     theme: &'a Theme,
     highlighter: &'a dyn Highlighter,
@@ -1440,20 +1446,25 @@ impl<'a> MarkdownRenderer<'a> {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(text),
-            // A tinted background marks inline code on its own; themes
-            // without one keep the backticks as the marker.
-            Event::Code(code) => self.span(
-                if self.theme.inline_code().bg.is_some() {
-                    code.to_string()
-                } else {
-                    format!("`{code}`")
-                },
-                self.styles
+            // A tinted chip marks inline code on its own, widened by a
+            // half-block cap on each side; themes without a tint keep the
+            // backticks as the marker.
+            Event::Code(code) => {
+                let style = self
+                    .styles
                     .last()
                     .copied()
                     .unwrap_or_default()
-                    .patch(self.theme.inline_code()),
-            ),
+                    .patch(self.theme.inline_code());
+                match self.theme.inline_code_cap() {
+                    Some(cap) => {
+                        self.span(INLINE_CODE_OPEN.to_owned(), cap);
+                        self.span(code.to_string(), style);
+                        self.span(INLINE_CODE_CLOSE.to_owned(), cap);
+                    }
+                    None => self.span(format!("`{code}`"), style),
+                }
+            }
             Event::InlineMath(math) => self.span(format!("${math}$"), self.theme.inline_code()),
             Event::DisplayMath(math) => {
                 self.flush();

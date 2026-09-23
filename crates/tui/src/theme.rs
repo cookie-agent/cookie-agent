@@ -76,10 +76,12 @@ struct Palette {
     allow_tint: Swatch,
     deny_tint: Swatch,
     neutral_tint: Swatch,
+    /// Muted body text: inline code on the parchment tint.
+    ink: Swatch,
 }
 
 impl Palette {
-    fn swatches(&self) -> [Swatch; 26] {
+    fn swatches(&self) -> [Swatch; 27] {
         [
             self.cream,
             self.terminal,
@@ -107,6 +109,7 @@ impl Palette {
             self.allow_tint,
             self.deny_tint,
             self.neutral_tint,
+            self.ink,
         ]
     }
 
@@ -152,6 +155,7 @@ const LIGHT: Palette = Palette {
     allow_tint: swatch((0xDE, 0xE7, 0xC6), 194, Color::LightGreen),
     deny_tint: swatch((0xF3, 0xD5, 0xC9), 224, Color::LightRed),
     neutral_tint: swatch((0xE6, 0xDC, 0xC6), 187, Color::Gray),
+    ink: swatch((0x62, 0x52, 0x40), 239, Color::DarkGray),
 };
 
 const DARK: Palette = Palette {
@@ -181,6 +185,7 @@ const DARK: Palette = Palette {
     allow_tint: swatch((0x82, 0x92, 0x57), 71, Color::LightGreen),
     deny_tint: swatch((0xBF, 0x7B, 0x5F), 203, Color::LightRed),
     neutral_tint: swatch((0x96, 0x8A, 0x71), 173, Color::Gray),
+    ink: swatch((0xC9, 0xB5, 0x9C), 180, Color::Gray),
 };
 
 #[derive(Clone, Debug)]
@@ -592,13 +597,22 @@ impl Theme {
     /// foreground, never a background in the default theme — the source
     /// backticks stay visible, and the bold modifier carries the distinction
     /// in mono terminals. High contrast keeps its inverse-video chip.
-    /// Inline code. Bakery palettes set it on the code-block parchment
-    /// band in regular weight, which is marker enough that the renderer
-    /// drops the backticks; other themes keep bold text and the backticks.
+    /// Inline code. Bakery palettes set it in a muted body-text colour on the
+    /// code-block parchment, in regular weight, which is marker enough that
+    /// the renderer drops the backticks; other themes keep bold text and
+    /// the backticks.
     pub fn inline_code(&self) -> Style {
         if let Some(background) = self.code_background() {
+            // A muted take on the body text. Sixteen colours cannot mute it:
+            // there the muted greys match the tint, so the chip keeps the
+            // body text colour.
+            let ink = if self.key.colors == ColorLevel::Ansi16 {
+                self.palette().espresso
+            } else {
+                self.palette().ink
+            };
             return self
-                .semantic(self.palette().terracotta, Color::Black, Modifier::empty())
+                .semantic(ink, Color::Black, Modifier::empty())
                 .bg(background);
         }
         let foreground = self.semantic(self.palette().terracotta, Color::Black, Modifier::BOLD);
@@ -608,6 +622,16 @@ impl Theme {
             ColorLevel::Ansi16 | ColorLevel::Ansi256 | ColorLevel::TrueColor => None,
         };
         background.map_or(foreground, |background| foreground.bg(background))
+    }
+
+    /// The half-block caps (`▐` before, `▌` after) that widen a tinted
+    /// inline-code chip by half a cell on each side: foreground in the chip's
+    /// background colour over the surrounding surface. `None` where inline
+    /// code has no tint.
+    pub fn inline_code_cap(&self) -> Option<Style> {
+        self.inline_code()
+            .bg
+            .map(|background| Style::default().fg(background))
     }
 
     pub fn code_border(&self) -> Style {

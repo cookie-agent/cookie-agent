@@ -192,7 +192,7 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
         mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
         contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-        default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=Some(Rgb(242, 229, 204)) bold=false italic=false underline=false dim=false reverse=false
+        default.inline_code: fg=Some(Rgb(98, 82, 64)) bg=Some(Rgb(242, 229, 204)) bold=false italic=false underline=false dim=false reverse=false
         contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
         mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
         mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -263,7 +263,7 @@ fn dark_semantic_theme_snapshot_is_deterministic() {
         dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
         dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=Some(Rgb(57, 51, 38)) bold=false italic=false underline=false dim=false reverse=false
+        dark.inline_code: fg=Some(Rgb(201, 181, 156)) bg=Some(Rgb(57, 51, 38)) bold=false italic=false underline=false dim=false reverse=false
         ");
 }
 
@@ -534,6 +534,7 @@ fn dark_palette_preserves_hues() {
         "allow_tint",
         "deny_tint",
         "neutral_tint",
+        "ink",
     ];
     for ((name, light), dark) in names
         .into_iter()
@@ -643,7 +644,10 @@ fn dark_ansi16_uses_specified_roles() {
     assert_eq!(theme.tool_success().fg, Some(Color::LightGreen));
     assert_eq!(theme.thinking().fg, Some(Color::LightMagenta));
     assert_eq!(theme.link().fg, Some(Color::LightBlue));
-    assert_eq!(theme.inline_code().fg, Some(Color::LightRed));
+    // Inline code keeps the body colour on the grey tint: sixteen colours
+    // have no muted ink that stays distinct from that tint.
+    assert_eq!(theme.inline_code().fg, Some(Color::White));
+    assert_eq!(theme.inline_code().bg, Some(Color::DarkGray));
     assert_eq!(theme.user().fg, Some(Color::Yellow));
     assert_eq!(theme.tool().fg, Some(Color::Yellow));
     assert_eq!(theme.warning().fg, Some(Color::Yellow));
@@ -759,5 +763,37 @@ fn surfaces_and_interactions_degrade_gracefully_without_color() {
                 assert_eq!(idle.fg, active.fg, "tone survives hover: {tone:?}");
             }
         }
+    }
+}
+
+#[test]
+fn inline_code_ink_is_muted_but_readable_on_its_tint() {
+    fn luminance(rgb: (u8, u8, u8)) -> f64 {
+        let channel = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(rgb.0) + 0.7152 * channel(rgb.1) + 0.0722 * channel(rgb.2)
+    }
+    fn contrast(first: (u8, u8, u8), second: (u8, u8, u8)) -> f64 {
+        let (high, low) = {
+            let (a, b) = (luminance(first), luminance(second));
+            if a > b { (a, b) } else { (b, a) }
+        };
+        (high + 0.05) / (low + 0.05)
+    }
+    for palette in [&super::LIGHT, &super::DARK] {
+        let ink = contrast(palette.ink.rgb, palette.parchment.rgb);
+        let body = contrast(palette.espresso.rgb, palette.parchment.rgb);
+        // WCAG AA for body-size text, yet quieter than the body text.
+        assert!(ink >= 4.5, "ink contrast {ink:.2}");
+        assert!(
+            ink < body,
+            "ink {ink:.2} must be quieter than body {body:.2}"
+        );
     }
 }

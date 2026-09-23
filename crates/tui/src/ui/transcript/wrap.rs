@@ -618,15 +618,30 @@ pub(super) fn extract_line(
     let end = col_end.saturating_sub(gutter_width);
     let mut extracted = String::new();
     let mut column = 0u16;
-    for grapheme in rest.graphemes(true) {
-        let width = UnicodeWidthStr::width(grapheme).max(1) as u16;
-        let next = column.saturating_add(width);
-        if next > start && column < end {
-            extracted.push_str(grapheme);
+    for span in &remaining {
+        // Inline-code caps occupy cells but are chrome, not text.
+        let copyable = !is_inline_code_cap(span, theme);
+        for grapheme in span.content.as_ref().graphemes(true) {
+            let width = UnicodeWidthStr::width(grapheme).max(1) as u16;
+            let next = column.saturating_add(width);
+            if copyable && next > start && column < end {
+                extracted.push_str(grapheme);
+            }
+            column = next;
         }
-        column = next;
     }
     Some(extracted.trim_end().to_owned())
+}
+
+/// A half-block cap around a tinted inline-code chip: nothing but cap glyphs
+/// (adjacent chips can merge two caps into one span) in the cap style.
+fn is_inline_code_cap(span: &ratatui::text::Span<'_>, theme: &Theme) -> bool {
+    theme.inline_code_cap().is_some_and(|cap| span.style == cap)
+        && !span.content.is_empty()
+        && span.content.chars().all(|character| {
+            character.to_string() == crate::markdown::INLINE_CODE_OPEN
+                || character.to_string() == crate::markdown::INLINE_CODE_CLOSE
+        })
 }
 
 /// The code/table border signature: its foreground and modifier set, compared
