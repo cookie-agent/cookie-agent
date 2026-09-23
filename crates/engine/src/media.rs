@@ -32,6 +32,13 @@ const MAX_PDF_TRAILER_DEPTH: usize = 64;
 const MAX_PDF_TRAILER_TOKENS: usize = 16_384;
 const MAX_PDF_NAME_BYTES: usize = 256;
 const MAX_PDF_STRING_BYTES: usize = 8 * 1024 * 1024;
+/// Anthropic caps each image at 10 MiB of base64; the largest raw size that encodes within it.
+const ANTHROPIC_IMAGE_BYTES: u64 = 10 * 1024 * 1024 / 4 * 3;
+/// Vertex caps each inline image at 7 MiB.
+const VERTEX_IMAGE_BYTES: u64 = 7 * 1024 * 1024;
+/// The Gemini API caps the whole request at 20 MiB, inline base64 included; this raw size
+/// encodes to about 18.7 MiB, leaving headroom for the rest of the request.
+const GEMINI_INLINE_BYTES: u64 = 14 * 1024 * 1024;
 const BEDROCK_IMAGE_BYTES: u64 = 15 * 1024 * 1024 / 4;
 const BEDROCK_PDF_BYTES: u64 = 9 * 1024 * 1024 / 2;
 /// Bedrock requires inline video base64 strictly below 25 MiB; the largest raw size whose
@@ -73,7 +80,7 @@ pub fn attachment_gate_error(
             ))
         }
         AttachmentGate::RejectUnsupportedFamily => Some(format!(
-            "Cannot attach {mime_type}: not deliverable in tool results via the {} family API",
+            "Cannot attach {mime_type}: not deliverable in tool results or user messages via the {} family API",
             family.as_str()
         )),
         AttachmentGate::RejectTooLarge { max_bytes } => Some(format!(
@@ -134,7 +141,11 @@ pub fn gate_attachment(
     let (delivery, family_limit) = match (family, kind) {
         (
             OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible,
-            CapabilityMediaKind::Image | CapabilityMediaKind::Pdf,
+            CapabilityMediaKind::Image,
+        ) => (AttachmentGate::AttachToolResult, ANTHROPIC_IMAGE_BYTES),
+        (
+            OvenAdapterFamily::Anthropic | OvenAdapterFamily::AnthropicCompatible,
+            CapabilityMediaKind::Pdf,
         ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
         (OvenAdapterFamily::AwsBedrockConverse, CapabilityMediaKind::Image) => {
             (AttachmentGate::AttachToolResult, BEDROCK_IMAGE_BYTES)
@@ -147,22 +158,41 @@ pub fn gate_attachment(
         }
         (
             OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses,
-            CapabilityMediaKind::Image,
+            CapabilityMediaKind::Image | CapabilityMediaKind::Pdf,
         ) => (AttachmentGate::AttachToolResult, MAX_ENCODED_BYTES as u64),
+        // Families that cannot carry the kind in tool results fall back to a follow-up
+        // user message whenever their adapter accepts that kind in user turns.
+        (OvenAdapterFamily::GoogleGemini, _) => {
+            (AttachmentGate::DeliverViaUserTurn, GEMINI_INLINE_BYTES)
+        }
+        (OvenAdapterFamily::GoogleVertexGemini, CapabilityMediaKind::Image) => {
+            (AttachmentGate::DeliverViaUserTurn, VERTEX_IMAGE_BYTES)
+        }
+        (
+            OvenAdapterFamily::OpenaiChat
+            | OvenAdapterFamily::OpenaiCompatible
+            | OvenAdapterFamily::AzureOpenaiChat
+            | OvenAdapterFamily::CohereV2Chat,
+            CapabilityMediaKind::Image,
+        )
+        | (
+            OvenAdapterFamily::OpenaiChat
+            | OvenAdapterFamily::OpenaiCompatible
+            | OvenAdapterFamily::GoogleVertexGemini,
+            CapabilityMediaKind::Pdf,
+        )
+        | (OvenAdapterFamily::GoogleVertexGemini, CapabilityMediaKind::Audio) => {
+            (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64)
+        }
         (
             OvenAdapterFamily::OpenaiCompatible
             | OvenAdapterFamily::AnthropicCompatible
-            | OvenAdapterFamily::GoogleGemini
             | OvenAdapterFamily::GoogleVertexGemini,
             CapabilityMediaKind::Video,
         ) => (
             AttachmentGate::DeliverViaUserTurn,
             MAX_VIDEO_ENCODED_BYTES as u64,
         ),
-        (
-            OvenAdapterFamily::GoogleGemini | OvenAdapterFamily::GoogleVertexGemini,
-            CapabilityMediaKind::Audio,
-        ) => (AttachmentGate::DeliverViaUserTurn, MAX_ENCODED_BYTES as u64),
         _ => return AttachmentGate::RejectUnsupportedFamily,
     };
     let max_bytes = capability.max_bytes.min(family_limit);
@@ -1545,23 +1575,25 @@ mod tests {
 
     #[test]
     fn attachment_gate_is_exhaustive_across_adapters_media_and_capability() {
+        use AttachmentGate::{AttachToolResult as Tool, DeliverViaUserTurn as User};
+        let reject = AttachmentGate::RejectUnsupportedFamily;
         let families = [
-            (OvenAdapterFamily::Anthropic, true, true),
-            (OvenAdapterFamily::AnthropicCompatible, true, true),
-            (OvenAdapterFamily::OpenaiChat, false, false),
-            (OvenAdapterFamily::OpenaiResponses, true, false),
-            (OvenAdapterFamily::OpenaiCompatible, false, false),
-            (OvenAdapterFamily::GoogleGemini, false, false),
-            (OvenAdapterFamily::GoogleVertexGemini, false, false),
-            (OvenAdapterFamily::AwsBedrockConverse, true, true),
-            (OvenAdapterFamily::AzureOpenaiChat, false, false),
-            (OvenAdapterFamily::AzureOpenaiResponses, true, false),
-            (OvenAdapterFamily::CohereV2Chat, false, false),
+            (OvenAdapterFamily::Anthropic, Tool, Tool),
+            (OvenAdapterFamily::AnthropicCompatible, Tool, Tool),
+            (OvenAdapterFamily::OpenaiChat, User, User),
+            (OvenAdapterFamily::OpenaiResponses, Tool, Tool),
+            (OvenAdapterFamily::OpenaiCompatible, User, User),
+            (OvenAdapterFamily::GoogleGemini, User, User),
+            (OvenAdapterFamily::GoogleVertexGemini, User, User),
+            (OvenAdapterFamily::AwsBedrockConverse, Tool, Tool),
+            (OvenAdapterFamily::AzureOpenaiChat, User, reject),
+            (OvenAdapterFamily::AzureOpenaiResponses, Tool, Tool),
+            (OvenAdapterFamily::CohereV2Chat, User, reject),
         ];
-        for (family, image_deliverable, pdf_deliverable) in families {
-            for (kind, mime_type, deliverable) in [
-                (MediaKind::Image, "image/png", image_deliverable),
-                (MediaKind::Pdf, "application/pdf", pdf_deliverable),
+        for (family, image_delivery, pdf_delivery) in families {
+            for (kind, mime_type, delivery) in [
+                (MediaKind::Image, "image/png", image_delivery),
+                (MediaKind::Pdf, "application/pdf", pdf_delivery),
             ] {
                 assert_eq!(
                     gate_attachment(family, &capabilities(None), mime_type, b"media"),
@@ -1575,11 +1607,7 @@ mod tests {
                         mime_type,
                         b"media",
                     ),
-                    if deliverable {
-                        AttachmentGate::AttachToolResult
-                    } else {
-                        AttachmentGate::RejectUnsupportedFamily
-                    },
+                    delivery,
                     "{family:?} {kind:?} with capability"
                 );
             }
@@ -1690,6 +1718,71 @@ mod tests {
             ),
             AttachmentGate::RejectTooLarge { max_bytes: 8 }
         );
+    }
+
+    #[test]
+    fn provider_inline_limits_clamp_images_and_gemini_requests() {
+        let image = capabilities(Some((MediaKind::Image, "image/png", u64::MAX)));
+        let video = capabilities(Some((MediaKind::Video, "video/mp4", u64::MAX)));
+        for (family, capabilities, mime_type, max_bytes) in [
+            (
+                OvenAdapterFamily::Anthropic,
+                &image,
+                "image/png",
+                super::ANTHROPIC_IMAGE_BYTES,
+            ),
+            (
+                OvenAdapterFamily::AnthropicCompatible,
+                &image,
+                "image/png",
+                super::ANTHROPIC_IMAGE_BYTES,
+            ),
+            (
+                OvenAdapterFamily::GoogleVertexGemini,
+                &image,
+                "image/png",
+                super::VERTEX_IMAGE_BYTES,
+            ),
+            (
+                OvenAdapterFamily::GoogleGemini,
+                &image,
+                "image/png",
+                super::GEMINI_INLINE_BYTES,
+            ),
+            (
+                OvenAdapterFamily::GoogleGemini,
+                &video,
+                "video/mp4",
+                super::GEMINI_INLINE_BYTES,
+            ),
+        ] {
+            assert_ne!(
+                gate_attachment(
+                    family,
+                    capabilities,
+                    mime_type,
+                    &vec![0; max_bytes as usize]
+                ),
+                AttachmentGate::RejectTooLarge { max_bytes },
+                "{family:?} {mime_type} at the limit"
+            );
+            assert_eq!(
+                gate_attachment(
+                    family,
+                    capabilities,
+                    mime_type,
+                    &vec![0; max_bytes as usize + 1]
+                ),
+                AttachmentGate::RejectTooLarge { max_bytes },
+                "{family:?} {mime_type} over the limit"
+            );
+        }
+        // The Anthropic raw limit is the largest whose base64 fits in 10 MiB.
+        assert_eq!(
+            4 * super::ANTHROPIC_IMAGE_BYTES.div_ceil(3),
+            10 * 1024 * 1024
+        );
+        assert!(4 * super::GEMINI_INLINE_BYTES.div_ceil(3) < 20 * 1024 * 1024);
     }
 
     #[test]

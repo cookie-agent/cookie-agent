@@ -104,14 +104,16 @@ depends on two checks, in order:
 Both rejections are ordinary tool errors: the model sees the reason and can
 recover (for example by asking the user, or by sampling the file through
 `bash`). Size is clamped to the smaller of the model's advertised limit and
-the provider's inline limit (Bedrock: 3.75 MiB images, 4.5 MiB
-documents, ≈18.7 MiB raw video; other families: 20 MiB images or 25 MiB
-video). Bedrock receives supported video in the tool result. OpenAI-compatible,
-Anthropic-compatible, Gemini, and Vertex models that declare video receive it
-as a file in one emitted user turn immediately after the tool result; Gemini
-and Vertex receive audio the same way. Each model also advertises per-kind
-count limits, enforced per request. Media parts do not contribute to context
-fit estimates, except video, which carries a flat conservative cost.
+the provider's inline limit (Anthropic: 7.5 MiB raw images, 10 MiB once
+base64-encoded; Bedrock: 3.75 MiB images, 4.5 MiB documents, ≈18.7 MiB raw
+video; Vertex: 7 MiB images; Gemini API: 14 MiB for any media, keeping the
+base64 request under its 20 MiB cap; other families: 20 MiB images, PDFs, and
+audio, or 25 MiB video). Media goes in the tool result when the family's wire
+API accepts it there; otherwise, when the API accepts that kind in user
+messages, it is sent as a file in one emitted user turn immediately after the
+tool result. Each model also advertises per-kind count limits, enforced per
+request. Media parts do not contribute to context fit estimates, except video,
+which carries a flat conservative cost.
 
 MCP media blocks (images, audio, embedded resource blobs) follow the same gate
 and delivery selection. Blob resources without a declared MIME type are
@@ -133,11 +135,12 @@ accepts. The effective model must also declare the modality and limits.
 | Anthropic | Tool result | Tool result | No | No |
 | Anthropic-compatible | Tool result | Tool result | User turn on capable MiniMax models | No |
 | Bedrock Converse | Tool result | Tool result | Tool result on capable Nova models | No |
-| OpenAI/compatible Responses, Azure Responses | Tool result | No | No | No |
-| OpenAI Chat, Azure Chat | No | No | No | No |
-| OpenAI-compatible Chat | No | No | User turn on capable Kimi/Qwen models | No |
-| Gemini, Vertex Gemini | No | No | User turn | User turn |
-| Cohere | No | No | No | No |
+| OpenAI/compatible Responses, Azure Responses | Tool result | Tool result | No | No |
+| OpenAI Chat | User turn | User turn | No | No |
+| Azure Chat | User turn | No | No | No |
+| OpenAI-compatible Chat | User turn | User turn | User turn on capable Kimi/Qwen models | No |
+| Gemini, Vertex Gemini | User turn | User turn | User turn | User turn |
+| Cohere | User turn | No | No | No |
 
 ## Bash
 

@@ -375,34 +375,49 @@ fn base64_attachments_follow_the_media_gate() {
     )
     .expect("capable model must retain");
 
-    let rejected = super::retain_base64_attachment(
+    let retained = super::retain_base64_attachment(
         &context(make_turn_context(AdaptorId::OpenaiChat, true)),
         "image/png".into(),
         &data,
     )
-    .expect_err("undeliverable family must reject");
-    assert!(
-        matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("not deliverable in tool results")),
-        "unexpected error: {rejected:?}"
+    .expect("user-turn image must retain");
+    assert_eq!(
+        retained.delivery,
+        crate::media::AttachmentGate::DeliverViaUserTurn
     );
 
-    let mut video_turn = make_turn_context(AdaptorId::OpenaiCompatible, false);
-    video_turn.capabilities.input.insert(Modality::Video);
-    video_turn.capabilities.media.insert(
-        cookie_agent_protocol::MediaKind::Video,
-        cookie_agent_protocol::MediaCapability {
-            mime_types: [cookie_agent_protocol::MimeType::new("video/mp4").unwrap()]
-                .into_iter()
-                .collect(),
-            max_bytes: 1024,
-            max_count: 1,
-        },
-    );
+    let video_turn = |adapter| {
+        let mut turn = make_turn_context(adapter, false);
+        turn.capabilities.input.insert(Modality::Video);
+        turn.capabilities.media.insert(
+            cookie_agent_protocol::MediaKind::Video,
+            cookie_agent_protocol::MediaCapability {
+                mime_types: [cookie_agent_protocol::MimeType::new("video/mp4").unwrap()]
+                    .into_iter()
+                    .collect(),
+                max_bytes: 1024,
+                max_count: 1,
+            },
+        );
+        turn
+    };
     let mut video = 16_u32.to_be_bytes().to_vec();
     video.extend_from_slice(b"ftypisom");
     video.extend_from_slice(&[0; 4]);
-    let video_context = context(video_turn);
     let encoded_video = base64::engine::general_purpose::STANDARD.encode(video);
+
+    let rejected = super::retain_base64_attachment(
+        &context(video_turn(AdaptorId::OpenaiChat)),
+        "video/mp4".into(),
+        &encoded_video,
+    )
+    .expect_err("undeliverable family must reject");
+    assert!(
+        matches!(&rejected, super::McpAttachmentError::Gated(message) if message.contains("not deliverable in tool results or user messages")),
+        "unexpected error: {rejected:?}"
+    );
+
+    let video_context = context(video_turn(AdaptorId::OpenaiCompatible));
     let retained =
         super::retain_base64_attachment(&video_context, "video/mp4".into(), &encoded_video)
             .expect("user-turn video must retain");

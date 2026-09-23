@@ -510,7 +510,7 @@ fn vertex_media() -> Value {
         "max_audio": 5,
         "max_videos": 5,
         "max_https_videos": 5,
-        "max_inline_image_bytes": 20 * 1024 * 1024,
+        "max_inline_image_bytes": 7 * 1024 * 1024,
         "max_inline_pdf_bytes": 32 * 1024 * 1024,
         "max_inline_text_bytes": 1024 * 1024,
         "url_schemes": ["https"]

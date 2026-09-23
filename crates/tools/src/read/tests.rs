@@ -378,7 +378,7 @@ async fn media_reads_follow_capability_family_and_size_gates() {
         "Cannot attach application/pdf: the active model \"test/model\" does not accept PDF inputs"
     );
 
-    let family_rejected = execute_media(
+    let openai_compatible_image = execute_media(
         root.path(),
         "pixel.png",
         turn_context(
@@ -392,11 +392,20 @@ async fn media_reads_follow_capability_family_and_size_gates() {
         ),
     )
     .await
-    .unwrap_err();
+    .unwrap();
     assert_eq!(
-        family_rejected.message(),
-        "Cannot attach image/png: not deliverable in tool results via the openai-compatible family API"
+        openai_compatible_image.output,
+        format!(
+            "Attached image/png ({} bytes), delivered in the following message.",
+            PNG.len()
+        )
     );
+    assert!(openai_compatible_image.attachments.is_empty());
+    assert!(matches!(
+        openai_compatible_image.additional_messages[0].content.as_slice(),
+        [ToolEmittedContent::File(attachment)]
+            if attachment.mime_type.as_str() == "image/png"
+    ));
 
     let size_rejected = execute_media(
         root.path(),
