@@ -274,6 +274,8 @@ pub(super) enum BlockId {
     SystemPrompt,
     Compaction(u64),
     PluginMessage(u64),
+    AgentMd(u64),
+    SkillLoaded(u64),
     ProducerMessage(ProducerMessageId),
     MediaFile {
         turn_seq: u64,

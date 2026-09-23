@@ -358,6 +358,7 @@ pub(super) fn reduce_event(
             state.run_agent = Some(agent.agent.clone());
             state.run_snapshot = Some(agent);
             state.run_selected_suffix = Some(selected_suffix);
+            state.agent_md_previous_run = state.agent_md_latest_run.take();
         }
         EventPayload::UserInputAdmitted { input } => {
             close_open_assistant(state, timestamp);
@@ -1318,6 +1319,51 @@ pub(super) fn reduce_event(
                 input,
             })
         }
+        EventPayload::AgentMdLoaded { entries } => {
+            // Every root run reloads AGENTS.md; a row appears only when this
+            // run's context differs from the previous run's. A run that
+            // loaded none breaks the chain, so re-enabling shows a row again.
+            let unchanged = state.agent_md_previous_run.as_ref() == Some(&entries);
+            state.agent_md_latest_run = Some(entries.clone());
+            if !unchanged {
+                push_item(state, timestamp, |id| TranscriptItem::AgentMd {
+                    id,
+                    version: 0,
+                    seq: sequence,
+                    entries,
+                });
+            }
+        }
+        EventPayload::AgentMdSkipped { path, byte_length } => push_event(
+            state,
+            EventLevel::Warning,
+            format!(
+                "AGENTS.md skipped: {} is {byte_length} bytes, over the {} MiB limit",
+                path.as_str(),
+                cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES / (1024 * 1024)
+            ),
+            timestamp,
+        ),
+        EventPayload::SkillLoaded {
+            name,
+            rendered_body,
+            source_path,
+            args,
+            ..
+        } => {
+            // A skill loaded by a tool mid-turn sits between that call and
+            // the output that follows it, like any interleaved event row.
+            state.mark_event_split_pending();
+            push_item(state, timestamp, |id| TranscriptItem::SkillLoaded {
+                id,
+                version: 0,
+                seq: sequence,
+                name,
+                source_path,
+                args,
+                rendered_body,
+            });
+        }
         EventPayload::DelegatedContextSeeded { .. }
         | EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
@@ -1330,9 +1376,6 @@ pub(super) fn reduce_event(
         | EventPayload::ToolStdinSubmitted { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
-        | EventPayload::AgentMdLoaded { .. }
-        | EventPayload::AgentMdSkipped { .. }
-        | EventPayload::SkillLoaded { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
     }
 }

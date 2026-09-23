@@ -169,13 +169,21 @@ open the message menu.
 
 ## Transcript details
 
-System prompts, context compaction checkpoints, plugin-injected messages, and
-committed media parts appear collapsed by default. A session's system-prompt
+System prompts, AGENTS.md context, loaded skills, context compaction
+checkpoints, plugin-injected messages, and committed media parts appear
+collapsed by default. An AGENTS.md row appears at a run whose loaded context
+differs from the previous run's: the first load, a change, or loading again
+after a run without AGENTS.md. A run that reloads identical files adds no row.
+Expanded,
+it shows each file's source and content. A skill row shows the skill's source
+path, arguments, and rendered body. An AGENTS.md file skipped for size appears
+as a warning row. A session's system-prompt
 row remains hidden until its first run starts, then identifies the agent from
 the latest run snapshot. If the next-run draft uses another agent, the row also
 shows `next: <agent>`. Click one of these rows to show or hide its text or
 metadata. Expansion state is kept separately for each session. Expanded system
-prompts are display-bounded to 256 lines or 32 KiB of sanitized text;
+prompts, skill bodies, and each AGENTS.md file are display-bounded to 256 lines
+or 32 KiB of sanitized text;
 compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
 Oversized content ends with a truncated-lines indicator while the complete data
 remains in session state.

@@ -96,6 +96,8 @@ pub(super) fn for_each_item_block_id(
         }
         TranscriptItem::Compaction { seq, .. } => visit(BlockId::Compaction(*seq)),
         TranscriptItem::PluginMessage { seq, .. } => visit(BlockId::PluginMessage(*seq)),
+        TranscriptItem::AgentMd { seq, .. } => visit(BlockId::AgentMd(*seq)),
+        TranscriptItem::SkillLoaded { seq, .. } => visit(BlockId::SkillLoaded(*seq)),
         TranscriptItem::ProducerMessage { message_id, .. } => {
             visit(BlockId::ProducerMessage(*message_id))
         }
@@ -164,6 +166,8 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
         | TranscriptItem::Event { .. }
         | TranscriptItem::Compaction { .. }
         | TranscriptItem::PluginMessage { .. }
+        | TranscriptItem::AgentMd { .. }
+        | TranscriptItem::SkillLoaded { .. }
         | TranscriptItem::Goal { .. }
         | TranscriptItem::ProducerMessage { .. } => false,
     }
@@ -222,6 +226,15 @@ pub(super) fn transcript_item_layout(
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),
+        TranscriptItem::AgentMd { seq, entries, .. } => agent_md_layout(*seq, entries, context),
+        TranscriptItem::SkillLoaded {
+            seq,
+            name,
+            source_path,
+            args,
+            rendered_body,
+            ..
+        } => skill_loaded_layout(*seq, name, source_path, args, rendered_body, context),
         TranscriptItem::Goal {
             goal, activation, ..
         } => ItemLayout {

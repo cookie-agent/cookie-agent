@@ -953,3 +953,203 @@ fn replay_rebuild_restores_new_event_backed_blocks() {
     assert!(rendered.contains("replayed plugin text"), "{rendered}");
     assert!(rendered.contains("replayed summary text"), "{rendered}");
 }
+
+fn agent_md_loaded(content: &str) -> EventPayload {
+    EventPayload::AgentMdLoaded {
+        entries: vec![cookie_agent_protocol::AgentMdEntry {
+            source: SafeDisplayText::new("/work/AGENTS.md").expect("source"),
+            content: content.into(),
+            byte_length: content.len() as u64,
+        }],
+    }
+}
+
+#[test]
+fn agent_md_and_skill_loads_render_as_expandable_context_rows() {
+    let session = SessionId::new_v7();
+    let [first, second, third] = [run_id(), run_id(), run_id()];
+    let events = [
+        session_created(session, 1),
+        run_started_with_suffix(session, 2, first, vec![resolved_model(None)]),
+        event(session, 3, first, agent_md_loaded("rule one\nrule two")),
+        // An identical reload on the next run adds no second row.
+        run_started_with_suffix(session, 4, second, vec![resolved_model(None)]),
+        event(session, 5, second, agent_md_loaded("rule one\nrule two")),
+        event(
+            session,
+            6,
+            second,
+            EventPayload::SkillLoaded {
+                name: "release-notes".into(),
+                rendered_body: "step one\nstep two\nstep three".into(),
+                source_path: "/skills/release-notes/SKILL.md".into(),
+                args: "v1.2".into(),
+                base_dir: "/skills/release-notes".into(),
+                supporting_files: Vec::new(),
+            },
+        ),
+        run_started_with_suffix(session, 7, third, vec![resolved_model(None)]),
+        event(
+            session,
+            8,
+            third,
+            agent_md_loaded("rule one\nrule two\nrule three"),
+        ),
+        event(
+            session,
+            9,
+            third,
+            EventPayload::AgentMdSkipped {
+                path: SafeDisplayText::new("/work/sub/AGENTS.md").expect("path"),
+                byte_length: cookie_agent_protocol::AgentMdSkipped::MAX_SKIP_BYTES + 1,
+            },
+        ),
+    ];
+    let mut store = StateStore::default();
+    for event in events {
+        assert!(store.apply_event(event));
+    }
+    let state = &store.sessions[&session];
+
+    let collapsed = transcript_layout_with_level(
+        state,
+        None,
+        100,
+        &Theme::default(),
+        &crate::markdown::SyntectHighlighter::default(),
+        crate::state::EventLevel::Warning,
+    );
+    let rendered = snapshot_lines(&collapsed.lines);
+    assert!(
+        rendered.contains("📘 ▸ AGENTS.md · /work/AGENTS.md (2 lines)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("📚 ▸ skill loaded · release-notes (3 lines)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("📘 ▸ AGENTS.md · /work/AGENTS.md (3 lines)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "AGENTS.md skipped: /work/sub/AGENTS.md is 2097153 bytes, over the 2 MiB limit"
+        ),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("rule one"), "{rendered}");
+    assert!(!rendered.contains("step one"), "{rendered}");
+    assert_eq!(
+        collapsed
+            .regions
+            .iter()
+            .map(|region| region.id)
+            .collect::<Vec<_>>(),
+        vec![
+            BlockId::SystemPrompt,
+            BlockId::AgentMd(3),
+            BlockId::SkillLoaded(6),
+            BlockId::AgentMd(8),
+        ]
+    );
+
+    let expanded = HashSet::from([
+        BlockId::AgentMd(3),
+        BlockId::SkillLoaded(6),
+        BlockId::AgentMd(8),
+    ]);
+    let open = snapshot_lines(&transcript_layout(state, Some(&expanded), 100).lines);
+    assert!(
+        open.contains("📘 ▾ AGENTS.md · /work/AGENTS.md (2 lines)"),
+        "{open}"
+    );
+    assert!(open.contains("rule two"), "{open}");
+    assert!(open.contains("rule three"), "{open}");
+    assert!(
+        open.contains("📚 ▾ skill loaded · release-notes (3 lines)"),
+        "{open}"
+    );
+    assert!(
+        open.contains("source: /skills/release-notes/SKILL.md"),
+        "{open}"
+    );
+    assert!(open.contains("args: v1.2"), "{open}");
+    assert!(open.contains("step three"), "{open}");
+}
+
+#[test]
+fn multi_file_agent_md_names_each_source_when_expanded() {
+    let session = SessionId::new_v7();
+    let entry = |source: &str, content: &str| cookie_agent_protocol::AgentMdEntry {
+        source: SafeDisplayText::new(source).expect("source"),
+        content: content.into(),
+        byte_length: content.len() as u64,
+    };
+    let mut store = StateStore::default();
+    for event in [
+        session_created(session, 1),
+        runless_event(
+            session,
+            2,
+            EventPayload::AgentMdLoaded {
+                entries: vec![
+                    entry("/repo/AGENTS.md", "repo rule"),
+                    entry("/repo/app/AGENTS.md", "app rule\napp detail"),
+                ],
+            },
+        ),
+    ] {
+        assert!(store.apply_event(event));
+    }
+    let state = &store.sessions[&session];
+
+    let collapsed = snapshot_lines(&transcript_layout(state, None, 100).lines);
+    assert!(
+        collapsed.contains("📘 ▸ AGENTS.md · 2 files (3 lines)"),
+        "{collapsed}"
+    );
+    let expanded = HashSet::from([BlockId::AgentMd(2)]);
+    let open = snapshot_lines(&transcript_layout(state, Some(&expanded), 100).lines);
+    assert!(open.contains("── /repo/AGENTS.md"), "{open}");
+    assert!(open.contains("── /repo/app/AGENTS.md"), "{open}");
+    assert!(open.contains("app detail"), "{open}");
+}
+
+#[test]
+fn agent_md_row_reappears_when_a_run_without_it_breaks_the_chain() {
+    let session = SessionId::new_v7();
+    let runs = [run_id(), run_id(), run_id(), run_id()];
+    let mut events = vec![session_created(session, 1)];
+    // on → off → on → on, with unchanged files throughout.
+    for (index, (run, loads)) in runs.iter().zip([true, false, true, true]).enumerate() {
+        let seq = 2 + 2 * index as u64;
+        events.push(run_started_with_suffix(
+            session,
+            seq,
+            *run,
+            vec![resolved_model(None)],
+        ));
+        if loads {
+            events.push(event(session, seq + 1, *run, agent_md_loaded("same rules")));
+        }
+    }
+    let mut store = StateStore::default();
+    for event in events {
+        assert!(store.apply_event(event));
+    }
+    let state = &store.sessions[&session];
+    let layout = transcript_layout(state, None, 100);
+    assert_eq!(
+        layout
+            .regions
+            .iter()
+            .map(|region| region.id)
+            .collect::<Vec<_>>(),
+        vec![
+            BlockId::SystemPrompt,
+            BlockId::AgentMd(3),
+            BlockId::AgentMd(7),
+        ]
+    );
+}

@@ -303,6 +303,91 @@ pub(super) fn plugin_message_layout(
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
+pub(super) fn agent_md_layout(
+    seq: u64,
+    entries: &[cookie_agent_protocol::AgentMdEntry],
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::AgentMd(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let line_count: usize = entries
+        .iter()
+        .map(|entry| display_line_count(&entry.content))
+        .sum();
+    let files = match entries {
+        [entry] => entry.source.as_str().to_owned(),
+        _ => format!("{} files", entries.len()),
+    };
+    let mut body = vec![Line::styled(
+        format!("📘 {chevron} AGENTS.md · {files} ({line_count} lines)"),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        for entry in entries {
+            if entries.len() > 1 {
+                body.push(Line::styled(
+                    format!("── {}", entry.source.as_str()),
+                    context.theme.muted(),
+                ));
+            }
+            body.extend(bounded_safe_display_text(
+                &entry.content,
+                context.theme.internal(),
+                MAX_SYSTEM_PROMPT_BODY_LINES,
+                MAX_SYSTEM_PROMPT_BODY_BYTES,
+            ));
+        }
+    }
+    collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
+pub(super) fn skill_loaded_layout(
+    seq: u64,
+    name: &str,
+    source_path: &str,
+    args: &str,
+    rendered_body: &str,
+    context: &TranscriptRenderContext<'_>,
+) -> ItemLayout {
+    let block_id = BlockId::SkillLoaded(seq);
+    let is_expanded = context
+        .expanded
+        .is_some_and(|blocks| blocks.contains(&block_id));
+    let chevron = if is_expanded { '▾' } else { '▸' };
+    let mut body = vec![Line::styled(
+        format!(
+            "📚 {chevron} skill loaded · {} ({} lines)",
+            safe_display_text(name),
+            display_line_count(rendered_body)
+        ),
+        context.theme.internal(),
+    )];
+    if is_expanded {
+        body.push(Line::styled(
+            format!("source: {}", safe_display_text(source_path)),
+            context.theme.muted(),
+        ));
+        if !args.trim().is_empty() {
+            body.extend(bounded_safe_display_text(
+                &format!("args: {args}"),
+                context.theme.muted(),
+                MAX_EXPANDED_BODY_LINES,
+                MAX_EXPANDED_BODY_BYTES,
+            ));
+        }
+        body.extend(bounded_safe_display_text(
+            rendered_body,
+            context.theme.internal(),
+            MAX_SYSTEM_PROMPT_BODY_LINES,
+            MAX_SYSTEM_PROMPT_BODY_BYTES,
+        ));
+    }
+    collapsible_event_block(block_id, body, context.width, context.theme)
+}
+
 pub(super) fn collapsible_event_block(
     block_id: BlockId,
     body: Vec<Line<'static>>,

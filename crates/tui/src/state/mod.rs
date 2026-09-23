@@ -226,6 +226,24 @@ pub enum TranscriptItem {
         role: cookie_agent_protocol::ExtensionMessageRole,
         input: String,
     },
+    /// AGENTS.md context loaded at a root run start, rendered inline when it
+    /// differs from the previous run's (see `agent_md_previous_run`).
+    AgentMd {
+        id: u64,
+        version: u64,
+        seq: u64,
+        entries: Vec<cookie_agent_protocol::AgentMdEntry>,
+    },
+    /// A skill body loaded into model context, rendered inline at its event.
+    SkillLoaded {
+        id: u64,
+        version: u64,
+        seq: u64,
+        name: String,
+        source_path: String,
+        args: String,
+        rendered_body: String,
+    },
     Goal {
         id: u64,
         seq: u64,
@@ -342,6 +360,8 @@ impl TranscriptItem {
             | Self::Event { id, .. }
             | Self::Compaction { id, .. }
             | Self::PluginMessage { id, .. }
+            | Self::AgentMd { id, .. }
+            | Self::SkillLoaded { id, .. }
             | Self::Goal { id, .. }
             | Self::ProducerMessage { id, .. } => *id,
         }
@@ -353,7 +373,9 @@ impl TranscriptItem {
             | Self::Assistant { version, .. }
             | Self::Event { version, .. }
             | Self::Compaction { version, .. }
-            | Self::PluginMessage { version, .. } => *version,
+            | Self::PluginMessage { version, .. }
+            | Self::AgentMd { version, .. }
+            | Self::SkillLoaded { version, .. } => *version,
             Self::Goal { .. } => 0,
             Self::ProducerMessage { status, .. } => match status {
                 ProducerMessageStatus::Pending => 0,
@@ -607,6 +629,12 @@ pub struct SessionState {
     pub(crate) producer_claims: HashMap<u64, ProducerClaimProjection>,
     pub(crate) terminal_runs: HashSet<RunId>,
     pub approvals: Vec<ApprovalState>,
+    /// AGENTS.md entries loaded by the latest run (`None` when it loaded
+    /// none) and by the run before it. A row appears only when a run's
+    /// context differs from the previous run's, so turning AGENTS.md off and
+    /// back on shows again even when the files are unchanged.
+    pub(crate) agent_md_latest_run: Option<Vec<cookie_agent_protocol::AgentMdEntry>>,
+    pub(crate) agent_md_previous_run: Option<Vec<cookie_agent_protocol::AgentMdEntry>>,
 }
 
 impl SessionState {
