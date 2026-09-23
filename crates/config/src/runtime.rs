@@ -424,19 +424,11 @@ pub struct ToolOutputConfig {
 pub struct AgentMdConfig {
     #[serde(default = "yes")]
     pub enabled: bool,
-    #[serde(default = "default_agent_md_bytes")]
-    pub max_bytes: usize,
 }
 impl Default for AgentMdConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            max_bytes: default_agent_md_bytes(),
-        }
+        Self { enabled: true }
     }
-}
-const fn default_agent_md_bytes() -> usize {
-    32 * 1024
 }
 impl Default for ToolOutputConfig {
     fn default() -> Self {
@@ -738,10 +730,6 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         (
             runtime.tool_output.max_bytes == 0,
             "tool_output.max_bytes must be positive",
-        ),
-        (
-            runtime.agent_md.max_bytes == 0 || runtime.agent_md.max_bytes > 2 * 1024 * 1024,
-            "agent_md.max_bytes must be 1..2097152",
         ),
         (
             runtime.approval.timeout_ms == 0,

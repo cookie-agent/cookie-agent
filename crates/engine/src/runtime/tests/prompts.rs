@@ -439,34 +439,38 @@ async fn invalid_tool_prompt_sections_fail_run_admission() {
 }
 
 #[tokio::test]
-async fn agent_md_discovery_honors_override_addition_missing_disable_and_truncation() {
+async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() {
     let (mut fixture, _) = custom_fixture();
     let root = fixture._directory.path();
     let agents = root.join(".cookie-agent").join("agents");
     write_private_test_file(&agents.join("AGENTS.md"), "default AGENTS.md context");
     write_private_test_file(&root.join("AGENTS.md"), "cwd AGENTS.md context");
 
-    let entries = fixture
+    let project_source = agents.join("AGENTS.md").to_string_lossy().into_owned();
+    let cwd_source = root.join("AGENTS.md").to_string_lossy().into_owned();
+    let (entries, skipped) = fixture
         .engine
         .load_agent_md(None)
         .expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].source.as_str(), ".cookie-agent/agents/AGENTS.md");
+    assert!(skipped.is_empty());
+    assert_eq!(entries[0].source.as_str(), project_source);
     assert_eq!(entries[0].content, "default AGENTS.md context");
-    assert_eq!(entries[1].source.as_str(), "AGENTS.md");
+    assert_eq!(entries[1].source.as_str(), cwd_source);
     assert_eq!(entries[1].content, "cwd AGENTS.md context");
 
     let preset = agents.join("python");
     create_private_test_dir(&preset);
     write_private_test_file(&preset.join("AGENTS.md"), "preset AGENTS.md context");
-    let entries = fixture
+    let (entries, skipped) = fixture
         .engine
         .load_agent_md(Some("python"))
         .expect("preset AGENTS.md context");
     assert_eq!(entries.len(), 2);
+    assert!(skipped.is_empty());
     assert_eq!(
         entries[0].source.as_str(),
-        ".cookie-agent/agents/python/AGENTS.md"
+        preset.join("AGENTS.md").to_string_lossy()
     );
     assert_eq!(entries[0].content, "preset AGENTS.md context");
     assert!(
@@ -477,33 +481,46 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_truncat
 
     write_private_test_file(&root.join("AGENTS.md"), "fresh cwd context");
     assert_eq!(
-        fixture.engine.load_agent_md(None).unwrap()[1].content,
+        fixture.engine.load_agent_md(None).unwrap().0[1].content,
         "fresh cwd context"
     );
     std::fs::remove_file(agents.join("AGENTS.md")).unwrap();
     std::fs::remove_file(preset.join("AGENTS.md")).unwrap();
     std::fs::remove_file(root.join("AGENTS.md")).unwrap();
-    assert!(fixture.engine.load_agent_md(None).unwrap().is_empty());
+    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    assert!(entries.is_empty());
+    assert!(skipped.is_empty());
 
     fixture.engine.shutdown().await;
     fixture.config.runtime.agent_md.enabled = false;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "disabled context");
-    assert!(fixture.engine.load_agent_md(None).unwrap().is_empty());
+    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    assert!(entries.is_empty());
+    assert!(skipped.is_empty());
 
     fixture.engine.shutdown().await;
     fixture.config.runtime.agent_md.enabled = true;
-    fixture.config.runtime.agent_md.max_bytes = 5;
     fixture.engine = reopen_engine(&fixture);
-    write_private_test_file(&root.join("AGENTS.md"), "abcdéz");
-    let entry = fixture.engine.load_agent_md(None).unwrap().remove(0);
-    assert_eq!(entry.content, "abcd");
-    assert!(entry.truncated);
-    assert_eq!(entry.original_bytes, 7);
-    let rendered = crate::model_history::agent_md_turn_for_test(&[entry]);
-    assert!(rendered.is_char_boundary(rendered.len()));
-    assert!(!rendered.contains('\u{fffd}'));
-    assert!(rendered.contains("original size: 7 bytes"));
+    write_private_test_file(&root.join("AGENTS.md"), "oversized context");
+    let oversized = root.join("AGENTS.md");
+    let oversized_len = crate::runtime::AGENT_MD_MAX_BYTES + 1;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&oversized)
+        .unwrap();
+    file.set_len(oversized_len).unwrap();
+    drop(file);
+    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    assert!(entries.is_empty());
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(
+        skipped[0].path.as_str(),
+        oversized.to_string_lossy().as_ref()
+    );
+    assert_eq!(skipped[0].byte_length, oversized_len);
+    let rendered = crate::model_history::agent_md_turn_for_test(&entries);
+    assert!(rendered.is_empty());
     fixture.engine.shutdown().await;
 }
 
@@ -657,7 +674,9 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
-        ".cookie-agent/agents/python/AGENTS.md"
+        root.join(".cookie-agent/agents/python/AGENTS.md")
+            .to_string_lossy()
+            .as_ref()
     );
     assert_eq!(entries[0].content, "preset replay context");
 
@@ -670,15 +689,17 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
             message["role"] == "user"
                 && message["content"]
                     .as_str()
-                    .is_some_and(|content| content.contains("<agent_md"))
+                    .is_some_and(|content| content.contains("<system-reminder>"))
         })
         .expect("AGENTS.md context user turn");
     let content = context["content"].as_str().unwrap();
-    assert!(content.contains("source=\".cookie-agent/agents/python/AGENTS.md\""));
+    assert!(content.contains("# AGENTS.md"));
+    assert!(content.contains("OVERRIDE any default behavior"));
+    assert!(content.contains("from=\""));
     assert!(content.contains("preset replay context"));
     assert!(!content.contains("overridden default context"));
-    assert!(content.contains("source=\"AGENTS.md\""));
     assert!(content.contains("cwd replay context"));
+    assert!(content.contains("</system-reminder>"));
     assert!(!messages[0].to_string().contains("preset replay context"));
     fixture.engine.shutdown().await;
 }

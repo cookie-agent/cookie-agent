@@ -667,10 +667,9 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         timestamp: jiff::Timestamp::now(),
         payload: EventPayload::AgentMdLoaded {
             entries: vec![AgentMdEntry {
-                source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                 content: "project rules".into(),
-                truncated: false,
-                original_bytes: 13,
+                byte_length: 13,
             }],
         },
     };
@@ -684,6 +683,33 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
         ..event
     };
     assert_eq!(invalid.validate(), Err(EventSchemaError::InvalidAgentMd));
+
+    let skipped = StoredEvent {
+        seq: 2,
+        payload: EventPayload::AgentMdSkipped {
+            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+            byte_length: AgentMdSkipped::MAX_SKIP_BYTES + 1,
+        },
+        ..invalid
+    };
+    let value = serde_json::to_value(&skipped).unwrap();
+    assert_eq!(
+        serde_json::from_value::<StoredEvent>(value).unwrap(),
+        skipped
+    );
+    assert_eq!(skipped.validate(), Ok(()));
+
+    let not_large_enough = StoredEvent {
+        payload: EventPayload::AgentMdSkipped {
+            path: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+            byte_length: AgentMdSkipped::MAX_SKIP_BYTES,
+        },
+        ..skipped
+    };
+    assert_eq!(
+        not_large_enough.validate(),
+        Err(EventSchemaError::InvalidAgentMd)
+    );
 }
 
 #[test]

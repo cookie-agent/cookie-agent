@@ -52,6 +52,8 @@ use crate::{
 
 mod admission;
 mod agent_md;
+#[cfg(test)]
+pub(crate) use agent_md::AGENT_MD_MAX_BYTES;
 mod approval_api;
 mod approval_flow;
 mod approval_projection;

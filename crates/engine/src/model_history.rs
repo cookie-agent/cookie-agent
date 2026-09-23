@@ -1270,25 +1270,23 @@ fn latest_agent_md_event(events: &[StoredEvent]) -> Option<&StoredEvent> {
     })
 }
 
+const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
+
+const AGENT_MD_FOOTNOTE: &str = "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.";
+
 fn agent_md_turn(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
-    entries
+    if entries.is_empty() {
+        return String::new();
+    }
+    let files = entries
         .iter()
         .map(|entry| {
             let source = escape_xml_attribute(entry.source.as_str());
-            let marker = entry.truncated.then(|| {
-                format!(
-                    "\n[AGENTS.md context truncated; original size: {} bytes]",
-                    entry.original_bytes
-                )
-            });
-            format!(
-                "<agent_md source=\"{source}\">\n{}{}\n</agent_md>",
-                entry.content,
-                marker.as_deref().unwrap_or_default()
-            )
+            format!("<contents from=\"{source}\">\n{}\n</contents>", entry.content)
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    format!("{AGENT_MD_PREAMBLE}\n\n{files}\n\n{AGENT_MD_FOOTNOTE}\n</system-reminder>")
 }
 
 #[cfg(test)]

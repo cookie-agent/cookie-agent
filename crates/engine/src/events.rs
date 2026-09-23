@@ -1010,6 +1010,7 @@ fn event_requires_durable_barrier(payload: &EventPayload) -> bool {
         | EventPayload::SkillLoaded { .. }
         | EventPayload::SkillInvocationNoted { .. }
         | EventPayload::AgentMdLoaded { .. }
+        | EventPayload::AgentMdSkipped { .. }
         | EventPayload::PluginEventAdded { .. }
         | EventPayload::PluginDiagnostic { .. }
         | EventPayload::GoalActivated { .. }

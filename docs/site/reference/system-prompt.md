@@ -84,20 +84,31 @@ and no configuration switch enables that path.
 ## AGENTS.md context turn
 
 At each root run start, cookie agent discovers applicable `AGENTS.md` files and
-stores their bounded content in `agent_md_loaded`. History replays the
-latest run's entries as one user turn, with each file delimited as:
+stores their bounded content in `agent_md_loaded`. Files larger than 2 MiB are
+skipped and surfaced as `AgentMdSkipped` warning events. History replays the
+latest run's entries as one user turn, wrapped in a `<system-reminder>` block
+with each file delimited as:
 
 ```text
-<agent_md source="AGENTS.md">
+<system-reminder>
+As you answer the user's questions, you can use the following context:
+# AGENTS.md
+Codebase and user instructions are shown below. Be sure to adhere to these instructions.
+IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.
+
+<contents from="/abs/path/AGENTS.md">
 ...
-</agent_md>
+</contents>
+
+IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+</system-reminder>
 ```
 
-Truncated entries include their original byte size. Making this context a turn
-rather than system text keeps the stable system cache key independent of normal
-repository edits, preserves per-file provenance, and lets compaction pin the
-turn alongside loaded skill bodies. The rolling non-system cache breakpoint can
-still move when AGENTS.md context changes, which is the intended invalidation.
+Making this context a turn rather than system text keeps the stable system
+cache key independent of normal repository edits, preserves per-file
+provenance, and lets compaction pin the turn alongside loaded skill bodies. The
+rolling non-system cache breakpoint can still move when AGENTS.md context
+changes, which is the intended invalidation.
 
 ## Cache breakpoints
 

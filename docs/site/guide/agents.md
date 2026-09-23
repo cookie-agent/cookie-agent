@@ -143,11 +143,13 @@ files are read fresh, so edits apply to the next run:
    replaces the default project file.
 2. `<cwd>/AGENTS.md` is loaded in addition when present.
 
-Missing files add no event or model tokens. Delegated sessions do not discover
-these files for their own runs; explicitly inherited parent text and forked event
-prefixes retain their existing behavior. Internal agents never discover them.
-Loaded entries are persisted with provenance in `agent_md_loaded` and
-replayed as one user context turn, not as system-prompt text.
+Missing files add no event or model tokens. Files larger than 2 MiB are skipped
+and surfaced as `AgentMdSkipped` warning events. Delegated sessions do not
+discover these files for their own runs; explicitly inherited parent text and
+forked event prefixes retain their existing behavior. Internal agents never
+discover them. Loaded entries are persisted with provenance in
+`agent_md_loaded` and replayed as one user context turn wrapped in a
+`<system-reminder>` block, not as system-prompt text.
 
 Repository-controlled `AGENTS.md` content enters model context automatically.
 Treat it as untrusted instructions when opening unfamiliar workspaces and review

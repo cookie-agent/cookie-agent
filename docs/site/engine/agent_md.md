@@ -21,4 +21,9 @@ Controls root-run `AGENTS.md` discovery documented in
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `true` | Load `AGENTS.md` context files at each root run start. Delegated and internal agents remain excluded. |
-| `max_bytes` | integer | `32768` (`32 * 1024`) | Maximum UTF-8 bytes retained from each discovered file. Longer content is truncated on a UTF-8 boundary and records its original size. Must be from 1 through `2097152` (2 MiB). |
+
+Files larger than 2 MiB (`2097152` bytes) are skipped entirely and surfaced as
+an `AgentMdSkipped` warning event; they are never partially loaded or
+truncated. Loaded entries are rendered into a single user context turn wrapped
+in a `<system-reminder>` block, with each file delimited as
+`<contents from="/abs/path/AGENTS.md">…</contents>`.

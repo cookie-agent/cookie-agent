@@ -407,10 +407,9 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
             run,
             EventPayload::AgentMdLoaded {
                 entries: vec![AgentMdEntry {
-                    source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                    source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned AGENTS.md context".into(),
-                    truncated: false,
-                    original_bytes: 22,
+                    byte_length: 22,
                 }],
             },
         ),
@@ -443,16 +442,15 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
 }
 
 #[test]
-fn truncated_agent_md_turn_has_provenance_and_size_marker() {
+fn agent_md_turn_uses_system_reminder_with_contents_blocks() {
     let rendered = super::agent_md_turn(&[AgentMdEntry {
-        source: SafeDisplayText::new("AGENTS.md").unwrap(),
-        content: "bounded".into(),
-        truncated: true,
-        original_bytes: 42,
+        source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
+        content: "project rules".into(),
+        byte_length: 13,
     }]);
     assert_eq!(
         rendered,
-        "<agent_md source=\"AGENTS.md\">\nbounded\n[AGENTS.md context truncated; original size: 42 bytes]\n</agent_md>"
+        "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.\n\n<contents from=\"/workspace/AGENTS.md\">\nproject rules\n</contents>\n\nIMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>"
     );
 }
 
@@ -490,10 +488,9 @@ fn replay_orders_agent_md_then_skills_then_delegated_seed() {
             run,
             EventPayload::AgentMdLoaded {
                 entries: vec![AgentMdEntry {
-                    source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                    source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "AGENTS.md context body".into(),
-                    truncated: false,
-                    original_bytes: 20,
+                    byte_length: 20,
                 }],
             },
         ),
@@ -2013,10 +2010,9 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
             run,
             EventPayload::AgentMdLoaded {
                 entries: vec![AgentMdEntry {
-                    source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                    source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: content.into(),
-                    truncated: false,
-                    original_bytes: content.len() as u64,
+                    byte_length: content.len() as u64,
                 }],
             },
         )
@@ -2091,10 +2087,9 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
             run,
             EventPayload::AgentMdLoaded {
                 entries: vec![AgentMdEntry {
-                    source: SafeDisplayText::new("AGENTS.md").unwrap(),
+                    source: SafeDisplayText::new("/workspace/AGENTS.md").unwrap(),
                     content: "pinned agent rules".into(),
-                    truncated: false,
-                    original_bytes: 18,
+                    byte_length: 18,
                 }],
             },
         ),

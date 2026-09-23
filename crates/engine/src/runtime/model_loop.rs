@@ -259,10 +259,10 @@ impl Engine {
                 }
             }
         }
-        let agent_md = if is_root {
+        let (agent_md, agent_md_skipped) = if is_root {
             self.load_agent_md(params.selection.preset.as_deref())?
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         self.compose_working_directory_section(&mut run_policy);
         self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
@@ -457,6 +457,26 @@ impl Engine {
             return Err(self
                 .terminalize_run_setup_failure(&active, run_id, error)
                 .await);
+        }
+        for skip in agent_md_skipped {
+            let path = skip.path.clone();
+            let byte_length = skip.byte_length;
+            if let Err(error) = self
+                .append(
+                    params.session_id,
+                    Some(run_id),
+                    event_origin("engine:agent-md"),
+                    Event::AgentMdSkipped {
+                        path,
+                        byte_length,
+                    },
+                )
+                .await
+            {
+                return Err(self
+                    .terminalize_run_setup_failure(&active, run_id, error)
+                    .await);
+            }
         }
         for message in injected_messages {
             if let Err(error) = self

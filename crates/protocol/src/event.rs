@@ -1611,18 +1611,32 @@ pub struct ContextRehydratedFile {
 pub struct AgentMdEntry {
     pub source: SafeDisplayText,
     pub content: String,
-    pub truncated: bool,
-    pub original_bytes: u64,
+    pub byte_length: u64,
 }
 impl AgentMdEntry {
     pub const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 
     pub fn validate(&self) -> Result<(), EventSchemaError> {
-        let content_bytes = self.content.len() as u64;
         if self.content.len() > Self::MAX_CONTENT_BYTES
-            || self.original_bytes < content_bytes
-            || self.truncated != (self.original_bytes > content_bytes)
+            || self.byte_length != self.content.len() as u64
         {
+            return Err(EventSchemaError::InvalidAgentMd);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMdSkipped {
+    pub path: SafeDisplayText,
+    pub byte_length: u64,
+}
+impl AgentMdSkipped {
+    pub const MAX_SKIP_BYTES: u64 = 2 * 1024 * 1024;
+
+    pub fn validate(&self) -> Result<(), EventSchemaError> {
+        if self.byte_length <= Self::MAX_SKIP_BYTES {
             return Err(EventSchemaError::InvalidAgentMd);
         }
         Ok(())
@@ -1846,6 +1860,10 @@ pub enum EventPayload {
     AgentMdLoaded {
         #[schemars(length(min = 1, max = 2))]
         entries: Vec<AgentMdEntry>,
+    },
+    AgentMdSkipped {
+        path: SafeDisplayText,
+        byte_length: u64,
     },
     PluginEventAdded {
         plugin: String,
@@ -2375,6 +2393,14 @@ impl EventPayload {
                 }
                 for entry in entries {
                     entry.validate()?;
+                }
+            }
+            Self::AgentMdSkipped {
+                path,
+                byte_length,
+            } => {
+                if byte_length <= &AgentMdSkipped::MAX_SKIP_BYTES || path.as_str().is_empty() {
+                    return Err(EventSchemaError::InvalidAgentMd);
                 }
             }
             Self::RunStarted {

@@ -1331,6 +1331,7 @@ pub(super) fn reduce_event(
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
         | EventPayload::AgentMdLoaded { .. }
+        | EventPayload::AgentMdSkipped { .. }
         | EventPayload::SkillLoaded { .. }
         | EventPayload::SkillInvocationNoted { .. } => {}
     }
