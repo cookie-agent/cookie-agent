@@ -33,7 +33,7 @@ fn goal_rows_are_always_visible_with_progress_and_checklist() {
         crate::state::EventLevel::Error,
     );
     let rendered = snapshot_lines(&layout.lines);
-    assert!(rendered.contains("GOAL"));
+    assert!(rendered.contains("◆─ Goal"));
     assert!(rendered.contains(&goal.objective));
     assert!(rendered.contains("status: active · 1/2 finished"));
     assert!(rendered.contains("[x] Render the objective"));

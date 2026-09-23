@@ -15,7 +15,7 @@ use pulldown_cmark::{
     BrokenLink, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
 };
 use ratatui::{
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use syntect::{
@@ -1272,22 +1272,34 @@ pub(crate) fn render_markdown_lines_width(
                 });
             rendered
         });
-        lines.extend(rendered.iter().cloned());
+        push_block_lines(&mut lines, rendered.iter().cloned());
     }
-    let mut renderer = MarkdownRenderer::new(theme, highlighter);
-    renderer.width = usize::from(width);
+    // The streaming tail renders block by block like the stable prefix, so a
+    // block looks the same before and after it settles.
     for block in &document.tail_blocks {
-        renderer.begin_block(false);
-        for event in &block.events {
-            renderer.event(event);
-        }
+        push_block_lines(
+            &mut lines,
+            render_block(block, false, theme, highlighter, width),
+        );
     }
-    renderer.flush();
-    lines.extend(renderer.lines);
     if lines.is_empty() {
         lines.push(MarkdownLine::default());
     }
     lines
+}
+
+/// Append one top-level block's lines, separated from the previous block by
+/// a blank line. Blocks that render nothing (reference definitions, empty
+/// HTML) add no gap.
+fn push_block_lines(lines: &mut Vec<MarkdownLine>, block: impl IntoIterator<Item = MarkdownLine>) {
+    let mut block = block.into_iter().peekable();
+    if block.peek().is_none() {
+        return;
+    }
+    if !lines.is_empty() {
+        lines.push(MarkdownLine::default());
+    }
+    lines.extend(block);
 }
 
 fn render_block(
@@ -1428,8 +1440,14 @@ impl<'a> MarkdownRenderer<'a> {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(text),
+            // A tinted background marks inline code on its own; themes
+            // without one keep the backticks as the marker.
             Event::Code(code) => self.span(
-                format!("`{code}`"),
+                if self.theme.inline_code().bg.is_some() {
+                    code.to_string()
+                } else {
+                    format!("`{code}`")
+                },
                 self.styles
                     .last()
                     .copied()
@@ -1737,26 +1755,6 @@ impl<'a> MarkdownRenderer<'a> {
             return;
         };
         let label = code.language.split_whitespace().next().unwrap_or_default();
-        let quote_prefix = "> ".repeat(self.quote_depth);
-        // The whole block (borders included) sits on one subtle parchment
-        // band; content lines pad to a common width so the band is solid.
-        let band = self
-            .theme
-            .code_background()
-            .map(|background| Style::default().bg(background));
-        let patch = |style: Style| band.map_or(style, |band| style.patch(band));
-        let border = patch(self.theme.code_border());
-        self.push_code_line(Line::from(vec![
-            Span::styled(quote_prefix.clone(), self.theme.quote()),
-            Span::styled(
-                if label.is_empty() {
-                    "┌─ code".to_owned()
-                } else {
-                    format!("┌─ code: {label}")
-                },
-                border,
-            ),
-        ]));
         // Highlighting is cached before code-band styling and width-dependent
         // wrapping, so stable entries survive terminal resizes.
         let highlighted = if code.stable {
@@ -1765,41 +1763,85 @@ impl<'a> MarkdownRenderer<'a> {
         } else {
             self.highlighter.highlight(label, &code.code, self.theme)
         };
+        // The language only picks the highlighter; it is never displayed.
+        match self.theme.code_background() {
+            Some(background) => self.finish_banded_code(&highlighted, background),
+            None => self.finish_framed_code(&highlighted),
+        }
+    }
+
+    /// A tinted band is the block's whole frame: each code row padded so the
+    /// band is a solid rectangle across the available width. Wrapped
+    /// continuations start with `↪`. Each row's one-cell left marker carries
+    /// the code-border style, which is how copy extraction drops it.
+    fn finish_banded_code(&mut self, highlighted: &[Line<'static>], background: Color) {
+        let quote_prefix = "> ".repeat(self.quote_depth);
+        let band = Style::default().bg(background);
+        let marker = self.theme.code_border().patch(band);
+        let quote_width = UnicodeWidthStr::width(quote_prefix.as_str());
+        let bounded = self.width != usize::from(u16::MAX);
+        let content_width = self.width.saturating_sub(quote_width + 1).max(1);
+        let mut rows = Vec::new();
+        for line in highlighted {
+            for (index, content) in
+                wrap_code_spans(line.spans.clone(), content_width, content_width)
+                    .into_iter()
+                    .enumerate()
+            {
+                let mut spans = vec![Span::styled(if index == 0 { " " } else { "↪" }, marker)];
+                spans.extend(content.into_iter().map(|mut span| {
+                    span.style = span.style.patch(band);
+                    span
+                }));
+                rows.push(spans);
+            }
+        }
+        let band_width = if bounded {
+            self.width.saturating_sub(quote_width)
+        } else {
+            rows.iter()
+                .map(|row| row.iter().map(Span::width).sum::<usize>())
+                .max()
+                .unwrap_or(0)
+                + 1
+        };
+        for mut row in rows {
+            let used = row.iter().map(Span::width).sum::<usize>();
+            if used < band_width {
+                row.push(Span::styled(" ".repeat(band_width - used), band));
+            }
+            let mut spans = vec![Span::styled(quote_prefix.clone(), self.theme.quote())];
+            spans.extend(row);
+            self.push_code_line(Line::from(spans));
+        }
+    }
+
+    /// Themes without a band keep the box-drawing frame so code stays
+    /// distinct from prose.
+    fn finish_framed_code(&mut self, highlighted: &[Line<'static>]) {
+        let quote_prefix = "> ".repeat(self.quote_depth);
+        let border = self.theme.code_border();
+        self.push_code_line(Line::from(vec![
+            Span::styled(quote_prefix.clone(), self.theme.quote()),
+            Span::styled("┌─ code".to_owned(), border),
+        ]));
         let quote_width = UnicodeWidthStr::width(quote_prefix.as_str());
         let first_width = self.width.saturating_sub(quote_width + 2).max(1);
         let continuation_width = self.width.saturating_sub(quote_width + 1).max(1);
-        let mut body = Vec::new();
-        for line in highlighted.iter() {
+        for line in highlighted {
             let line_style = line.style;
-            for (index, mut content) in
+            for (index, content) in
                 wrap_code_spans(line.spans.clone(), first_width, continuation_width)
                     .into_iter()
                     .enumerate()
             {
-                if let Some(band) = band {
-                    for span in &mut content {
-                        span.style = span.style.patch(band);
-                    }
-                }
                 let mut spans = vec![
                     Span::styled(quote_prefix.clone(), self.theme.quote()),
                     Span::styled(if index == 0 { "│ " } else { "│" }, border),
                 ];
                 spans.extend(content);
-                body.push(Line::from(spans).style(line_style));
+                self.push_code_line(Line::from(spans).style(line_style));
             }
-        }
-        if let Some(band) = band {
-            let band_width = body.iter().map(Line::width).max().unwrap_or(0);
-            for line in &mut body {
-                let padding = band_width.saturating_sub(line.width());
-                if padding > 0 {
-                    line.spans.push(Span::styled(" ".repeat(padding), band));
-                }
-            }
-        }
-        for line in body {
-            self.push_code_line(line);
         }
         self.push_code_line(Line::from(vec![
             Span::styled(quote_prefix, self.theme.quote()),

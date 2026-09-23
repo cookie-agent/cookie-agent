@@ -14,7 +14,21 @@ pub(super) fn assistant_item_layout(
         regions: Vec::new(),
         user_seq: None,
     };
+    let mut previous_is_prose = None;
     for child in children {
+        // Prose and the compact tool/thinking rows are separated by one blank
+        // gutter row whenever the reply switches between them; runs of rows
+        // stay tight. Separators sit between parts, never inside a part's
+        // line range, so streaming splices are unaffected.
+        let is_prose = matches!(child, AssistantChild::Text { .. });
+        if previous_is_prose.is_some_and(|previous| previous != is_prose) {
+            layout.lines.extend(assistant_body_line(
+                Line::default(),
+                context.width,
+                context.theme,
+            ));
+        }
+        previous_is_prose = Some(is_prose);
         match child {
             AssistantChild::Text { .. } | AssistantChild::Thinking { .. } => {
                 let key = assistant_part_layout_key(state, item_id, child, context);
@@ -333,7 +347,8 @@ pub(super) fn assistant_child_layout(
             let label = if key.expanded {
                 format!("💭 ▾ {status}")
             } else {
-                format!("💭 ▸ {status} ({hidden_lines} lines hidden)")
+                let noun = if hidden_lines == 1 { "line" } else { "lines" };
+                format!("💭 ▸ {status} ({hidden_lines} {noun} hidden)")
             };
             let mut lines = assistant_body_line(
                 Line::from(Span::styled(label, theme.thinking())),
@@ -379,11 +394,16 @@ pub(super) fn format_thinking_duration(duration: Duration) -> String {
 
 pub(super) fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     // The frozen `Agent • Model` attribution wraps at tiny widths and is
-    // never reduced to a tag: it is the sole producer identity.
+    // never reduced to a tag: it is the sole producer identity. The agent
+    // leads in the bold role style; the model trails muted so the header
+    // reads as one name, not two competing labels.
+    let (agent, model) = attribution
+        .split_once(" • ")
+        .map_or((attribution, None), |(agent, model)| (agent, Some(model)));
     let text = if width >= 8 {
-        format!("╭─ {attribution}")
+        format!("╭─ {agent}")
     } else {
-        attribution.to_owned()
+        agent.to_owned()
     };
     let gutter = (width >= 4).then_some("│ ");
     let gutter_width = gutter.map_or(0, unicode_width::UnicodeWidthStr::width);
@@ -395,25 +415,24 @@ pub(super) fn assistant_header(attribution: &str, width: u16, theme: &Theme) -> 
             .max(1),
     )
     .unwrap_or(u16::MAX);
-    wrapped_line(
-        Line::from(vec![
-            Span::styled(text.clone(), theme.assistant()),
-            Span::raw(" "),
-        ]),
-        wrap_width,
-    )
-    .into_iter()
-    .enumerate()
-    .map(|(index, mut line)| {
-        if index > 0
-            && let Some(gutter) = gutter
-        {
-            line.spans
-                .insert(0, Span::styled(gutter, theme.assistant()));
-        }
-        line
-    })
-    .collect()
+    let mut spans = vec![Span::styled(text, theme.assistant())];
+    if let Some(model) = model {
+        spans.push(Span::styled(format!(" • {model}"), theme.muted()));
+    }
+    spans.push(Span::raw(" "));
+    wrapped_line(Line::from(spans), wrap_width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut line)| {
+            if index > 0
+                && let Some(gutter) = gutter
+            {
+                line.spans
+                    .insert(0, Span::styled(gutter, theme.assistant()));
+            }
+            line
+        })
+        .collect()
 }
 
 pub(super) fn attribution_line(

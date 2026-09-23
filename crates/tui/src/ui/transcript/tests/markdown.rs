@@ -72,8 +72,16 @@ fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    assert!(rendered.iter().any(|line| line == "│ │ abcdefghijklmn"));
-    assert!(rendered.iter().any(|line| line.starts_with("│ │opq")));
+    // Code rows never prose-wrap: the band's own marker wraps them, a space
+    // on the first row and `↪` on the continuation.
+    assert!(
+        rendered.iter().any(|line| line == "│  abcdefghijklmno"),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| line.starts_with("│ ↪pq")),
+        "{rendered:?}"
+    );
     for (first, continuation) in [
         ("│ • alpha beta", "│   gamma delta"),
         ("│   • bravo", "│     charlie"),
@@ -96,7 +104,7 @@ fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
 }
 
 #[test]
-fn inline_code_spans_use_a_foreground_chip_except_in_high_contrast() {
+fn inline_code_spans_sit_on_the_code_tint_and_high_contrast_keeps_its_chip() {
     fn inline_code_style(theme: &Theme) -> ratatui::style::Style {
         let state = assistant_state(vec![AssistantChild::Text {
             id: 1,
@@ -113,14 +121,13 @@ fn inline_code_spans_use_a_foreground_chip_except_in_high_contrast() {
             .style
     }
 
-    // Default theme: warm terracotta foreground, never a background —
-    // the source backticks stay visible, and bold carries the
-    // distinction where color is unavailable.
+    // Default theme: warm terracotta on the code-block parchment, in
+    // regular weight; the tint replaces the source backticks.
     let default = inline_code_style(&Theme::default());
-    assert!(default.bg.is_none());
+    assert_eq!(default.bg, Theme::default().code_background());
     assert_eq!(default.fg, Theme::default().inline_code().fg);
     assert!(
-        default
+        !default
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD)
     );

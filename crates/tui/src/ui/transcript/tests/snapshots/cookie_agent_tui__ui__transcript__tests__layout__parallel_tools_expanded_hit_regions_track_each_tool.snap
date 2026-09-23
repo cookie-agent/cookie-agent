@@ -4,6 +4,7 @@ expression: rendered
 ---
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
+│
 │ 💻 ▾ bash sleep 2 …
 │ ❯ sleep 2
 │ model call: call-a

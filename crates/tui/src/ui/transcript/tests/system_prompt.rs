@@ -49,9 +49,9 @@ fn internal_blocks_are_headerless_without_changing_other_role_headers() {
         "[I] row"
     );
     for (role, header) in [
-        (Role::User, "┌─ USER"),
-        (Role::Action, "-- ACTION"),
-        (Role::Goal, "◆─ GOAL"),
+        (Role::User, "┌─ You"),
+        (Role::Action, "-- Action"),
+        (Role::Goal, "◆─ Goal"),
         (Role::ToolRunning, "┏… TOOL RUNNING"),
         (Role::ToolSuccess, "┏✓ TOOL SUCCESS"),
         (Role::ToolFailure, "┏! TOOL FAILURE"),

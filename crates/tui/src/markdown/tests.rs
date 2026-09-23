@@ -134,10 +134,17 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
         &PlainHighlighter,
         20,
     );
+    // One blank row separates each top-level block.
     assert_eq!(
         strings(&heading_lines),
-        ["One `code`", "Two", "Three", "Four", "Five", "Six"]
+        [
+            "One code", "", "Two", "", "Three", "", "Four", "", "Five", "", "Six"
+        ]
     );
+    let heading_lines = heading_lines
+        .into_iter()
+        .filter(|line| line.width() > 0)
+        .collect::<Vec<_>>();
     let h1 = heading_lines[0].spans[0].style;
     let inline_code = heading_lines[0]
         .spans
@@ -170,7 +177,7 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
 }
 
 #[test]
-fn code_wraps_by_grapheme_with_preserved_styles_and_continuation_bar() {
+fn code_wraps_by_grapheme_with_preserved_styles_and_continuation_marker() {
     struct SplitHighlighter;
 
     impl Highlighter for SplitHighlighter {
@@ -200,18 +207,19 @@ fn code_wraps_by_grapheme_with_preserved_styles_and_continuation_bar() {
         &SplitHighlighter,
         8,
     );
-    let body = lines
+    let code = lines
         .iter()
-        .filter(|line| {
-            line.kind == super::MarkdownLineKind::Code && line.line.to_string().starts_with('│')
-        })
+        .filter(|line| line.kind == super::MarkdownLineKind::Code)
         .collect::<Vec<_>>();
+    // No language label: every row pads to the full width, and a wrapped
+    // continuation starts with `↪`.
     assert_eq!(
-        body.iter()
+        code.iter()
             .map(|line| line.line.to_string())
             .collect::<Vec<_>>(),
-        ["│ abcdef", "│ghijkl "]
+        [" abcdefg", "↪hijkl  "]
     );
+    let body = &code;
     assert!(
         body.iter()
             .flat_map(|line| line.line.spans.iter())
@@ -819,8 +827,10 @@ fn markdown_text_snapshot_is_stable_across_color_themes() {
     );
     let expected = vec![
         "Result",
+        "",
         "1. first",
         "2. second <https://example.test>",
+        "",
         "> done",
     ];
     for theme in [
@@ -855,20 +865,25 @@ fn markdown_terminal_snapshot_covers_required_block_aesthetics() {
     .join("\n");
     assert_snapshot!(rendered, @r#"
 Result
-bold and italic, `code`, link <https://example.test>.
+
+bold and italic, code, link <https://example.test>.
+
 • [x] done
 • [ ] next
+
 > quoted
+
 ┌─────┬───────┐
 │ key │ value │
 ├─────┼───────┤
 │ a   │ b     │
 └─────┴───────┘
+
 ────────────────
+
 <kbd>html</kbd>
-┌─ code: rust
-│ fn main() {}
-└─
+
+ fn main() {} 
 "#);
 }
 
@@ -941,9 +956,9 @@ fn table_cells_keep_inline_markup_styles_with_distinct_inline_code_foreground() 
         .flat_map(|line| line.spans.iter())
         .find(|span| span.content.contains("render()"))
         .expect("inline code span");
-    // Inline code is foreground-only in the default theme: a warm
-    // terracotta plus bold, never a background or reverse video.
-    assert!(code_span.style.bg.is_none());
+    // Inline code sits on the code parchment in the default theme, the
+    // same tint as code blocks, never reverse video.
+    assert!(code_span.style.bg.is_some());
     assert!(code_span.style.fg.is_some());
     assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
     assert!(
@@ -1101,10 +1116,10 @@ fn table_cells_never_inject_control_sequences() {
 }
 
 #[test]
-fn inline_code_is_foreground_only_except_in_high_contrast() {
+fn inline_code_is_marked_by_a_tint_or_by_backticks() {
     let document = MarkdownDocument::new("before `let x = 1;` after".into());
     for (theme, has_background) in [
-        (Theme::default(), false),
+        (Theme::default(), true),
         (
             Theme::new(
                 crate::theme::ThemeKind::HighContrast,
@@ -1133,10 +1148,15 @@ fn inline_code_is_foreground_only_except_in_high_contrast() {
             theme.key()
         );
         assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
-        // The backticks stay visible and bold carries the distinction in
-        // mono terminals, so inline code never depends on color alone.
+        // A tinted background replaces the backticks; without one the
+        // backticks stay and bold carries the distinction in mono
+        // terminals, so inline code never depends on color alone.
         let rendered = strings(&lines).join("");
-        assert!(rendered.contains("`let x = 1;`"));
+        if has_background {
+            assert_eq!(rendered, "before let x = 1; after");
+        } else {
+            assert!(rendered.contains("`let x = 1;`"));
+        }
         assert!(
             code_span.style.add_modifier.contains(Modifier::BOLD)
                 || theme.key().colors != crate::theme::ColorLevel::None

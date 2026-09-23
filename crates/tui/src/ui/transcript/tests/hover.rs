@@ -156,7 +156,7 @@ fn transcript_items_get_exactly_one_breathing_row_between_them() {
     assert!(
         rendered[..blanks[0]]
             .iter()
-            .any(|line| line.contains("USER"))
+            .any(|line| line.contains("┌─ You"))
     );
     assert!(
         rendered[blanks[0] + 1..]

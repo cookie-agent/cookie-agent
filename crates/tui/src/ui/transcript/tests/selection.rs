@@ -54,9 +54,53 @@ fn extraction_strips_chrome_and_copies_raw_content() {
     let end = (lines.len() - 1, u16::MAX);
     let extracted = extract_selection(&lines, (0, 0), end, &theme);
     assert_eq!(
-        extracted, "raw question\n\nsome prose\nfn main() {\n    let x = 1;\n}\ntrail",
+        extracted, "raw question\n\nsome prose\n\nfn main() {\n    let x = 1;\n}\n\ntrail",
         "gutters stripped, fence borders and role headers gone, code raw:\n{extracted:?}"
     );
+}
+
+#[test]
+fn code_band_markers_never_reach_copied_text() {
+    let theme = Theme::default();
+    // Narrow enough that the long line wraps onto a `↪` continuation, and
+    // with leading indentation that must survive the marker stripping.
+    let lines = crate::markdown::render_markdown_width(
+        &MarkdownDocument::new("```sh\n  echo abcdefghijklmnop\n```".into()),
+        &theme,
+        &PlainHighlighter,
+        16,
+    )
+    .into_iter()
+    .flat_map(|line| assistant_body_line(line, 18, &theme))
+    .collect::<Vec<_>>();
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+    // The fence language picks the highlighter but is never shown.
+    assert!(
+        !rendered.iter().any(|line| line.trim_end().ends_with(" sh")),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| line.contains('↪')),
+        "{rendered:?}"
+    );
+    let extracted = extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme);
+    assert_eq!(extracted, "  echo abcdefgh\nijklmnop");
+}
+
+#[test]
+fn assistant_header_leads_with_the_agent_and_mutes_the_model() {
+    let theme = Theme::default();
+    let header = assistant_header("primary • test-model[base]", 60, &theme);
+    assert_eq!(header.len(), 1);
+    let spans = &header[0].spans;
+    assert_eq!(
+        header[0].to_string().trim_end(),
+        "╭─ primary • test-model[base]"
+    );
+    assert_eq!(spans[0].content, "╭─ primary");
+    assert_eq!(spans[0].style, theme.assistant());
+    assert_eq!(spans[1].content, " • test-model[base]");
+    assert_eq!(spans[1].style, theme.muted());
 }
 
 #[test]

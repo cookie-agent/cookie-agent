@@ -103,9 +103,9 @@ pub(super) fn role_block_lines(
         Role::Debug | Role::Internal | Role::Warning | Role::Error
     );
     let (label, marker, gutter, style) = match role {
-        Role::User => ("USER", "┌─", "│ ", theme.user()),
-        Role::Action => ("ACTION", "--", "│ ", theme.user()),
-        Role::Goal => ("GOAL", "◆─", "│ ", theme.assistant()),
+        Role::User => ("You", "┌─", "│ ", theme.user()),
+        Role::Action => ("Action", "--", "│ ", theme.user()),
+        Role::Goal => ("Goal", "◆─", "│ ", theme.assistant()),
         Role::ToolRunning => ("TOOL RUNNING", "┏…", "┃ ", theme.tool_running()),
         Role::ToolSuccess => ("TOOL SUCCESS", "┏✓", "┃ ", theme.tool_success()),
         Role::ToolFailure => ("TOOL FAILURE", "┏!", "┃ ", theme.tool_failure()),
@@ -570,6 +570,16 @@ pub(super) fn extract_line(
         span_index += 1;
         spans.next();
     }
+    // A code band's one-cell left marker (a space, or `↪` on a wrapped
+    // continuation) is chrome only in the border style: indentation inside
+    // the code arrives as content with the code's own styles.
+    if let Some(span) = spans.peek()
+        && matches!(span.content.as_ref(), " " | "↪")
+        && is_code_border(span.style, theme)
+    {
+        gutter_width = gutter_width.saturating_add(1);
+        spans.next();
+    }
     let remaining: Vec<&ratatui::text::Span<'static>> = spans.collect();
     let rest: String = remaining.iter().map(|span| span.content.as_ref()).collect();
     // Standalone narrow headers carry the diagnostic style on the Line and
@@ -595,9 +605,10 @@ pub(super) fn extract_line(
     }
     if !rest.is_empty()
         && border_style.fg.is_some()
-        && remaining.iter().all(|span| {
-            span.style.fg == border_style.fg && span.style.add_modifier == border_style.add_modifier
-        })
+        && remaining
+            .iter()
+            .filter(|span| !span.content.is_empty())
+            .all(|span| is_code_border(span.style, theme))
     {
         return None;
     }
@@ -616,6 +627,13 @@ pub(super) fn extract_line(
         column = next;
     }
     Some(extracted.trim_end().to_owned())
+}
+
+/// The code/table border signature: its foreground and modifier set, compared
+/// exactly (the parchment band only ever patches backgrounds).
+fn is_code_border(style: ratatui::style::Style, theme: &Theme) -> bool {
+    let border = theme.code_border();
+    border.fg.is_some() && style.fg == border.fg && style.add_modifier == border.add_modifier
 }
 
 /// Extract a normalized multi-line selection (start before end, both

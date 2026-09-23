@@ -174,8 +174,8 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
         default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        default.tool_success: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=false italic=false underline=false dim=false reverse=false
+        default.tool_success: fg=Some(Rgb(47, 107, 56)) bg=None bold=false italic=false underline=false dim=false reverse=false
         default.tool_failure: fg=Some(Rgb(174, 51, 39)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
         default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
@@ -192,7 +192,7 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
         mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
         contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-        default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        default.inline_code: fg=Some(Rgb(168, 71, 28)) bg=Some(Rgb(242, 229, 204)) bold=false italic=false underline=false dim=false reverse=false
         contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
         mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
         mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -253,8 +253,8 @@ fn dark_semantic_theme_snapshot_is_deterministic() {
         dark.panel: fg=None bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
         dark.user: fg=Some(Rgb(199, 119, 30)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.assistant: fg=Some(Rgb(96, 151, 64)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.tool_running: fg=Some(Rgb(217, 130, 70)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.tool_success: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.tool_running: fg=Some(Rgb(217, 130, 70)) bg=None bold=false italic=false underline=false dim=false reverse=false
+        dark.tool_success: fg=Some(Rgb(74, 170, 89)) bg=None bold=false italic=false underline=false dim=false reverse=false
         dark.tool_failure: fg=Some(Rgb(242, 110, 97)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.selected: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(99, 86, 59)) bold=true italic=false underline=false dim=false reverse=false
         dark.hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
@@ -263,21 +263,39 @@ fn dark_semantic_theme_snapshot_is_deterministic() {
         dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
         dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=None bold=true italic=false underline=false dim=false reverse=false
+        dark.inline_code: fg=Some(Rgb(230, 110, 58)) bg=Some(Rgb(57, 51, 38)) bold=false italic=false underline=false dim=false reverse=false
         ");
 }
 
 #[test]
-fn inline_code_uses_foreground_only_except_in_high_contrast() {
-    for (theme, has_background) in [
-        (Theme::new(ThemeKind::Default, ColorLevel::TrueColor), false),
-        (Theme::new(ThemeKind::Default, ColorLevel::Ansi256), false),
-        (Theme::new(ThemeKind::Default, ColorLevel::Ansi16), false),
+fn inline_code_is_tinted_in_bakery_palettes_and_bold_elsewhere() {
+    for (theme, has_background, bold) in [
+        (
+            Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
+            true,
+            false,
+        ),
+        (
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
+            true,
+            false,
+        ),
+        (
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi16),
+            true,
+            false,
+        ),
+        (
+            Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
+            true,
+            false,
+        ),
         (
             Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
             true,
+            true,
         ),
-        (Theme::new(ThemeKind::Mono, ColorLevel::None), false),
+        (Theme::new(ThemeKind::Mono, ColorLevel::None), false, true),
     ] {
         let style = theme.inline_code();
         assert_eq!(
@@ -291,13 +309,17 @@ fn inline_code_uses_foreground_only_except_in_high_contrast() {
             "no reverse video: {:?}",
             theme.key()
         );
-        // Distinction is never color-only: a bold modifier remains even
-        // when color is unavailable.
-        assert!(
+        // Distinction is never color-only: the bakery tint is the code-block
+        // parchment, and without a tint bold (plus backticks) carries it.
+        assert_eq!(
             style.add_modifier.contains(Modifier::BOLD),
-            "bold distinction without color: {:?}",
+            bold,
+            "weight: {:?}",
             theme.key()
         );
+        if has_background && !bold {
+            assert_eq!(style.bg, theme.code_background(), "{:?}", theme.key());
+        }
     }
 }
 

@@ -933,7 +933,7 @@ fn goal_activation_precedes_triggered_streaming_and_preserves_existing_output() 
                 let rendered = snapshot_lines(&caches[1].layout.lines);
                 let action = rendered.find("/goal finish  the parser").unwrap();
                 assert_eq!(rendered.matches("/goal finish  the parser").count(), 1);
-                assert!(rendered.contains("ACTION"));
+                assert!(rendered.contains("-- Action"));
                 if stored.seq >= input {
                     let started = rendered.find("GoalStarted:").unwrap();
                     assert_eq!(rendered.matches("GoalStarted:").count(), 1);

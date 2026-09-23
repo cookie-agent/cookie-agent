@@ -150,7 +150,7 @@ terminal emulator supports OSC 52.
 
 ## User-message menu
 
-Click a past `USER` message to open its action menu. Use Up/Down and Enter, Esc
+Click a past `You` message to open its action menu. Use Up/Down and Enter, Esc
 to close, or the `c`, `r`, and `f` accelerators.
 
 - **Copy** writes the original message text to the clipboard.

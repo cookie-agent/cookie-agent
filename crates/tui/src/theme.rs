@@ -523,8 +523,14 @@ impl Theme {
         self.semantic(self.palette().plum, Color::LightMagenta, Modifier::ITALIC)
     }
 
+    /// Tool rows sit under the bold agent header, so colour alone carries
+    /// them; colourless themes keep bold as the only cue left.
     pub fn tool(&self) -> Style {
-        self.semantic(self.palette().cinnamon, Color::LightYellow, Modifier::BOLD)
+        self.semantic(
+            self.palette().cinnamon,
+            Color::LightYellow,
+            self.weight_without_color(),
+        )
     }
 
     pub fn tool_running(&self) -> Style {
@@ -532,7 +538,20 @@ impl Theme {
     }
 
     pub fn tool_success(&self) -> Style {
-        self.semantic(self.palette().basil, Color::LightGreen, Modifier::BOLD)
+        self.semantic(
+            self.palette().basil,
+            Color::LightGreen,
+            self.weight_without_color(),
+        )
+    }
+
+    /// Bold only where there is no colour to distinguish a row.
+    fn weight_without_color(&self) -> Modifier {
+        if self.key.colors == ColorLevel::None {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }
     }
 
     pub fn tool_failure(&self) -> Style {
@@ -573,7 +592,15 @@ impl Theme {
     /// foreground, never a background in the default theme — the source
     /// backticks stay visible, and the bold modifier carries the distinction
     /// in mono terminals. High contrast keeps its inverse-video chip.
+    /// Inline code. Bakery palettes set it on the code-block parchment
+    /// band in regular weight, which is marker enough that the renderer
+    /// drops the backticks; other themes keep bold text and the backticks.
     pub fn inline_code(&self) -> Style {
+        if let Some(background) = self.code_background() {
+            return self
+                .semantic(self.palette().terracotta, Color::Black, Modifier::empty())
+                .bg(background);
+        }
         let foreground = self.semantic(self.palette().terracotta, Color::Black, Modifier::BOLD);
         let background = match self.key.colors {
             ColorLevel::None => None,
