@@ -610,6 +610,9 @@ pub struct App {
     /// The model chosen in `/model`, applied only once its variant is picked.
     pub(super) variant_step_model: Option<ModelKey>,
     pub(super) last_escape: Option<Instant>,
+    /// When Ctrl-C last found nothing to interrupt; a second press inside
+    /// the quit window exits.
+    pub(super) last_quit_press: Option<Instant>,
     pub(super) input: InputState,
     pub(super) modal: Modal,
     pub(super) stdin_target: Option<cookie_agent_protocol::ToolCallId>,
@@ -1097,6 +1100,7 @@ impl App {
             model_then_variant: false,
             variant_step_model: None,
             last_escape: None,
+            last_quit_press: None,
             input: InputState::default(),
             modal: Modal::None,
             stdin_target: None,

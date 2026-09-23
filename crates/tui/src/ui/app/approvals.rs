@@ -710,17 +710,15 @@ impl App {
         ids
     }
 
-    pub(in crate::ui) fn cancel_active_run(&mut self) {
-        let Some(session_id) = self.selected else {
-            self.status = "no active run to cancel".into();
-            return;
-        };
-        let Some(run_id) = self
-            .store
-            .sessions
-            .get(&session_id)
+    /// The selected session's running run, if any: what Ctrl-C interrupts.
+    pub(in crate::ui) fn selected_active_run(&self) -> Option<cookie_agent_protocol::RunId> {
+        self.selected
+            .and_then(|session_id| self.store.sessions.get(&session_id))
             .and_then(|state| state.active_run)
-        else {
+    }
+
+    pub(in crate::ui) fn cancel_active_run(&mut self) {
+        let Some(run_id) = self.selected_active_run() else {
             self.status = "no active run to cancel".into();
             return;
         };

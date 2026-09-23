@@ -401,6 +401,9 @@ impl App {
         if key.code != KeyCode::Esc {
             self.last_escape = None;
         }
+        if !(key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)) {
+            self.last_quit_press = None;
+        }
         if self.modal == Modal::None
             && self.current_approval().is_none()
             && !self.command_palette_visible()
@@ -503,16 +506,23 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 // With an active selection ctrl+c is copy; without one it
-                // keeps its long-standing meaning (cancel the active run).
+                // cancels the active run, and with nothing to interrupt a
+                // second press inside the quit window exits.
                 if let Some(text) = self.selected_text() {
                     self.selection = None;
+                    self.last_quit_press = None;
                     if text.is_empty() {
                         self.status = "nothing to copy in the selection".into();
                     } else {
                         self.copy_to_clipboard(text);
                     }
-                } else {
+                } else if self.selected_active_run().is_some() {
+                    self.last_quit_press = None;
                     self.cancel_active_run();
+                } else if self.register_quit_press(Instant::now()) {
+                    self.should_quit = true;
+                } else {
+                    self.status = "press ctrl+c again to quit".into();
                 }
             }
             Modal::None

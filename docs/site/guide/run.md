@@ -146,7 +146,8 @@ composer when the session is viewed.
 
 Drag in the conversation or composer to select text. Ctrl-C copies the selected
 text and clears the selection; Ctrl-X cuts only a composer selection. With no
-selection, Ctrl-C cancels the active run. Esc clears a selection before it can
+selection, Ctrl-C cancels the active run; when there is nothing to interrupt,
+pressing it twice within two seconds quits. Esc clears a selection before it can
 count toward the double-Esc run-cancel gesture.
 
 Conversation copy removes role gutters, borders, and code-fence chrome, so code

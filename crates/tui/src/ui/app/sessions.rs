@@ -560,6 +560,18 @@ impl App {
         cancel
     }
 
+    /// Records a Ctrl-C that found nothing to interrupt. Returns true when it
+    /// is the second such press inside the quit window, which quits.
+    pub(in crate::ui) fn register_quit_press(&mut self, now: Instant) -> bool {
+        const CTRL_C_QUIT_WINDOW: Duration = Duration::from_secs(2);
+        let quit = self
+            .last_quit_press
+            .and_then(|previous| now.checked_duration_since(previous))
+            .is_some_and(|elapsed| elapsed <= CTRL_C_QUIT_WINDOW);
+        self.last_quit_press = (!quit).then_some(now);
+        quit
+    }
+
     pub(in crate::ui) fn move_tree_selection(&mut self, up: bool) {
         let entries = self.tree_entries();
         if entries.is_empty() {

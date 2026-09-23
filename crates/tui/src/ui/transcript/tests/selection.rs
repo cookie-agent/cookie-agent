@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::ui::transcript::*;
 
@@ -329,6 +330,51 @@ async fn ctrl_c_without_a_selection_still_cancels_the_active_run() {
         .await;
     wait_for_recorded_request(&recorded, "run.cancel", 1).await;
     assert!(app.selection.is_none());
+}
+
+#[tokio::test]
+async fn ctrl_c_twice_with_nothing_to_interrupt_quits() {
+    let ctrl_c = || KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut app = test_app().await;
+    app.selected = Some(SessionId::new_v7());
+    app.handle_key(ctrl_c()).await;
+    assert!(!app.should_quit);
+    assert_eq!(app.status, "press ctrl+c again to quit");
+    app.handle_key(ctrl_c()).await;
+    assert!(app.should_quit);
+
+    // Any other key in between starts the count over.
+    let mut app = test_app().await;
+    app.handle_key(ctrl_c()).await;
+    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+        .await;
+    app.handle_key(ctrl_c()).await;
+    assert!(!app.should_quit);
+    app.handle_key(ctrl_c()).await;
+    assert!(app.should_quit);
+}
+
+#[tokio::test]
+async fn ctrl_c_quit_presses_must_land_inside_the_window() {
+    let mut app = test_app().await;
+    let start = Instant::now();
+    assert!(!app.register_quit_press(start));
+    assert!(!app.register_quit_press(start + Duration::from_secs(3)));
+    assert!(app.register_quit_press(start + Duration::from_secs(4)));
+}
+
+#[tokio::test]
+async fn ctrl_c_during_a_run_cancels_and_never_counts_toward_quit() {
+    let (mut app, _session, _run) = app_with_active_run().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    for _ in 0..2 {
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await;
+    }
+    wait_for_recorded_request(&recorded, "run.cancel", 2).await;
+    assert!(!app.should_quit);
+    assert!(app.last_quit_press.is_none());
 }
 
 #[tokio::test]
