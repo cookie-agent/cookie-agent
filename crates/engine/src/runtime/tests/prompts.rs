@@ -446,8 +446,15 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     write_private_test_file(&agents.join("AGENTS.md"), "default AGENTS.md context");
     write_private_test_file(&root.join("AGENTS.md"), "cwd AGENTS.md context");
 
-    let project_source = agents.join("AGENTS.md").to_string_lossy().into_owned();
-    let cwd_source = root.join("AGENTS.md").to_string_lossy().into_owned();
+    // Sources come from the engine's canonical cwd, which differs from the
+    // temp dir spelling on Windows (`\\?\` prefix, expanded 8.3 names).
+    let engine_root = fixture.engine.inner.store.cwd().to_path_buf();
+    let engine_agents = engine_root.join(".cookie-agent").join("agents");
+    let project_source = engine_agents
+        .join("AGENTS.md")
+        .to_string_lossy()
+        .into_owned();
+    let cwd_source = engine_root.join("AGENTS.md").to_string_lossy().into_owned();
     let (entries, skipped) = fixture
         .engine
         .load_agent_md(None, None)
@@ -470,7 +477,10 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     assert!(skipped.is_empty());
     assert_eq!(
         entries[0].source.as_str(),
-        preset.join("AGENTS.md").to_string_lossy()
+        engine_agents
+            .join("python")
+            .join("AGENTS.md")
+            .to_string_lossy()
     );
     assert_eq!(entries[0].content, "preset AGENTS.md context");
     assert!(
@@ -523,7 +533,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     assert_eq!(skipped.len(), 1);
     assert_eq!(
         skipped[0].path.as_str(),
-        oversized.to_string_lossy().as_ref()
+        engine_root.join("AGENTS.md").to_string_lossy().as_ref()
     );
     assert_eq!(skipped[0].byte_length, oversized_len);
     let rendered = crate::model_history::agent_md_turn_for_test(&entries);
@@ -729,7 +739,15 @@ async fn root_run_persists_and_replays_agent_md_as_a_user_turn() {
     assert_eq!(entries.len(), 2);
     assert_eq!(
         entries[0].source.as_str(),
-        root.join(".cookie-agent/agents/python/AGENTS.md")
+        fixture
+            .engine
+            .inner
+            .store
+            .cwd()
+            .join(".cookie-agent")
+            .join("agents")
+            .join("python")
+            .join("AGENTS.md")
             .to_string_lossy()
             .as_ref()
     );
