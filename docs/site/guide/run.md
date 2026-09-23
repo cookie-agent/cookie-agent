@@ -188,6 +188,14 @@ compaction, plugin-message, and media bodies are bounded to 64 lines or 8 KiB.
 Oversized content ends with a truncated-lines indicator while the complete data
 remains in session state.
 
+Expanding a tool row opens its title block: the header, followed by the rest of
+the tool's primary argument (a command or path) when the collapsed header had to
+shorten it. Bash commands keep their own line breaks. The whole title block is
+one click target. Expanded tools use ordinary text colours and end with a blank
+row; bash reads as one grey panel, its title block on a slightly deeper grey
+above its output. Full call arguments appear between the title block and the
+output only when the diagnostic filter is `info` or `debug` (see `/events`).
+
 OpenAI Responses turns can retain opaque continuation witnesses for provider
 metadata such as message phase, annotations, and logprobs. Keep these parts
 alongside native replay data when preserving or restoring history. Internal

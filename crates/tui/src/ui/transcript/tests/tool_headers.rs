@@ -142,12 +142,31 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
                     .iter()
                     .find(|region| region.id == BlockId::Tool(id))
                     .unwrap();
-                assert_eq!(
-                    region.header_lines,
-                    Some(1),
-                    "{name}@{width}: {:?}",
-                    snapshot_lines(&layout.lines)
-                );
+                let header_lines = region.header_lines.unwrap();
+                if blocks.is_none() {
+                    assert_eq!(
+                        header_lines,
+                        1,
+                        "{name}@{width}: {:?}",
+                        snapshot_lines(&layout.lines)
+                    );
+                } else {
+                    // The expanded title block finishes the argument on as
+                    // many hanging rows as it needs.
+                    let compact = |text: &str| -> String {
+                        text.chars()
+                            .filter(|character| !character.is_whitespace() && *character != '│')
+                            .collect()
+                    };
+                    let title = layout.lines[region.start_line..region.start_line + header_lines]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<String>();
+                    assert!(
+                        compact(&title).contains(&compact(&argument)),
+                        "{name}@{width}: {title:?}"
+                    );
+                }
             }
         }
         if matches!(name, "read" | "write" | "edit") {
@@ -174,7 +193,7 @@ fn builtin_tool_headers_abbreviate_arguments_without_losing_expanded_content() {
 }
 
 #[test]
-fn builtin_tool_headers_hold_one_row_at_every_width_and_status() {
+fn builtin_tool_headers_stay_inside_every_width_and_status() {
     let longest = "x".repeat(cookie_agent_protocol::BoundedDisplayText::MAX_BYTES);
     // A plugin label longer than any row, and the built-in whose expanded
     // body draws the terminal band that used to widen past the viewport.
@@ -216,11 +235,20 @@ fn builtin_tool_headers_hold_one_row_at_every_width_and_status() {
                             .find(|region| region.id == BlockId::Tool(id))
                             .unwrap();
                         let rendered = snapshot_lines(&layout.lines);
-                        assert_eq!(
-                            region.header_lines,
-                            Some(1),
-                            "{name}@{status_name}@{clock_bucket}x{width}: {rendered:?}"
-                        );
+                        // Collapsed, the header holds one row; expanded, its
+                        // title block may hang the argument over more.
+                        if blocks.is_none() {
+                            assert_eq!(
+                                region.header_lines,
+                                Some(1),
+                                "{name}@{status_name}@{clock_bucket}x{width}: {rendered:?}"
+                            );
+                        } else {
+                            assert!(
+                                region.header_lines.is_some_and(|lines| lines >= 1),
+                                "{name}@{status_name}@{clock_bucket}x{width}: {rendered:?}"
+                            );
+                        }
                         assert!(
                             layout
                                 .lines
@@ -301,18 +329,26 @@ fn expanded_read_path_renders_embedded_tabs_as_spaces() {
     let id = read_tool_id(&state);
     state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some(path));
     let expanded = HashSet::from([BlockId::Tool(id)]);
-    let rows = render_to_buffer(&transcript_layout(&state, Some(&expanded), 80).lines, 80);
+    let rows = render_to_buffer(
+        &transcript_layout_with_level(
+            &state,
+            Some(&expanded),
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Warning,
+        )
+        .lines,
+        80,
+    );
     // The terminal renderer drops control characters outright, so a literal
-    // tab would silently vanish from the buffer row. Both the collapsed
-    // header and the expanded `path:` row must show the flattened space.
+    // tab would silently vanish from the buffer row. The header shows the
+    // flattened space, and a path it shows whole gets no second row.
     assert!(
         rows.iter().any(|row| row.ends_with("read src/my file.rs")),
         "{rows:?}"
     );
-    assert!(
-        rows.iter().any(|row| row.ends_with("path: src/my file.rs")),
-        "{rows:?}"
-    );
+    assert!(!rows.iter().any(|row| row.contains("path:")), "{rows:?}");
     assert!(
         !rows.iter().any(|row| row.contains("src/myfile")),
         "{rows:?}"
@@ -342,10 +378,8 @@ fn builtin_tool_headers_flatten_control_bearing_arguments() {
     let rendered = snapshot_lines(
         &transcript_layout(&read, Some(&HashSet::from([BlockId::Tool(id)])), 80).lines,
     );
-    assert!(
-        rendered.contains("path: src/lib\u{fffd}.rs"),
-        "{rendered:?}"
-    );
+    assert!(rendered.contains("📖 ▾ read src/lib .rs"), "{rendered:?}");
+    assert!(!rendered.contains("path:"), "{rendered:?}");
     assert!(!rendered.contains('\u{1b}'), "{rendered:?}");
 }
 
@@ -360,7 +394,14 @@ fn bash_expanded_command_keeps_its_line_breaks() {
     })
     .to_string();
     let expanded = HashSet::from([BlockId::Tool(id)]);
-    let layout = transcript_layout(&state, Some(&expanded), 80);
+    let layout = transcript_layout_with_level(
+        &state,
+        Some(&expanded),
+        80,
+        &Theme::default(),
+        &PlainHighlighter,
+        crate::state::EventLevel::Warning,
+    );
     let region = layout
         .regions
         .iter()
@@ -370,12 +411,25 @@ fn bash_expanded_command_keeps_its_line_breaks() {
         .iter()
         .map(|line| line.to_string().trim_end().to_owned())
         .collect();
-    assert!(rows[1].ends_with("❯ python3 - <<'PY'"), "{rows:?}");
-    assert!(rows[2].ends_with("  import re"), "{rows:?}");
-    // Other control characters still flatten to the replacement character.
-    assert!(rows[3].ends_with("  print(\"hi\u{fffd}\")"), "{rows:?}");
-    assert!(rows[4].ends_with("  PY"), "{rows:?}");
-    assert!(rows[5].ends_with("  cat /proc/meminfo"), "{rows:?}");
+    assert_eq!(rows[0], "│ 💻 ▾ bash python3 - <<'PY'", "{rows:?}");
+    // Each further command line hangs under where the command starts.
+    let column = |row: &str, text: &str| {
+        UnicodeWidthStr::width(&row[..row.find(text).expect("text on row")])
+    };
+    let start = column(&rows[0], "python3");
+    for (row, text) in [
+        (1, "import re"),
+        // Other control characters still flatten to the replacement character.
+        (2, "print(\"hi\u{fffd}\")"),
+        (3, "PY"),
+        (4, "cat /proc/meminfo"),
+    ] {
+        assert!(rows[row].ends_with(text), "{rows:?}");
+        assert_eq!(column(&rows[row], text), start, "{rows:?}");
+    }
+    // The whole command is the clickable title block; output follows it.
+    assert_eq!(region.header_lines, Some(5));
+    assert_eq!(rows[5], "│ ok", "{rows:?}");
     let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
     assert!(!rendered.contains("<<'PY'\u{fffd}"), "{rendered}");
 
@@ -386,7 +440,14 @@ fn bash_expanded_command_keeps_its_line_breaks() {
         .collect::<String>();
     let tool = state.tools.get_mut(&id).unwrap();
     tool.arguments = serde_json::json!({ "command": script }).to_string();
-    let layout = transcript_layout(&state, Some(&expanded), 80);
+    let layout = transcript_layout_with_level(
+        &state,
+        Some(&expanded),
+        80,
+        &Theme::default(),
+        &PlainHighlighter,
+        crate::state::EventLevel::Warning,
+    );
     let region = layout
         .regions
         .iter()
@@ -405,7 +466,7 @@ fn bash_expanded_command_keeps_its_line_breaks() {
 }
 
 #[test]
-fn bash_expanded_rows_sit_on_the_terminal_band() {
+fn expanded_tool_rows_form_a_title_and_output_panel() {
     let mut state = read_tool_state(
         "unused",
         ToolStatus::Completed,
@@ -415,8 +476,9 @@ fn bash_expanded_rows_sit_on_the_terminal_band() {
     );
     let id = read_tool_id(&state);
     let tool = state.tools.get_mut(&id).unwrap();
-    tool.presentation = presentation("bash", Some("printf hello"));
-    tool.arguments = r#"{"command":"printf hello"}"#.into();
+    let command = format!("printf {}", "long-argument ".repeat(8));
+    tool.presentation = presentation("bash", Some(command.trim_end()));
+    tool.arguments = serde_json::json!({ "command": command.trim_end() }).to_string();
     let expanded = HashSet::from([BlockId::Tool(id)]);
     for theme in [
         Theme::default(),
@@ -426,58 +488,90 @@ fn bash_expanded_rows_sit_on_the_terminal_band() {
         Theme::new(ThemeKind::Mono, ColorLevel::None),
         Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
     ] {
-        let collapsed = transcript_layout_with(&state, None, 80, &theme, &PlainHighlighter);
-        let region = collapsed
-            .regions
-            .iter()
-            .find(|region| region.id == BlockId::Tool(id))
-            .unwrap();
+        let at = |blocks, level| {
+            let layout =
+                transcript_layout_with_level(&state, blocks, 60, &theme, &PlainHighlighter, level);
+            let region = *layout
+                .regions
+                .iter()
+                .find(|region| region.id == BlockId::Tool(id))
+                .unwrap();
+            (layout, region)
+        };
+        let (collapsed, region) = at(None, crate::state::EventLevel::Warning);
         assert!(
             collapsed.lines[region.start_line..region.end_line]
                 .iter()
                 .flat_map(|line| &line.spans)
                 .all(|span| span.style.bg.is_none())
         );
-        let layout = transcript_layout_with(&state, Some(&expanded), 80, &theme, &PlainHighlighter);
-        let region = layout
-            .regions
-            .iter()
-            .find(|region| region.id == BlockId::Tool(id))
-            .unwrap();
+        let (layout, region) = at(Some(&expanded), crate::state::EventLevel::Warning);
         let rows = &layout.lines[region.start_line..region.end_line];
-        assert!(rows[0].to_string().contains("💻 ▾ bash printf hello"));
-        assert!(rows[1].to_string().contains("❯ printf hello"));
-        assert!(!snapshot_lines(rows).contains("arguments:"));
-        let body_width = rows[1].width();
+        let header_lines = region.header_lines.unwrap();
+        // The command no longer fits one row, so the title block hangs it
+        // over several; no `❯` echo of it follows.
+        assert!(header_lines > 1, "{}", snapshot_lines(rows));
+        assert!(!snapshot_lines(rows).contains('❯'));
+        // Title block, then one output panel (the `more lines` toggle
+        // included), then a clear spacer row before whatever follows.
+        let spacer = rows.len() - 1;
+        assert_eq!(rows[spacer].to_string().trim_end(), "│");
         for (index, row) in rows.iter().enumerate() {
-            let banded = !row.to_string().contains("more lines");
+            let expected = if index < header_lines {
+                theme.tool_title_background()
+            } else if index == spacer {
+                None
+            } else {
+                theme.terminal_background()
+            };
             // Counted chrome columns, not span text: `"│ "` in the middle of
-            // a row is tree output and belongs on the band.
+            // a row is output and belongs on the band.
             let chrome = usize::from(leading_gutter_columns(row));
             let mut column = 0;
-            for span in row.spans.iter() {
-                let is_gutter = column < chrome;
-                assert_eq!(
-                    span.style.bg,
-                    if banded && !is_gutter {
-                        theme.terminal_background()
-                    } else {
-                        None
-                    },
-                    "{index}: {row}"
-                );
+            let toggle = row.to_string().contains("more lines");
+            for span in &row.spans {
+                let background = if column < chrome { None } else { expected };
+                assert_eq!(span.style.bg, background, "{index}: {row}");
+                // Expanded text is ordinary text, not the status colour.
+                if column >= chrome && !toggle {
+                    assert_eq!(span.style.fg, None, "{index}: {row}");
+                }
                 column += UnicodeWidthStr::width(span.content.as_ref());
             }
-            if banded && theme.terminal_background().is_some() {
-                assert_eq!(row.width(), body_width);
+            if expected.is_some() {
+                assert_eq!(row.width(), 60, "{index}: {row}");
             }
         }
+        // Full arguments stay out of the default view and appear at `info`,
+        // fenced off by blank rows and a muted label.
+        assert!(!snapshot_lines(rows).contains("arguments"));
+        let (layout, region) = at(Some(&expanded), crate::state::EventLevel::Info);
+        let rows: Vec<String> = layout.lines[region.start_line..region.end_line]
+            .iter()
+            .map(|line| line.to_string().trim_end().to_owned())
+            .collect();
+        let label = rows.iter().position(|row| row == "│ arguments").unwrap();
+        let header_lines = region.header_lines.unwrap();
+        assert_eq!(label, header_lines + 1, "{rows:?}");
+        assert_eq!(rows[header_lines], "│", "{rows:?}");
+        assert!(rows[label + 1].ends_with('{'), "{rows:?}");
+        let closing = rows.iter().position(|row| row == "│ }").unwrap();
+        assert_eq!(rows[closing + 1], "│", "{rows:?}");
+        assert!(rows[closing + 2].contains("output 0"), "{rows:?}");
     }
     state.tools.get_mut(&id).unwrap().arguments = r#"{"command":42}"#.into();
-    assert!(
-        snapshot_lines(&transcript_layout(&state, Some(&expanded), 80).lines)
-            .contains(r#"arguments: {"command":42}"#)
+    let info = snapshot_lines(
+        &transcript_layout_with_level(
+            &state,
+            Some(&expanded),
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Info,
+        )
+        .lines,
     );
+    assert!(info.contains(r#""command": 42"#), "{info}");
 }
 
 #[test]
@@ -602,7 +696,14 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
             .collect()
     };
     let tool_rows = |width: u16| {
-        let layout = transcript_layout(&state, Some(&expanded), width);
+        let layout = transcript_layout_with_level(
+            &state,
+            Some(&expanded),
+            width,
+            &Theme::default(),
+            &PlainHighlighter,
+            crate::state::EventLevel::Warning,
+        );
         for line in &layout.lines {
             assert!(
                 line.width() <= usize::from(width),
@@ -639,8 +740,9 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
     assert_eq!(
         tool_rows(6),
         [
-            "[T✓] ▾",
-            "    ❯",
+            "[T✓]▾b",
+            "    as",
+            "    h",
             "    ec",
             "    ho",
             "    世",
@@ -654,13 +756,14 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
             "     i",
             "     a",
             "     l",
+            "",
         ]
     );
     assert_eq!(
         tool_rows(2),
         [
-            "…▾", "❯", "ec", "ho", "世", "界", "界", "界", " p", " a", " r", " t", " i", " a",
-            " l",
+            "▾b", "as", "h", "ec", "ho", "世", "界", "界", "界", " p", " a", " r", " t", " i",
+            " a", " l", "",
         ]
     );
     // The other shared wrappers carry the same guarantee, and the same
@@ -715,10 +818,14 @@ fn expanded_bash_body_yields_its_hanging_indent_to_wide_graphemes() {
     let narrow = tool_rows(1);
     assert!(narrow.iter().any(|row| row == "…"), "{narrow:?}");
     assert!(!narrow.iter().any(|row| row.contains('世')), "{narrow:?}");
-    assert!(
-        tool_rows(8).iter().any(|row| row == "│ 世界界"),
-        "{:?}",
-        tool_rows(8)
+    // At eight columns every wide glyph of the command survives on the
+    // title block's hanging rows.
+    let rows = tool_rows(8);
+    assert!(rows.iter().any(|row| row.ends_with('世')), "{rows:?}");
+    assert_eq!(
+        rows.iter().filter(|row| row.ends_with('界')).count(),
+        3,
+        "{rows:?}"
     );
 }
 
@@ -734,10 +841,17 @@ fn read_rows_render_book_header_and_hide_duplicate_argument_lines() {
     let collapsed = transcript_layout(&state, None, 80);
     assert!(snapshot_lines(&collapsed.lines).contains("📖 ▸ read src/main.rs"));
     let expanded = HashSet::from([BlockId::Tool(id)]);
-    let layout = transcript_layout(&state, Some(&expanded), 80);
+    let layout = transcript_layout_with_level(
+        &state,
+        Some(&expanded),
+        80,
+        &Theme::default(),
+        &PlainHighlighter,
+        crate::state::EventLevel::Warning,
+    );
     let text = snapshot_lines(&layout.lines);
     assert!(text.contains("📖 ▾ read src/main.rs"));
-    assert!(!text.contains("arguments:"));
+    assert!(!text.contains("arguments"));
     assert!(!text.contains("Read file src/main.rs"));
     assert_eq!(text.matches("src/main.rs").count(), 1);
     assert!(text.contains("fn main() {}"));
@@ -794,9 +908,9 @@ async fn bash_header_hover_covers_visible_header_only() {
             .find(|region| region.id == BlockId::Tool(id))
             .unwrap();
         let header_lines = region.header_lines.unwrap();
-        // The header takes exactly one row: an over-long argument truncates
-        // to the row instead of wrapping a second header line.
-        assert_eq!(header_lines, 1);
+        // Expanded, the over-long command finishes on hanging rows, and all
+        // of them belong to the one hoverable header.
+        assert!(header_lines > 1, "{header_lines}");
         for (offset, visible_header_lines) in [
             (0, header_lines),
             (region.start_line + 1, header_lines - 1),
@@ -1015,4 +1129,96 @@ fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
         .filter(|(_, _, bg)| *bg != background)
         .collect::<Vec<_>>();
     assert!(unpainted.is_empty(), "{unpainted:?}\n{rendered}");
+}
+
+#[test]
+fn only_bash_paints_expanded_backgrounds() {
+    let path = "src/very/deeply/nested/module/with/a/long/path/transcript.rs";
+    let mut state = read_tool_state(path, ToolStatus::Completed, "result");
+    let id = read_tool_id(&state);
+    state.tools.get_mut(&id).unwrap().presentation = presentation("read", Some(path));
+    let expanded = HashSet::from([BlockId::Tool(id)]);
+    let layout = transcript_layout_with_level(
+        &state,
+        Some(&expanded),
+        40,
+        &Theme::default(),
+        &PlainHighlighter,
+        crate::state::EventLevel::Warning,
+    );
+    let region = layout
+        .regions
+        .iter()
+        .find(|region| region.id == BlockId::Tool(id))
+        .unwrap();
+    let rows = &layout.lines[region.start_line..region.end_line];
+    // The path still finishes on a clickable multi-row title block…
+    let header_lines = region.header_lines.unwrap();
+    assert!(header_lines > 1, "{}", snapshot_lines(rows));
+    // …but without the bash title tint or output band, in ordinary text,
+    // and with a clear row after it.
+    assert!(
+        rows.iter()
+            .flat_map(|row| &row.spans)
+            .all(|span| span.style.bg.is_none()),
+        "{}",
+        snapshot_lines(rows)
+    );
+    assert_eq!(rows.last().unwrap().to_string().trim_end(), "│");
+}
+
+#[test]
+fn collapsed_tool_rows_are_muted_and_only_a_failure_suffix_keeps_its_colour() {
+    let theme = Theme::default();
+    let muted = theme.muted_text().fg;
+    assert!(muted.is_some());
+    assert_ne!(muted, theme.tool_success().fg);
+    let mut state = read_tool_state("unused", ToolStatus::Completed, "result");
+    let id = read_tool_id(&state);
+    state.tools.get_mut(&id).unwrap().presentation = presentation("bash", Some("make test"));
+    for status in [
+        ToolStatus::Running,
+        ToolStatus::Completed,
+        ToolStatus::Failed,
+        ToolStatus::Cancelled,
+        ToolStatus::Interrupted,
+    ] {
+        let failed = matches!(
+            status,
+            ToolStatus::Failed | ToolStatus::Cancelled | ToolStatus::Interrupted
+        );
+        state.tools.get_mut(&id).unwrap().status = status.clone();
+        let layout = transcript_layout(&state, None, 80);
+        let region = layout
+            .regions
+            .iter()
+            .find(|region| region.id == BlockId::Tool(id))
+            .unwrap();
+        let row = &layout.lines[region.start_line];
+        let chrome = usize::from(leading_gutter_columns(row));
+        let mut column = 0;
+        for span in &row.spans {
+            if column >= chrome && !span.content.trim().is_empty() {
+                let is_suffix = failed
+                    && ["failed", "cancelled", "interrupted"]
+                        .iter()
+                        .any(|word| span.content.trim() == *word);
+                let expected = if is_suffix {
+                    theme.tool_failure().fg
+                } else {
+                    muted
+                };
+                assert_eq!(span.style.fg, expected, "{status:?}: {row}");
+            }
+            column += UnicodeWidthStr::width(span.content.as_ref());
+        }
+        if failed {
+            assert!(
+                row.spans
+                    .iter()
+                    .any(|span| span.style.fg == theme.tool_failure().fg),
+                "{status:?}: {row}"
+            );
+        }
+    }
 }

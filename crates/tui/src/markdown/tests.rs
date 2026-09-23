@@ -138,17 +138,7 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
     assert_eq!(
         strings(&heading_lines),
         [
-            "One ▐code▌",
-            "",
-            "Two",
-            "",
-            "Three",
-            "",
-            "Four",
-            "",
-            "Five",
-            "",
-            "Six"
+            "One code", "", "Two", "", "Three", "", "Four", "", "Five", "", "Six"
         ]
     );
     let heading_lines = heading_lines
@@ -876,7 +866,7 @@ fn markdown_terminal_snapshot_covers_required_block_aesthetics() {
     assert_snapshot!(rendered, @r#"
 Result
 
-bold and italic, ▐code▌, link <https://example.test>.
+bold and italic, code, link <https://example.test>.
 
 • [x] done
 • [ ] next
@@ -966,10 +956,10 @@ fn table_cells_keep_inline_markup_styles_with_distinct_inline_code_foreground() 
         .flat_map(|line| line.spans.iter())
         .find(|span| span.content.contains("render()"))
         .expect("inline code span");
-    // Inline code sits on the code parchment in the default theme, the
-    // same tint as code blocks, never reverse video.
-    assert!(code_span.style.bg.is_some());
-    assert!(code_span.style.fg.is_some());
+    // Inline code keeps its own near-body colour inside a cell, with no
+    // tint and never reverse video.
+    assert_eq!(code_span.style.bg, None);
+    assert_eq!(code_span.style.fg, Theme::default().inline_code().fg);
     assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
     assert!(
         lines
@@ -1126,60 +1116,59 @@ fn table_cells_never_inject_control_sequences() {
 }
 
 #[test]
-fn inline_code_is_marked_by_a_tint_or_by_backticks() {
+fn inline_code_is_marked_by_colour_a_tint_or_backticks() {
     let document = MarkdownDocument::new("before `let x = 1;` after".into());
-    for (theme, has_background) in [
-        (Theme::default(), true),
+    for (theme, expected) in [
+        // Bakery palettes: the code's own near-body colour, nothing else.
+        (Theme::default(), "before let x = 1; after"),
+        // A tinted chip widened by half-block caps.
         (
             Theme::new(
                 crate::theme::ThemeKind::HighContrast,
                 crate::theme::ColorLevel::Ansi16,
             ),
-            true,
+            "before ▐let x = 1;▌ after",
         ),
+        // No colour at all: backticks and bold carry it.
         (
             Theme::new(
                 crate::theme::ThemeKind::Mono,
                 crate::theme::ColorLevel::None,
             ),
-            false,
+            "before `let x = 1;` after",
         ),
     ] {
         let lines = render_markdown(&document, &theme, &PlainHighlighter);
+        assert_eq!(strings(&lines).join(""), expected, "{:?}", theme.key());
         let code_span = lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .find(|span| span.content.contains("let x = 1;"))
             .expect("inline code span");
+        assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
         assert_eq!(
-            code_span.style.bg.is_some(),
-            has_background,
+            code_span.style.fg,
+            theme.inline_code().fg,
             "{:?}",
             theme.key()
         );
-        assert!(!code_span.style.add_modifier.contains(Modifier::REVERSED));
-        // A tinted chip replaces the backticks, widened by half-block caps
-        // drawn in the chip colour; without a tint the backticks stay and
-        // bold carries the distinction in mono terminals, so inline code
-        // never depends on color alone.
-        let rendered = strings(&lines).join("");
-        if has_background {
-            assert_eq!(rendered, "before ▐let x = 1;▌ after");
-            let cap = theme.inline_code_cap().expect("cap style");
-            assert_eq!(cap.fg, code_span.style.bg, "{:?}", theme.key());
-            for glyph in ["▐", "▌"] {
-                assert!(
-                    lines
-                        .iter()
-                        .flat_map(|line| line.spans.iter())
-                        .any(|span| span.content == glyph && span.style == cap),
-                    "{glyph} cap: {:?}",
-                    theme.key()
-                );
+        match theme.inline_code_cap() {
+            Some(cap) => {
+                assert_eq!(cap.fg, code_span.style.bg, "{:?}", theme.key());
+                for glyph in ["▐", "▌"] {
+                    assert!(
+                        lines
+                            .iter()
+                            .flat_map(|line| line.spans.iter())
+                            .any(|span| span.content == glyph && span.style == cap),
+                        "{glyph} cap: {:?}",
+                        theme.key()
+                    );
+                }
             }
-        } else {
-            assert!(rendered.contains("`let x = 1;`"));
+            None => assert_eq!(code_span.style.bg, None, "{:?}", theme.key()),
         }
+        // Never colour alone where there is no colour to carry it.
         assert!(
             code_span.style.add_modifier.contains(Modifier::BOLD)
                 || theme.key().colors != crate::theme::ColorLevel::None

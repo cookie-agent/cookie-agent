@@ -350,8 +350,10 @@ pub(super) fn assistant_child_layout(
                 let noun = if hidden_lines == 1 { "line" } else { "lines" };
                 format!("💭 ▸ {status} ({hidden_lines} {noun} hidden)")
             };
+            // Thinking is secondary to the reply: its row reads as muted body
+            // text whether collapsed or expanded.
             let mut lines = assistant_body_line(
-                Line::from(Span::styled(label, theme.thinking())),
+                Line::from(Span::styled(label, theme.muted_text())),
                 width,
                 theme,
             );
@@ -527,24 +529,24 @@ pub(super) fn assistant_markdown_body_line(
     }
 }
 
+/// Expanded thinking: muted body text in italics behind a `┆` marker.
 pub(super) fn thinking_body_lines(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let style = theme
+        .muted_text()
+        .add_modifier(ratatui::style::Modifier::ITALIC);
     text.split('\n')
         .flat_map(|text| {
             let prefix = if width >= 5 {
                 vec![
                     Span::styled("│ ", theme.assistant()),
-                    Span::styled("┆ ", theme.thinking()),
+                    Span::styled("┆ ", style),
                 ]
             } else if width >= 3 {
-                vec![Span::styled("┆ ", theme.thinking())]
+                vec![Span::styled("┆ ", style)]
             } else {
                 Vec::new()
             };
-            repeated_prefixed_wrapped_line(
-                prefix,
-                Line::styled(text.to_owned(), theme.thinking()),
-                width,
-            )
+            repeated_prefixed_wrapped_line(prefix, Line::styled(text.to_owned(), style), width)
         })
         .collect()
 }

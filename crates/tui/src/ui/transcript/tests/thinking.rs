@@ -147,3 +147,40 @@ async fn thinking_clock_cycles_buckets_only_while_thinking_streams() {
     );
     assert!(!app.animation_active());
 }
+
+#[test]
+fn thinking_reads_as_muted_text_collapsed_and_expanded() {
+    let state = assistant_state(vec![AssistantChild::Thinking {
+        id: 10,
+        version: 0,
+        text: "a thought".into(),
+    }]);
+    let theme = Theme::default();
+    let header_style = |expanded: Option<&HashSet<BlockId>>| {
+        transcript_layout(&state, expanded, 60)
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("💭"))
+            .expect("thinking header")
+            .style
+    };
+    assert_eq!(header_style(None).fg, theme.muted_text().fg);
+    let expanded = HashSet::from([BlockId::Thinking(10)]);
+    assert_eq!(header_style(Some(&expanded)).fg, theme.muted_text().fg);
+    // The expanded text and its marker are muted too, in italics.
+    let layout = transcript_layout(&state, Some(&expanded), 60);
+    for span in layout
+        .lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter(|span| span.content.contains("a thought") || span.content == "┆ ")
+    {
+        assert_eq!(span.style.fg, theme.muted_text().fg, "{span:?}");
+        assert!(
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::ITALIC)
+        );
+    }
+}

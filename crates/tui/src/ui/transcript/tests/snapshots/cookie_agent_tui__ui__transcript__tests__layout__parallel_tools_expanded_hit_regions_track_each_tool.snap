@@ -6,10 +6,11 @@ expression: rendered
 │ launching both
 │
 │ 💻 ▾ bash sleep 2 …
-│ ❯ sleep 2
 │ model call: call-a
+│
 │ 💭 ▾ thought
 │ ┆ waiting on both
 │ 📖 ▾ read src/lib.rs
 │ ran true
 │ done
+│

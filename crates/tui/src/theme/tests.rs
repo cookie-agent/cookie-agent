@@ -170,8 +170,8 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
     ]
     .join("\n");
     assert_snapshot!(snapshot, @"
-        default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
-        default.panel: fg=None bg=Some(Rgb(251, 244, 230)) bold=false italic=false underline=false dim=false reverse=false
+        default.surface: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(255, 255, 255)) bold=false italic=false underline=false dim=false reverse=false
+        default.panel: fg=None bg=Some(Rgb(255, 255, 255)) bold=false italic=false underline=false dim=false reverse=false
         default.user: fg=Some(Rgb(156, 90, 16)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.assistant: fg=Some(Rgb(78, 122, 52)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.tool_running: fg=Some(Rgb(156, 74, 18)) bg=None bold=false italic=false underline=false dim=false reverse=false
@@ -180,7 +180,7 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         default.selected: fg=Some(Rgb(70, 48, 31)) bg=Some(Rgb(230, 206, 158)) bold=true italic=false underline=false dim=false reverse=false
         default.hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
         default.block_hover: fg=None bg=Some(Rgb(235, 216, 174)) bold=false italic=false underline=false dim=false reverse=false
-        default.terminal_background: fg=None bg=Some(Rgb(249, 241, 225)) bold=false italic=false underline=false dim=false reverse=false
+        default.terminal_background: fg=None bg=Some(Rgb(240, 238, 234)) bold=false italic=false underline=false dim=false reverse=false
         default.decision.allow: fg=Some(Rgb(47, 107, 56)) bg=None bold=true italic=false underline=false dim=false reverse=false
         default.decision.deny.active: fg=Some(Rgb(174, 51, 39)) bg=Some(Rgb(243, 213, 201)) bold=true italic=false underline=false dim=false reverse=false
         contrast.user: fg=Some(LightCyan) bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -192,7 +192,7 @@ fn semantic_theme_snapshot_is_deterministic_with_and_without_color() {
         contrast.warning: fg=Some(LightYellow) bg=None bold=true italic=false underline=false dim=false reverse=false
         mono.warning: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
         contrast.heading: fg=Some(White) bg=None bold=true italic=false underline=true dim=false reverse=false
-        default.inline_code: fg=Some(Rgb(98, 82, 64)) bg=Some(Rgb(242, 229, 204)) bold=false italic=false underline=false dim=false reverse=false
+        default.inline_code: fg=Some(Rgb(110, 78, 56)) bg=None bold=false italic=false underline=false dim=false reverse=false
         contrast.inline_code: fg=Some(Black) bg=Some(LightYellow) bold=true italic=false underline=false dim=false reverse=false
         mono.link: fg=None bg=None bold=true italic=false underline=true dim=false reverse=false
         mono.inline_code: fg=None bg=None bold=true italic=false underline=false dim=false reverse=false
@@ -249,8 +249,8 @@ fn dark_semantic_theme_snapshot_is_deterministic() {
     ]
     .join("\n");
     assert_snapshot!(snapshot, @"
-        dark.surface: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
-        dark.panel: fg=None bg=Some(Rgb(32, 28, 22)) bold=false italic=false underline=false dim=false reverse=false
+        dark.surface: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(0, 0, 0)) bold=false italic=false underline=false dim=false reverse=false
+        dark.panel: fg=None bg=Some(Rgb(0, 0, 0)) bold=false italic=false underline=false dim=false reverse=false
         dark.user: fg=Some(Rgb(199, 119, 30)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.assistant: fg=Some(Rgb(96, 151, 64)) bg=None bold=true italic=false underline=false dim=false reverse=false
         dark.tool_running: fg=Some(Rgb(217, 130, 70)) bg=None bold=false italic=false underline=false dim=false reverse=false
@@ -259,66 +259,86 @@ fn dark_semantic_theme_snapshot_is_deterministic() {
         dark.selected: fg=Some(Rgb(237, 199, 171)) bg=Some(Rgb(99, 86, 59)) bold=true italic=false underline=false dim=false reverse=false
         dark.hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
         dark.block_hover: fg=None bg=Some(Rgb(76, 67, 48)) bold=false italic=false underline=false dim=false reverse=false
-        dark.terminal_background: fg=None bg=Some(Rgb(41, 37, 29)) bold=false italic=false underline=false dim=false reverse=false
+        dark.terminal_background: fg=None bg=Some(Rgb(42, 41, 39)) bold=false italic=false underline=false dim=false reverse=false
         dark.decision.allow: fg=Some(Rgb(74, 170, 89)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.decision.deny.active: fg=Some(Rgb(32, 28, 22)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
+        dark.decision.deny.active: fg=Some(Rgb(0, 0, 0)) bg=Some(Rgb(191, 123, 95)) bold=true italic=false underline=false dim=false reverse=false
         dark.warning: fg=Some(Rgb(204, 149, 45)) bg=None bold=true italic=false underline=false dim=false reverse=false
-        dark.inline_code: fg=Some(Rgb(201, 181, 156)) bg=Some(Rgb(57, 51, 38)) bold=false italic=false underline=false dim=false reverse=false
+        dark.inline_code: fg=Some(Rgb(212, 150, 108)) bg=None bold=false italic=false underline=false dim=false reverse=false
         ");
 }
 
 #[test]
-fn inline_code_is_tinted_in_bakery_palettes_and_bold_elsewhere() {
-    for (theme, has_background, bold) in [
+fn inline_code_is_a_near_text_colour_in_bakery_palettes() {
+    // (theme, coloured without a tint, tinted chip, bold)
+    for (theme, coloured, tinted, bold) in [
         (
             Theme::new(ThemeKind::Default, ColorLevel::TrueColor),
             true,
+            false,
             false,
         ),
         (
             Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
             true,
             false,
-        ),
-        (
-            Theme::new(ThemeKind::Default, ColorLevel::Ansi16),
-            true,
             false,
         ),
         (
             Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
             true,
             false,
+            false,
+        ),
+        (
+            Theme::new(ThemeKind::Dark, ColorLevel::Ansi256),
+            true,
+            false,
+            false,
+        ),
+        // Sixteen colours have no near shade: the body colour on the tint.
+        (
+            Theme::new(ThemeKind::Default, ColorLevel::Ansi16),
+            false,
+            true,
+            false,
         ),
         (
             Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+            false,
             true,
             true,
         ),
-        (Theme::new(ThemeKind::Mono, ColorLevel::None), false, true),
+        (
+            Theme::new(ThemeKind::Mono, ColorLevel::None),
+            false,
+            false,
+            true,
+        ),
     ] {
         let style = theme.inline_code();
         assert_eq!(
-            style.bg.is_some(),
-            has_background,
-            "background: {:?}",
+            theme.inline_code_is_coloured(),
+            coloured,
+            "{:?}",
             theme.key()
         );
-        assert!(
-            !style.add_modifier.contains(Modifier::REVERSED),
-            "no reverse video: {:?}",
+        assert_eq!(style.bg.is_some(), tinted, "background: {:?}", theme.key());
+        assert_eq!(
+            theme.inline_code_cap().is_some(),
+            tinted,
+            "caps: {:?}",
             theme.key()
         );
-        // Distinction is never color-only: the bakery tint is the code-block
-        // parchment, and without a tint bold (plus backticks) carries it.
+        assert!(!style.add_modifier.contains(Modifier::REVERSED));
         assert_eq!(
             style.add_modifier.contains(Modifier::BOLD),
             bold,
             "weight: {:?}",
             theme.key()
         );
-        if has_background && !bold {
-            assert_eq!(style.bg, theme.code_background(), "{:?}", theme.key());
+        if coloured {
+            assert!(style.fg.is_some());
+            assert_ne!(style.fg, theme.surface().fg, "{:?}", theme.key());
         }
     }
 }
@@ -362,10 +382,10 @@ fn block_hover_never_underlines_at_any_capability() {
 }
 
 #[test]
-fn terminal_bands_stay_close_to_the_surface_and_below_hover() {
+fn terminal_bands_are_a_muted_grey_apart_from_hover() {
     for (kind, rgb, indexed, ansi16) in [
-        (ThemeKind::Default, (249, 241, 225), 230, Color::White),
-        (ThemeKind::Dark, (41, 37, 29), 235, Color::Black),
+        (ThemeKind::Default, (0xF0, 0xEE, 0xEA), 255, Color::White),
+        (ThemeKind::Dark, (0x2A, 0x29, 0x27), 235, Color::Black),
     ] {
         for (level, expected) in [
             (ColorLevel::TrueColor, Some(Color::Rgb(rgb.0, rgb.1, rgb.2))),
@@ -382,14 +402,56 @@ fn terminal_bands_stay_close_to_the_surface_and_below_hover() {
                 assert_eq!(Theme::new(flat, level).terminal_background(), None);
             }
         }
-        let palette = Theme::new(kind, ColorLevel::TrueColor).palette();
-        for (band, surface) in [rgb.0, rgb.1, rgb.2].into_iter().zip([
-            palette.cream.rgb.0,
-            palette.cream.rgb.1,
-            palette.cream.rgb.2,
-        ]) {
-            assert!(band.abs_diff(surface) <= 10);
+        // A muted grey: channels within a few steps of each other, so shell
+        // output never reads as the warm code tint.
+        let (max, min) = (rgb.0.max(rgb.1).max(rgb.2), rgb.0.min(rgb.1).min(rgb.2));
+        assert!(max - min <= 6, "{rgb:?}");
+    }
+}
+
+#[test]
+fn tool_title_band_is_one_grey_step_past_the_output_band() {
+    fn luminance(rgb: (u8, u8, u8)) -> u32 {
+        u32::from(rgb.0) * 2126 + u32::from(rgb.1) * 7152 + u32::from(rgb.2) * 722
+    }
+    for (kind, palette) in [
+        (ThemeKind::Default, &super::LIGHT),
+        (ThemeKind::Dark, &super::DARK),
+    ] {
+        let truecolor = Theme::new(kind, ColorLevel::TrueColor);
+        let pan = palette.pan.rgb;
+        assert_eq!(
+            truecolor.tool_title_background(),
+            Some(Color::Rgb(pan.0, pan.1, pan.2))
+        );
+        // The same muted grey as the output band, one step further from the
+        // surface, so title and output read as one panel.
+        let (max, min) = (pan.0.max(pan.1).max(pan.2), pan.0.min(pan.1).min(pan.2));
+        assert!(max - min <= 8, "{pan:?}");
+        let (surface, output, title) = (
+            luminance(palette.cream.rgb),
+            luminance(palette.terminal.rgb),
+            luminance(pan),
+        );
+        assert!(
+            surface.abs_diff(title) > surface.abs_diff(output),
+            "{kind:?}"
+        );
+        for level in [ColorLevel::TrueColor, ColorLevel::Ansi256] {
+            let theme = Theme::new(kind, level);
+            assert_ne!(theme.tool_title_background(), theme.block_hover().bg);
+            assert_ne!(theme.tool_title_background(), theme.terminal_background());
         }
+        // No sixteen-colour cell sits between the band and the hover fill.
+        for level in [ColorLevel::Ansi16, ColorLevel::None] {
+            assert_eq!(Theme::new(kind, level).tool_title_background(), None);
+        }
+    }
+    for flat in [ThemeKind::Mono, ThemeKind::HighContrast] {
+        assert_eq!(
+            Theme::new(flat, ColorLevel::TrueColor).tool_title_background(),
+            None
+        );
     }
 }
 
@@ -402,7 +464,8 @@ fn warm_background_bands_hand_pick_ansi256_cells() {
     assert_eq!(theme.surface().bg, Some(Color::Indexed(231)));
     assert_eq!(theme.panel().bg, Some(Color::Indexed(231)));
     assert_eq!(theme.code_background(), Some(Color::Indexed(230)));
-    assert_eq!(theme.terminal_background(), Some(Color::Indexed(230)));
+    assert_eq!(theme.terminal_background(), Some(Color::Indexed(255)));
+    assert_eq!(theme.tool_title_background(), Some(Color::Indexed(254)));
     assert_eq!(theme.hover().bg, Some(Color::Indexed(223)));
     assert_eq!(theme.hover_fill().bg, Some(Color::Indexed(223)));
     assert_eq!(theme.selected().bg, Some(Color::Indexed(222)));
@@ -440,7 +503,7 @@ fn palette_colors_use_hand_picked_ansi256_cells() {
     let theme = Theme::new(ThemeKind::Default, ColorLevel::Ansi256);
     for (rgb, cell) in [
         (super::LIGHT.cream.rgb, 231),
-        (super::LIGHT.terminal.rgb, 230),
+        (super::LIGHT.terminal.rgb, 255),
         (super::LIGHT.parchment.rgb, 230),
         (super::LIGHT.glaze.rgb, 223),
         (super::LIGHT.toasted.rgb, 222),
@@ -449,7 +512,7 @@ fn palette_colors_use_hand_picked_ansi256_cells() {
         (super::LIGHT.tan.rgb, 240),
         (super::LIGHT.honey.rgb, 94),
         (super::LIGHT.espresso.rgb, 236),
-        (super::LIGHT.cocoa.rgb, 239),
+        (super::LIGHT.cocoa.rgb, 95),
         (super::LIGHT.latte.rgb, 95),
         (super::LIGHT.ash.rgb, 241),
         (super::LIGHT.quote.rgb, 243),
@@ -465,6 +528,7 @@ fn palette_colors_use_hand_picked_ansi256_cells() {
         (super::LIGHT.allow_tint.rgb, 194),
         (super::LIGHT.deny_tint.rgb, 224),
         (super::LIGHT.neutral_tint.rgb, 187),
+        (super::LIGHT.pan.rgb, 254),
     ] {
         assert_eq!(
             theme.quantize_rgb(rgb.0, rgb.1, rgb.2),
@@ -535,6 +599,7 @@ fn dark_palette_preserves_hues() {
         "deny_tint",
         "neutral_tint",
         "ink",
+        "pan",
     ];
     for ((name, light), dark) in names
         .into_iter()
@@ -767,7 +832,7 @@ fn surfaces_and_interactions_degrade_gracefully_without_color() {
 }
 
 #[test]
-fn inline_code_ink_is_muted_but_readable_on_its_tint() {
+fn inline_code_and_muted_text_stay_close_to_the_body_colour() {
     fn luminance(rgb: (u8, u8, u8)) -> f64 {
         let channel = |value: u8| {
             let value = f64::from(value) / 255.0;
@@ -787,14 +852,19 @@ fn inline_code_ink_is_muted_but_readable_on_its_tint() {
         (high + 0.05) / (low + 0.05)
     }
     for palette in [&super::LIGHT, &super::DARK] {
-        let ink = contrast(palette.ink.rgb, palette.parchment.rgb);
-        let body = contrast(palette.espresso.rgb, palette.parchment.rgb);
-        // WCAG AA for body-size text, yet quieter than the body text.
-        assert!(ink >= 4.5, "ink contrast {ink:.2}");
-        assert!(
-            ink < body,
-            "ink {ink:.2} must be quieter than body {body:.2}"
-        );
+        let body = contrast(palette.espresso.rgb, palette.cream.rgb);
+        for (name, rgb) in [
+            ("inline code", palette.cocoa.rgb),
+            ("muted text", palette.ink.rgb),
+        ] {
+            let readable = contrast(rgb, palette.cream.rgb);
+            // WCAG AA for body-size text, yet quieter than the body text…
+            assert!(readable >= 4.5, "{name} contrast {readable:.2}");
+            assert!(readable < body, "{name} {readable:.2} vs body {body:.2}");
+            // …and a near neighbour of it, never a separate accent.
+            let distance = contrast(rgb, palette.espresso.rgb);
+            assert!(distance < 2.0, "{name} strays {distance:.2} from body");
+        }
     }
 }
 
@@ -821,4 +891,18 @@ fn known_truecolor_terminals_fill_in_a_missing_colorterm() {
         &colorterm_with_hints(String::new(), true, ""),
     );
     assert_eq!(theme.key().colors, ColorLevel::TrueColor);
+}
+
+#[test]
+fn inline_code_differs_from_body_text_at_every_colour_level() {
+    for kind in [ThemeKind::Default, ThemeKind::Dark] {
+        for level in [ColorLevel::Ansi256, ColorLevel::TrueColor] {
+            let theme = Theme::new(kind, level);
+            assert_ne!(
+                theme.inline_code().fg,
+                theme.surface().fg,
+                "{kind:?} {level:?}"
+            );
+        }
+    }
 }

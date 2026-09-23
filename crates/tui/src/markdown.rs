@@ -1447,9 +1447,9 @@ impl<'a> MarkdownRenderer<'a> {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(*tag),
             Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => self.text(text),
-            // A tinted chip marks inline code on its own, widened by a
-            // half-block cap on each side; themes without a tint keep the
-            // backticks as the marker.
+            // Inline code is marked by its own colour where the theme has
+            // one, by a tinted chip widened with half-block caps where the
+            // theme tints it, and otherwise by its backticks.
             Event::Code(code) => {
                 let style = self
                     .styles
@@ -1462,6 +1462,9 @@ impl<'a> MarkdownRenderer<'a> {
                         self.span(INLINE_CODE_OPEN.to_owned(), cap);
                         self.span(code.to_string(), style);
                         self.span(INLINE_CODE_CLOSE.to_owned(), cap);
+                    }
+                    None if self.theme.inline_code_is_coloured() => {
+                        self.span(code.to_string(), style);
                     }
                     None => self.span(format!("`{code}`"), style),
                 }

@@ -104,7 +104,7 @@ fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
 }
 
 #[test]
-fn inline_code_spans_sit_on_the_code_tint_and_high_contrast_keeps_its_chip() {
+fn inline_code_spans_take_a_near_body_colour_and_high_contrast_keeps_its_chip() {
     fn inline_code_style(theme: &Theme) -> ratatui::style::Style {
         let state = assistant_state(vec![AssistantChild::Text {
             id: 1,
@@ -121,10 +121,10 @@ fn inline_code_spans_sit_on_the_code_tint_and_high_contrast_keeps_its_chip() {
             .style
     }
 
-    // Default theme: warm terracotta on the code-block parchment, in
-    // regular weight; the tint replaces the source backticks.
+    // Default theme: a near-body colour, no tint, regular weight; the
+    // colour replaces the source backticks.
     let default = inline_code_style(&Theme::default());
-    assert_eq!(default.bg, Theme::default().code_background());
+    assert_eq!(default.bg, None);
     assert_eq!(default.fg, Theme::default().inline_code().fg);
     assert!(
         !default

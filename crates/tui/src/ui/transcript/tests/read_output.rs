@@ -36,19 +36,21 @@ fn read_errors_and_non_read_tools_stay_plain() {
         .filter(|span| span.content.contains("permission denied"))
         .filter_map(|span| span.style.fg)
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(failure_colors.len(), 1, "{failure_colors:?}");
+    // Expanded, a failure reads as ordinary text; its header suffix names
+    // the failure.
+    assert!(failure_colors.is_empty(), "{failure_colors:?}");
     let mut bash = read_tool_state("src/main.rs", ToolStatus::Completed, "fn main() {}");
     bash.tools.values_mut().next().expect("tool").presentation = presentation("bash", None);
     let lines = expanded_read_layout(&bash, &Theme::default());
-    // A non-read tool never gets read highlighting: content spans share
-    // the single tool-success foreground.
+    // A non-read tool never gets read highlighting: its content is ordinary
+    // text, with no foreground of its own.
     let content_colors = lines
         .iter()
         .flat_map(|line| line.spans.iter())
         .filter(|span| span.content.contains("fn main"))
         .filter_map(|span| span.style.fg)
         .collect::<std::collections::HashSet<_>>();
-    assert_eq!(content_colors.len(), 1);
+    assert!(content_colors.is_empty(), "{content_colors:?}");
 }
 
 #[test]

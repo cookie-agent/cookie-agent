@@ -310,41 +310,35 @@ pub(super) fn tool_child_layout(
     };
     let mut budget = RenderBudget::new(limits);
     let mut remaining_sections = section_count;
-    let tool_name = tool.presentation.title.as_str();
     let chevron = if is_expanded { '▾' } else { '▸' };
     let (header, title) = tool_header_row(tool, chevron, &suffix, context.width);
-    let mut body = vec![ToolBodyLine::wrapped(Line::from(header))];
+    let mut body = Vec::new();
     if is_expanded {
-        if tool_name == "read"
-            && let Some(path) = tool.presentation.primary_argument.as_ref()
-            && title != format!("{tool_name} {path}")
-        {
-            // Tabs survive `safe_display_text` but the renderer drops control
-            // characters outright, so flatten them first: the expanded path must
-            // show the same text the collapsed header flattened to.
-            let path = safe_display_text(&path.as_str().replace('\t', " "));
-            body.push(ToolBodyLine::wrapped(Line::from(format!("path: {path}"))));
-        }
-        if tool_name != "read" {
-            let command = arguments.as_ref().and_then(|args| args.command.as_deref());
-            if tool_name == "bash"
-                && let Some(command) = command
-            {
-                body.extend(
-                    bash_command_lines(command)
-                        .into_iter()
-                        .map(|line| ToolBodyLine::wrapped(Line::from(line))),
-                );
-            } else {
-                body.push(ToolBodyLine::wrapped(Line::from(format!(
-                    "arguments: {}",
-                    display_tool_arguments(tool, arguments.as_ref())
-                ))));
-            }
+        body.extend(expanded_title_lines(
+            tool,
+            arguments.as_ref(),
+            ExpandedHeader {
+                row: header,
+                title: &title,
+                chevron,
+                suffix: &suffix,
+            },
+            context.width,
+        ));
+        // Everything under the title: full arguments (diagnostic detail,
+        // shown only at the `info` filter and below), then the response.
+        let mut panel = Vec::new();
+        if context.minimum_event_level <= crate::state::EventLevel::Info {
+            panel.extend(argument_section_lines(
+                tool,
+                arguments.as_ref(),
+                context.theme,
+                !tool.detail.is_empty(),
+            ));
         }
         if !tool.detail.is_empty() {
             remaining_sections -= 1;
-            body.extend(tool_body_lines(
+            panel.extend(tool_body_lines(
                 tool,
                 arguments.as_ref(),
                 context,
@@ -354,13 +348,41 @@ pub(super) fn tool_child_layout(
                 remaining_sections,
             ));
         }
-    }
-    if tool_name == "bash" && is_expanded {
-        for line in &mut body {
-            line.banded = line.output_toggle.is_none();
+        // Only shell output gets the backgrounds: a grey title block over a
+        // lighter grey output panel.
+        if tool.presentation.title.as_str() == "bash" {
+            for line in &mut body {
+                line.band = Some(ToolBand::Title);
+            }
+            for line in &mut panel {
+                line.band = Some(ToolBand::Terminal);
+            }
         }
+        body.extend(panel);
+        // One clear row between the panel and whatever follows it.
+        body.push(ToolBodyLine::wrapped(Line::default()));
+    } else {
+        // Collapsed rows are muted body text; only a failure's status suffix
+        // keeps the error colour, so failed calls still stand out.
+        let line = match header.strip_suffix(suffix.as_str()) {
+            Some(head) if matches!(role, Role::ToolFailure) && !suffix.is_empty() => {
+                Line::from(vec![
+                    Span::raw(head.to_owned()),
+                    Span::styled(suffix.clone(), context.theme.tool_failure()),
+                ])
+            }
+            _ => Line::from(header),
+        };
+        body.push(ToolBodyLine::wrapped(line));
     }
-    let rendered = tool_block_lines(role, body, context.width, context.theme);
+    // Collapsed rows are muted body text; expanded blocks are ordinary text
+    // whose header suffix still names a failure.
+    let text_style = if is_expanded {
+        context.theme.body()
+    } else {
+        context.theme.muted_text()
+    };
+    let rendered = tool_block_lines_with(text_style, role, body, context.width, context.theme);
     let mut regions = vec![BlockRegion {
         id: block_id,
         start_line: 0,
@@ -417,6 +439,15 @@ impl<'a> ParsedToolArguments<'a> {
     }
 }
 
+/// Bytes of full arguments the `info`-level section shows before eliding.
+const MAX_ARGUMENT_BYTES: usize = 2 * 1024;
+
+/// Rows of full arguments the `info`-level section shows before eliding.
+const MAX_ARGUMENT_LINES: usize = 48;
+
+/// The full call arguments for the `info`-level section: pretty-printed JSON,
+/// or the raw text when it does not parse. Edit and write name their file only;
+/// their content is the diff shown below.
 pub(super) fn display_tool_arguments(
     tool: &crate::state::ToolCallState,
     arguments: Option<&ParsedToolArguments<'_>>,
@@ -424,34 +455,59 @@ pub(super) fn display_tool_arguments(
     if matches!(tool.presentation.title.as_str(), "edit" | "write")
         && let Some(path) = arguments.and_then(ParsedToolArguments::file_path)
     {
-        return format!("filePath={path} (content shown below)");
+        return format!("filePath: {path} (content shown below)");
     }
-    const MAX_ARGUMENT_BYTES: usize = 2 * 1024;
-    let (arguments, complete) = sanitized_display_prefix(&tool.arguments, MAX_ARGUMENT_BYTES);
-    if complete {
-        arguments
-    } else {
-        format!("{arguments}…")
-    }
+    serde_json::from_str::<serde_json::Value>(&tool.arguments)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| tool.arguments.clone())
 }
 
-/// Bytes of a bash command the expanded row shows before eliding the rest.
+/// Full arguments, set well apart from the response: a blank row, a muted
+/// `arguments` label, the muted body, and a blank row before any output.
+fn argument_section_lines(
+    tool: &crate::state::ToolCallState,
+    arguments: Option<&ParsedToolArguments<'_>>,
+    theme: &Theme,
+    output_follows: bool,
+) -> Vec<ToolBodyLine> {
+    let muted = theme.muted();
+    let mut lines = vec![
+        ToolBodyLine::wrapped(Line::default()),
+        ToolBodyLine::wrapped(Line::styled("arguments", muted)),
+    ];
+    lines.extend(
+        bounded_safe_display_text(
+            &display_tool_arguments(tool, arguments),
+            muted,
+            MAX_ARGUMENT_LINES,
+            MAX_ARGUMENT_BYTES,
+        )
+        .into_iter()
+        .map(ToolBodyLine::wrapped),
+    );
+    if output_follows {
+        lines.push(ToolBodyLine::wrapped(Line::default()));
+    }
+    lines
+}
+
+/// Bytes of a bash command the expanded title block shows before eliding.
 const MAX_COMMAND_BYTES: usize = 2 * 1024;
 
-/// The `❯ command` body of an expanded bash row: one line per command line,
-/// so a heredoc or multi-line script keeps its line breaks instead of showing
-/// each newline as a replacement character. The byte budget spans all lines,
-/// and an elided tail is marked on the last line shown.
+/// A bash command split for the expanded title block: one entry per command
+/// line, so a heredoc or multi-line script keeps its line breaks instead of
+/// showing each newline as a replacement character. The byte budget spans all
+/// lines, and an elided tail is marked on the last line shown.
 fn bash_command_lines(command: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut remaining = MAX_COMMAND_BYTES;
-    let mut source_lines = command.split('\n').peekable();
+    let mut source_lines = command.trim_end_matches('\n').split('\n').peekable();
     while let Some(line) = source_lines.next() {
-        let prefix = if lines.is_empty() { "❯ " } else { "  " };
         let (text, complete) = sanitized_display_prefix(line, remaining);
         remaining = remaining.saturating_sub(text.len());
         let elided = !complete || (remaining == 0 && source_lines.peek().is_some());
-        lines.push(format!("{prefix}{text}{}", if elided { "…" } else { "" }));
+        lines.push(format!("{text}{}", if elided { "…" } else { "" }));
         if elided {
             break;
         }
@@ -459,6 +515,65 @@ fn bash_command_lines(command: &str) -> Vec<String> {
         remaining = remaining.saturating_sub(1);
     }
     lines
+}
+
+/// The collapsed header row and the pieces an expanded title block reuses.
+pub(super) struct ExpandedHeader<'a> {
+    pub(super) row: String,
+    pub(super) title: &'a str,
+    pub(super) chevron: char,
+    pub(super) suffix: &'a str,
+}
+
+/// An expanded tool's title block: the header row, then — only when the
+/// collapsed header had to shorten the primary argument — the rest of it on
+/// hanging rows aligned under where the argument starts. Bash shows its full
+/// command with its own line breaks. Every row is part of the clickable header.
+fn expanded_title_lines(
+    tool: &crate::state::ToolCallState,
+    arguments: Option<&ParsedToolArguments<'_>>,
+    header: ExpandedHeader<'_>,
+    width: u16,
+) -> Vec<ToolBodyLine> {
+    let name = tool.presentation.title.as_str();
+    let chrome = tool_header_chrome(tool_icon(name), header.chevron, width);
+    let indent = UnicodeWidthStr::width(chrome.as_str()) + UnicodeWidthStr::width(name) + 1;
+    let full = if name == "bash" {
+        arguments
+            .and_then(|arguments| arguments.command.as_deref())
+            .map(bash_command_lines)
+    } else {
+        None
+    }
+    .or_else(|| {
+        tool.presentation
+            .primary_argument
+            .as_ref()
+            .map(|argument| vec![flatten_header_argument(argument.as_str())])
+    });
+    let finished = match full.as_deref() {
+        None | Some([]) => true,
+        Some([only]) => header.title == format!("{name} {only}"),
+        Some(_) => false,
+    };
+    if finished {
+        return vec![ToolBodyLine::title(Line::from(header.row), indent)];
+    }
+    let lines = full.unwrap_or_default();
+    let last = lines.len() - 1;
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let lead = if index == 0 {
+                format!("{chrome}{name} ")
+            } else {
+                " ".repeat(indent)
+            };
+            let suffix = if index == last { header.suffix } else { "" };
+            ToolBodyLine::title(Line::from(format!("{lead}{text}{suffix}")), indent)
+        })
+        .collect()
 }
 
 /// Identity for a tool row: a started call or a committed placeholder index.
@@ -475,17 +590,32 @@ impl From<cookie_agent_protocol::ToolCallId> for BlockKey {
 
 pub(super) enum ToolBodyLineKind {
     Wrapped,
+    /// Wrapped with continuation rows indented by `indent` columns.
+    Hanging {
+        indent: usize,
+    },
     Code {
         first_gutter: Vec<Span<'static>>,
         continuation_gutter: Vec<Span<'static>>,
     },
 }
 
+/// A full-width background behind a tool body row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ToolBand {
+    /// The expanded title block.
+    Title,
+    /// Shell output.
+    Terminal,
+}
+
 pub(super) struct ToolBodyLine {
     pub(super) line: Line<'static>,
     pub(super) kind: ToolBodyLineKind,
     pub(super) output_toggle: Option<ToolOutputSection>,
-    pub(super) banded: bool,
+    pub(super) band: Option<ToolBand>,
+    /// Part of the block's clickable header (an expanded title block row).
+    pub(super) header: bool,
 }
 
 impl ToolBodyLine {
@@ -494,7 +624,19 @@ impl ToolBodyLine {
             line,
             kind: ToolBodyLineKind::Wrapped,
             output_toggle: None,
-            banded: false,
+            band: None,
+            header: false,
+        }
+    }
+
+    /// A row of an expanded title block, wrapping under `indent`.
+    pub(super) fn title(line: Line<'static>, indent: usize) -> Self {
+        Self {
+            line,
+            kind: ToolBodyLineKind::Hanging { indent },
+            output_toggle: None,
+            band: None,
+            header: true,
         }
     }
 
@@ -514,7 +656,8 @@ impl ToolBodyLine {
                 continuation_gutter,
             },
             output_toggle: None,
-            banded: false,
+            band: None,
+            header: false,
         }
     }
 
@@ -523,7 +666,8 @@ impl ToolBodyLine {
             line,
             kind: ToolBodyLineKind::Wrapped,
             output_toggle: Some(section),
-            banded: false,
+            band: None,
+            header: false,
         }
     }
 }
@@ -697,18 +841,26 @@ pub(super) struct ToolBlockLayout {
     pub(super) chrome: Vec<u16>,
 }
 
+/// A collapsed-style tool block: muted body text. `role` still picks the
+/// narrow-row status label.
 pub(super) fn tool_block_lines(
     role: Role,
     body: Vec<ToolBodyLine>,
     width: u16,
     theme: &Theme,
 ) -> ToolBlockLayout {
-    let style = match role {
-        Role::ToolRunning => theme.tool_running(),
-        Role::ToolSuccess => theme.tool_success(),
-        Role::ToolFailure => theme.tool_failure(),
-        _ => theme.tool(),
-    };
+    tool_block_lines_with(theme.muted_text(), role, body, width, theme)
+}
+
+/// [`tool_block_lines`] with an explicit base text style: an expanded block
+/// uses ordinary text rather than its status colour.
+pub(super) fn tool_block_lines_with(
+    style: Style,
+    role: Role,
+    body: Vec<ToolBodyLine>,
+    width: u16,
+    theme: &Theme,
+) -> ToolBlockLayout {
     let mut lines = Vec::new();
     let mut output_toggles = Vec::new();
     let mut banded_rows = Vec::new();
@@ -721,7 +873,8 @@ pub(super) fn tool_block_lines(
     let mut gutters = Vec::new();
     let mut header_lines = 0;
     for (index, body_line) in body.into_iter().enumerate() {
-        let banded = body_line.banded;
+        let band = body_line.band;
+        let header = body_line.header;
         let output_toggle = body_line.output_toggle;
         let line_style = body_line.line.style;
         let spans = body_line
@@ -736,7 +889,7 @@ pub(super) fn tool_block_lines(
         let line = Line::from(spans).style(line_style);
         let start = lines.len();
         match body_line.kind {
-            ToolBodyLineKind::Wrapped if width < 8 => {
+            ToolBodyLineKind::Wrapped | ToolBodyLineKind::Hanging { .. } if width < 8 => {
                 // The label and its aligned indent share one budget, so every
                 // wrapped row of the block stays inside the viewport.
                 let reserve = unbreakable_columns(&line);
@@ -755,6 +908,12 @@ pub(super) fn tool_block_lines(
                 let gutter = vec![Span::styled("│ ", theme.assistant())];
                 let chrome = usize::from(gutter_fits(&gutter, &line, width));
                 lines.extend(repeated_prefixed_wrapped_line(gutter, line, width));
+                gutters.resize(lines.len(), chrome);
+            }
+            ToolBodyLineKind::Hanging { indent } => {
+                let gutter = vec![Span::styled("│ ", theme.assistant())];
+                let chrome = usize::from(gutter_fits(&gutter, &line, width));
+                lines.extend(repeated_prefixed_hanging_line(gutter, line, width, indent));
                 gutters.resize(lines.len(), chrome);
             }
             ToolBodyLineKind::Code {
@@ -811,21 +970,28 @@ pub(super) fn tool_block_lines(
                 }
             }
         }
-        if index == 0 {
+        // An expanded title block's rows are all header: one click target,
+        // one hover highlight.
+        if index == 0 || header {
             header_lines = lines.len();
         }
         if let Some(section) = output_toggle {
             output_toggles.push((section, start, lines.len()));
         }
-        if banded {
-            banded_rows.extend((start..lines.len()).map(|row| (row, gutters[row])));
+        let background = match band {
+            Some(ToolBand::Title) => theme.tool_title_background(),
+            Some(ToolBand::Terminal) => theme.terminal_background(),
+            None => None,
+        };
+        if let Some(background) = background {
+            banded_rows.extend((start..lines.len()).map(|row| (row, gutters[row], background)));
         }
     }
-    if let Some(background) = theme.terminal_background() {
+    {
         // The band spans the block's full width, not its widest row, so short
         // output still reads as one solid panel.
         let band_width = usize::from(width);
-        for (index, chrome) in banded_rows {
+        for (index, chrome, background) in banded_rows {
             let line = &mut lines[index];
             // The band stops at the block's own gutter: those spans keep their
             // background and the content beside them takes the terminal band.
@@ -836,7 +1002,9 @@ pub(super) fn tool_block_lines(
             let padding = band_width.saturating_sub(line.width());
             line.spans.push(Span::raw(" ".repeat(padding)));
             for span in &mut line.spans[content_start..] {
-                span.style = span.style.bg(background);
+                if span.style.bg.is_none() {
+                    span.style = span.style.bg(background);
+                }
             }
         }
     }

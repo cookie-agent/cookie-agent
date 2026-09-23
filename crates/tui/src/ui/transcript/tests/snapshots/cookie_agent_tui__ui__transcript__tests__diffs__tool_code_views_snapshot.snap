@@ -4,13 +4,24 @@ expression: "snapshot_lines(&transcript_layout(&state, Some(&expanded), 60).line
 ---
 ╭─ primary • gateway/arbitrary-model[base]
 │ 📖 ▾ read src/main.rs
+│
+│ arguments
+│ {
+│   "filePath": "src/main.rs"
+│ }
+│
 │    1 │ fn main() {
 │ 1000 │     println!("hi");
 │ metadata: {"kind":"text"}
+│
 │ ✏️ ▾ edit src/main.rs
-│ arguments: filePath=src/main.rs (content shown below)
+│
+│ arguments
+│ filePath: src/main.rs (content shown below)
+│
 │ @@ -1 +1 @@
 │ 1 - │ let old = 1;
 │ 1 + │ let new = 2;
 │ \ No newline at end of file
 │ Edit applied atomically
+│

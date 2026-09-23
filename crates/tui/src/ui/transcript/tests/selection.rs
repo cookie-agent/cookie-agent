@@ -890,7 +890,8 @@ async fn ctrl_a_selects_the_whole_draft_for_copy_typing_and_paste() {
 
 #[test]
 fn inline_code_caps_never_reach_copied_text() {
-    let theme = Theme::default();
+    // High contrast is the theme that still draws chip caps.
+    let theme = Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16);
     let lines = crate::markdown::render_markdown_width(
         &MarkdownDocument::new("run `cargo test` or `a``b` now".into()),
         &theme,

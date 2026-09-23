@@ -1,9 +1,9 @@
 //! Semantic terminal themes and capability-aware color quantization.
 //!
-//! The default theme is a warm, light "cookie" palette: one cream surface
-//! across the whole frame, espresso-brown text, and caramel/cinnamon/sage
-//! accents. Every TrueColor foreground is chosen for WCAG-AA-or-better
-//! contrast against the cream surface; ANSI-256 and ANSI-16 are hue-faithful
+//! The default theme is a warm, light "cookie" palette: one white surface
+//! (black in the dark table) across the whole frame, espresso-brown text,
+//! and caramel/cinnamon/sage accents. Every TrueColor foreground is chosen for WCAG-AA-or-better
+//! contrast against the white surface; ANSI-256 and ANSI-16 are hue-faithful
 //! degradations. State is never conveyed by color alone (bold/italic/underline
 //! and text markers accompany every semantic color). `Mono` drops all color,
 //! `HighContrast` keeps bright ANSI colors on the terminal's own background.
@@ -76,12 +76,15 @@ struct Palette {
     allow_tint: Swatch,
     deny_tint: Swatch,
     neutral_tint: Swatch,
-    /// Muted body text: inline code on the parchment tint.
+    /// Muted body text: collapsed tool and thinking rows.
     ink: Swatch,
+    /// Expanded tool title block: one grey step deeper than the `terminal`
+    /// output band, so title and output read as one panel.
+    pan: Swatch,
 }
 
 impl Palette {
-    fn swatches(&self) -> [Swatch; 27] {
+    fn swatches(&self) -> [Swatch; 28] {
         [
             self.cream,
             self.terminal,
@@ -110,6 +113,7 @@ impl Palette {
             self.deny_tint,
             self.neutral_tint,
             self.ink,
+            self.pan,
         ]
     }
 
@@ -129,8 +133,8 @@ const fn swatch(rgb: (u8, u8, u8), ansi256: u8, ansi16: Color) -> Swatch {
 // Role names describe the bakery hue across both tables. The light table is
 // the v2 palette; the dark table re-lights those roles for an espresso surface.
 const LIGHT: Palette = Palette {
-    cream: swatch((0xFB, 0xF4, 0xE6), 231, Color::White),
-    terminal: swatch((0xF9, 0xF1, 0xE1), 230, Color::White),
+    cream: swatch((0xFF, 0xFF, 0xFF), 231, Color::White),
+    terminal: swatch((0xF0, 0xEE, 0xEA), 255, Color::White),
     parchment: swatch((0xF2, 0xE5, 0xCC), 230, Color::Gray),
     glaze: swatch((0xEB, 0xD8, 0xAE), 223, Color::Gray),
     toasted: swatch((0xE6, 0xCE, 0x9E), 222, Color::Gray),
@@ -138,7 +142,7 @@ const LIGHT: Palette = Palette {
     border: swatch((0x6B, 0x4F, 0x2C), 240, Color::DarkGray),
     tan: swatch((0x71, 0x54, 0x30), 240, Color::DarkGray),
     espresso: swatch((0x46, 0x30, 0x1F), 236, Color::Black),
-    cocoa: swatch((0x6E, 0x4E, 0x38), 239, Color::Cyan),
+    cocoa: swatch((0x6E, 0x4E, 0x38), 95, Color::Cyan),
     latte: swatch((0x7A, 0x59, 0x41), 95, Color::DarkGray),
     ash: swatch((0x62, 0x5E, 0x66), 241, Color::DarkGray),
     quote: swatch((0x6F, 0x62, 0x50), 243, Color::DarkGray),
@@ -156,11 +160,12 @@ const LIGHT: Palette = Palette {
     deny_tint: swatch((0xF3, 0xD5, 0xC9), 224, Color::LightRed),
     neutral_tint: swatch((0xE6, 0xDC, 0xC6), 187, Color::Gray),
     ink: swatch((0x62, 0x52, 0x40), 239, Color::DarkGray),
+    pan: swatch((0xE7, 0xE4, 0xDF), 254, Color::Gray),
 };
 
 const DARK: Palette = Palette {
-    cream: swatch((0x20, 0x1C, 0x16), 234, Color::Black),
-    terminal: swatch((0x29, 0x25, 0x1D), 235, Color::Black),
+    cream: swatch((0x00, 0x00, 0x00), 16, Color::Black),
+    terminal: swatch((0x2A, 0x29, 0x27), 235, Color::Black),
     parchment: swatch((0x39, 0x33, 0x26), 236, Color::DarkGray),
     glaze: swatch((0x4C, 0x43, 0x30), 238, Color::DarkGray),
     toasted: swatch((0x63, 0x56, 0x3B), 240, Color::Gray),
@@ -186,6 +191,7 @@ const DARK: Palette = Palette {
     deny_tint: swatch((0xBF, 0x7B, 0x5F), 203, Color::LightRed),
     neutral_tint: swatch((0x96, 0x8A, 0x71), 173, Color::Gray),
     ink: swatch((0xC9, 0xB5, 0x9C), 180, Color::Gray),
+    pan: swatch((0x36, 0x34, 0x31), 237, Color::DarkGray),
 };
 
 #[derive(Clone, Debug)]
@@ -424,12 +430,24 @@ impl Theme {
         self.background_color(self.palette().parchment, None)
     }
 
-    /// Barely tinted terminal band for shell commands and their output.
+    /// Muted grey band for shell output: neutral beside the warm code
+    /// tint, so command output never reads as highlighted source.
     pub fn terminal_background(&self) -> Option<Color> {
         if !self.is_bakery_palette() {
             return None;
         }
         self.background_color(self.palette().terminal, None)
+    }
+
+    /// Background of an expanded tool's title block (header plus the rest of
+    /// its primary argument): a grey one step deeper than the output band.
+    /// Sixteen-colour terminals have no grey ladder, so the block stays
+    /// untinted there rather than collide with the hover fill.
+    pub fn tool_title_background(&self) -> Option<Color> {
+        if !self.is_bakery_palette() || self.key.colors == ColorLevel::Ansi16 {
+            return None;
+        }
+        self.background_color(self.palette().pan, None)
     }
 
     /// Interactive block hover preserves foregrounds and never underlines.
@@ -512,6 +530,12 @@ impl Theme {
 
     pub fn muted(&self) -> Style {
         self.semantic(self.palette().latte, Color::White, Modifier::DIM)
+    }
+
+    /// The body text colour one step quieter, for rows that summarise hidden
+    /// content: collapsed tool calls and thinking.
+    pub fn muted_text(&self) -> Style {
+        self.semantic(self.palette().ink, Color::White, Modifier::DIM)
     }
 
     pub fn user(&self) -> Style {
@@ -599,18 +623,18 @@ impl Theme {
     /// code-block parchment, in regular weight, which is marker enough that
     /// the renderer drops the backticks; other themes keep bold text and
     /// the backticks.
+    /// Inline code in the bakery palettes is text, not a chip: a close
+    /// cousin of the body colour (cocoa beside espresso) with no tint, so it
+    /// never breaks a line into padded blocks. Sixteen colours have no such
+    /// near shade and keep the body colour on the code tint; colourless and
+    /// high-contrast themes keep a weight or chip cue.
     pub fn inline_code(&self) -> Style {
+        if self.inline_code_is_coloured() {
+            return self.semantic(self.palette().cocoa, Color::Black, Modifier::empty());
+        }
         if let Some(background) = self.code_background() {
-            // A muted take on the body text. Sixteen colours cannot mute it:
-            // there the muted greys match the tint, so the chip keeps the
-            // body text colour.
-            let ink = if self.key.colors == ColorLevel::Ansi16 {
-                self.palette().espresso
-            } else {
-                self.palette().ink
-            };
             return self
-                .semantic(ink, Color::Black, Modifier::empty())
+                .semantic(self.palette().espresso, Color::Black, Modifier::empty())
                 .bg(background);
         }
         let foreground = self.semantic(self.palette().terracotta, Color::Black, Modifier::BOLD);
@@ -620,6 +644,13 @@ impl Theme {
             ColorLevel::Ansi16 | ColorLevel::Ansi256 | ColorLevel::TrueColor => None,
         };
         background.map_or(foreground, |background| foreground.bg(background))
+    }
+
+    /// Whether inline code's own text colour marks it, so it needs neither a
+    /// chip nor backticks.
+    pub fn inline_code_is_coloured(&self) -> bool {
+        self.is_bakery_palette()
+            && matches!(self.key.colors, ColorLevel::Ansi256 | ColorLevel::TrueColor)
     }
 
     /// The half-block caps (`▐` before, `▌` after) that widen a tinted
