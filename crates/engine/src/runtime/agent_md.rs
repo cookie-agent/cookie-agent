@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::Read as _,
-    path::Path,
-};
+use std::{fs::File, io::Read as _, path::Path};
 
 use cookie_agent_protocol::{AgentMdEntry, AgentMdSkipped, SafeDisplayText};
 

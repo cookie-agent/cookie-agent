@@ -466,10 +466,7 @@ impl Engine {
                     params.session_id,
                     Some(run_id),
                     event_origin("engine:agent-md"),
-                    Event::AgentMdSkipped {
-                        path,
-                        byte_length,
-                    },
+                    Event::AgentMdSkipped { path, byte_length },
                 )
                 .await
             {

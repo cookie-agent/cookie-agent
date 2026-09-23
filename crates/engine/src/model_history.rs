@@ -1282,7 +1282,10 @@ fn agent_md_turn(entries: &[cookie_agent_protocol::AgentMdEntry]) -> String {
         .iter()
         .map(|entry| {
             let source = escape_xml_attribute(entry.source.as_str());
-            format!("<contents from=\"{source}\">\n{}\n</contents>", entry.content)
+            format!(
+                "<contents from=\"{source}\">\n{}\n</contents>",
+                entry.content
+            )
         })
         .collect::<Vec<_>>()
         .join("\n\n");
