@@ -56,6 +56,7 @@ Review the requested change and report concrete findings.
 | `models` | array | *(required)* | Ordered model chain; must be nonempty for `primary`. Other modes may declare `[]`. |
 | `limits` | table | defaults below | Timeouts and token bounds. |
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](agents.md#permissions). At most 256 rules. |
+| `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](agents.md#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
 
 `max_output_tokens` applies in every mode and defaults to `0` in all of them. A
 nonzero value caps each request at the smaller of the document value and the
@@ -135,8 +136,10 @@ prompt, skill-listing, plugin, cache, and history assembly order.
 
 ## AGENTS.md context
 
-Root sessions automatically load AGENTS.md context at the start of every run. The
-files are read fresh, so edits apply to the next run:
+Root sessions automatically load AGENTS.md context at the start of every run
+unless it is turned off. The run agent's `agent_md` frontmatter decides when it is
+set; otherwise the global [`[agent_md]`](../engine/agent_md.md) `enabled` switch
+does. The files are read fresh, so edits apply to the next run:
 
 1. `.cookie-agent/agents/AGENTS.md` is the default project file. When the run
    uses a preset and `.cookie-agent/agents/<preset>/AGENTS.md` exists, that file

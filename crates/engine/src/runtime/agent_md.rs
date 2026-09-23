@@ -9,12 +9,14 @@ use super::{Engine, EngineError};
 pub(crate) const AGENT_MD_MAX_BYTES: u64 = AgentMdEntry::MAX_CONTENT_BYTES as u64;
 
 impl Engine {
+    /// `agent_override` is the run agent's `agent_md` frontmatter; when present
+    /// it replaces the global `[agent_md] enabled` switch.
     pub(crate) fn load_agent_md(
         &self,
         preset: Option<&str>,
+        agent_override: Option<bool>,
     ) -> Result<(Vec<AgentMdEntry>, Vec<AgentMdSkipped>), EngineError> {
-        let config = &self.inner.config.runtime.agent_md;
-        if !config.enabled {
+        if !agent_override.unwrap_or(self.inner.config.runtime.agent_md.enabled) {
             return Ok((Vec::new(), Vec::new()));
         }
         let cwd = self.inner.store.cwd();

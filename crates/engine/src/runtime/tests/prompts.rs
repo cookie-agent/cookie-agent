@@ -450,7 +450,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     let cwd_source = root.join("AGENTS.md").to_string_lossy().into_owned();
     let (entries, skipped) = fixture
         .engine
-        .load_agent_md(None)
+        .load_agent_md(None, None)
         .expect("default AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
@@ -464,7 +464,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     write_private_test_file(&preset.join("AGENTS.md"), "preset AGENTS.md context");
     let (entries, skipped) = fixture
         .engine
-        .load_agent_md(Some("python"))
+        .load_agent_md(Some("python"), None)
         .expect("preset AGENTS.md context");
     assert_eq!(entries.len(), 2);
     assert!(skipped.is_empty());
@@ -481,13 +481,13 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
 
     write_private_test_file(&root.join("AGENTS.md"), "fresh cwd context");
     assert_eq!(
-        fixture.engine.load_agent_md(None).unwrap().0[1].content,
+        fixture.engine.load_agent_md(None, None).unwrap().0[1].content,
         "fresh cwd context"
     );
     std::fs::remove_file(agents.join("AGENTS.md")).unwrap();
     std::fs::remove_file(preset.join("AGENTS.md")).unwrap();
     std::fs::remove_file(root.join("AGENTS.md")).unwrap();
-    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
 
@@ -495,13 +495,20 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     fixture.config.runtime.agent_md.enabled = false;
     fixture.engine = reopen_engine(&fixture);
     write_private_test_file(&root.join("AGENTS.md"), "disabled context");
-    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
     assert!(entries.is_empty());
     assert!(skipped.is_empty());
+    // An agent document's `agent_md` overrides the global switch both ways.
+    let (entries, _) = fixture.engine.load_agent_md(None, Some(true)).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].content, "disabled context");
 
     fixture.engine.shutdown().await;
     fixture.config.runtime.agent_md.enabled = true;
     fixture.engine = reopen_engine(&fixture);
+    let (entries, skipped) = fixture.engine.load_agent_md(None, Some(false)).unwrap();
+    assert!(entries.is_empty());
+    assert!(skipped.is_empty());
     write_private_test_file(&root.join("AGENTS.md"), "oversized context");
     let oversized = root.join("AGENTS.md");
     let oversized_len = crate::runtime::AGENT_MD_MAX_BYTES + 1;
@@ -511,7 +518,7 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
         .unwrap();
     file.set_len(oversized_len).unwrap();
     drop(file);
-    let (entries, skipped) = fixture.engine.load_agent_md(None).unwrap();
+    let (entries, skipped) = fixture.engine.load_agent_md(None, None).unwrap();
     assert!(entries.is_empty());
     assert_eq!(skipped.len(), 1);
     assert_eq!(
@@ -521,6 +528,54 @@ async fn agent_md_discovery_honors_override_addition_missing_disable_and_skip() 
     assert_eq!(skipped[0].byte_length, oversized_len);
     let rendered = crate::model_history::agent_md_turn_for_test(&entries);
     assert!(rendered.is_empty());
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn agent_document_can_opt_out_of_agent_md() {
+    let (endpoint, captured) = scripted_model_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        "---\ndescription: Lean agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\nagent_md: false\npermissions: {}\n---\nLean prompt.\n",
+    );
+    assert!(fixture.config.runtime.agent_md.enabled);
+    write_private_test_file(
+        &fixture._directory.path().join("AGENTS.md"),
+        "context the lean agent never sees",
+    );
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("agent-md-opt-out").unwrap(),
+                selection,
+                input: "run without AGENTS.md".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    let request = with_watchdog("captured fixture completion", captured)
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert!(!request.contains("context the lean agent never sees"));
+    assert!(!request.contains("<system-reminder>"));
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session.session_id)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .all(|event| !matches!(event.payload, EventPayload::AgentMdLoaded { .. }))
+    );
     fixture.engine.shutdown().await;
 }
 

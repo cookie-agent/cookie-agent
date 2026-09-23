@@ -243,6 +243,7 @@ fn built_in_internal_document(
         }],
         limits,
         permissions: IndexMap::new(),
+        agent_md: None,
     };
     let document_fingerprint = fingerprint(
         "cookie-agent/built-in-internal-agent-document/v2",
@@ -277,6 +278,7 @@ fn built_in_default_document(selection: &ModelSelection) -> Result<AgentDocument
         }],
         limits: AgentLimits::default(),
         permissions: built_in_default_permissions()?,
+        agent_md: None,
     };
     let document_fingerprint = fingerprint(
         "cookie-agent/built-in-default-document/v2",
@@ -566,6 +568,7 @@ mod tests {
                 max_output_tokens: 1_024,
             },
             permissions: IndexMap::new(),
+            agent_md: None,
         };
         let document_fingerprint = fingerprint(
             "cookie-agent/test-agent-document/v1",

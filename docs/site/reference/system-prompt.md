@@ -83,7 +83,9 @@ and no configuration switch enables that path.
 
 ## AGENTS.md context turn
 
-At each root run start, cookie agent discovers applicable `AGENTS.md` files and
+At each root run start where AGENTS.md loading is on (the run agent's
+`agent_md` frontmatter, else `[agent_md] enabled`), cookie agent discovers
+applicable `AGENTS.md` files and
 stores their bounded content in `agent_md_loaded`. Files larger than 2 MiB are
 skipped and surfaced as `AgentMdSkipped` warning events. History replays the
 latest run's entries as one user turn, wrapped in a `<system-reminder>` block

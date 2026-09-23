@@ -167,6 +167,10 @@ pub struct AgentFrontmatter {
     pub limits: AgentLimits,
     #[serde(default, deserialize_with = "deserialize_permissions")]
     pub permissions: IndexMap<PermissionAction, PermissionValue>,
+    /// Per-agent AGENTS.md loading. `None` defers to `[agent_md] enabled`;
+    /// a value overrides it for root runs of this agent.
+    #[serde(default)]
+    pub agent_md: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for AgentFrontmatter {
@@ -192,6 +196,8 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             limits: RawLimits,
             #[serde(default, deserialize_with = "deserialize_permissions")]
             permissions: IndexMap<PermissionAction, PermissionValue>,
+            #[serde(default)]
+            agent_md: Option<bool>,
         }
 
         let raw = RawFrontmatter::deserialize(deserializer)?;
@@ -212,6 +218,7 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
                 max_output_tokens: raw.limits.max_output_tokens.unwrap_or(0),
             },
             permissions: raw.permissions,
+            agent_md: raw.agent_md,
         })
     }
 }
@@ -316,6 +323,16 @@ fn validate_agent_document(
         return Err(ConfigError::AgentField {
             agent: document.id.clone(),
             field: "description",
+        });
+    }
+    // Only root runs load AGENTS.md, so the override is meaningless on agents
+    // that can never run as a root.
+    if frontmatter.agent_md.is_some()
+        && matches!(frontmatter.mode, AgentMode::Subagent | AgentMode::Internal)
+    {
+        return Err(ConfigError::AgentField {
+            agent: document.id.clone(),
+            field: "agent_md",
         });
     }
     if matches!(frontmatter.mode, AgentMode::Primary) && frontmatter.models.is_empty() {

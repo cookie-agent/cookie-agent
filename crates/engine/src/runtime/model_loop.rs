@@ -260,7 +260,11 @@ impl Engine {
             }
         }
         let (agent_md, agent_md_skipped) = if is_root {
-            self.load_agent_md(params.selection.preset.as_deref())?
+            let agent_override = run_policy
+                .registry
+                .get(&run_policy.agent.agent)
+                .and_then(|agent| agent.document.frontmatter.agent_md);
+            self.load_agent_md(params.selection.preset.as_deref(), agent_override)?
         } else {
             (Vec::new(), Vec::new())
         };

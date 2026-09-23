@@ -16,11 +16,26 @@ unfamiliar workspace; admission is independent of tool read permissions. See
 [security boundaries](../guide/security.md#agentsmd-context-files).
 
 Controls root-run `AGENTS.md` discovery documented in
-[Agents](../guide/agents.md#agentsmd-context).
+[Agents](../guide/agents.md#agentsmd-context). This is the global default; an
+agent document may set `agent_md: true` or `agent_md: false` to override it for
+that agent, for example to keep a lean agent's context free of repository
+instructions:
+
+```markdown
+---
+description: Minimal-context agent
+mode: primary
+enabled: true
+models:
+  - { model: "openai/gpt-5", variant: null }
+agent_md: false
+---
+Answer using only what the user provides.
+```
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Load `AGENTS.md` context files at each root run start. Delegated and internal agents remain excluded. |
+| `enabled` | boolean | `true` | Load `AGENTS.md` context files at each root run start. Delegated and internal agents remain excluded. An agent document's `agent_md` field, when present, overrides this for that agent's root runs. |
 
 Files larger than 2 MiB (`2097152` bytes) are skipped entirely and surfaced as
 an `AgentMdSkipped` warning event; they are never partially loaded or

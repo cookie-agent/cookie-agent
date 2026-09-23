@@ -128,6 +128,7 @@ fn test_agent_document(id: &AgentId) -> AgentDocument {
             }],
             limits: cookie_agent_config::AgentLimits::default(),
             permissions: Default::default(),
+            agent_md: None,
         },
         body: body.to_owned(),
         source: AgentDocumentSource::Workspace,
