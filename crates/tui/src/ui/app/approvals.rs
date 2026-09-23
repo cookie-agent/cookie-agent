@@ -316,34 +316,121 @@ pub(super) fn render_approval_actions(
     }
 }
 
-pub(super) fn approval_action_label(decision: ApprovalUserDecision, width: u16) -> &'static str {
-    let full = match decision {
-        ApprovalUserDecision::ApproveOnce => "✓ Allow once",
-        ApprovalUserDecision::ApproveTree => "✓ Allow all",
-        ApprovalUserDecision::Reject => "✗ Reject",
-        ApprovalUserDecision::Cancel => "⎋ Cancel",
-    };
-    if usize::from(width) >= full.len() + 2 {
-        return full;
-    }
-    let short = match decision {
-        ApprovalUserDecision::ApproveOnce => "✓ Once",
-        ApprovalUserDecision::ApproveTree => "✓ Tree",
-        ApprovalUserDecision::Reject => "✗ No",
-        ApprovalUserDecision::Cancel => "⎋ Esc",
-    };
-    if usize::from(width) >= short.len() + 2 {
-        return short;
-    }
+/// The key that answers an approval with `decision`: letters for the
+/// grants and the reject, Esc for cancel.
+pub(super) fn approval_hotkey(decision: ApprovalUserDecision) -> &'static str {
     match decision {
-        ApprovalUserDecision::ApproveOnce => "✓",
-        ApprovalUserDecision::ApproveTree => "✓T",
-        ApprovalUserDecision::Reject => "✗",
-        ApprovalUserDecision::Cancel => "⎋",
+        ApprovalUserDecision::ApproveOnce => "y",
+        ApprovalUserDecision::ApproveTree => "a",
+        ApprovalUserDecision::Reject => "n",
+        ApprovalUserDecision::Cancel => "esc",
     }
 }
 
+/// The decision a letter hotkey answers with, if this approval offers it.
+/// Case-insensitive so Caps Lock does not silently disable the keys.
+pub(super) fn approval_hotkey_decision(
+    character: char,
+    approval: &ApprovalState,
+) -> Option<ApprovalUserDecision> {
+    match character.to_ascii_lowercase() {
+        'y' if approval.constraints.allow_once => Some(ApprovalUserDecision::ApproveOnce),
+        'a' if approval.constraints.allow_tree_grant => Some(ApprovalUserDecision::ApproveTree),
+        'n' => Some(ApprovalUserDecision::Reject),
+        _ => None,
+    }
+}
+
+/// Button text, widest variant that fits: every variant names its key.
+pub(super) fn approval_action_label(decision: ApprovalUserDecision, width: u16) -> String {
+    let key = approval_hotkey(decision);
+    let (glyph, full, short) = match decision {
+        ApprovalUserDecision::ApproveOnce => ("✓", "Allow once", "Once"),
+        ApprovalUserDecision::ApproveTree => ("✓", "Allow all", "Tree"),
+        ApprovalUserDecision::Reject => ("✗", "Reject", "No"),
+        ApprovalUserDecision::Cancel => ("⎋", "Cancel", "Esc"),
+    };
+    let width = usize::from(width);
+    [
+        format!("{glyph} {full} [{key}]"),
+        format!("{glyph} {short} [{key}]"),
+        format!("{glyph} {key}"),
+    ]
+    .into_iter()
+    .find(|label| UnicodeWidthStr::width(label.as_str()) + 2 <= width)
+    .unwrap_or_else(|| glyph.to_owned())
+}
+
 impl App {
+    /// Keys while an approval is the topmost panel. The panel owns the
+    /// keyboard: scrolling, the decision hotkeys, Esc (cancel, when
+    /// allowed), and Ctrl-C (cancel the run). Anything else is dropped
+    /// rather than typed into the composer hidden behind the panel.
+    pub(super) async fn handle_approval_key(&mut self, key: KeyEvent) {
+        if is_approval_scroll_key(key.code) {
+            self.handle_approval_scroll_key(key.code);
+            return;
+        }
+        let Some(approval) = self.current_approval().cloned() else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                if approval.constraints.cancellable {
+                    self.answer_approval(ApprovalUserDecision::Cancel).await;
+                }
+            }
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
+                self.cancel_active_run();
+            }
+            KeyCode::Char(character) if is_printable_key(key) => {
+                let Some(decision) = approval_hotkey_decision(character, &approval) else {
+                    return;
+                };
+                if self.approval_hotkeys_armed(&approval, Instant::now()) {
+                    self.answer_approval(decision).await;
+                } else {
+                    self.status = "Approval just appeared; press the key again to answer.".into();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Record which approval is on top now, restarting the hotkey grace
+    /// whenever a different request (or revision) appears. `None` means no
+    /// approval is on top, so the next one starts a fresh grace.
+    pub(super) fn note_approval_on_top(
+        &mut self,
+        on_top: Option<(cookie_agent_protocol::ApprovalId, u64)>,
+        now: Instant,
+    ) {
+        self.approval_shown =
+            on_top.map(
+                |(approval_id, request_revision)| match self.approval_shown {
+                    Some(shown)
+                        if shown.approval_id == approval_id
+                            && shown.request_revision == request_revision =>
+                    {
+                        shown
+                    }
+                    _ => ApprovalShown {
+                        approval_id,
+                        request_revision,
+                        at: now,
+                    },
+                },
+            );
+    }
+
+    /// Whether `approval` has been on top for the full grace. A request
+    /// that was never drawn starts its grace now.
+    fn approval_hotkeys_armed(&mut self, approval: &ApprovalState, now: Instant) -> bool {
+        self.note_approval_on_top(Some((approval.approval_id, approval.request_revision)), now);
+        self.approval_shown
+            .is_some_and(|shown| now.duration_since(shown.at) >= APPROVAL_HOTKEY_GRACE)
+    }
+
     pub(super) fn handle_approval_scroll_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Up => self.scroll_approval(true, 1),

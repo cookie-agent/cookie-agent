@@ -521,12 +521,34 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
     app.wait_for_skill_refresh_for_test().await;
     assert_eq!(app.skill_names_for_test(), ["fresh-skill"]);
     assert_eq!(app.skill_visible_for_test("fresh-skill"), Some(true));
+    // Palette → skills → pick the skill → type its arguments → Enter.
+    let key = |code, modifiers| crossterm::event::KeyEvent::new(code, modifiers);
+    let none = crossterm::event::KeyModifiers::NONE;
+    app.handle_key_for_test(key(
+        crossterm::event::KeyCode::Char('p'),
+        crossterm::event::KeyModifiers::CONTROL,
+    ))
+    .await;
+    for character in "skills".chars() {
+        app.handle_key_for_test(key(crossterm::event::KeyCode::Char(character), none))
+            .await;
+    }
+    app.handle_key_for_test(key(crossterm::event::KeyCode::Enter, none))
+        .await;
     assert!(
-        app.skill_palette_labels_for_test()
+        app.palette_labels_for_test()
             .iter()
             .any(|label| label.contains("/fresh-skill <value>"))
     );
-    app.submit_text_for_test("/fresh-skill value").await;
+    app.handle_key_for_test(key(crossterm::event::KeyCode::Enter, none))
+        .await;
+    for character in "value".chars() {
+        app.handle_key_for_test(key(crossterm::event::KeyCode::Char(character), none))
+            .await;
+    }
+    app.handle_key_for_test(key(crossterm::event::KeyCode::Enter, none))
+        .await;
+    assert!(!app.palette_open_for_test());
     let loaded = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             let mut run_id = None;
             loop {

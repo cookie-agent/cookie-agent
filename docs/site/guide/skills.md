@@ -23,7 +23,7 @@ skills shared with other agents that follow the cross-client convention.
 Same-named skills are replaced whole, never merged: a higher-precedence
 location wins, and within one directory scope the cookie-agent-native root wins
 over `.agents/skills`. Shadowed user-scope skills remain visible in
-`skills.list` and `/skills` diagnostics, but cannot be invoked. Skill files are
+`skills.list`, but cannot be invoked and are not offered by the TUI. Skill files are
 not hot-reloaded; restart the engine after changing them.
 
 ## Authoring
@@ -64,8 +64,11 @@ does not execute a shell.
 
 The model uses `skill({"name":"release-check","args":"v1.2.0"})`. The tool is
 absent when policy leaves no skill effectively usable, and skills with
-`disable-model-invocation: true` are omitted from the model listing. Users invoke
-a `user-invocable` skill with `/release-check v1.2.0` or headlessly with
+`disable-model-invocation: true` are omitted from the model listing. In the TUI, users
+choose `/skills` in the [command palette](run.md#command-palette), search for a
+`user-invocable` skill, press Enter, and type optional arguments such as
+`v1.2.0` into the prompt that follows. The highlighted skill's source,
+permission effect, and location show under the list. Headless runs use
 `cookie run --skill release-check --skill-args v1.2.0 "Check the release"`.
 
 Skill access uses the `skill` permission action and the skill name as its

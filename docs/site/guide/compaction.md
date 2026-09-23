@@ -164,13 +164,16 @@ trigger forms, and inheritance.
 
 ## Manual compaction
 
-`/compact` forces a checkpoint for the selected idle session:
+Choosing `/compact` in the [command palette](run.md#command-palette) forces a
+checkpoint for the selected idle session. The palette then asks for an
+optional focus, for example:
 
 ```text
-/compact preserve the parser decisions and failing test evidence
+preserve the parser decisions and failing test evidence
 ```
 
-The optional focus text is appended to the fixed compaction instruction so the
+Press Enter with the prompt empty to compact without a focus. The focus text is
+appended to the fixed compaction instruction so the
 summary emphasizes the areas you care about. Steering remains available while
 compaction runs; admitted pending inputs are promoted only after the checkpoint,
 honoring any recalls made during compaction.

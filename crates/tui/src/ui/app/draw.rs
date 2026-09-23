@@ -88,6 +88,7 @@ impl App {
             self.input_focused
                 && self.goal_focus.is_none()
                 && self.modal == Modal::None
+                && self.palette.is_none()
                 && self.selected.is_none_or(|session| {
                     !self.read_only_sessions.contains(&session) || self.new_session_draft.is_some()
                 }),
@@ -245,6 +246,21 @@ impl App {
             Modal::Models => {
                 self.render_model_picker(frame, centered(frame.area(), 56, 44));
             }
+            Modal::Variants => {
+                let title = self.variant_step_model.as_ref().map_or_else(
+                    || "Variant".to_owned(),
+                    |model| format!("Variant — {model}"),
+                );
+                let entries = self.variant_step_labels();
+                self.render_picker(
+                    frame,
+                    &title,
+                    entries,
+                    None,
+                    centered(frame.area(), 48, 40),
+                    Some("↑↓ move · enter: select · esc: back"),
+                );
+            }
             Modal::ConnectProviders => {
                 let match_count = self.filtered_providers().len();
                 let provider_count = self.providers.len();
@@ -349,14 +365,6 @@ impl App {
                     &self.theme,
                 );
             }
-            Modal::Skills => {
-                crate::ui::management::render_skills(
-                    frame,
-                    centered(frame.area(), 88, 76),
-                    &mut self.skill_panel,
-                    &self.theme,
-                );
-            }
             Modal::Usage => {
                 crate::ui::management::render_usage(
                     frame,
@@ -370,6 +378,13 @@ impl App {
         if self.command_palette_visible() {
             self.render_command_palette(frame, centered(frame.area(), 68, 60));
         }
+        // The hotkey grace runs only while the approval is what the user
+        // actually sees on top.
+        let approval_on_top = (self.modal == Modal::None && self.palette.is_none())
+            .then(|| self.current_approval())
+            .flatten()
+            .map(|approval| (approval.approval_id, approval.request_revision));
+        self.note_approval_on_top(approval_on_top, Instant::now());
         // Selection sits beneath hover: both are pure cell-style patches,
         // and the hover affordance always wins where they overlap.
         self.apply_selection(frame);
@@ -764,9 +779,12 @@ impl App {
     }
 
     pub(super) fn command_is_available(&self, spec: &CommandSpec) -> bool {
-        match spec.name {
-            "show" => !self.agent_panel_visible(),
-            "hide" => self.agent_panel_visible(),
+        if spec.writes_session && !self.session_writable() {
+            return false;
+        }
+        match spec.action {
+            PaletteAction::Run(SlashCommand::ShowAgentPanel) => !self.agent_panel_visible(),
+            PaletteAction::Run(SlashCommand::HideAgentPanel) => self.agent_panel_visible(),
             _ => true,
         }
     }
@@ -1356,24 +1374,106 @@ impl App {
 
     pub(in crate::ui) fn render_command_palette(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         self.clamp_palette_selection();
-        let entries = self.palette_entries();
-        let query = self.input.as_str().strip_prefix('/').unwrap_or_default();
-        let labels = entries
-            .iter()
-            .map(|entry| entry.label())
-            .collect::<Vec<_>>();
-        self.hit_map.palette = Some(area);
-        self.hit_map.palette_rows = crate::ui::slash::render(
-            frame,
-            query,
-            labels,
-            area,
-            &mut self.palette_state,
-            &self.theme,
-        )
-        .into_iter()
-        .map(|(rect, index)| PaletteRowHit { rect, index })
-        .collect();
+        let labels = self.palette_list_labels();
+        let detail = self.palette_skill_detail();
+        let Some(mut palette) = self.palette.take() else {
+            return;
+        };
+        let theme = &self.theme;
+        let (painted, rows) = match palette.steps.last_mut() {
+            None => {
+                let rows = crate::ui::slash::render_list(
+                    frame,
+                    area,
+                    crate::ui::slash::ListChrome {
+                        title: "Commands",
+                        hint: "↑↓ move · enter: choose · esc: close",
+                        empty_message: "No matching commands",
+                        detail: None,
+                    },
+                    Some((
+                        &mut palette.search,
+                        "Filter commands… (/ here types a literal /)",
+                    )),
+                    labels,
+                    &mut palette.list,
+                    theme,
+                );
+                (area, rows)
+            }
+            Some(PaletteStep::EventLevel { list }) => {
+                let rows = crate::ui::slash::render_list(
+                    frame,
+                    area,
+                    crate::ui::slash::ListChrome {
+                        title: "Event filter",
+                        hint: "↑↓ move · enter: apply · esc: back",
+                        empty_message: "",
+                        detail: None,
+                    },
+                    None,
+                    labels,
+                    list,
+                    theme,
+                );
+                (area, rows)
+            }
+            Some(PaletteStep::Skills { search, list }) => {
+                let rows = crate::ui::slash::render_list(
+                    frame,
+                    area,
+                    crate::ui::slash::ListChrome {
+                        title: "Skills",
+                        hint: "↑↓ move · enter: choose · esc: back",
+                        empty_message: "No matching skills",
+                        detail,
+                    },
+                    Some((search, "Filter skills…")),
+                    labels,
+                    list,
+                    theme,
+                );
+                (area, rows)
+            }
+            Some(PaletteStep::Text { target, input }) => {
+                let (title, placeholder, hint) = match target {
+                    TextTarget::GoalObjective => (
+                        "Goal".to_owned(),
+                        "Enter the goal objective…".to_owned(),
+                        "enter: set goal · esc: back",
+                    ),
+                    TextTarget::CompactFocus => (
+                        "Compact".to_owned(),
+                        "Optional focus to emphasize; enter alone compacts".to_owned(),
+                        "enter: compact · esc: back",
+                    ),
+                    TextTarget::SkillArguments { name, hint } => (
+                        format!("/{name}"),
+                        hint.as_deref().map_or_else(
+                            || "Arguments (optional)".to_owned(),
+                            |hint| format!("Arguments: {hint}"),
+                        ),
+                        "enter: run skill · esc: back",
+                    ),
+                };
+                let painted = crate::ui::slash::render_text(
+                    frame,
+                    area,
+                    &title,
+                    &placeholder,
+                    hint,
+                    input,
+                    theme,
+                );
+                (painted, Vec::new())
+            }
+        };
+        self.palette = Some(palette);
+        self.hit_map.palette = Some(painted);
+        self.hit_map.palette_rows = rows
+            .into_iter()
+            .map(|(rect, index)| PaletteRowHit { rect, index })
+            .collect();
     }
 }
 

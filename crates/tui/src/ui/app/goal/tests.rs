@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::ui::slash::{Submission, parse_submission};
 use crate::{client::Client, config::TuiConfig, state::SessionState, theme::Theme};
 
 struct ScriptedStream {
@@ -167,13 +166,19 @@ fn meta(session_id: SessionId, origin: SessionOrigin) -> SessionMeta {
         })).expect("session metadata")
 }
 
+/// Run a goal command written the way the tests read it: `/goal pause`,
+/// `/goal resume`, `/goal cancel`, or `/goal <objective>`. The palette only
+/// sets objectives; lifecycle controls come from the goal bar, and both
+/// reach the same `run_goal_command`.
 async fn dispatch(app: &mut App, input: &str) {
-    let Submission::Command(command) = parse_submission(input).expect("command") else {
-        panic!("expected command");
+    let command = match input.strip_prefix("/goal ").expect("goal command") {
+        "pause" => GoalCommand::Pause,
+        "resume" => GoalCommand::Resume,
+        "cancel" => GoalCommand::Cancel,
+        objective => GoalCommand::Objective(objective.to_owned()),
     };
-    tokio::time::timeout(Duration::from_secs(1), app.run_command(command))
-        .await
-        .expect("dispatch does not wait for RPC");
+    // Synchronous: the RPC runs in the background and reports back below.
+    app.run_goal_command(command);
     let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
         .await
         .expect("goal response")
@@ -261,6 +266,100 @@ async fn goal_activation_uses_exact_set_request_without_starting_a_run() {
         json!({"session_id": session_id, "objective": "finish  the parser", "selection": selection})
     );
     assert!(!app.goal_notices.contains_key(&session_id));
+}
+
+#[tokio::test]
+async fn palette_goal_step_prompts_for_the_objective_and_leaves_the_draft_alone() {
+    use crossterm::event::KeyModifiers;
+
+    let key = |code| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    let expected = goal(GoalStatus::Active);
+    let (mut app, requests) =
+        app_with_replies(vec![("session.goal.set", Ok(json!({"goal": expected})))]).await;
+    let session_id = SessionId::new_v7();
+    app.selected = Some(session_id);
+    app.sessions.push(meta(session_id, SessionOrigin::Root));
+    app.input.set_buffer("half-written message".into());
+    let selection = app.draft.clone().unwrap();
+    let type_text = async |app: &mut App, text: &str| {
+        for character in text.chars() {
+            app.handle_key(key(KeyCode::Char(character))).await;
+        }
+    };
+
+    app.handle_key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    ))
+    .await;
+    type_text(&mut app, "goal").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    let in_goal_step = |app: &App| {
+        matches!(
+            app.palette
+                .as_ref()
+                .and_then(|palette| palette.steps.last()),
+            Some(crate::ui::slash::PaletteStep::Text {
+                target: crate::ui::slash::TextTarget::GoalObjective,
+                ..
+            })
+        )
+    };
+    assert!(in_goal_step(&app));
+
+    // An empty objective is refused in place.
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(in_goal_step(&app));
+    assert!(app.status.contains("must not be empty"), "{}", app.status);
+
+    // Esc steps back to the command list with the search intact.
+    type_text(&mut app, "abandoned").await;
+    app.handle_key(key(KeyCode::Esc)).await;
+    let palette = app.palette.as_ref().expect("palette still open");
+    assert!(palette.steps.is_empty());
+    assert_eq!(palette.search.as_str(), "goal");
+
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(in_goal_step(&app));
+    type_text(&mut app, "finish the parser").await;
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(app.palette.is_none());
+    let update = tokio::time::timeout(Duration::from_secs(2), app.rpc_updates_rx.recv())
+        .await
+        .expect("goal response")
+        .expect("update");
+    app.handle_rpc_update(update);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["params"],
+        json!({"session_id": session_id, "objective": "finish the parser", "selection": selection})
+    );
+    assert_eq!(app.input.as_str(), "half-written message");
+}
+
+#[tokio::test]
+async fn palette_goal_entry_refuses_before_prompting_outside_a_root_session() {
+    let (mut app, requests) = app_with_replies(Vec::new()).await;
+    app.selected = None;
+    app.open_command_palette();
+    let goal = crate::ui::slash::COMMANDS
+        .iter()
+        .find(|spec| spec.name == "goal")
+        .expect("goal command");
+    app.choose_palette_command(goal).await;
+    assert!(
+        app.palette
+            .as_ref()
+            .is_some_and(|palette| palette.steps.is_empty())
+    );
+    assert!(
+        app.status.contains("select a root session"),
+        "{}",
+        app.status
+    );
+    assert!(requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

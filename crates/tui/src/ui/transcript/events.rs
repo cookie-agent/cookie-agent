@@ -409,7 +409,7 @@ pub(super) fn empty_conversation_lines(
     let (headline, hint) = if has_session {
         (
             "🍪 Fresh session, warm out of the oven.",
-            "Type a message below to start · `ctrl+p` lists commands · `/help` shows help",
+            "Type a message below to start · `/` or `ctrl+p` lists commands",
         )
     } else {
         (

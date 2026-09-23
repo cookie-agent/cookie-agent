@@ -40,23 +40,29 @@ impl App {
         true
     }
 
-    pub(super) fn read_only_input_allowed(&self) -> bool {
-        if self.new_session_draft.is_some() {
-            return true;
-        }
-        let input = self.input.as_str().trim_start();
-        !input.is_empty() && ("/new".starts_with(input) || input.starts_with("/new "))
+    /// Whether the composer may send to the current view: a read-only
+    /// snapshot accepts a message only as the first one of a pending new
+    /// root session.
+    pub(super) fn session_writable(&self) -> bool {
+        self.new_session_draft.is_some()
+            || self
+                .selected
+                .is_none_or(|session| !self.read_only_sessions.contains(&session))
     }
 
     pub(in crate::ui) async fn handle_input_key(&mut self, key: KeyEvent) {
-        if self
-            .selected
-            .is_some_and(|session| self.read_only_sessions.contains(&session))
-            && !self.read_only_input_allowed()
-            && !(self.input.as_str().is_empty()
-                && key.code == KeyCode::Char('/')
-                && key.modifiers.is_empty())
+        // The palette opens from anywhere, read-only views included, and
+        // leaves the draft untouched. `/` opens it only on an empty draft so
+        // paths and other mid-text slashes still type.
+        if (key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL)
+            || (key.code == KeyCode::Char('/')
+                && is_printable_key(key)
+                && self.input.as_str().is_empty())
         {
+            self.open_command_palette();
+            return;
+        }
+        if !self.session_writable() {
             self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
@@ -78,21 +84,11 @@ impl App {
             self.mutate_input(|input| input.insert_newline());
             return;
         }
-        if key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL {
-            self.input_focused = true;
-            self.mutate_input(|input| input.set_buffer("/".into()));
-            self.palette_dismissed = false;
-            self.palette_state.select(Some(0));
-            return;
-        }
         if !self.input_focused {
             match key.code {
                 KeyCode::Enter => self.input_focused = true,
                 KeyCode::Char(character) if is_printable_key(key) => {
                     self.input_focused = true;
-                    if self.input.as_str().is_empty() && character == '/' {
-                        self.palette_dismissed = false;
-                    }
                     self.mutate_input(|input| input.insert(character));
                 }
                 _ => {}
@@ -169,9 +165,6 @@ impl App {
                 self.navigate_input(|input| input.move_end());
             }
             KeyCode::Char(character) if is_printable_key(key) => {
-                if self.input.as_str().is_empty() && character == '/' {
-                    self.palette_dismissed = false;
-                }
                 self.mutate_input(|input| input.insert(character));
             }
             _ => {}
@@ -179,6 +172,10 @@ impl App {
     }
 
     pub(in crate::ui) fn handle_paste(&mut self, text: &str) {
+        if self.command_palette_visible() {
+            self.paste_into_palette(text);
+            return;
+        }
         if self.modal == Modal::Sessions {
             let sanitized = text.replace(['\r', '\n'], "");
             self.session_search.focus_input();
@@ -249,114 +246,34 @@ impl App {
             }
             return;
         }
-        if self.modal != Modal::None {
+        // An open approval owns input; a paste must not land in the
+        // composer hidden behind it.
+        if self.modal != Modal::None || self.current_approval().is_some() {
             return;
         }
-        if self
-            .selected
-            .is_some_and(|session| self.read_only_sessions.contains(&session))
-            && !self.read_only_input_allowed()
-            && !text.trim_start().starts_with("/new")
-        {
+        if !self.session_writable() {
             self.input_focused = false;
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
         self.input_focused = true;
-        if self.input.as_str().is_empty() && text.starts_with('/') {
-            self.palette_dismissed = false;
-        }
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
         self.mutate_input(|input| input.insert_text(&normalized));
     }
 
+    /// Send the composer draft as a prompt. Commands never come from the
+    /// composer: they run from the palette only, so every draft, including
+    /// one that begins with `/`, is sent verbatim.
     pub(in crate::ui) async fn submit_input(&mut self) {
-        if self
-            .selected
-            .is_some_and(|session| self.read_only_sessions.contains(&session))
-            && !self.read_only_input_allowed()
-        {
+        if !self.session_writable() {
             self.status = "Session is owned by another cookie process; input is disabled.".into();
             return;
         }
         if self.input.as_str().trim().is_empty() {
             return;
         }
-        let skills = self
-            .skills
-            .iter()
-            .filter(|skill| skill.precedence_winner && skill.user_invocable)
-            .map(|skill| skill.name.clone())
-            .collect::<Vec<_>>();
-        let mut submission = parse_submission_with_skills(self.input.as_str(), &skills);
-        let could_be_pending_skill = self
-            .input
-            .as_str()
-            .strip_prefix('/')
-            .and_then(|input| input.split_whitespace().next())
-            .is_some_and(|name| {
-                !COMMANDS
-                    .iter()
-                    .any(|spec| spec.name == name || spec.aliases.contains(&name))
-            });
-        if submission.is_err() && self.new_session_draft.is_some() && could_be_pending_skill {
-            let selection = self
-                .new_session_draft
-                .clone()
-                .expect("pending new-session draft");
-            if self.create_root_session(selection).await {
-                let Some(session_id) = self.selected else {
-                    self.status = "new session was created without a selection".into();
-                    return;
-                };
-                match self
-                    .client
-                    .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
-                    .await
-                {
-                    Ok(result) => {
-                        self.skills = result.skills.clone();
-                        self.skill_panel.install(result);
-                        let skill_names = self
-                            .skills
-                            .iter()
-                            .filter(|skill| skill.precedence_winner && skill.user_invocable)
-                            .map(|skill| skill.name.clone())
-                            .collect::<Vec<_>>();
-                        submission =
-                            parse_submission_with_skills(self.input.as_str(), &skill_names);
-                    }
-                    Err(error) => {
-                        self.status = format!("skill discovery failed: {error}");
-                        return;
-                    }
-                }
-            } else {
-                // Keep both the original slash input and pending selection for retry.
-                return;
-            }
-        }
-        let submission = match submission {
-            Ok(submission) => submission,
-            Err(error) => {
-                self.mutate_input(|input| {
-                    input.take();
-                });
-                self.palette_dismissed = false;
-                self.status = error;
-                return;
-            }
-        };
-        match submission {
-            Submission::Command(command) => {
-                self.mutate_input(|input| {
-                    input.take();
-                });
-                self.palette_dismissed = false;
-                self.run_command(command).await;
-            }
-            Submission::Prompt(prompt) => self.submit_prompt(prompt).await,
-        }
+        let prompt = self.input.as_str().to_owned();
+        self.submit_prompt(prompt).await;
     }
 
     pub(in crate::ui) async fn submit_prompt(&mut self, input: String) {
@@ -409,7 +326,6 @@ impl App {
         self.mutate_input(|input| {
             input.take();
         });
-        self.palette_dismissed = false;
         let submitted_id = client_run_id();
         let draft_generation = self.draft_generation;
         if active_run.is_none() {
@@ -980,6 +896,13 @@ impl App {
                     self.status = "Select the agent for the new root session.".into();
                 }
             }
+            SlashCommand::Agent => self.open_selection_modal(Modal::Agents),
+            SlashCommand::Model => {
+                self.open_selection_modal(Modal::Models);
+                // Only the palette's `/model` continues on to the variant
+                // step; the title's model segment keeps its one-step picker.
+                self.model_then_variant = self.modal == Modal::Models;
+            }
             SlashCommand::Preset => {
                 self.modal = Modal::Presets;
                 self.picker_state.select(Some(0));
@@ -1011,49 +934,6 @@ impl App {
                     self.load_permissions();
                 }
             }
-            SlashCommand::Skills => {
-                let Some(session_id) = self.selected else {
-                    self.status = "select a session before listing skills".into();
-                    return;
-                };
-                self.modal = Modal::Skills;
-                match self
-                    .client
-                    .list_skills(cookie_agent_protocol::SkillsListParams { session_id })
-                    .await
-                {
-                    Ok(result) => {
-                        self.skills = result.skills.clone();
-                        self.skill_panel.install(result);
-                        self.status = "skills loaded".into();
-                    }
-                    Err(error) => self.status = format!("list skills failed: {error}"),
-                }
-            }
-            SlashCommand::Skill { name, args } => {
-                let Some(session_id) = self.selected else {
-                    self.status = "select a session before invoking a skill".into();
-                    return;
-                };
-                match self
-                    .client
-                    .get_skill(cookie_agent_protocol::SkillsGetParams {
-                        session_id,
-                        name: name.clone(),
-                        args: args.clone(),
-                    })
-                    .await
-                {
-                    Ok(result) if result.skill.user_invocable => {
-                        self.submit_prompt(cookie_agent_protocol::encode_skill_submission(
-                            &name, &args,
-                        ))
-                        .await;
-                    }
-                    Ok(_) => self.status = "skill is not user-invocable".into(),
-                    Err(error) => self.status = format!("load skill failed: {error}"),
-                }
-            }
             SlashCommand::Usage => {
                 self.modal = Modal::Usage;
                 self.load_usage();
@@ -1064,16 +944,39 @@ impl App {
                 self.picker_state.select(Some(0));
             }
             SlashCommand::Cancel => self.cancel_active_run(),
-            SlashCommand::Goal(command) => self.run_goal_command(command),
-            SlashCommand::Compact(focus) => self.compact_selected_session(focus).await,
-            SlashCommand::Approve(decision) => self.answer_approval(decision).await,
-            SlashCommand::Events(level) => {
-                // View-only threshold change: the TOML is not rewritten and
-                // hidden rows stay in the session projection.
-                self.tui_config.minimum_event_level = level;
-                self.status = format!("diagnostic event filter: {}", level.name());
+        }
+    }
+
+    /// View-only threshold change: the TOML is not rewritten and hidden rows
+    /// stay in the session projection.
+    pub(in crate::ui) fn set_event_level(&mut self, level: crate::state::EventLevel) {
+        self.tui_config.minimum_event_level = level;
+        self.status = format!("diagnostic event filter: {}", level.name());
+    }
+
+    /// Run a user-invocable skill with free-form arguments. A pending
+    /// new-session draft is honored by `submit_prompt`, which creates the
+    /// root session before sending.
+    pub(in crate::ui) async fn invoke_skill(&mut self, name: String, args: String) {
+        let Some(session_id) = self.selected else {
+            self.status = "select a session before invoking a skill".into();
+            return;
+        };
+        match self
+            .client
+            .get_skill(cookie_agent_protocol::SkillsGetParams {
+                session_id,
+                name: name.clone(),
+                args: args.clone(),
+            })
+            .await
+        {
+            Ok(result) if result.skill.user_invocable => {
+                self.submit_prompt(cookie_agent_protocol::encode_skill_submission(&name, &args))
+                    .await;
             }
-            SlashCommand::Help => self.show_help(),
+            Ok(_) => self.status = "skill is not user-invocable".into(),
+            Err(error) => self.status = format!("load skill failed: {error}"),
         }
     }
 
@@ -1102,28 +1005,5 @@ impl App {
             Ok(_) => "context did not require or could not produce a smaller checkpoint".into(),
             Err(error) => format!("context compaction failed: {error}"),
         };
-    }
-
-    pub(in crate::ui) fn show_help(&mut self) {
-        // One line per command in the transcript; the status line stays a
-        // short pointer instead of a truncated wall of text.
-        let notice = std::iter::once("Available commands:".to_owned())
-            .chain(
-                COMMANDS
-                    .iter()
-                    .filter(|spec| self.command_is_available(spec))
-                    .map(|spec| format!("{} — {}", spec.usage, spec.description)),
-            )
-            .chain(std::iter::once(
-                "Use // to send a prompt beginning with /.".to_owned(),
-            ))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.status = "commands listed in the conversation".into();
-        self.transient_notices.push(notice);
-        if self.transient_notices.len() > MAX_TRANSIENT_NOTICES {
-            let excess = self.transient_notices.len() - MAX_TRANSIENT_NOTICES;
-            self.transient_notices.drain(..excess);
-        }
     }
 }

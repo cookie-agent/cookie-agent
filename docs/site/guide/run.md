@@ -15,8 +15,8 @@ When at least one model is available, select an agent and model if needed, type
 a request in the composer, and press Enter. If no authored root agent is
 runnable, the engine supplies the built-in `default` coding agent.
 
-Useful first commands are `/help`, `/sessions`, `/new`, `/compact`, and
-`/cancel`. [Agent](agents.md) covers authored prompts and permissions.
+Useful first commands, from the [command palette](#command-palette), are
+`/sessions`, `/new`, `/model`, `/compact`, and `/cancel`. [Agent](agents.md) covers authored prompts and permissions.
 
 Model fallback progress is local to the session. For a chain `[A, B, C]`, once B
 commits a successful model turn after fallback, later turns and runs continue
@@ -77,33 +77,52 @@ Arrow keys move by character or visual line; Ctrl-Left and Ctrl-Right move by
 word. Ctrl-Backspace and Ctrl-Delete remove a word. Home and End move within a
 line, while Ctrl-Home and Ctrl-End move to the start or end of the whole draft.
 
-Ctrl-P opens the command palette. The available commands are:
+The agent and model panels include search fields. Agent search matches agent IDs
+and descriptions; model search matches display names and `provider/model_id`.
+Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
+into the matching rows.
+
+## Command palette
+
+Press `/` in an empty composer, or Ctrl-P at any time, to open the command
+palette. The palette has its own search field: what you type there filters the
+commands and never touches the composer, so a half-written message survives
+opening, searching, and closing the palette. Up and Down move, Enter chooses,
+and Esc closes. Matches rank exact names first, then prefixes, then substrings.
+Some commands have aliases, listed below, that match the search the same way
+but are never shown in the list.
+
+Commands that need input ask for it in a follow-up step instead of taking
+typed arguments. Esc in a step returns to the command list with the search
+intact.
 
 | Command | Action |
 |---|---|
 | `/new` | Choose the next root-run agent |
 | `/preset` | Select the preset for the next root run and future new sessions; see [Agent presets](agents.md#agent-presets) |
+| `/agent` | Choose the agent for the next run |
+| `/model` | Choose the model for the next run, then its variant; nothing applies until the variant is chosen, and Esc in the variant list returns to the models |
 | `/connect` | Connect or update a managed provider |
 | `/mcp` | Manage MCP servers; see [MCP servers](mcp.md) |
-| `/permissions` | Edit session permission overrides; see [Permissions](agents.md#permissions) |
-| `/sessions` | Choose a session |
-| `/skills` | List discovered skills, sources, precedence, and permission effects |
-| `/<skill-name> [args]` | Invoke a user-invocable skill |
+| `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](agents.md#permissions) |
+| `/sessions` (also `resume`, `load`, `continue`) | Choose a session |
+| `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](skills.md) |
 | `/usage` | Show selected-session and session-tree usage |
 | `/cancel` | Cancel the active run |
-| `/compact [focus]` | Compact the selected idle session |
-| `/approve once\|all\|reject\|cancel` | Answer the current approval |
-| `/events debug\|info\|warning\|error` | Change the event filter |
-| `/help` | Show command help |
-| `/quit` or `/q` | Exit the TUI |
+| `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](goals.md) |
+| `/compact` | Prompt for an optional focus, then compact the selected idle session |
+| `/events` | Pick the diagnostic event filter from a list |
+| `/show agent panel`, `/hide agent panel` | Override the agent panel's visibility |
+| `/quit` (also `q`, `exit`) | Exit the TUI |
 
-A multiline paste beginning with `/` is sent as a normal prompt. Prefix a
-single-line prompt with `//` to send one leading `/` literally.
+In a read-only session owned by another cookie process, commands that write to
+the session (`/permissions`, `/skills`, `/cancel`, `/goal`, `/compact`) are
+hidden.
 
-The agent and model panels include search fields. Agent search matches agent IDs
-and descriptions; model search matches display names and `provider/model_id`.
-Both are case-insensitive. Use Down, Tab, or Enter to move from the search field
-into the matching rows.
+The composer only ever sends messages: text beginning with `/` is sent as a
+prompt like any other. To start a message with `/`, open the palette and type
+`/` in its empty search; the palette closes and a literal `/` lands in the
+composer. A `/` typed after other text, as in a path, is always literal.
 
 ## Steering and the pending strip
 
@@ -227,9 +246,17 @@ by the committed turn.
 
 An approval modal presents the prepared operation and the decisions allowed by
 its constraints: allow once, allow for the session tree, reject, or cancel.
-Use the on-screen controls or the `/approve` command. Esc cancels only when the
-request is cancellable. Long approval details scroll with arrows, Page Up/Page
+Click a button or press its key, shown on the button: `y` allows once, `a`
+allows for the session tree, `n` rejects, and Esc cancels when the request is
+cancellable. Letter keys are case-insensitive and do nothing for a decision the
+request does not offer. Long approval details scroll with arrows, Page Up/Page
 Down, Home, and End.
+
+While an approval is on top it owns the keyboard: other typing and pastes are
+dropped rather than landing in the hidden composer, and Ctrl-C still cancels
+the run. The letter keys ignore presses for 400 ms after a request appears, so
+keystrokes already on their way to the composer cannot answer it; press again
+once the panel has settled.
 
 The permission mode appears in the bottom bar. Click it to cycle
 `auto-approve -> auto-n -> auto-y -> ask -> yolo`; the mode applies to

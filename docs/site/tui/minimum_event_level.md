@@ -11,6 +11,7 @@ and `"error"`. The default is `"warning"`. Other strings and non-string values
 are errors. This is a top-level scalar, not a `[minimum_event_level]` table.
 
 Rows below the threshold remain in the session projection. Lowering the filter
-with `/events debug` reveals them again. Runtime changes do not edit the file or
+to `debug` with the palette's `/events` command, or by clicking the filter in
+the conversation title, reveals them again. Runtime changes do not edit the file or
 remove events from history. There are no nested fields or workspace overrides;
 see [tui.toml](configuration.md) for loading behavior.

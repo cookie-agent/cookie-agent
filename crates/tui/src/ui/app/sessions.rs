@@ -485,9 +485,10 @@ impl App {
             Modal::Presets => self.preset_names().len() + 1,
             Modal::Agents => self.filtered_agent_picker_candidates().len(),
             Modal::Models => self.filtered_draft_models().len(),
+            Modal::Variants => self.variant_step_options().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
             Modal::UserMessage => USER_MENU_ITEMS.len(),
-            Modal::Mcp | Modal::Permissions | Modal::Skills | Modal::Usage | Modal::GoalDetail => 0,
+            Modal::Mcp | Modal::Permissions | Modal::Usage | Modal::GoalDetail => 0,
             Modal::ConnectDetails
             | Modal::ConnectSetup
             | Modal::ConnectError
@@ -536,6 +537,8 @@ impl App {
 
     pub(super) fn close_model_picker(&mut self) {
         self.model_search.reset();
+        self.model_then_variant = false;
+        self.variant_step_model = None;
         self.modal = Modal::None;
         self.new_session_draft = None;
     }

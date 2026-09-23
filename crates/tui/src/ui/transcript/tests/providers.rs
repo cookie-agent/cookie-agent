@@ -42,8 +42,6 @@ async fn connect_submission_renders_the_provider_panel_with_an_empty_catalog() {
     });
 
     type_input(&mut app, "/connect").await;
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
-        .await;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
 

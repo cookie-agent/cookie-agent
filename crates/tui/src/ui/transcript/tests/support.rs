@@ -1270,6 +1270,16 @@ pub(crate) fn live_recording_client() -> (
     )
 }
 
+pub(crate) fn last_request_params(recorded: &Arc<Mutex<Vec<Value>>>, method: &str) -> Value {
+    recorded
+        .lock()
+        .expect("recorded")
+        .iter()
+        .rfind(|value| value["method"].as_str() == Some(method))
+        .map(|value| value["params"].clone())
+        .expect("recorded request")
+}
+
 pub(crate) fn recorded_method_count(recorded: &Arc<Mutex<Vec<Value>>>, method: &str) -> usize {
     recorded
         .lock()
@@ -2244,12 +2254,11 @@ pub(crate) async fn drive_until_recorded_request(
         .expect("request id")
 }
 
-pub(crate) async fn submit_direct_command(app: &mut App, command: &str) {
-    type_input(app, command).await;
-    if app.command_palette_visible() {
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
-            .await;
-    }
+/// Run a command the way a user does: Ctrl-P, type the search, Enter.
+pub(crate) async fn run_palette_command(app: &mut App, query: &str) {
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
+        .await;
+    type_input(app, query).await;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
 }

@@ -13,41 +13,87 @@ use crate::theme::{ColorLevel, ThemeKind};
 
 use crate::ui::app::*;
 
-use crate::ui::slash::{SlashCommand, Submission, command_help, command_spec, parse_submission};
+use crate::ui::slash::SlashCommand;
 
 use super::support::*;
 
-#[test]
-fn slash_commands_parse_and_escape_prompts() {
-    assert_eq!(
-        parse_submission("/quit").expect("quit"),
-        Submission::Command(SlashCommand::Quit)
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl_p() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)
+}
+
+fn palette_search(app: &App) -> Option<&str> {
+    app.palette.as_ref().map(|palette| palette.search.as_str())
+}
+
+#[tokio::test]
+async fn palette_owns_its_search_and_never_touches_the_draft() {
+    let mut app = test_app().await;
+    type_input(&mut app, "half-written").await;
+
+    app.handle_key(ctrl_p()).await;
+    assert!(app.command_palette_visible());
+    type_input(&mut app, "qu").await;
+    assert_eq!(palette_search(&app), Some("qu"));
+    assert_eq!(app.input.as_str(), "half-written");
+    assert!(
+        app.palette_labels_for_test()
+            .first()
+            .is_some_and(|label| label.starts_with("/quit"))
     );
-    assert_eq!(
-        parse_submission("//literal /quit").expect("escaped"),
-        Submission::Prompt("/literal /quit".into())
-    );
-    assert_eq!(
-        parse_submission("line one\n/quit").expect("multiline"),
-        Submission::Prompt("line one\n/quit".into())
-    );
-    assert!(parse_submission("/nope").is_err());
-    assert_eq!(
-        parse_submission("/show agent panel").expect("show agent panel"),
-        Submission::Command(SlashCommand::ShowAgentPanel)
-    );
-    assert_eq!(
-        parse_submission("/hide agent panel").expect("hide agent panel"),
-        Submission::Command(SlashCommand::HideAgentPanel)
-    );
-    assert_eq!(
-        command_spec("show").map(|spec| spec.usage),
-        Some("/show agent panel")
-    );
-    assert_eq!(
-        command_spec("hide").map(|spec| spec.usage),
-        Some("/hide agent panel")
-    );
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(rendered.contains("Commands"), "{rendered}");
+    assert!(rendered.contains("qu"), "{rendered}");
+
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert!(!app.command_palette_visible());
+    assert_eq!(app.input.as_str(), "half-written");
+    assert!(!app.should_quit);
+}
+
+#[tokio::test]
+async fn slash_opens_the_palette_only_on_an_empty_draft() {
+    let mut app = test_app().await;
+    app.handle_key(key(KeyCode::Char('/'))).await;
+    assert!(app.command_palette_visible());
+    assert_eq!(app.input.as_str(), "");
+    assert_eq!(palette_search(&app), Some(""));
+
+    // `/` in the empty search is the literal-slash escape hatch.
+    app.handle_key(key(KeyCode::Char('/'))).await;
+    assert!(!app.command_palette_visible());
+    assert_eq!(app.input.as_str(), "/");
+    type_input(&mut app, "quit").await;
+    assert!(!app.command_palette_visible());
+    assert_eq!(app.input.as_str(), "/quit");
+
+    // Mid-draft slashes are just text.
+    let mut paths = test_app().await;
+    type_input(&mut paths, "src/ui/app.rs").await;
+    assert!(!paths.command_palette_visible());
+    assert_eq!(paths.input.as_str(), "src/ui/app.rs");
+}
+
+#[tokio::test]
+async fn composer_text_beginning_with_slash_is_a_prompt_not_a_command() {
+    let mut app = test_app().await;
+    app.submit_text_for_test("/quit").await;
+    assert!(!app.should_quit);
+    app.submit_text_for_test("/sessions").await;
+    assert_eq!(app.modal, Modal::None);
+}
+
+#[tokio::test]
+async fn pastes_go_to_the_open_palette_as_one_line() {
+    let mut app = test_app().await;
+    type_input(&mut app, "draft").await;
+    app.handle_key(ctrl_p()).await;
+    app.handle_paste("ses\nsions");
+    assert_eq!(palette_search(&app), Some("ses sions"));
+    assert_eq!(app.input.as_str(), "draft");
 }
 
 #[tokio::test]
@@ -71,8 +117,9 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
     let auto = frame_rows(&mut app, 80, 24);
     assert!(auto.iter().any(|row| row.contains("Agents")));
     let visible_conversation_y = app.hit_map.conversation.expect("conversation").y;
-    app.input.set_buffer("/".into());
-    let labels = app.skill_palette_labels_for_test();
+    app.open_command_palette();
+    let labels = app.palette_labels_for_test();
+    app.close_command_palette();
     assert!(
         labels
             .iter()
@@ -89,8 +136,9 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
     assert!(!hidden.iter().any(|row| row.contains("Agents")));
     assert_eq!(app.hit_map.conversation.expect("conversation").y, 1);
     assert!(visible_conversation_y > 1);
-    app.input.set_buffer("/".into());
-    let labels = app.skill_palette_labels_for_test();
+    app.open_command_palette();
+    let labels = app.palette_labels_for_test();
+    app.close_command_palette();
     assert!(
         labels
             .iter()
@@ -126,8 +174,9 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
     );
     assert!(app.hit_map.conversation.expect("conversation").y > 1);
 
-    app.input.set_buffer("/".into());
-    let labels = app.skill_palette_labels_for_test();
+    app.open_command_palette();
+    let labels = app.palette_labels_for_test();
+    app.close_command_palette();
     assert!(
         labels
             .iter()
@@ -138,11 +187,6 @@ async fn manual_agent_panel_override_wins_and_commands_are_context_sensitive() {
             .iter()
             .any(|label| label.starts_with("/show agent panel"))
     );
-    app.show_help();
-    let help = app.transient_notices.last().expect("command help");
-    assert!(help.contains("/hide agent panel"));
-    assert!(!help.contains("/show agent panel"));
-    assert!(help.contains("until toggled or a different root session is selected"));
 }
 
 #[tokio::test]
@@ -267,32 +311,26 @@ fn newline_keys_insert_and_bare_enter_submits() {
 }
 
 #[tokio::test]
-async fn ctrl_p_opens_palette_plain_p_types_and_removed_commands_are_rejected() {
+async fn ctrl_p_opens_palette_plain_p_types_and_retired_commands_do_not_match() {
     let mut app = test_app().await;
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL))
-        .await;
-    assert_eq!(app.input.as_str(), "/");
+    app.handle_key(ctrl_p()).await;
+    assert_eq!(app.input.as_str(), "");
     assert!(app.command_palette_visible());
+    for retired in [
+        "approve", "block", "scroll", "stdin", "eof", "tree", "watch",
+    ] {
+        app.palette
+            .as_mut()
+            .expect("palette")
+            .search
+            .set_buffer(retired.into());
+        assert!(app.palette_labels_for_test().is_empty(), "{retired}");
+    }
+    app.close_command_palette();
 
-    app.input.set_buffer(String::new());
-    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))
-        .await;
+    app.handle_key(key(KeyCode::Char('p'))).await;
     assert_eq!(app.input.as_str(), "p");
-    assert!(command_spec("block").is_none());
-    assert!(command_spec("scroll").is_none());
-    assert!(command_spec("stdin").is_none());
-    assert!(command_spec("eof").is_none());
-    assert!(command_spec("tree").is_none());
-    assert!(command_spec("watch").is_none());
-    assert!(parse_submission("/block next").is_err());
-    assert!(parse_submission("/scroll top").is_err());
-    assert!(parse_submission("/stdin").is_err());
-    assert!(parse_submission("/stdin next").is_err());
-    assert!(parse_submission("/eof").is_err());
-    assert!(parse_submission("/tree up").is_err());
-    assert!(parse_submission("/tree down").is_err());
-    assert!(parse_submission("/tree toggle").is_err());
-    assert!(parse_submission("/watch").is_err());
+    assert!(!app.command_palette_visible());
 }
 
 #[tokio::test]
@@ -356,33 +394,6 @@ async fn chrome_stays_coherent_across_themes_and_tiny_terminals() {
 }
 
 #[tokio::test]
-async fn help_lists_each_command_on_its_own_transcript_line() {
-    let mut app = test_app().await;
-    let session = SessionId::new_v7();
-    assert!(app.store.apply_event(session_created(session, 1)));
-    app.selected = Some(session);
-    submit_direct_command(&mut app, "/help").await;
-    let rendered = rendered_frame(&mut app, 110, 40);
-    assert!(
-        rendered.contains("NOTICE: Available commands:"),
-        "{rendered}"
-    );
-    for expected in [
-        "/quit — exit the TUI",
-        "/new — start a new root session",
-        "/preset — select the preset for the next root run and future new sessions",
-        "/approve once|all|reject|cancel — answer an approval",
-        "/events debug|info|warning|error — set the diagnostic level filter for this view",
-        "/help — show command help",
-        "Use // to send a prompt beginning with /.",
-    ] {
-        assert!(rendered.contains(expected), "{expected}: {rendered}");
-    }
-    // The wall of semicolon-joined text is gone.
-    assert!(!rendered.contains("; /new"), "{rendered}");
-}
-
-#[tokio::test]
 async fn scroll_follow_state_is_loud_in_the_conversation_title() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();
@@ -421,20 +432,8 @@ async fn scroll_follow_state_is_loud_in_the_conversation_title() {
     assert!(!rendered.contains("PgDn: bottom"), "{rendered}");
 }
 
-#[test]
-fn command_registry_drives_help_and_parser() {
-    let help = command_help();
-    assert!(help.contains("/new"));
-    assert!(help.contains("/connect"));
-    assert!(help.contains("/events"));
-    assert!(!help.contains("/block"));
-    assert!(!help.contains("/scroll"));
-    // The stdin era is over: /message left with it.
-    assert!(!help.contains("/message"));
-}
-
 #[tokio::test]
-async fn command_palette_no_matches_renders_empty_state_then_reports_unknown_command() {
+async fn command_palette_no_matches_renders_empty_state_and_enter_stays_put() {
     let mut app = test_app().await;
     type_input(&mut app, "/definitely-not-a-command").await;
     assert!(app.command_palette_visible());
@@ -448,16 +447,15 @@ async fn command_palette_no_matches_renders_empty_state_then_reports_unknown_com
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
     assert!(app.input.as_str().is_empty());
-    assert!(app.status.contains("unknown command"));
-    let rendered = rendered_frame(&mut app, 100, 30);
-    assert!(rendered.contains("unknown command"));
+    assert!(app.command_palette_visible());
+    assert!(app.status.contains("no matching command"), "{}", app.status);
 }
 
 #[tokio::test]
 async fn empty_agent_and_model_selectors_are_truthful_and_safe() {
     let mut agents = test_app().await;
     agents.agents.clear();
-    submit_direct_command(&mut agents, "/new").await;
+    run_palette_command(&mut agents, "new").await;
     assert_eq!(agents.modal, Modal::Agents);
     let rendered = rendered_frame(&mut agents, 100, 30);
     assert!(rendered.contains("No root-runnable agents are available."));
@@ -625,11 +623,19 @@ async fn read_only_session_allows_starting_new_session_with_new_command() {
     assert!(app.input.as_str().is_empty());
     assert!(app.status.contains("input is disabled"));
 
-    type_input(&mut app, "/new").await;
-    if app.command_palette_visible() {
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
-            .await;
+    // Session-writing commands are hidden in a read-only snapshot.
+    app.open_command_palette();
+    let labels = app.palette_labels_for_test();
+    for hidden in ["/goal", "/compact", "/cancel", "/skills", "/permissions"] {
+        assert!(
+            !labels.iter().any(|label| label.starts_with(hidden)),
+            "{hidden}: {labels:?}"
+        );
     }
+    assert!(labels.iter().any(|label| label.starts_with("/sessions")));
+    app.close_command_palette();
+
+    type_input(&mut app, "/new").await;
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .await;
 
@@ -645,30 +651,25 @@ async fn read_only_session_allows_starting_new_session_with_new_command() {
 }
 
 #[tokio::test]
-async fn every_slash_command_variant_dispatches_from_key_events_without_starting_a_run() {
+async fn every_immediate_command_dispatches_from_key_events_without_starting_a_run() {
     let cases = [
-        ("/quit", None),
-        ("/new", Some("Agent")),
-        ("/preset", Some("Agent preset")),
-        ("/connect", Some("Connect provider")),
-        ("/sessions", Some("Sessions")),
-        ("/cancel", Some("no active run")),
-        ("/approve once", None),
-        ("/approve all", None),
-        ("/approve reject", None),
-        ("/approve cancel", None),
-        ("/events debug", Some("diagnostic event filter")),
-        ("/events info", Some("diagnostic event filter")),
-        ("/events warning", Some("diagnostic event filter")),
-        ("/events error", Some("diagnostic event filter")),
-        ("/help", Some("Available commands:")),
+        ("quit", None),
+        ("new", Some("Agent")),
+        ("preset", Some("Agent preset")),
+        ("connect", Some("Connect provider")),
+        ("sessions", Some("Sessions")),
+        ("cancel", Some("no active run")),
+        ("agent", Some("Agent")),
+        ("exit", None),
+        ("resume", Some("Sessions")),
     ];
 
     for (command, expected) in cases {
         let mut app = test_app().await;
         let (client, recorded, incoming_guard) = live_recording_client();
         app.client = client;
-        submit_direct_command(&mut app, command).await;
+        run_palette_command(&mut app, command).await;
+        assert!(!app.command_palette_visible(), "{command}");
         settle_recording().await;
         let rendered = rendered_frame(&mut app, 100, 30);
         assert!(!rendered.is_empty(), "{command}");
@@ -721,23 +722,24 @@ async fn rpc_slash_commands_issue_only_their_intended_methods() {
     let session = SessionId::new_v7();
     cancel.selected = Some(session);
     cancel.store.sessions.entry(session).or_default().active_run = Some(run_id());
-    submit_direct_command(&mut cancel, "/cancel").await;
+    run_palette_command(&mut cancel, "cancel").await;
     wait_for_method(&recorded, "run.cancel", 1).await;
     assert_eq!(recorded_method_count(&recorded, "run.cancel"), 1);
     assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
     assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
     drop(incoming_guard);
 
-    for command in [
-        "/approve once",
-        "/approve all",
-        "/approve reject",
-        "/approve cancel",
+    for (hotkey, decision) in [
+        (KeyCode::Char('y'), "approve_once"),
+        (KeyCode::Char('A'), "approve_tree"),
+        (KeyCode::Char('n'), "reject"),
+        (KeyCode::Esc, "cancel"),
     ] {
         let mut app = test_app().await;
         let (client, recorded, incoming_guard) = live_recording_client();
         app.client = client;
-        let approval = bash_approval_state();
+        let mut approval = bash_approval_state();
+        approval.constraints.allow_tree_grant = true;
         app.selected = Some(approval.session_id);
         app.store
             .sessions
@@ -745,23 +747,132 @@ async fn rpc_slash_commands_issue_only_their_intended_methods() {
             .or_default()
             .approvals
             .push(approval);
-        submit_direct_command(&mut app, command).await;
+        app.arm_approval_hotkeys_for_test();
+        app.handle_key(key(hotkey)).await;
         wait_for_method(&recorded, "approval.respond", 1).await;
         assert_eq!(
             recorded_method_count(&recorded, "approval.respond"),
             1,
-            "{command}"
+            "{decision}"
         );
         assert_eq!(
-            recorded_method_count(&recorded, "run.start"),
-            0,
-            "{command}"
+            last_request_params(&recorded, "approval.respond")["decision"],
+            decision
         );
-        assert_eq!(
-            recorded_method_count(&recorded, "run.steer"),
-            0,
-            "{command}"
-        );
+        assert_eq!(recorded_method_count(&recorded, "run.start"), 0);
+        assert_eq!(recorded_method_count(&recorded, "run.steer"), 0);
         drop(incoming_guard);
     }
+}
+
+#[tokio::test]
+async fn approval_hotkeys_wait_out_the_grace_and_the_panel_swallows_typing() {
+    let mut app = test_app().await;
+    let (client, recorded, incoming_guard) = live_recording_client();
+    app.client = client;
+    let approval = bash_approval_state();
+    app.selected = Some(approval.session_id);
+    app.store
+        .sessions
+        .entry(approval.session_id)
+        .or_default()
+        .approvals
+        .push(approval);
+
+    // Freshly shown: the first `y` only starts the grace.
+    rendered_frame(&mut app, 100, 30);
+    app.handle_key(key(KeyCode::Char('y'))).await;
+    settle_recording().await;
+    assert_eq!(recorded_method_count(&recorded, "approval.respond"), 0);
+    assert!(app.status.contains("just appeared"), "{}", app.status);
+
+    // Other typing never reaches the hidden composer, nor opens the palette.
+    type_input(&mut app, "hello /").await;
+    app.handle_paste("pasted");
+    app.handle_key(ctrl_p()).await;
+    assert_eq!(app.input.as_str(), "");
+    assert!(!app.command_palette_visible());
+    // `a` is not offered by this request, so it does nothing even armed.
+    app.arm_approval_hotkeys_for_test();
+    app.handle_key(key(KeyCode::Char('a'))).await;
+    settle_recording().await;
+    assert_eq!(recorded_method_count(&recorded, "approval.respond"), 0);
+
+    app.handle_key(key(KeyCode::Char('y'))).await;
+    wait_for_method(&recorded, "approval.respond", 1).await;
+    assert_eq!(
+        last_request_params(&recorded, "approval.respond")["decision"],
+        "approve_once"
+    );
+    drop(incoming_guard);
+}
+
+#[tokio::test]
+async fn approval_buttons_name_their_hotkeys() {
+    let mut app = test_app().await;
+    let mut approval = bash_approval_state();
+    approval.constraints.allow_tree_grant = true;
+    app.selected = Some(approval.session_id);
+    app.store
+        .sessions
+        .entry(approval.session_id)
+        .or_default()
+        .approvals
+        .push(approval);
+    let rendered = rendered_frame(&mut app, 140, 40);
+    for label in [
+        "✓ Allow once [y]",
+        "✓ Allow all [a]",
+        "✗ Reject [n]",
+        "⎋ Cancel [esc]",
+    ] {
+        assert!(rendered.contains(label), "{label}: {rendered}");
+    }
+}
+
+#[tokio::test]
+async fn events_step_lists_levels_marks_the_current_one_and_applies_the_choice() {
+    let mut app = test_app().await;
+    run_palette_command(&mut app, "events").await;
+    let labels = app.palette_labels_for_test();
+    assert_eq!(labels.len(), 4);
+    let current = app.tui_config.minimum_event_level.name();
+    assert!(
+        labels.contains(&format!("{current} (current)")),
+        "{labels:?}"
+    );
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(rendered.contains("Event filter"), "{rendered}");
+
+    // Esc steps back to the command list, a second Esc closes.
+    app.handle_key(key(KeyCode::Esc)).await;
+    assert!(
+        app.palette
+            .as_ref()
+            .is_some_and(|palette| palette.steps.is_empty())
+    );
+    app.handle_key(key(KeyCode::Enter)).await;
+
+    app.handle_key(key(KeyCode::Home)).await;
+    for _ in 0..4 {
+        app.handle_key(key(KeyCode::Up)).await;
+    }
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(!app.command_palette_visible());
+    assert_eq!(
+        app.tui_config.minimum_event_level,
+        crate::state::EventLevel::Debug
+    );
+    assert!(app.status.contains("diagnostic event filter: debug"));
+}
+
+#[tokio::test]
+async fn compact_step_accepts_an_empty_focus() {
+    let mut app = test_app().await;
+    run_palette_command(&mut app, "compact").await;
+    let rendered = rendered_frame(&mut app, 100, 30);
+    assert!(rendered.contains("Compact"), "{rendered}");
+    assert!(rendered.contains("enter: compact"), "{rendered}");
+    app.handle_key(key(KeyCode::Enter)).await;
+    assert!(!app.command_palette_visible());
 }

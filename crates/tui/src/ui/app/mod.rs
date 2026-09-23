@@ -11,7 +11,6 @@ mod refresh;
 mod sessions;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::approval_content;
-use approvals::is_approval_scroll_key;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
 pub(super) use sessions::status_change_from_event;
@@ -91,8 +90,8 @@ use crate::{
 use super::events::{RenderScheduler, TerminalRestore, install_terminal_panic_hook};
 use super::input::{self, InputState};
 use super::management::{
-    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, SkillPanel,
-    UsagePanel, cycle_effect,
+    McpAuthView, McpForm, McpFormFocus, McpPanel, PermissionForm, PermissionPanel, UsagePanel,
+    cycle_effect,
 };
 use super::pickers::{
     SearchPickerFocus, SearchPickerState, SessionSearchRow, agent_matches, cycle_selection,
@@ -104,7 +103,8 @@ use super::provider::{
     ProviderRowState, action_name, row_label, row_state,
 };
 use super::slash::{
-    COMMANDS, CommandSpec, SlashCommand, Submission, move_selection, parse_submission_with_skills,
+    CommandPalette, CommandSpec, EVENT_LEVELS, GoalCommand, PaletteAction, PaletteStep,
+    SlashCommand, TextTarget, move_selection,
 };
 use super::transcript::{
     BlockHit, BlockId, ConversationScroll, LayoutCache, ScrollbarGeometry, wrapped_line,
@@ -117,6 +117,9 @@ pub(super) enum Modal {
     Presets,
     Agents,
     Models,
+    /// The variant step of `/model`, for the model in
+    /// `App::variant_step_model`.
+    Variants,
     ConnectProviders,
     ConnectDetails,
     ConnectSetup,
@@ -128,7 +131,6 @@ pub(super) enum Modal {
     RevertConfirm,
     Mcp,
     Permissions,
-    Skills,
     Usage,
     GoalDetail,
 }
@@ -178,27 +180,6 @@ pub(super) fn store_contention_message(error: &ClientError, store: &str) -> Stri
         format!("Another cookie-agent process is writing the {store} — try again.")
     } else {
         error.to_string()
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum PaletteEntry<'a> {
-    Command(&'static CommandSpec),
-    Skill(&'a cookie_agent_protocol::SkillDescriptor),
-}
-
-impl PaletteEntry<'_> {
-    fn label(self) -> String {
-        match self {
-            Self::Command(spec) => format!("{} — {}", spec.usage, spec.description),
-            Self::Skill(skill) => {
-                let hint = skill
-                    .argument_hint
-                    .as_deref()
-                    .map_or(String::new(), |hint| format!(" {hint}"));
-                format!("/{}{} — {}", skill.name, hint, skill.description)
-            }
-        }
     }
 }
 
@@ -582,7 +563,6 @@ pub struct App {
     permission_mode_generations: HashMap<SessionId, u64>,
     pub(super) mcp_panel: McpPanel,
     pub(super) permission_panel: PermissionPanel,
-    pub(super) skill_panel: SkillPanel,
     pub(super) usage_panel: UsagePanel,
     pub(super) usage_load_generation: u64,
     pub(super) cost_refreshes: HashMap<SessionId, SessionCostRefresh>,
@@ -594,6 +574,10 @@ pub struct App {
     pub(super) approval_max_scroll: u16,
     pub(super) approval_scroll_request: Option<(cookie_agent_protocol::ApprovalId, u64)>,
     pub(super) pending_approval: Option<PendingApprovalSubmission>,
+    /// The approval request that most recently became the topmost panel,
+    /// and when. Hotkeys stay inert for [`APPROVAL_HOTKEY_GRACE`] after it
+    /// appears so keystrokes aimed at the composer cannot answer it.
+    pub(super) approval_shown: Option<ApprovalShown>,
     pub(super) next_approval_request_id: u64,
     pub(super) approval_refresh_in_flight: Option<(SessionId, u64, u64)>,
     pub(super) next_approval_refresh_id: u64,
@@ -617,8 +601,14 @@ pub struct App {
     pub(super) agent_search: SearchPickerState,
     pub(super) model_search: SearchPickerState,
     pub(super) provider_search: SearchPickerState,
-    pub(super) palette_state: ListState,
-    pub(super) palette_dismissed: bool,
+    /// The open command palette; `None` while it is closed. It never
+    /// shares text with the composer.
+    pub(super) palette: Option<CommandPalette>,
+    /// Set while the model picker was opened by `/model`: choosing a model
+    /// with named variants continues to the variant step.
+    pub(super) model_then_variant: bool,
+    /// The model chosen in `/model`, applied only once its variant is picked.
+    pub(super) variant_step_model: Option<ModelKey>,
     pub(super) last_escape: Option<Instant>,
     pub(super) input: InputState,
     pub(super) modal: Modal,
@@ -830,6 +820,18 @@ pub(super) enum SessionLiveSubscriptionOutcome {
 }
 
 /// An approval response captured at click time and currently in flight.
+/// How long approval hotkeys ignore keys after a request appears on top.
+pub(super) const APPROVAL_HOTKEY_GRACE: Duration = Duration::from_millis(400);
+
+/// One approval request revision and the moment it became the topmost
+/// panel.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ApprovalShown {
+    pub(super) approval_id: cookie_agent_protocol::ApprovalId,
+    pub(super) request_revision: u64,
+    pub(super) at: Instant,
+}
+
 /// The modal was dismissed optimistically; this marker blocks duplicate
 /// actions until the RPC resolves.
 #[derive(Clone, Debug)]
@@ -928,11 +930,33 @@ impl App {
     }
 
     #[cfg(test)]
-    pub(crate) fn skill_palette_labels_for_test(&self) -> Vec<String> {
-        self.palette_entries()
-            .into_iter()
-            .map(PaletteEntry::label)
-            .collect()
+    pub(crate) async fn handle_key_for_test(&mut self, key: KeyEvent) {
+        self.handle_key(key).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn palette_open_for_test(&self) -> bool {
+        self.command_palette_visible()
+    }
+
+    /// Row labels of the palette's current list step (commands or skills).
+    #[cfg(test)]
+    pub(crate) fn palette_labels_for_test(&self) -> Vec<String> {
+        self.palette_list_labels()
+    }
+
+    /// Backdate the current approval's appearance past the hotkey grace, as
+    /// if it had been on screen for a while.
+    #[cfg(test)]
+    pub(crate) fn arm_approval_hotkeys_for_test(&mut self) {
+        let approval = self.current_approval().expect("pending approval");
+        self.approval_shown = Some(ApprovalShown {
+            approval_id: approval.approval_id,
+            request_revision: approval.request_revision,
+            at: Instant::now()
+                .checked_sub(APPROVAL_HOTKEY_GRACE * 2)
+                .expect("backdated instant"),
+        });
     }
 
     #[cfg(test)]
@@ -1039,7 +1063,6 @@ impl App {
             permission_mode_generations: HashMap::new(),
             mcp_panel: McpPanel::default(),
             permission_panel: PermissionPanel::default(),
-            skill_panel: SkillPanel::default(),
             usage_panel: UsagePanel::default(),
             usage_load_generation: 0,
             cost_refreshes: HashMap::new(),
@@ -1051,6 +1074,7 @@ impl App {
             approval_max_scroll: 0,
             approval_scroll_request: None,
             pending_approval: None,
+            approval_shown: None,
             next_approval_request_id: 0,
             approval_refresh_in_flight: None,
             next_approval_refresh_id: 0,
@@ -1070,14 +1094,15 @@ impl App {
             agent_search: SearchPickerState::default(),
             model_search: SearchPickerState::default(),
             provider_search: SearchPickerState::default(),
-            palette_state: ListState::default().with_selected(Some(0)),
-            palette_dismissed: false,
+            palette: None,
+            model_then_variant: false,
+            variant_step_model: None,
             last_escape: None,
             input: InputState::default(),
             modal: Modal::None,
             input_focused: true,
             stdin_target: None,
-            status: "Connected. Type /help for commands.".into(),
+            status: "Connected. Press / or Ctrl-P for commands.".into(),
             session_errors: SessionErrorSummary::default(),
             should_quit: false,
             selection: None,
@@ -1320,8 +1345,9 @@ impl App {
                 self.note_sessions_changed();
                 self.open_session(session_id).await;
                 self.new_session_draft = None;
-                self.status =
-                    format!("New root session opened with agent {agent}. Type /help for commands.");
+                self.status = format!(
+                    "New root session opened with agent {agent}. Press / or Ctrl-P for commands."
+                );
                 true
             }
             Err(error) => {

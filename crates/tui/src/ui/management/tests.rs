@@ -4,7 +4,7 @@ use cookie_agent_protocol::{
     EffectivePermissionAction, McpConfigSource, McpOAuthDefinition, McpServerDefinition,
     McpServerInfo, McpServerState, ModelUsageRollup, PermissionAction, PermissionEffect,
     PermissionRuleSource, SessionId, SessionPermissionGetResult, SessionTreeUsageResult,
-    SessionUsageResult, SkillDescriptor, SkillSource, SkillsListResult, UsageRollup,
+    SessionUsageResult, UsageRollup,
 };
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -182,48 +182,6 @@ fn permission_editor_renders_effect_and_source() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(text.contains("write  *  deny  [session_overlay]"), "{text}");
-}
-
-#[test]
-fn skills_panel_renders_source_precedence_permission_and_location() {
-    let mut panel = super::SkillPanel::default();
-    panel.install(SkillsListResult {
-        skills: vec![SkillDescriptor {
-            name: "release-check".into(),
-            description: "Check a release".into(),
-            when_to_use: None,
-            location: "/workspace/.cookie-agent/skills/release-check/SKILL.md".into(),
-            source: SkillSource::Project,
-            precedence_winner: true,
-            permission_effect: PermissionEffect::Allow,
-            visible: true,
-            user_invocable: true,
-            argument_hint: Some("<tag>".into()),
-        }],
-    });
-    let mut terminal = Terminal::new(TestBackend::new(120, 8)).expect("terminal");
-    terminal
-        .draw(|frame| {
-            super::render_skills(
-                frame,
-                frame.area(),
-                &mut panel,
-                &crate::theme::Theme::default(),
-            );
-        })
-        .expect("render skills");
-    let text = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-    assert!(
-        text.contains("release-check  Project  Allow  winner"),
-        "{text}"
-    );
-    assert!(text.contains("/workspace/.cookie-agent/skills"), "{text}");
 }
 
 #[test]

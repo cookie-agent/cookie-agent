@@ -537,10 +537,7 @@ impl App {
                     return;
                 }
                 match result {
-                    Ok(result) => {
-                        self.skills = result.skills.clone();
-                        self.skill_panel.install(result);
-                    }
+                    Ok(result) => self.skills = result.skills,
                     Err(error) => self.status = format!("skill discovery failed: {error}"),
                 }
             }

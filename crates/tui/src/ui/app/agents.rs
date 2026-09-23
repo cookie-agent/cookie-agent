@@ -454,14 +454,20 @@ impl App {
         let Some(draft) = self.new_session_draft.as_ref().or(self.draft.as_ref()) else {
             return Vec::new();
         };
+        self.variants_for(&draft.model.model)
+    }
+
+    /// The variant choices for `model` in the current draft context, in
+    /// [`Self::draft_variants`] order.
+    pub(in crate::ui) fn variants_for(&self, model: &ModelKey) -> Vec<Option<VariantId>> {
         if self.new_session_draft.is_none() && !self.watching_root_session() {
             return self
-                .persisted_chain_selection(&draft.model.model)
+                .persisted_chain_selection(model)
                 .map(|selection| vec![selection.variant])
                 .unwrap_or_default();
         }
         let mut variants = vec![None];
-        if let Some(descriptor) = self.model_descriptor(&draft.model.model) {
+        if let Some(descriptor) = self.model_descriptor(model) {
             let mut named = descriptor
                 .variants
                 .iter()

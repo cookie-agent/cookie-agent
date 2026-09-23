@@ -20,25 +20,20 @@ priorities, no mandatory third message queue.
 
 ### 1.1 Activation
 
-Goal mode is activated **explicitly only**, by the user typing
-`/goal <objective>` in the root session's TUI (see
-`crates/tui/src/ui/slash.rs`, `COMMANDS`). The engine never infers a goal from
-prompt content. Only root sessions can have a goal; the slash command in a
-delegated/child session is rejected with an explanatory error.
+Goal mode is activated **explicitly only**, by the user choosing `/goal` in
+the root session's TUI command palette and entering an objective in its
+follow-up prompt (see `crates/tui/src/ui/slash.rs`, `COMMANDS`). The engine
+never infers a goal from prompt content. Only root sessions can have a goal;
+the palette refuses the command in a delegated/child session with an
+explanatory status instead of prompting.
 
-Activation and retained lifecycle shortcuts:
-
-- `/goal <objective text>` — activate goal mode with the given objective.
-  Errors if a goal is already `active` or `paused` (the user must
-  cancel or complete the current goal first).
-- Bare `/goal` shows usage requiring an objective; it does not report status.
-- `/goal status` is removed and rejected, not interpreted as an objective.
-- `/goal pause` — transition `active -> paused`.
-- `/goal resume` — transition `paused -> active`.
-- `/goal cancel` — transition `active|paused -> cancelled`.
-
-The primary lifecycle controls are the goal bar's Pause/Resume and Cancel
-buttons; slash lifecycle shortcuts are secondary. A persistent one-line goal
+- Activation errors if a goal is already `active` or `paused` (the user must
+  cancel or complete the current goal first). An empty objective is refused in
+  the prompt.
+- Pause (`active -> paused`), Resume (`paused -> active`), and Cancel
+  (`active|paused -> cancelled`) are the goal bar's controls, reachable by
+  mouse or by F6 focus and the keyboard. There are no typed lifecycle
+  commands. A persistent one-line goal
 bar sits above the message composer whenever the selected session has a goal.
 It is hidden when no goal exists and remains visible with read-only status for
 completed or cancelled goals. Clicking the objective description opens a detail
@@ -482,7 +477,7 @@ History transforms:
   run admission; goal lifecycle events never mutate `history[0]`
   (`AGENTS.md` rules; `crates/engine/src/runtime/tool_prompts.rs`).
 - **TUI** (`crates/tui/src/ui/slash.rs`, `crates/tui/src/state`):
-  explicit `/goal <objective>` activation with matching usage/help, plus a
+  explicit activation through the palette's `/goal` objective prompt, plus a
   persistent one-line goal bar above the composer. Its clickable objective
   opens a detail modal with the full checklist and status, without checklist
   editing. Pause/Resume and Cancel buttons are the primary lifecycle controls;

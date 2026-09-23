@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use cookie_agent_protocol::{
     McpConfigTarget, McpServerDefinition, McpServerInfo, McpServerState, ModelUsageRollup,
     PermissionAction, PermissionEffect, PermissionRuleSource, SessionPermissionGetResult,
-    SessionTreeUsageResult, SessionUsageResult, SkillsListResult, UsageRollup,
+    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 use ratatui::{
     Frame,
@@ -393,20 +393,6 @@ pub(super) struct PermissionPanel {
 }
 
 #[derive(Default)]
-pub(super) struct SkillPanel {
-    pub(super) result: Option<SkillsListResult>,
-    pub(super) selection: ListState,
-}
-
-impl SkillPanel {
-    pub(super) fn install(&mut self, result: SkillsListResult) {
-        self.result = Some(result);
-        let len = self.result.as_ref().map_or(0, |result| result.skills.len());
-        self.selection.select((len > 0).then_some(0));
-    }
-}
-
-#[derive(Default)]
 pub(super) struct UsagePanel {
     pub(super) session: Option<SessionUsageResult>,
     pub(super) tree: Option<SessionTreeUsageResult>,
@@ -705,50 +691,6 @@ pub(super) fn render_permissions(
                             theme.internal(),
                         ))
                         .right_aligned(),
-                    )),
-            ),
-        area,
-        &mut panel.selection,
-    );
-}
-
-pub(super) fn render_skills(frame: &mut Frame, area: Rect, panel: &mut SkillPanel, theme: &Theme) {
-    paint_panel(frame, area, theme);
-    let items = panel
-        .result
-        .as_ref()
-        .map(|result| {
-            result
-                .skills
-                .iter()
-                .map(|skill| {
-                    ListItem::new(format!(
-                        "{}  {:?}  {:?}  {}  {}",
-                        skill.name,
-                        skill.source,
-                        skill.permission_effect,
-                        if skill.precedence_winner {
-                            "winner"
-                        } else {
-                            "shadowed"
-                        },
-                        skill.location
-                    ))
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    frame.render_stateful_widget(
-        List::new(items)
-            .highlight_symbol("> ")
-            .highlight_style(theme.selected())
-            .block(
-                crate::ui::panel_block()
-                    .border_style(theme.panel_border())
-                    .title(crate::ui::panel_title("Skills"))
-                    .title_bottom(crate::ui::panel_title(
-                        Line::from(Span::styled("arrows move | esc close", theme.internal()))
-                            .right_aligned(),
                     )),
             ),
         area,

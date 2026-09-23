@@ -100,10 +100,7 @@ async fn goal_activation_keeps_run_a_frozen_until_modeled_run_b_events_arrive() 
         "{switched}"
     );
 
-    app.run_command(SlashCommand::Goal(GoalCommand::Objective(
-        "Continue with model B".into(),
-    )))
-    .await;
+    app.run_goal_command(GoalCommand::Objective("Continue with model B".into()));
     assert_eq!(app.draft.as_ref(), Some(&draft_b));
     assert_eq!(
         assistant_projection(&app.store.sessions[&session]),
@@ -843,4 +840,90 @@ async fn delegated_variant_cycle_is_immune_to_live_provider_refresh() {
     assert_eq!(after, before);
     app.cycle_draft_variant();
     assert_eq!(app.draft_variants(), before);
+}
+
+#[tokio::test]
+async fn model_command_continues_to_a_variant_step_that_applies_both_together() {
+    let (client, _requests) = recording_client();
+    let mut app = App::new(client).await.expect("test app");
+    let model_a = model_descriptor();
+    let model_b = catalog_model("other/model-b", &["low", "high"], Some("low"));
+    app.install_initial_runtime(runtime_snapshot(
+        "1",
+        Vec::new(),
+        vec![model_a.clone(), model_b.clone()],
+        vec![descriptor("primary", true)],
+    ));
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    app.sessions.push(session_meta(session));
+    assert!(app.store.apply_event(session_created(session, 1)));
+    let original = RunSelection {
+        agent: agent_id(),
+        model: ModelSelection {
+            model: model_a.key.clone(),
+            variant: None,
+        },
+        preset: None,
+    };
+    app.draft = Some(original.clone());
+
+    run_palette_command(&mut app, "model").await;
+    assert_eq!(app.modal, Modal::Models);
+    let row_b = app
+        .filtered_draft_models()
+        .iter()
+        .position(|selection| selection.model == model_b.key)
+        .expect("model B row");
+    app.choose_picker_entry(row_b).await;
+    assert_eq!(app.modal, Modal::Variants);
+    // The model's default is highlighted; nothing is applied yet.
+    assert_eq!(app.picker_state.selected(), Some(1));
+    assert_eq!(app.draft.as_ref(), Some(&original));
+    let rendered = rendered_frame(&mut app, 120, 36);
+    assert!(rendered.contains("Variant — other/model-b"), "{rendered}");
+    assert!(rendered.contains("base"), "{rendered}");
+    assert!(
+        rendered.contains("low — Variant low (default)"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("high — Variant high"), "{rendered}");
+
+    // Esc goes back to the model list, still with nothing applied.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::Models);
+    assert_eq!(app.picker_state.selected(), Some(row_b));
+    assert_eq!(app.draft.as_ref(), Some(&original));
+
+    app.choose_picker_entry(row_b).await;
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::None);
+    let draft = app.draft.as_ref().expect("draft");
+    assert_eq!(draft.model.model, model_b.key);
+    assert_eq!(
+        draft.model.variant,
+        Some(cookie_agent_protocol::VariantId::new("high").expect("variant"))
+    );
+
+    // The title's model segment keeps its one-step picker.
+    app.open_selection_modal(Modal::Models);
+    let row_a = app
+        .filtered_draft_models()
+        .iter()
+        .position(|selection| selection.model == model_a.key)
+        .expect("model A row");
+    app.choose_picker_entry(row_a).await;
+    assert_eq!(app.modal, Modal::None);
+    assert_eq!(
+        app.draft.as_ref().map(|draft| &draft.model.model),
+        Some(&model_a.key)
+    );
+
+    run_palette_command(&mut app, "agent").await;
+    assert_eq!(app.modal, Modal::Agents);
 }

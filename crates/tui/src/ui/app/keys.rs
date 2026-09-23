@@ -449,6 +449,7 @@ impl App {
             Modal::Presets => self.handle_selection_picker(key).await,
             Modal::Agents => self.handle_agent_picker_key(key).await,
             Modal::Models => self.handle_model_picker_key(key).await,
+            Modal::Variants => self.handle_variant_picker_key(key).await,
             Modal::ConnectProviders => self.handle_connect_provider_key(key),
             Modal::ConnectDetails => self.handle_connect_details_key(key),
             Modal::ConnectSetup => self.handle_connect_setup_key(key),
@@ -458,26 +459,6 @@ impl App {
             Modal::RevertConfirm => self.handle_revert_confirm_key(key).await,
             Modal::Mcp => self.handle_mcp_key(key).await,
             Modal::Permissions => self.handle_permissions_key(key).await,
-            Modal::Skills => match key.code {
-                KeyCode::Esc => self.modal = Modal::None,
-                KeyCode::Up => move_picker_selection(
-                    &mut self.skill_panel.selection,
-                    self.skill_panel
-                        .result
-                        .as_ref()
-                        .map_or(0, |result| result.skills.len()),
-                    true,
-                ),
-                KeyCode::Down => move_picker_selection(
-                    &mut self.skill_panel.selection,
-                    self.skill_panel
-                        .result
-                        .as_ref()
-                        .map_or(0, |result| result.skills.len()),
-                    false,
-                ),
-                _ => {}
-            },
             Modal::Usage => match key.code {
                 KeyCode::Esc => self.modal = Modal::None,
                 KeyCode::Up => self.usage_panel.scroll_up(1),
@@ -494,19 +475,7 @@ impl App {
                 self.cycle_agent(agent_cycle_backward(key).expect("agent cycle key"));
             }
             Modal::None if self.command_palette_visible() => self.handle_palette_key(key).await,
-            Modal::None
-                if self.current_approval().is_some() && is_approval_scroll_key(key.code) =>
-            {
-                self.handle_approval_scroll_key(key.code);
-            }
-            Modal::None if key.code == KeyCode::Esc && self.current_approval().is_some() => {
-                if self
-                    .current_approval()
-                    .is_some_and(|approval| approval.constraints.cancellable)
-                {
-                    self.answer_approval(ApprovalUserDecision::Cancel).await;
-                }
-            }
+            Modal::None if self.current_approval().is_some() => self.handle_approval_key(key).await,
             Modal::None if key.code == KeyCode::Esc && self.selection.is_some() => {
                 // Esc retires a selection before it ever counts toward the
                 // double-Esc run cancel.
@@ -1153,7 +1122,7 @@ impl App {
                 .find(|hit| contains(hit.rect, column, row))
                 .copied()
             {
-                self.activate_palette_entry(hit.index).await;
+                self.activate_palette_row(hit.index).await;
             }
             return;
         }
@@ -1430,8 +1399,7 @@ impl App {
                 .palette
                 .is_some_and(|rect| contains(rect, column, row))
         {
-            let count = self.palette_entries().len();
-            move_selection(&mut self.palette_state, count, up);
+            self.move_palette_selection(up);
             return;
         }
         if self.modal != Modal::None {
@@ -1465,7 +1433,7 @@ impl App {
                         self.agent_search.focus_list();
                         self.picker_entry_count()
                     }
-                    Modal::Presets => self.picker_entry_count(),
+                    Modal::Presets | Modal::Variants => self.picker_entry_count(),
                     Modal::ConnectProviders => self.filtered_providers().len(),
                     Modal::UserMessage => USER_MENU_ITEMS.len(),
                     Modal::ConnectDetails
@@ -1475,7 +1443,6 @@ impl App {
                     | Modal::RevertConfirm
                     | Modal::Mcp
                     | Modal::Permissions
-                    | Modal::Skills
                     | Modal::Usage
                     | Modal::GoalDetail
                     | Modal::None => 0,

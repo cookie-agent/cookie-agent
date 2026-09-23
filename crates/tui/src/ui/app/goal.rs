@@ -29,19 +29,28 @@ pub(super) struct GoalDetailState {
 }
 
 impl App {
-    pub(super) fn run_goal_command(&mut self, command: GoalCommand) {
+    /// Why a goal command cannot run in the current view, if it cannot.
+    pub(super) fn goal_command_blocker(&self) -> Option<&'static str> {
         let Some(session_id) = self.selected else {
-            self.status = "select a root session before using /goal".into();
-            return;
+            return Some("select a root session before using /goal");
         };
         if !self.watching_root_session() {
-            self.status = "goal commands are only available in root sessions".into();
-            return;
+            return Some("goal commands are only available in root sessions");
         }
         if self.read_only_sessions.contains(&session_id) {
-            self.status = "cannot change a goal in a read-only session".into();
+            return Some("cannot change a goal in a read-only session");
+        }
+        None
+    }
+
+    pub(in crate::ui) fn run_goal_command(&mut self, command: GoalCommand) {
+        if let Some(reason) = self.goal_command_blocker() {
+            self.status = reason.into();
             return;
         }
+        let Some(session_id) = self.selected else {
+            return;
+        };
         if matches!(&command, GoalCommand::Objective(objective) if objective.trim().is_empty()) {
             self.status = "goal objective must not be empty".into();
             return;

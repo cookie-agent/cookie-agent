@@ -9,9 +9,11 @@ plugin, and persistence contracts behind this workflow.
 
 ## Activation and goal bar
 
-Activate goal mode in the root session with `/goal <objective>`. Bare `/goal`
-shows usage requiring an objective, not a status report. `/goal status` is no
-longer supported and is rejected.
+Activate goal mode in the root session by choosing `/goal` in the
+[command palette](run.md#command-palette) and entering the objective in the
+prompt that follows. An empty objective is refused in place, and Esc returns to
+the command list. Outside a root session, or in a read-only one, the palette
+explains why instead of prompting.
 
 A persistent one-line goal bar appears above the message composer whenever the
 selected session has a goal. Click its objective description to open a detail
@@ -19,21 +21,14 @@ modal with the full objective, checklist, and lifecycle status. The checklist
 view is read-only; the root agent maintains it through its items-only update tool.
 
 Use the bar's **Pause** or **Resume** button and **Cancel** button to control an
-active or paused goal. Completed and cancelled goals keep a read-only bar and
-detail view; the bar is hidden when no goal exists. The producer queue strip
-is separate and appears above the goal bar and composer.
+active or paused goal. From the keyboard, F6 focuses the bar, Left/Right or Tab
+move between its controls, Enter activates one, and Esc returns to the
+composer. Completed and cancelled goals keep a read-only bar and detail view;
+the bar is hidden when no goal exists. The producer queue strip is separate and
+appears above the goal bar and composer.
 
-The buttons are the primary lifecycle controls. These slash shortcuts remain:
-
-| Command | Action |
-|---|---|
-| `/goal pause` | Pause an active goal |
-| `/goal resume` | Resume a paused goal |
-| `/goal cancel` | Cancel an active or paused goal |
-
-`/goal <objective>` errors if a goal is already active or paused; cancel or
-complete the current goal first. Typing `/goal` in a delegated child session is
-rejected with an explanatory error.
+Setting a new objective errors if a goal is already active or paused; cancel or
+complete the current goal first.
 
 A goal moves through four lifecycle states: `active`, `paused`, `completed`,
 and `cancelled`. Completed and cancelled are terminal. Only you control the
