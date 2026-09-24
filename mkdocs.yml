@@ -121,5 +121,8 @@ nav:
 
 extra:
   homepage: https://cookie-agent.github.io/
+  # Store preferences at the origin root: every docs version and the landing
+  # page share one light/dark choice under /.__palette.
+  scope: /
   version:
     provider: mike
