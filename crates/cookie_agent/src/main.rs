@@ -397,12 +397,13 @@ async fn compose_with_configuration<T: CatalogTransport + 'static>(
     }
     let port = configuration.runtime.server.port;
 
+    // Startup never waits on the network: it serves the validated cache (or
+    // the bundled catalog) and the refresh loop checks models.dev right away.
     let catalog_manager = open_catalog(open_transport()?);
     let catalog = Arc::new(
         catalog_manager
-            .refresh()
-            .await
-            .context("refresh fixed models.dev catalog")?,
+            .load_cached()
+            .context("load cached models.dev catalog")?,
     );
     let provider_store = open_provider_store().context("open provider store 3")?;
     let model_manager = Arc::new(
@@ -477,12 +478,20 @@ async fn run_catalog_refresh_loop<T: CatalogTransport + 'static>(
     shutdown: CancellationToken,
     cadence: Duration,
 ) {
+    // The first check runs immediately, since startup served the cache.
+    let mut first = true;
     loop {
-        tokio::select! {
-            () = shutdown.cancelled() => return,
-            () = tokio::time::sleep(cadence) => {}
+        if !std::mem::take(&mut first) {
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                () = tokio::time::sleep(cadence) => {}
+            }
         }
-        let Ok(catalog) = catalog_manager.refresh().await else {
+        let refreshed = tokio::select! {
+            () = shutdown.cancelled() => return,
+            refreshed = catalog_manager.refresh() => refreshed,
+        };
+        let Ok(catalog) = refreshed else {
             continue;
         };
         if !catalog_publication_changed(&engine, &catalog) {
@@ -494,15 +503,16 @@ async fn run_catalog_refresh_loop<T: CatalogTransport + 'static>(
     }
 }
 
+/// Republishing recompiles every model, so it happens only when the models
+/// could differ: a new catalog revision or a change in availability. A server
+/// confirming the cached body (source `cache` becoming `network`) is not one.
 fn catalog_publication_changed(
     engine: &Engine,
     catalog: &cookie_agent_models::catalog::CatalogSnapshot,
 ) -> bool {
     let current = engine.current_runtime();
     let current = current.models.catalog();
-    current.revision != catalog.revision
-        || current.source != catalog.source
-        || current.state.availability != catalog.state.availability
+    current.revision != catalog.revision || current.state.availability != catalog.state.availability
 }
 
 fn data_dir() -> anyhow::Result<PathBuf> {

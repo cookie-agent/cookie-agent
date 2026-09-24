@@ -74,6 +74,47 @@ impl<T: CatalogTransport> CatalogManager<T> {
         }
     }
 
+    /// The catalog to start from without touching the network: the validated
+    /// cache, else the bundled bootstrap copy. A background refresh then
+    /// checks models.dev.
+    pub fn load_cached(&self) -> Result<CatalogSnapshot, CatalogError> {
+        self.load_cached_at(Timestamp::now())
+    }
+
+    /// [`Self::load_cached`] at a supplied time for deterministic tests.
+    pub fn load_cached_at(&self, now: Timestamp) -> Result<CatalogSnapshot, CatalogError> {
+        match self.load_cache(now) {
+            Ok(cached) => {
+                let availability = if cached.meta.stale {
+                    CatalogAvailability::Stale
+                } else {
+                    CatalogAvailability::Ready
+                };
+                Ok(snapshot_from_parsed(
+                    cached.parsed,
+                    CatalogSource::Cache,
+                    cached.meta.validated_at,
+                    cached.meta.last_checked_at,
+                    cached.meta.etag,
+                    availability,
+                    cached.meta.last_error,
+                ))
+            }
+            Err(_) => {
+                let parsed = parse_catalog(validated_bootstrap()?)?;
+                Ok(snapshot_from_parsed(
+                    parsed,
+                    CatalogSource::Bootstrap,
+                    now,
+                    now,
+                    None,
+                    CatalogAvailability::Bootstrap,
+                    None,
+                ))
+            }
+        }
+    }
+
     /// Refreshes using the system clock.
     pub async fn refresh(&self) -> Result<CatalogSnapshot, CatalogError> {
         self.refresh_at(Timestamp::now()).await
@@ -116,7 +157,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 meta.selected_source = CatalogSource::Network;
                 meta.stale = false;
                 meta.last_error = None;
-                let write_error = self.commit_cache(&cached.parsed.body, &meta).err();
+                let write_error = self.commit_meta(&meta).err();
                 Ok(snapshot_from_parsed(
                     cached.parsed,
                     CatalogSource::Network,
@@ -181,7 +222,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                     cached.meta.etag.clone(),
                     Some(safe_error),
                 );
-                let write_error = self.commit_cache(&cached.parsed.body, &meta).err();
+                let write_error = self.commit_meta(&meta).err();
                 if let Some(error) = write_error {
                     meta.last_error = Some(error.safe_meta(now));
                 }
@@ -324,6 +365,40 @@ impl<T: CatalogTransport> CatalogManager<T> {
         }
         validate_parsed_meta(&meta, &parsed)?;
         Ok(ValidatedCache { parsed, meta })
+    }
+
+    /// Rewrites only the metadata for a body that is already installed (a 304,
+    /// or serving the cache after a failed refresh), instead of rewriting the
+    /// multi-megabyte body. The metadata on disk must still name the same body,
+    /// so one atomic replace keeps the pair consistent.
+    fn commit_meta(&self, meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
+        let directory = self.cache.as_ref().map_err(Clone::clone)?;
+        let lock = directory
+            .lock_within(CATALOG_LOCK_FILE, DEFAULT_LOCK_BUDGET)
+            .map_err(CatalogError::from_store)?;
+        recover_cache(&lock)?;
+        let installed = lock
+            .read(CATALOG_META_FILE, MAX_META_BYTES)
+            .map_err(CatalogError::from_store)?
+            .map(|bytes| parse_cache_meta(&bytes))
+            .transpose()?;
+        if installed.is_none_or(|installed| {
+            installed.body_revision != meta.body_revision
+                || installed.byte_length != meta.byte_length
+        }) {
+            return Err(CatalogError::new(
+                "catalog_cache_changed",
+                "catalog cache body changed before its metadata could be updated",
+            ));
+        }
+        let meta_bytes = serde_json::to_vec_pretty(meta).map_err(|_| {
+            CatalogError::new(
+                "cache_metadata_write_failed",
+                "catalog cache metadata could not be encoded",
+            )
+        })?;
+        lock.atomic_replace(CATALOG_META_FILE, &meta_bytes)
+            .map_err(CatalogError::from_store)
     }
 
     fn commit_cache(&self, body: &[u8], meta: &CatalogCacheMeta) -> Result<(), CatalogError> {

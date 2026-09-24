@@ -27,6 +27,20 @@ async fn compose_isolated<T: CatalogTransport + 'static>(
     .await
 }
 
+/// Startup serves the cached or bundled catalog and refreshes from the
+/// transport in the background; waits until that first refresh is published.
+async fn await_initial_catalog_refresh(runtime: &Runtime) {
+    for _ in 0..10_000 {
+        if runtime.engine.current_runtime().models.catalog().source
+            == cookie_agent_models::catalog::CatalogSource::Network
+        {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("initial catalog refresh was not published");
+}
+
 use std::{
     collections::VecDeque,
     future::Future,
@@ -599,6 +613,9 @@ async fn empty_startup_uses_injected_offline_catalog_and_composes_before_fronten
     )
     .await
     .unwrap();
+    // Startup itself never waits on the network.
+    assert_eq!(fetches.load(Ordering::SeqCst), 0);
+    await_initial_catalog_refresh(&runtime).await;
     assert_eq!(fetches.load(Ordering::SeqCst), 1);
     let snapshot = runtime.engine.runtime_snapshot().unwrap();
     assert!(snapshot.snapshot.models.is_empty());
@@ -916,6 +933,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
     )
     .await
     .unwrap();
+    await_initial_catalog_refresh(&runtime).await;
     let initial = runtime.engine.runtime_snapshot().unwrap().snapshot;
     let connected = runtime
         .engine
@@ -1069,7 +1087,14 @@ async fn hourly_catalog_refresh_skips_noops_publishes_fallback_once_and_cancels(
     .await
     .unwrap();
     let mut changes = runtime.engine.subscribe_runtime_changes();
-    tokio::task::yield_now().await;
+    // The first refresh runs right after startup, replacing the bundled catalog.
+    await_initial_catalog_refresh(&runtime).await;
+    assert_eq!(fetches.load(Ordering::SeqCst), 1);
+    let changed = changes.recv().await.unwrap();
+    assert_eq!(
+        changed.reasons,
+        vec![cookie_agent_protocol::RuntimeChangeReason::CatalogRefreshed]
+    );
 
     tokio::time::advance(CATALOG_REFRESH_INTERVAL).await;
     tokio::task::yield_now().await;

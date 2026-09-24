@@ -13,8 +13,9 @@ authentication. Connections are stored globally for the
 current user, not in the workspace config. Setup is validated locally; the first
 model request tests the credentials. Never commit credential-bearing files.
 
-At startup, the engine refreshes `https://models.dev/catalog.json`, falling back
-to a validated cache or the bundled catalog. Supported, non-deprecated text-output
+At startup, the engine serves the validated catalog cache (or the bundled
+catalog on first run) and refreshes `https://models.dev/catalog.json` in the
+background right away, then hourly. Supported, non-deprecated text-output
 models are included automatically. Catalog declarations are not probes of your
 endpoint: account access, deployed model features, and billing may differ.
 

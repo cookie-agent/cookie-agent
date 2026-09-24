@@ -159,10 +159,13 @@ See [Configuration](guide/configuration.md) and the
 
 `crates/models` owns the full dynamic provider pipeline:
 
-1. **Catalog.** The daemon refreshes the fixed models.dev catalog
-   (`https://models.dev/catalog.json`) hourly, with a validated ETag cache and a
-   bundled integrity-checked bootstrap as fallbacks. Catalog selection is network,
-   cache, or bootstrap.
+1. **Catalog.** The daemon starts from the validated catalog cache, or the
+   bundled integrity-checked bootstrap when there is none, without waiting on the
+   network. It then refreshes the fixed models.dev catalog
+   (`https://models.dev/catalog.json`) in the background: once right away, then
+   hourly, with an ETag. A `304 Not Modified` rewrites only the cache metadata,
+   and models are recompiled only when the catalog revision or availability
+   changes. Catalog selection is network, cache, or bootstrap.
 2. **Family registry.** A code-owned recipe registry (schema 1) maps the catalog's
    npm package names to protocol families: OpenAI, OpenAI-compatible chat,
    Anthropic, Google, Vertex, Bedrock, Azure, and Cohere. Each recipe declares a

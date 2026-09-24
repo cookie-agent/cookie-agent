@@ -586,3 +586,54 @@ async fn content_length_is_rejected_before_body_streaming() {
         .unwrap();
     assert_eq!(snapshot.source, CatalogSource::Bootstrap);
 }
+
+#[tokio::test]
+async fn startup_serves_cache_or_bootstrap_without_fetching_and_304_rewrites_only_metadata() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let mut response = CatalogTransportResponse::from_bytes(200, candidate());
+    response.etag = Some("\"revision-one\"".to_owned());
+    let transport = ScriptedTransport::with([response, CatalogTransportResponse::not_modified()]);
+    let requests = Arc::clone(&transport.requests);
+    let manager = manager(transport, &temporary);
+    let later: Timestamp = "2026-08-06T00:00:00Z".parse().unwrap();
+
+    // Nothing cached yet: startup serves the bundled catalog without a request.
+    let bootstrap = manager.load_cached_at(now()).unwrap();
+    assert_eq!(bootstrap.source, CatalogSource::Bootstrap);
+    assert_eq!(bootstrap.state.availability, CatalogAvailability::Bootstrap);
+    assert!(requests.lock().unwrap().is_empty());
+
+    let first = manager.refresh_at(now()).await.unwrap();
+    // Cached now: startup serves the validated cache, still without a request.
+    let cached = manager.load_cached_at(later).unwrap();
+    assert_eq!(cached.source, CatalogSource::Cache);
+    assert_eq!(cached.state.availability, CatalogAvailability::Ready);
+    assert_eq!(cached.revision, first.revision);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    // A 304 rewrites only the small metadata file, never the body.
+    let cache_root = temporary.path().join("catalog");
+    let body_inode = fs::metadata(cache_root.join(CATALOG_BODY_FILE))
+        .unwrap()
+        .ino();
+    let meta_before = fs::read(cache_root.join(CATALOG_META_FILE)).unwrap();
+    let second = manager.refresh_at(later).await.unwrap();
+    assert_eq!(second.source, CatalogSource::Network);
+    assert_eq!(second.revision, first.revision);
+    assert_eq!(
+        fs::metadata(cache_root.join(CATALOG_BODY_FILE))
+            .unwrap()
+            .ino(),
+        body_inode
+    );
+    assert_ne!(
+        fs::read(cache_root.join(CATALOG_META_FILE)).unwrap(),
+        meta_before
+    );
+    assert_eq!(
+        manager.load_cached_at(later).unwrap().revision,
+        first.revision
+    );
+}
