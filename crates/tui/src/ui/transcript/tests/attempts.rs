@@ -267,6 +267,111 @@ fn model_change_inserts_marker_and_keeps_first_header() {
 }
 
 #[test]
+fn fallback_rows_sit_between_the_abandoned_block_and_the_fallback_block() {
+    // With and without a committed turn in the failing model's block: the
+    // abandonment and fallback rows land where they happened, and the
+    // fallback model's output opens its own block below them instead of
+    // continuing the block above behind a `now using` marker.
+    for committed_first in [true, false] {
+        let session = SessionId::new_v7();
+        let run = run_id();
+        let first = AttemptId::new_v7();
+        let failing = AttemptId::new_v7();
+        let fallback = AttemptId::new_v7();
+        let error: cookie_agent_protocol::ModelErrorSummary =
+            serde_json::from_value(serde_json::json!({
+                "kind": "invalid_response",
+                "message": "Chat cache-write token usage is invalid",
+                "retryable": false,
+                "stage": "stream_event",
+                "http_status": null,
+                "bytes_received": 10362,
+                "vendor_code": null,
+                "request_id": null,
+                "retry_after_ms": null,
+            }))
+            .expect("model error summary");
+        let mut events = vec![session_created(session, 1)];
+        if committed_first {
+            events.extend([
+                attempt_started(session, 2, run, first, None),
+                turn_committed(
+                    session,
+                    3,
+                    run,
+                    first,
+                    1,
+                    vec![text_part("first answer")],
+                    Vec::new(),
+                    None,
+                ),
+            ]);
+        }
+        events.extend([
+            attempt_started(session, 4, run, failing, None),
+            text_delta(session, 5, run, failing, "discarded partial"),
+            event(
+                session,
+                6,
+                run,
+                EventPayload::AttemptAbandoned {
+                    attempt_id: failing,
+                    model_error: Some(error.clone()),
+                },
+            ),
+            event(
+                session,
+                7,
+                run,
+                EventPayload::ModelFallback {
+                    from: resolved_model(None),
+                    to: resolved_model(Some("high")),
+                    from_fallback_index: 0,
+                    to_fallback_index: 1,
+                    error,
+                    attempts_on_from: 1,
+                },
+            ),
+            attempt_started(session, 8, run, fallback, Some("high")),
+            text_delta(session, 9, run, fallback, "fallback answer"),
+        ]);
+        let mut store = StateStore::default();
+        for event in events {
+            assert!(store.apply_event(event));
+        }
+        let state = &store.sessions[&session];
+        let expected: &[&str] = if committed_first {
+            &[
+                "assistant[text:first answer]",
+                "assistant[text:fallback answer]",
+            ]
+        } else {
+            &["assistant[text:fallback answer]"]
+        };
+        assert_eq!(transcript_shape(state), expected);
+        let rendered = snapshot_lines(&transcript_layout(state, None, 200).lines);
+        assert!(!rendered.contains("now using"), "{rendered}");
+        let position = |needle: &str| {
+            rendered
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing {needle:?} in:\n{rendered}"))
+        };
+        let abandoned = position("model attempt abandoned");
+        let fallback_row = position("model fallback");
+        let fallback_header = position("primary • gateway/arbitrary-model[high]");
+        assert!(
+            abandoned < fallback_row && fallback_row < fallback_header,
+            "{rendered}"
+        );
+        if committed_first {
+            assert!(position("first answer") < abandoned, "{rendered}");
+        } else {
+            assert!(!rendered.contains("arbitrary-model[base]"), "{rendered}");
+        }
+    }
+}
+
+#[test]
 fn multi_attempt_run_merges_committed_turns_and_tool_in_order() {
     let session = SessionId::new_v7();
     let run = run_id();

@@ -706,6 +706,21 @@ impl SessionState {
         }
     }
 
+    /// Split the run's open block at an attempt-boundary row (an abandoned
+    /// attempt, a model fallback). Such a row lands after the attempt closed,
+    /// so the streaming-only rule above never fires, yet the next attempt
+    /// happened after it: its output must open a fresh block below the row
+    /// rather than continue the block above.
+    pub(crate) fn mark_attempt_boundary_split(&mut self, run_id: Option<RunId>) {
+        if let Some(projection) = self
+            .open_run_assistant
+            .as_mut()
+            .filter(|projection| Some(projection.run_id) == run_id)
+        {
+            projection.split_pending = true;
+        }
+    }
+
     /// Split the open run block at a committed context checkpoint. A
     /// checkpoint is durable context history the run's output must not
     /// straddle, so unlike an interleaved event row — which splits only while

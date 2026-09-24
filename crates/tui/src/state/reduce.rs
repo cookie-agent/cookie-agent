@@ -416,6 +416,9 @@ pub(super) fn reduce_event(
                 .clone()
                 .unwrap_or_else(|| AgentId::new("unknown").expect("static agent id"));
             let mut attribution_marker = None;
+            if let Some(run_id) = run_id {
+                relocate_empty_split_block(state, run_id, &resolved_model);
+            }
             let item_id = if let Some(run_id) = run_id {
                 if let Some(projection) = state
                     .open_run_assistant
@@ -567,6 +570,7 @@ pub(super) fn reduce_event(
                     None => "model attempt abandoned".into(),
                 };
                 push_event(state, EventLevel::Warning, message, timestamp);
+                state.mark_attempt_boundary_split(run_id);
             }
         }
         EventPayload::ModelTurnCommitted {
@@ -775,6 +779,7 @@ pub(super) fn reduce_event(
                 ),
                 timestamp,
             );
+            state.mark_attempt_boundary_split(run_id);
         }
         EventPayload::ToolCallStarted { start } => {
             close_open_assistant(state, timestamp);
@@ -2257,6 +2262,55 @@ pub(super) fn split_assistant_if_pending(
         },
     );
     Some(item_id)
+}
+
+/// A split-pending run block that an abandoned attempt left empty (its
+/// partials pruned, nothing ever committed) has nothing to keep above the
+/// rows that split it: move it below them and let the new attempt continue
+/// in it under its own model, instead of stranding an empty header.
+pub(super) fn relocate_empty_split_block(
+    state: &mut SessionState,
+    run_id: RunId,
+    resolved_model: &ResolvedModelRef,
+) {
+    let Some(item_id) = state
+        .open_run_assistant
+        .as_ref()
+        .filter(|projection| projection.run_id == run_id && projection.split_pending)
+        .map(|projection| projection.item_id)
+    else {
+        return;
+    };
+    let Some(index) = state.transcript.iter().position(|item| {
+        matches!(
+            item,
+            TranscriptItem::Assistant {
+                id,
+                children,
+                committed_turn_seq: None,
+                ..
+            } if *id == item_id && children.is_empty()
+        )
+    }) else {
+        return;
+    };
+    if let TranscriptItem::Assistant {
+        version,
+        attribution,
+        ..
+    } = &mut state.transcript[index]
+    {
+        attribution.resolved_model = resolved_model.clone();
+        *version = version.wrapping_add(1);
+    }
+    move_transcript_item_to_end(state, index);
+    let projection = state
+        .open_run_assistant
+        .as_mut()
+        .expect("located run projection");
+    projection.split_pending = false;
+    projection.committed_prefix = 0;
+    projection.current_model = resolved_model.clone();
 }
 
 /// Prune one split-off block back to its committed prefix (keeping
