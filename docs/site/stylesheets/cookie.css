@@ -73,8 +73,9 @@
   --md-accent-bg-color--light: var(--cookie-panel);
 }
 
-/* Header: the landing page's bar. A 64px header instead of Material's 48px, so
-   the sticky sidebars and anchor targets move down by the same 0.8rem. */
+/* Header: the landing page's bar with the section tabs pinned under it. A
+   64px bar instead of Material's 48px, so the sticky sidebars and anchor
+   targets move down by the same 0.8rem. */
 
 .md-header {
   border-bottom: 1px solid var(--cookie-rule);
@@ -86,8 +87,13 @@
 }
 
 @media screen and (min-width: 76.25em) {
-  .md-sidebar {
-    top: 3.2rem;
+  .md-sidebar,
+  .md-header--lifted ~ .md-container .md-sidebar {
+    top: 5.6rem;
+  }
+
+  .md-header--lifted ~ .md-container .md-typeset :target {
+    --md-scroll-margin: 6.8rem;
   }
 }
 
@@ -147,7 +153,7 @@
 .md-tabs {
   background-color: var(--cookie-bg);
   color: var(--cookie-text);
-  border-bottom: 1px solid var(--cookie-rule);
+  border-top: 1px solid var(--cookie-rule);
 }
 
 .md-tabs__link--active,
