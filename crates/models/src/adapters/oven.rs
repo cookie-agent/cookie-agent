@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock, PoisonError},
     time::Duration,
 };
 
@@ -848,7 +848,32 @@ const fn default_stream_idle() -> u64 {
     120
 }
 
+/// One HTTP client per connect timeout, shared by every compiled model.
+/// Building a client loads the platform's root certificates, which, done once
+/// per model, dominated startup; a `reqwest::Client` is a cheap handle to one
+/// shared connection pool. `None` if the client cannot be built, in which case
+/// an adapter builds its own and reports the failure itself.
+fn shared_http_client(connect: Duration) -> Option<reqwest::Client> {
+    static CLIENTS: OnceLock<Mutex<HashMap<Duration, reqwest::Client>>> = OnceLock::new();
+    let mut clients = CLIENTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(client) = clients.get(&connect) {
+        return Some(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(connect)
+        .build()
+        .ok()?;
+    clients.insert(connect, client.clone());
+    Some(client)
+}
+
 impl TimeoutsConfig {
+    fn shared_client(self) -> Option<reqwest::Client> {
+        shared_http_client(Duration::from_secs(self.connect_seconds))
+    }
     fn anthropic(self) -> AnthropicTimeouts {
         AnthropicTimeouts {
             headers: Duration::from_secs(self.headers_seconds),
@@ -942,10 +967,9 @@ pub struct AnthropicSettingsConfig {
 impl AnthropicSettingsConfig {
     fn to_oven(&self) -> Result<AnthropicSettings, ModelBuildError> {
         Ok(AnthropicSettings {
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(self.timeouts.connect_seconds))
-                .build()
-                .map_err(|_| ModelError::transport("could not construct Anthropic HTTP client"))?,
+            client: self.timeouts.shared_client().ok_or_else(|| {
+                ModelError::transport("could not construct Anthropic HTTP client")
+            })?,
             timeouts: self.timeouts.anthropic(),
             protocol: AnthropicProtocolSettings {
                 thinking: self.thinking.into(),
@@ -1209,7 +1233,7 @@ impl OpenAiChatSettingsConfig {
                 self.routing_discriminator.as_deref(),
                 header_discriminator,
             ),
-            client: None,
+            client: self.timeouts.shared_client(),
             timeouts: self.timeouts.openai(),
         }
     }
@@ -1233,7 +1257,7 @@ impl OpenAiResponsesSettingsConfig {
                 header_discriminator,
             ),
             compaction: self.compaction.into(),
-            client: None,
+            client: self.timeouts.shared_client(),
             timeouts: self.timeouts.openai(),
         }
     }
@@ -1376,7 +1400,7 @@ impl CompatibleSettingsConfig {
                 self.routing_discriminator.as_deref(),
                 header_discriminator,
             ),
-            client: None,
+            client: self.timeouts.shared_client(),
             timeouts: self.timeouts.openai(),
         }
     }
@@ -1640,7 +1664,7 @@ impl VertexSettingsConfig {
                 url_schemes: self.media.url_schemes.clone(),
             },
             native_context_scope,
-            client: None,
+            client: self.timeouts.shared_client(),
             timeouts: self.timeouts.vertex(),
         })
     }
@@ -1805,7 +1829,7 @@ impl BedrockSettingsConfig {
             structured_output: self.structured_output.into(),
             event_stream: BedrockEventStreamLimits::new(self.max_event_message_bytes),
             timeouts: self.timeouts.bedrock(),
-            client: None,
+            client: self.timeouts.shared_client(),
         }
     }
 }
