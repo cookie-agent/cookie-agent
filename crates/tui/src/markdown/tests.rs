@@ -177,7 +177,7 @@ fn headings_drop_markers_preserve_hierarchy_and_rules_fill_the_render_width() {
 }
 
 #[test]
-fn code_wraps_by_grapheme_with_preserved_styles_and_continuation_marker() {
+fn code_wraps_by_grapheme_with_preserved_styles_and_blank_continuation_marker() {
     struct SplitHighlighter;
 
     impl Highlighter for SplitHighlighter {
@@ -212,12 +212,12 @@ fn code_wraps_by_grapheme_with_preserved_styles_and_continuation_marker() {
         .filter(|line| line.kind == super::MarkdownLineKind::Code)
         .collect::<Vec<_>>();
     // No language label: every row pads to the full width, and a wrapped
-    // continuation starts with `↪`.
+    // continuation keeps the blank left marker of a one-line block.
     assert_eq!(
         code.iter()
             .map(|line| line.line.to_string())
             .collect::<Vec<_>>(),
-        [" abcdefg", "↪hijkl  "]
+        [" abcdefg", " hijkl  "]
     );
     let body = &code;
     assert!(

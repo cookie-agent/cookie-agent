@@ -72,14 +72,14 @@ fn markdown_code_bypasses_prose_wrap_and_lists_use_nested_hanging_indents() {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    // Code rows never prose-wrap: the band's own marker wraps them, a space
-    // on the first row and `↪` on the continuation.
+    // Code rows never prose-wrap: the band wraps them itself, behind the
+    // same blank marker on the first row and the continuation.
     assert!(
         rendered.iter().any(|line| line == "│  abcdefghijklmno"),
         "{rendered:?}"
     );
     assert!(
-        rendered.iter().any(|line| line.starts_with("│ ↪pq")),
+        rendered.iter().any(|line| line.starts_with("│  pq")),
         "{rendered:?}"
     );
     for (first, continuation) in [

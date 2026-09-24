@@ -551,7 +551,13 @@ pub(super) fn extract_line(
     }
     let border_style = theme.code_border();
     let mut span_index = 0usize;
-    let mut spans = line.spans.iter().peekable();
+    // Empty spans occupy no cells; left in, one between the role gutter and
+    // a code marker would end the chrome walk and leak the marker.
+    let mut spans = line
+        .spans
+        .iter()
+        .filter(|span| !span.content.is_empty())
+        .peekable();
     let mut gutter_width = 0u16;
     // Quoted content rows keep only "> " gutters; a border row inside a
     // quote ("> ┌──┬──") is therefore still recognized as chrome.
@@ -570,14 +576,23 @@ pub(super) fn extract_line(
         span_index += 1;
         spans.next();
     }
-    // A code band's one-cell left marker (a space, or `↪` on a wrapped
-    // continuation) is chrome only in the border style: indentation inside
-    // the code arrives as content with the code's own styles.
+    // A code block's left marker (a band's space and the line-number cell,
+    // blank on a wrapped continuation) is chrome only in the border style:
+    // indentation inside the code arrives as content with the code's own
+    // styles. Without colors the border is its DIM modifier alone, which
+    // syntax highlighting never emits. A frame's number cell shares its
+    // `│ ` border's style, so the two may arrive merged into one span.
     if let Some(span) = spans.peek()
-        && matches!(span.content.as_ref(), " " | "↪")
-        && is_code_border(span.style, theme)
+        && !span.content.is_empty()
+        && span
+            .content
+            .strip_prefix("│ ")
+            .unwrap_or(&span.content)
+            .chars()
+            .all(|character| character == ' ' || character.is_ascii_digit())
+        && (is_code_border(span.style, theme) || span.style == theme.code_border())
     {
-        gutter_width = gutter_width.saturating_add(1);
+        gutter_width = gutter_width.saturating_add(span.width() as u16);
         spans.next();
     }
     let remaining: Vec<&ratatui::text::Span<'static>> = spans.collect();
@@ -609,6 +624,20 @@ pub(super) fn extract_line(
             .iter()
             .filter(|span| !span.content.is_empty())
             .all(|span| is_code_border(span.style, theme))
+    {
+        return None;
+    }
+    // Without colors the border is a bare DIM that muted prose may share,
+    // so only rows that also open with a border glyph (a code frame's
+    // `┌─ code` and `└─`) count as chrome there.
+    if border_style.fg.is_none()
+        && CHROME_ROW_PREFIXES
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+        && remaining
+            .iter()
+            .filter(|span| !span.content.is_empty())
+            .all(|span| span.style == border_style)
     {
         return None;
     }

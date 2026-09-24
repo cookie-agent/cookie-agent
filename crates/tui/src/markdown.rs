@@ -1786,18 +1786,25 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     /// A tinted band is the block's whole frame: each code row padded so the
-    /// band is a solid rectangle across the available width. Wrapped
-    /// continuations start with `↪`. Each row's one-cell left marker carries
-    /// the code-border style, which is how copy extraction drops it.
+    /// band is a solid rectangle across the available width. Each row's left
+    /// marker (a space, framing the line number of a multi-line block; blank
+    /// on wrapped continuations) carries the code-border style, which is how
+    /// copy extraction drops it.
     fn finish_banded_code(&mut self, highlighted: &[Line<'static>], background: Color) {
         let quote_prefix = "> ".repeat(self.quote_depth);
         let band = Style::default().bg(background);
         let marker = self.theme.code_border().patch(band);
         let quote_width = UnicodeWidthStr::width(quote_prefix.as_str());
         let bounded = self.width != usize::from(u16::MAX);
-        let content_width = self.width.saturating_sub(quote_width + 1).max(1);
+        let number_width = code_number_width(highlighted.len());
+        let marker_width = if number_width == 0 {
+            1
+        } else {
+            number_width + 2
+        };
+        let content_width = self.width.saturating_sub(quote_width + marker_width).max(1);
         let mut rows = Vec::new();
-        for line in highlighted {
+        for (line_index, line) in highlighted.iter().enumerate() {
             for (index, content) in wrap_code_spans(
                 expand_tabs_in_spans(line.spans.clone()),
                 content_width,
@@ -1806,7 +1813,13 @@ impl<'a> MarkdownRenderer<'a> {
             .into_iter()
             .enumerate()
             {
-                let mut spans = vec![Span::styled(if index == 0 { " " } else { "↪" }, marker)];
+                let label = code_line_number(number_width, line_index, index);
+                let label = if number_width == 0 {
+                    label
+                } else {
+                    format!(" {label}")
+                };
+                let mut spans = vec![Span::styled(label, marker)];
                 spans.extend(content.into_iter().map(|mut span| {
                     span.style = span.style.patch(band);
                     span
@@ -1844,22 +1857,36 @@ impl<'a> MarkdownRenderer<'a> {
             Span::styled("┌─ code".to_owned(), border),
         ]));
         let quote_width = UnicodeWidthStr::width(quote_prefix.as_str());
-        let first_width = self.width.saturating_sub(quote_width + 2).max(1);
-        let continuation_width = self.width.saturating_sub(quote_width + 1).max(1);
-        for line in highlighted {
+        let number_width = code_number_width(highlighted.len());
+        let number_columns = if number_width == 0 {
+            0
+        } else {
+            number_width + 1
+        };
+        let content_width = self
+            .width
+            .saturating_sub(quote_width + 2 + number_columns)
+            .max(1);
+        for (line_index, line) in highlighted.iter().enumerate() {
             let line_style = line.style;
             for (index, content) in wrap_code_spans(
                 expand_tabs_in_spans(line.spans.clone()),
-                first_width,
-                continuation_width,
+                content_width,
+                content_width,
             )
             .into_iter()
             .enumerate()
             {
                 let mut spans = vec![
                     Span::styled(quote_prefix.clone(), self.theme.quote()),
-                    Span::styled(if index == 0 { "│ " } else { "│" }, border),
+                    Span::styled("│ ", border),
                 ];
+                if number_width > 0 {
+                    spans.push(Span::styled(
+                        code_line_number(number_width, line_index, index),
+                        border,
+                    ));
+                }
                 spans.extend(content);
                 self.push_code_line(Line::from(spans).style(line_style));
             }
@@ -1947,6 +1974,28 @@ pub(crate) fn expand_tabs_in_spans(spans: Vec<Span<'static>>) -> Vec<Span<'stati
             Span::styled(content, span.style)
         })
         .collect()
+}
+
+/// Digits in a code block's line-number column; zero for a one-line block,
+/// which is left unnumbered.
+fn code_number_width(line_count: usize) -> usize {
+    if line_count < 2 {
+        0
+    } else {
+        line_count.to_string().len()
+    }
+}
+
+/// The line-number cell of one code row plus its trailing space: the number
+/// on a line's first row, blank on its wrapped continuations.
+fn code_line_number(number_width: usize, line_index: usize, row_index: usize) -> String {
+    if number_width == 0 {
+        " ".to_owned()
+    } else if row_index == 0 {
+        format!("{:>number_width$} ", line_index + 1)
+    } else {
+        " ".repeat(number_width + 1)
+    }
 }
 
 pub(crate) fn wrap_code_spans(

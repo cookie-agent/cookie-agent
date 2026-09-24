@@ -63,7 +63,7 @@ fn extraction_strips_chrome_and_copies_raw_content() {
 #[test]
 fn code_band_markers_never_reach_copied_text() {
     let theme = Theme::default();
-    // Narrow enough that the long line wraps onto a `↪` continuation, and
+    // Narrow enough that the long line wraps onto a blank continuation, and
     // with leading indentation that must survive the marker stripping.
     let lines = crate::markdown::render_markdown_width(
         &MarkdownDocument::new("```sh\n  echo abcdefghijklmnop\n```".into()),
@@ -80,12 +80,50 @@ fn code_band_markers_never_reach_copied_text() {
         !rendered.iter().any(|line| line.trim_end().ends_with(" sh")),
         "{rendered:?}"
     );
-    assert!(
-        rendered.iter().any(|line| line.contains('↪')),
-        "{rendered:?}"
-    );
+    assert!(rendered.len() > 1, "{rendered:?}");
     let extracted = extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme);
     assert_eq!(extracted, "  echo abcdefgh\nijklmnop");
+}
+
+#[test]
+fn code_line_numbers_never_reach_copied_text() {
+    // Banded, framed with colors, and framed without any colors.
+    for theme in [
+        Theme::default(),
+        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Mono, ColorLevel::None),
+    ] {
+        let source = (1..=10)
+            .map(|line| format!("{line} x"))
+            .chain(["  echo abcdefghijklmnopqrstuvwxyz".to_owned()])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = crate::markdown::render_markdown_width(
+            &MarkdownDocument::new(format!("```\n{source}\n```")),
+            &theme,
+            &PlainHighlighter,
+            24,
+        )
+        .into_iter()
+        .flat_map(|line| assistant_body_line(line, 26, &theme))
+        .collect::<Vec<_>>();
+        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+        // Right-aligned numbers, blank on the wrapped continuation.
+        for number in [" 1 1 x", "10 10 x", "11   echo"] {
+            assert!(
+                rendered.iter().any(|line| line.contains(number)),
+                "{rendered:?}"
+            );
+        }
+        let extracted = extract_selection(&lines, (0, 0), (lines.len() - 1, u16::MAX), &theme);
+        // Rows are copied whole: a leaked number would change the joined
+        // text, and the long line adds one row per continuation.
+        assert_eq!(extracted.replace('\n', ""), source.replace('\n', ""));
+        assert!(
+            extracted.lines().count() > source.lines().count(),
+            "{extracted:?}"
+        );
+    }
 }
 
 #[test]
@@ -954,4 +992,40 @@ fn inline_code_caps_never_reach_copied_text() {
         // `a``b` is one code span whose text keeps its inner backticks.
         "run cargo test or a``b now"
     );
+}
+
+#[test]
+fn transcript_code_blocks_copy_without_markers_or_line_numbers() {
+    use crate::state::AssistantChild;
+    // The full layout, with the real highlighter, puts an empty styled span
+    // between the role gutter and the code marker.
+    let markdown = "```rust\nfn main() {\n    let x = 1;\n}\n```\n\n```\none line\n```";
+    let state = assistant_state(vec![AssistantChild::Text {
+        id: 1,
+        version: 0,
+        markdown: MarkdownDocument::new(markdown.to_owned()),
+    }]);
+    for theme in [
+        Theme::default(),
+        Theme::new(ThemeKind::Dark, ColorLevel::TrueColor),
+        Theme::new(ThemeKind::Default, ColorLevel::Ansi256),
+        Theme::new(ThemeKind::HighContrast, ColorLevel::Ansi16),
+        Theme::new(ThemeKind::Mono, ColorLevel::None),
+    ] {
+        let layout = transcript_layout_with(
+            &state,
+            None,
+            60,
+            &theme,
+            &crate::markdown::SyntectHighlighter::default(),
+        );
+        let lines = &layout.lines;
+        let copied = extract_selection(lines, (1, 0), (lines.len() - 1, u16::MAX), &theme);
+        assert_eq!(
+            copied,
+            "fn main() {\n    let x = 1;\n}\n\none line",
+            "{:?}",
+            theme.key()
+        );
+    }
 }
