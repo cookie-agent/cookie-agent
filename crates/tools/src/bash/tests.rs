@@ -398,7 +398,7 @@ async fn real_bash_completion_keeps_read_order_and_nonzero_exits_are_data() {
             tool_call_id: call_id,
             args: BashArgs {
                 command: format!(
-                    "for i in 1 2 3; do printf 'stdout %s\\n' \"$i\"; sleep 0.02; printf 'stderr %s é\\n' \"$i\" >&2; sleep 0.02; done; exit {status}"
+                    "for i in 1 2 3; do printf 'stdout %s\\n' \"$i\"; sleep 0.04; printf 'stderr %s é\\n' \"$i\" >&2; sleep 0.04; done; exit {status}"
                 ),
                 timeout: 2_000,
                 interactive: false,
