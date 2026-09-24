@@ -1,11 +1,11 @@
 # Releasing cookie agent
 
-Stable releases are driven by manual `vX.Y.Z` tags. cargo-dist builds five Linux
-and macOS targets plus Windows x86_64 and ARM64 MSVC targets, creates tar or ZIP
-archives and SHA256 checksums, generates shell and PowerShell installers, and
-publishes those files to a GitHub release. The workflow also publishes the three
-public Rust crates when `CARGO_REGISTRY_TOKEN` is configured in the repository's
-Actions secrets.
+Stable releases start from a GitHub release published by hand. cargo-dist
+builds five Linux and macOS targets plus Windows x86_64 and ARM64 MSVC targets,
+creates tar or ZIP archives and SHA256 checksums, generates shell and PowerShell
+installers, and attaches those files to the published release. The workflow
+also publishes the three public Rust crates when `CARGO_REGISTRY_TOKEN` is
+configured in the repository's Actions secrets.
 
 ## Stable release
 
@@ -13,19 +13,25 @@ Actions secrets.
 2. Update every exact internal path dependency pin (`version = "=X.Y.Z"`) to
    the same version.
 3. Run the full local verification suite and merge the version bump to `main`.
-4. Create and push an annotated `vX.Y.Z` tag at the release commit.
-5. Monitor the Release workflow and verify the GitHub release artifacts.
+4. On GitHub, draft a new release with a new `vX.Y.Z` tag targeting the release
+   commit on `main`, write the notes, and publish it.
+5. Monitor the CI run for the `release` event and verify the attached artifacts.
+
+Publishing fires the `release: published` event; drafts fire nothing. CI runs
+every required check on the tag, then cargo-dist builds and uploads the
+artifacts to the existing release, keeping its title and notes (dist's generated
+notes fill in only when the body is empty). The release is public while that
+run is in flight, so the installer URLs under `releases/latest` answer 404 until
+the upload finishes. The tag's own push event does not start CI: pushes run for
+branches only.
 
 The workflow publishes crates in dependency order:
 `cookie_agent_identity`, `cookie_agent_protocol`, then
 `cookie_agent_plugin_sdk`. It waits for each dependency version to appear in
 the crates.io sparse index before publishing the dependent crate. Publication
-finishes before GitHub release creation. Each crate is skipped when its exact
+finishes before the artifacts are uploaded. Each crate is skipped when its exact
 version is already indexed, so rerunning a partially completed release resumes
 at the first missing crate.
-
-For the first release, all workspace versions and exact pins are `0.2.0`, and
-the tag is `v0.2.0`.
 
 ## Nightly release
 
@@ -47,11 +53,13 @@ protects the maintained edits. Move the workflow aside, temporarily remove the
 `allow-dirty` entry, run `dist generate --mode=ci`, restore `allow-dirty`, then
 reapply and review these edits:
 
-- Preserve both the generated `main` branch trigger and the `v*` tag trigger;
-  real tags use their tag while branch pushes use `--tag=timestamp --force-tag`.
+- Plan published `release` events with `--tag=<release tag>` and branch
+  pushes with `--tag=timestamp --force-tag`.
+- In the `host` job, upload to the existing release for `release` events and
+  keep `gh release create` for branch nightlies.
 - Set generated workflow concurrency to `cancel-in-progress: true`.
 - Keep root `contents: read` permissions and grant `contents: write` only to the
-  `host` job that creates the GitHub release.
+  `host` job that creates or fills the GitHub release.
 - Install the pinned `dtolnay/rust-toolchain` action with toolchain `1.88.0`
   and the joined matrix targets instead of the generated Rust update step.
 - Keep the SHA-pinned `Swatinem/rust-cache` step after toolchain installation,
@@ -65,6 +73,6 @@ reapply and review these edits:
   The `host` job accepts that job being skipped for branch nightlies but still
   requires a successful crates publish for stable tags.
 
-The workflow-generated alpha tag is created with `GITHUB_TOKEN`; GitHub does not
-start another workflow run for tag events created by that token, so the `v*`
-trigger does not cascade from nightly generation.
+Nightly alpha releases and their tags are created with `GITHUB_TOKEN`; GitHub
+does not start workflow runs for events created by that token, so nightly
+generation never cascades into a stable release run.

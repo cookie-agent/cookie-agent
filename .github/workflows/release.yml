@@ -65,7 +65,7 @@ jobs:
       # but also really annoying to build CI around when it needs secrets to work right.)
       - id: plan
         run: |
-          dist ${{ (!github.event.pull_request && github.ref_type == 'tag' && format('host --steps=create --tag={0}', github.ref_name)) || (!github.event.pull_request && 'host --steps=create --tag=timestamp --force-tag') || 'plan' }} --output-format=json > plan-dist-manifest.json
+          dist ${{ (github.event_name == 'release' && format('host --steps=create --tag={0}', github.event.release.tag_name)) || (!github.event.pull_request && 'host --steps=create --tag=timestamp --force-tag') || 'plan' }} --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -276,17 +276,27 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
-      - name: Create GitHub Release
+      - name: Create or fill the GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
           RELEASE_COMMIT: "${{ github.sha }}"
+          RELEASE_TAG: "${{ needs.plan.outputs.tag }}"
         run: |
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          if [[ "$GITHUB_EVENT_NAME" == release ]]; then
+            # A stable release was published on GitHub: attach the artifacts and
+            # keep its title and notes, filling in dist's notes only when empty.
+            gh release upload "$RELEASE_TAG" artifacts/* --clobber
+            if [[ -z "$(gh release view "$RELEASE_TAG" --json body --jq .body)" ]]; then
+              gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/notes.txt"
+            fi
+          else
+            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          fi
 
   announce:
     needs:

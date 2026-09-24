@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Branch pushes only: a stable release starts from a GitHub release being
+  # published, so the tag it creates must not start a second run.
   push:
+    branches: ['**']
   pull_request:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -115,7 +120,7 @@ jobs:
   release:
     name: Release validated commit
     needs: [stable, msrv, windows, release-targets]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
