@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::Arc,
 };
@@ -945,7 +945,9 @@ fn parsed_cost_rates(fields: &BTreeMap<&str, &JsonValue>) -> crate::catalog::Cat
 
 fn parsed_catalog_rate(value: &JsonValue) -> Option<crate::catalog::PicoUsdPerMillion> {
     match value {
-        JsonValue::Number(value) => crate::catalog::PicoUsdPerMillion::from_decimal_str(value),
+        JsonValue::Number(value) => {
+            crate::catalog::PicoUsdPerMillion::from_decimal_str(&value.to_string())
+        }
         JsonValue::String(value) => crate::catalog::PicoUsdPerMillion::from_decimal_str(value),
         _ => None,
     }
@@ -1485,11 +1487,32 @@ fn candidate(message: &'static str) -> CatalogError {
     CatalogError::new("invalid_catalog_candidate", message)
 }
 
+/// A JSON number as the parser reported it: integers stay exact, and only
+/// values with a fraction or exponent become `f64`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum JsonNumber {
+    Unsigned(u64),
+    Signed(i64),
+    Float(f64),
+}
+
+impl std::fmt::Display for JsonNumber {
+    /// Integers as written; floats as the shortest decimal that round-trips,
+    /// which reproduces the source text for any realistic catalog value.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsigned(value) => value.fmt(formatter),
+            Self::Signed(value) => value.fmt(formatter),
+            Self::Float(value) => value.fmt(formatter),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum JsonValue {
     Null,
     Bool(bool),
-    Number(String),
+    Number(JsonNumber),
     String(String),
     Array(Vec<JsonValue>),
     Object(Vec<(String, JsonValue)>),
@@ -1526,21 +1549,25 @@ impl JsonValue {
 
     fn as_u64(&self) -> Option<u64> {
         match self {
-            Self::Number(value) => value.parse().ok(),
+            Self::Number(JsonNumber::Unsigned(value)) => Some(*value),
+            Self::Number(JsonNumber::Signed(value)) => u64::try_from(*value).ok(),
             _ => None,
         }
     }
 
     fn as_i64(&self) -> Option<i64> {
         match self {
-            Self::Number(value) => value.parse().ok(),
+            Self::Number(JsonNumber::Unsigned(value)) => i64::try_from(*value).ok(),
+            Self::Number(JsonNumber::Signed(value)) => Some(*value),
             _ => None,
         }
     }
 
     fn as_f64(&self) -> Option<f64> {
         match self {
-            Self::Number(value) => value.parse().ok(),
+            Self::Number(JsonNumber::Unsigned(value)) => Some(*value as f64),
+            Self::Number(JsonNumber::Signed(value)) => Some(*value as f64),
+            Self::Number(JsonNumber::Float(value)) => Some(*value),
             _ => None,
         }
     }
@@ -1552,7 +1579,7 @@ impl JsonValue {
                 JsonValue::Bool(value) => {
                     output.extend_from_slice(if *value { b"true" } else { b"false" })
                 }
-                JsonValue::Number(value) => output.extend_from_slice(value.as_bytes()),
+                JsonValue::Number(value) => output.extend_from_slice(value.to_string().as_bytes()),
                 JsonValue::String(value) => {
                     output
                         .extend_from_slice(&serde_json::to_vec(value).expect("string serializes"));
@@ -1593,7 +1620,6 @@ impl JsonValue {
 
 struct ParseState {
     entries: usize,
-    numbers: VecDeque<String>,
 }
 
 struct JsonSeed<'a> {
@@ -1646,16 +1672,14 @@ impl<'de> Visitor<'de> for JsonVisitor<'_> {
     where
         E: serde::de::Error,
     {
-        let _ = value;
-        Ok(JsonValue::Number(next_number::<E>(self.state)?))
+        Ok(JsonValue::Number(JsonNumber::Signed(value)))
     }
 
     fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        let _ = value;
-        Ok(JsonValue::Number(next_number::<E>(self.state)?))
+        Ok(JsonValue::Number(JsonNumber::Unsigned(value)))
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
@@ -1665,7 +1689,7 @@ impl<'de> Visitor<'de> for JsonVisitor<'_> {
         if !value.is_finite() {
             return Err(E::custom("non-finite JSON number"));
         }
-        Ok(JsonValue::Number(next_number::<E>(self.state)?))
+        Ok(JsonValue::Number(JsonNumber::Float(value)))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -1731,58 +1755,8 @@ fn count_entry<E: serde::de::Error>(state: &std::cell::RefCell<ParseState>) -> R
     }
 }
 
-fn next_number<E: serde::de::Error>(state: &std::cell::RefCell<ParseState>) -> Result<String, E> {
-    state
-        .borrow_mut()
-        .numbers
-        .pop_front()
-        .ok_or_else(|| E::custom("JSON number tracking mismatch"))
-}
-
-fn number_lexemes(bytes: &[u8]) -> VecDeque<String> {
-    let mut numbers = VecDeque::new();
-    let mut index = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
-            }
-            index += 1;
-            continue;
-        }
-        if byte == b'"' {
-            in_string = true;
-            index += 1;
-            continue;
-        }
-        if byte == b'-' || byte.is_ascii_digit() {
-            let start = index;
-            index += 1;
-            while index < bytes.len()
-                && matches!(bytes[index], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-            {
-                index += 1;
-            }
-            numbers.push_back(String::from_utf8_lossy(&bytes[start..index]).into_owned());
-            continue;
-        }
-        index += 1;
-    }
-    numbers
-}
-
 fn parse_json(bytes: &[u8]) -> Result<JsonValue, CatalogError> {
-    let state = std::cell::RefCell::new(ParseState {
-        entries: 0,
-        numbers: number_lexemes(bytes),
-    });
+    let state = std::cell::RefCell::new(ParseState { entries: 0 });
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = JsonSeed {
         depth: 0,
@@ -1793,8 +1767,5 @@ fn parse_json(bytes: &[u8]) -> Result<JsonValue, CatalogError> {
     deserializer
         .end()
         .map_err(|_| candidate("catalog JSON has trailing data"))?;
-    if !state.borrow().numbers.is_empty() {
-        return Err(candidate("catalog JSON number tracking mismatch"));
-    }
     Ok(value)
 }

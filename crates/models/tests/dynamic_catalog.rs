@@ -130,9 +130,11 @@ async fn catalog_model_costs_are_preserved_with_cache_and_reasoning_rates() {
             "tier": {"type": "context", "size": 300000}
         }]
     });
+    // Catalog numbers are parsed as f64, so a rate keeps every digit it can
+    // carry (about 15 significant digits); realistic small rates stay exact.
     let document = serde_json::to_string(&document)
         .unwrap()
-        .replace("\"__EXACT_NUMERIC_RATE__\"", "10000.000000000001");
+        .replace("\"__EXACT_NUMERIC_RATE__\"", "0.000125");
     let snapshot = manager(
         ScriptedTransport::with([CatalogTransportResponse::from_bytes(
             200,
@@ -155,7 +157,7 @@ async fn catalog_model_costs_are_preserved_with_cache_and_reasoning_rates() {
         .cost
         .as_ref()
         .unwrap();
-    assert_eq!(cost.input.value(), 10_000_000_000_000_001);
+    assert_eq!(cost.input.value(), 125_000_000);
     assert_eq!(cost.output.value(), 12_000_000_000_000);
     assert_eq!(cost.reasoning.unwrap().value(), 15_000_000_000_000);
     assert_eq!(cost.cache_read.unwrap().value(), 200_000_000_000);
@@ -166,10 +168,7 @@ async fn catalog_model_costs_are_preserved_with_cache_and_reasoning_rates() {
     );
     assert_eq!(cost.tiers[0].context_tokens, 300_000);
     assert_eq!(cost.tiers[0].rates.output.value(), 24_000_000_000_000);
-    assert_eq!(
-        cost.rates_for_input(199_999).input.value(),
-        10_000_000_000_000_001
-    );
+    assert_eq!(cost.rates_for_input(199_999).input.value(), 125_000_000);
     assert_eq!(
         cost.rates_for_input(200_000).input.value(),
         3_000_000_000_000

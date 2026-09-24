@@ -355,14 +355,10 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 CatalogError::new("catalog_cache_missing", "catalog cache metadata is missing")
             })?;
         let meta = parse_cache_meta(&meta_bytes)?;
-        validate_meta(&meta, &body)?;
+        // Parsing computes the body's revision, the one hash of it this load
+        // needs; the metadata is checked against that.
         let parsed = parse_catalog(&body)?;
-        if parsed.revision.as_str() != meta.body_revision {
-            return Err(CatalogError::new(
-                "catalog_cache_revision_mismatch",
-                "catalog cache revision does not match its body",
-            ));
-        }
+        validate_meta(&meta, body.len(), &parsed.revision)?;
         validate_parsed_meta(&meta, &parsed)?;
         Ok(ValidatedCache { parsed, meta })
     }
@@ -413,7 +409,8 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 "catalog cache metadata could not be encoded",
             )
         })?;
-        validate_meta(meta, body)?;
+        let body_revision = revision(body);
+        validate_meta(meta, body.len(), &body_revision)?;
         self.commit_checkpoint(CacheCommitPhase::BeforeNextBody)?;
         lock.atomic_replace(BODY_NEXT_FILE, body)
             .map_err(CatalogError::from_store)?;
@@ -426,7 +423,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         let previous = read_fixed_pair(&lock)?;
         let prepared = CacheJournalRecord::prepared(
             previous.is_some(),
-            revision(body).as_str().to_owned(),
+            body_revision.as_str().to_owned(),
             digest_bytes(&meta_bytes),
         );
         append_journal_record(&lock, &prepared)?;
@@ -746,7 +743,7 @@ fn validate_staged_pair(
             "catalog cache staged pair changed before commit",
         ));
     }
-    validate_pair_bytes(&body, &meta)
+    validate_pair_bytes(&body, &meta).map(|_| ())
 }
 
 fn validate_fixed_pair(
@@ -779,22 +776,21 @@ fn fixed_pair_matches(
     else {
         return Ok(false);
     };
-    Ok(validate_pair_bytes(&body, &meta).is_ok()
-        && prepared.body_revision.as_deref() == Some(revision(&body).as_str())
-        && prepared.metadata_digest.as_deref() == Some(digest_bytes(&meta).as_str()))
+    Ok(
+        validate_pair_bytes(&body, &meta).is_ok_and(|body_revision| {
+            prepared.body_revision.as_deref() == Some(body_revision.as_str())
+        }) && prepared.metadata_digest.as_deref() == Some(digest_bytes(&meta).as_str()),
+    )
 }
 
-fn validate_pair_bytes(body: &[u8], meta_bytes: &[u8]) -> Result<(), CatalogError> {
+/// Validates a body and its metadata as a pair, returning the body's revision
+/// (hashed once, while parsing) so callers need not hash it again.
+fn validate_pair_bytes(body: &[u8], meta_bytes: &[u8]) -> Result<CatalogRevision, CatalogError> {
     let meta = parse_cache_meta(meta_bytes)?;
-    validate_meta(&meta, body)?;
     let parsed = parse_catalog(body)?;
-    if parsed.revision.as_str() != meta.body_revision {
-        return Err(CatalogError::new(
-            "catalog_cache_revision_mismatch",
-            "catalog cache revision does not match its body",
-        ));
-    }
-    validate_parsed_meta(&meta, &parsed)
+    validate_meta(&meta, body.len(), &parsed.revision)?;
+    validate_parsed_meta(&meta, &parsed)?;
+    Ok(parsed.revision)
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -873,11 +869,17 @@ fn metadata_for(
     }
 }
 
-fn validate_meta(meta: &CatalogCacheMeta, body: &[u8]) -> Result<(), CatalogError> {
+/// Checks metadata against its body, given the body's length and its
+/// already-computed revision.
+fn validate_meta(
+    meta: &CatalogCacheMeta,
+    body_len: usize,
+    body_revision: &CatalogRevision,
+) -> Result<(), CatalogError> {
     if meta.schema_version != CATALOG_CACHE_SCHEMA_VERSION
         || meta.url != MODELS_DEV_CATALOG_URL
-        || meta.byte_length != body.len() as u64
-        || meta.body_revision != revision(body).as_str()
+        || meta.byte_length != body_len as u64
+        || meta.body_revision != body_revision.as_str()
         || meta.etag.clone().map(validate_etag).transpose()?.as_deref() != meta.etag.as_deref()
     {
         return Err(CatalogError::new(
