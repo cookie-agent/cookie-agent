@@ -632,7 +632,6 @@ async fn missing_child_after_reservation_terminalizes_delegation_and_parent_tool
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen missing-child reservation window");
     reopened

@@ -1,19 +1,10 @@
-#![cfg(unix)]
-
-use std::{
-    fs,
-    os::unix::fs::{PermissionsExt as _, symlink},
-};
-
 use cookie_agent_identity::{
-    CatalogRevision, ModelRevision, ModelSnapshotRevision, ProviderStateRevision,
-    RecipeRegistryRevision,
+    CatalogRevision, ModelRevision, ProviderStateRevision, RecipeRegistryRevision,
 };
 use cookie_agent_models::manifests::{
-    ManifestError, ModelSnapshotManifestStore, ModelSnapshotPayloadV1,
+    ModelSnapshotPayloadV1, build_manifest, canonical_payload_bytes,
 };
 use sha2::{Digest as _, Sha256};
-use tempfile::TempDir;
 
 fn revision<T, E: std::fmt::Debug>(
     label: &str,
@@ -22,9 +13,9 @@ fn revision<T, E: std::fmt::Debug>(
     constructor(format!("sha256:{:x}", Sha256::digest(label.as_bytes()))).unwrap()
 }
 
-fn payload() -> ModelSnapshotPayloadV1 {
+fn payload(catalog: &str) -> ModelSnapshotPayloadV1 {
     ModelSnapshotPayloadV1 {
-        catalog_revision: revision("catalog", CatalogRevision::new),
+        catalog_revision: revision(catalog, CatalogRevision::new),
         recipe_registry_revision: revision("recipes", RecipeRegistryRevision::new),
         provider_state_revision: revision("providers", ProviderStateRevision::new),
         model_revision: revision("models", ModelRevision::new),
@@ -32,215 +23,22 @@ fn payload() -> ModelSnapshotPayloadV1 {
     }
 }
 
-fn private_store(temporary: &TempDir) -> ModelSnapshotManifestStore {
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    ModelSnapshotManifestStore::open_directory(temporary.path().join("model-snapshots")).unwrap()
-}
-
-fn manifest_path(
-    store: &ModelSnapshotManifestStore,
-    revision: &ModelSnapshotRevision,
-) -> std::path::PathBuf {
-    store
-        .path()
-        .join(format!("{}.json", &revision.as_str()["sha256:".len()..]))
-}
-
-fn directory_fingerprint(path: &std::path::Path) -> Vec<(String, u32, u64, String)> {
-    let mut entries = fs::read_dir(path)
-        .unwrap()
-        .map(|entry| {
-            let entry = entry.unwrap();
-            let metadata = entry.metadata().unwrap();
-            let bytes = if metadata.is_file() {
-                fs::read(entry.path()).unwrap()
-            } else {
-                Vec::new()
-            };
-            (
-                entry.file_name().into_string().unwrap(),
-                metadata.permissions().mode() & 0o777,
-                metadata.len(),
-                format!("{:x}", Sha256::digest(bytes)),
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries
-}
-
 #[test]
-fn durable_manifest_round_trip_and_jcs_property_reordering_are_equivalent() {
-    let temporary = TempDir::new().unwrap();
-    let store = private_store(&temporary);
-    let manifest = store.write(payload()).unwrap();
-    let path = manifest_path(&store, &manifest.revision);
-    let payload = &manifest.payload;
-    let reordered = format!(
-        "{{\"payload\":{{\"model_revision\":\"{}\",\"blueprints\":[],\"provider_state_revision\":\"{}\",\"catalog_revision\":\"{}\",\"recipe_registry_revision\":\"{}\"}},\"revision\":\"{}\",\"schema_version\":1}}",
-        payload.model_revision,
-        payload.provider_state_revision,
-        payload.catalog_revision,
-        payload.recipe_registry_revision,
-        manifest.revision,
-    );
-    fs::write(&path, reordered).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    let index = store.scan().unwrap();
-    assert_eq!(index.len(), 1);
+fn manifest_revision_is_the_digest_of_the_canonical_payload() {
+    let manifest = build_manifest(payload("catalog")).unwrap();
+    let canonical = canonical_payload_bytes(&manifest.payload).unwrap();
     assert_eq!(
-        index.require(&manifest.revision).unwrap().payload,
-        manifest.payload
+        manifest.revision.as_str(),
+        format!("sha256:{:x}", Sha256::digest(&canonical))
     );
+    assert_eq!(manifest.payload, payload("catalog"));
 }
 
 #[test]
-fn missing_corrupt_and_revision_mismatched_manifests_fail_closed() {
-    let temporary = TempDir::new().unwrap();
-    let store = private_store(&temporary);
-    let missing = revision("missing", ModelSnapshotRevision::new);
-    assert!(matches!(
-        store.scan().unwrap().require(&missing),
-        Err(ManifestError::MissingModelSnapshotManifest)
-    ));
-
-    let manifest = store.write(payload()).unwrap();
-    let path = manifest_path(&store, &manifest.revision);
-    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    value["payload"]["model_revision"] = serde_json::Value::String(
-        revision::<ModelRevision, _>("different", ModelRevision::new).into_string(),
-    );
-    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(matches!(
-        store.scan(),
-        Err(ManifestError::ModelSnapshotDigestMismatch)
-    ));
-
-    fs::write(&path, b"{not-json").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(matches!(
-        store.scan(),
-        Err(ManifestError::InvalidModelSnapshotManifest)
-    ));
-}
-
-#[test]
-fn matching_manifest_symlink_hardlink_and_wrong_mode_are_used() {
-    let temporary = TempDir::new().unwrap();
-    let store = private_store(&temporary);
-    let manifest = store.write(payload()).unwrap();
-    let attack = manifest_path(&store, &manifest.revision);
-    let target = store.path().join("target");
-    fs::rename(&attack, &target).unwrap();
-    symlink(&target, &attack).unwrap();
-    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
-    fs::remove_file(&attack).unwrap();
-
-    fs::hard_link(&target, &attack).unwrap();
-    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
-
-    fs::set_permissions(&attack, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(store.scan().unwrap().get(&manifest.revision).is_some());
-}
-
-#[test]
-fn floats_unsafe_integers_duplicates_and_old_names_are_current_only() {
-    let temporary = TempDir::new().unwrap();
-    let store = private_store(&temporary);
-    fs::write(store.path().join("snapshot.json"), b"legacy is ignored").unwrap();
-    fs::set_permissions(
-        store.path().join("snapshot.json"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    assert!(store.scan().unwrap().is_empty());
-
-    for (name, bytes) in [
-        (
-            format!("{}.json", "b".repeat(64)),
-            br#"{"schema_version":1.0,"revision":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","payload":{}}"#.as_slice(),
-        ),
-        (
-            format!("{}.json", "c".repeat(64)),
-            br#"{"schema_version":1,"schema_version":1,"revision":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","payload":{}}"#.as_slice(),
-        ),
-        (
-            format!("{}.json", "d".repeat(64)),
-            br#"{"schema_version":9007199254740992,"revision":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","payload":{}}"#.as_slice(),
-        ),
-    ] {
-        let path = store.path().join(name);
-        fs::write(&path, bytes).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(matches!(
-            store.scan(),
-            Err(ManifestError::InvalidModelSnapshotManifest)
-        ));
-        fs::remove_file(path).unwrap();
-    }
-}
-
-#[test]
-fn concurrent_same_digest_writes_converge_to_one_manifest() {
-    let temporary = TempDir::new().unwrap();
-    fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let directory = temporary.path().join("model-snapshots");
-    // Start from an empty directory so both writers race through the real
-    // install path (validate, collision check, temp + atomic rename) instead
-    // of short-circuiting on an already-installed manifest.
-    let stores = (0..2)
-        .map(|_| ModelSnapshotManifestStore::open_directory(&directory).unwrap())
-        .collect::<Vec<_>>();
-    let barrier = std::sync::Barrier::new(2);
-    let barrier = &barrier;
-    let installed = std::thread::scope(|scope| {
-        let handles = stores
-            .iter()
-            .map(|store| {
-                scope.spawn(move || {
-                    barrier.wait();
-                    store.write(payload()).unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect::<Vec<_>>()
-    });
-    let expected = &installed[0];
-    for manifest in &installed[1..] {
-        assert_eq!(manifest.as_ref(), expected.as_ref());
-    }
-    let index = ModelSnapshotManifestStore::open_directory(&directory)
-        .unwrap()
-        .scan()
-        .unwrap();
-    assert_eq!(index.len(), 1);
-    assert_eq!(
-        index.get(&expected.revision).unwrap().as_ref(),
-        expected.as_ref()
-    );
-}
-
-#[test]
-fn preparation_validates_existing_index_before_write_and_returns_resulting_index() {
-    let temporary = TempDir::new().unwrap();
-    let store = private_store(&temporary);
-    let first = store.prepare(payload()).unwrap();
-    assert_eq!(first.index.len(), 1);
-    assert!(first.index.get(&first.manifest.revision).is_some());
-
-    let malformed = store.path().join(format!("{}.json", "e".repeat(64)));
-    fs::write(&malformed, b"{malformed").unwrap();
-    fs::set_permissions(&malformed, fs::Permissions::from_mode(0o600)).unwrap();
-    let before = directory_fingerprint(store.path());
-    let mut missing_payload = payload();
-    missing_payload.model_revision = revision("different-models", ModelRevision::new);
-    assert!(matches!(
-        store.prepare(missing_payload),
-        Err(ManifestError::InvalidModelSnapshotManifest)
-    ));
-    assert_eq!(directory_fingerprint(store.path()), before);
+fn equal_payloads_share_a_revision_and_different_ones_do_not() {
+    let first = build_manifest(payload("catalog")).unwrap();
+    let again = build_manifest(payload("catalog")).unwrap();
+    let other = build_manifest(payload("other catalog")).unwrap();
+    assert_eq!(first.revision, again.revision);
+    assert_ne!(first.revision, other.revision);
 }

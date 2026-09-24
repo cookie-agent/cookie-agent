@@ -480,7 +480,7 @@ async fn delegation_completion_triggers_configured_subagent_eviction_after_tease
 }
 
 #[tokio::test]
-async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
+async fn delegated_restart_after_agent_removal_falls_back_to_the_default_agent() {
     let (endpoint, responses, server) = scripted_channel_server(4).await;
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
@@ -584,8 +584,22 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
             cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
         )
         .await
-        .expect("resume capped child after restart");
+        .expect("resume child after restart");
     wait_for_session_not_running(&engine, child).await;
+    // The removed `worker` no longer governs the child: its next run resolves
+    // best-effort to the default agent, which carries no 128-token cap.
+    let resumed_run = engine
+        .inner
+        .store
+        .get(child)
+        .expect("resumed child projection")
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "resume-capped-child")
+        .expect("resumed child run")
+        .clone();
+    assert_eq!(resumed_run.agent.agent.as_str(), "primary");
+    assert_eq!(resumed_run.selection.agent.as_str(), "primary");
 
     let requests = with_watchdog("server fixture completion", server)
         .await
@@ -599,7 +613,7 @@ async fn delegated_restart_retains_frozen_output_cap_after_agent_removal() {
         .expect("resumed HTTP request body")
         .1;
     let request: serde_json::Value = serde_json::from_str(body).expect("resumed request JSON");
-    assert_eq!(
+    assert_ne!(
         request
             .get("max_tokens")
             .and_then(serde_json::Value::as_u64),

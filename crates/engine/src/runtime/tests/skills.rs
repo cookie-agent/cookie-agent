@@ -88,7 +88,6 @@ async fn staged_skill_child_recovers_after_reservation_before_install_restart() 
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen at staged reservation window");
     reopened

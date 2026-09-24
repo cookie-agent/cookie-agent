@@ -179,7 +179,6 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("empty engine");
     let server = Arc::new(Server::new(engine.clone()));
@@ -398,7 +397,6 @@ fn harness_with_catalog(
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("engine");
     let server = Arc::new(Server::new(engine.clone()));

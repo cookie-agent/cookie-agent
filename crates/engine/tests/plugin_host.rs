@@ -140,7 +140,6 @@ fn open_engine(config_text: &str) -> Harness {
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("engine");
     Harness {

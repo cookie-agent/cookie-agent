@@ -367,7 +367,6 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         config: fixture.config,
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     });
     assert!(matches!(
         rejected,

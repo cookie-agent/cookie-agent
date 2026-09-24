@@ -34,7 +34,6 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
             Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
             Arc::new(TestPromptProvider::new("test.duplicate", Vec::new())),
         ],
-        model_snapshot_directory: None,
     };
     let startup_error = match Engine::open(duplicate_options) {
         Ok(_) => panic!("duplicate startup provider ID must fail"),
@@ -81,14 +80,13 @@ fn provider_registration_rejects_duplicate_provenance_ids() {
 
 #[cfg(unix)]
 #[test]
-fn shared_project_cwd_creates_and_reopens_model_manifests() {
+fn shared_project_cwd_reopens_with_the_same_model_revision_and_no_snapshot_files() {
     let fixture = fixture();
     let workspace = fixture._directory.path().join("shared-workspace");
     fs::create_dir(&workspace).expect("shared workspace");
     fs::set_permissions(&workspace, fs::Permissions::from_mode(0o775))
         .expect("shared workspace mode");
     let data_dir = fixture._directory.path().join("shared-data");
-    let snapshots = fixture._directory.path().join("model-snapshots");
 
     let engine = Engine::open(EngineOptions {
         data_dir: data_dir.clone(),
@@ -96,7 +94,6 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(snapshots.clone()),
     })
     .expect("engine in shared workspace");
     let revision = engine
@@ -106,17 +103,9 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         .model_revision;
     drop(engine);
 
-    assert_eq!(
-        fs::metadata(&snapshots).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    assert!(fs::read_dir(&snapshots).unwrap().any(|entry| {
-        entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".json")
-    }));
+    // Model manifests live only in memory; opening writes no snapshot files.
+    assert!(!fixture._directory.path().join("model-snapshots").exists());
+    assert!(!data_dir.join("model-snapshots").exists());
 
     let reopened = Engine::open(EngineOptions {
         data_dir,
@@ -124,7 +113,6 @@ fn shared_project_cwd_creates_and_reopens_model_manifests() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(snapshots),
     })
     .expect("reopened engine in shared workspace");
     assert_eq!(
@@ -715,33 +703,6 @@ fn failed_publication_preparation_commits_nothing_and_publishes_nothing() {
         initial_generation
     );
     assert!(notifications.try_recv().is_err());
-}
-
-#[test]
-fn corrupt_matching_manifest_rejects_reopen() {
-    let fixture = fixture();
-    let runtime = fixture.engine.current_runtime();
-    let revision = runtime
-        .current_manifest
-        .revision
-        .as_str()
-        .strip_prefix("sha256:")
-        .expect("manifest revision");
-    let path = fixture
-        ._directory
-        .path()
-        .join("model-snapshots")
-        .join(format!("{revision}.json"));
-    fs::write(&path, b"{\"schema_version\":1}\n").expect("corrupt manifest");
-    let reopened = Engine::open(EngineOptions {
-        data_dir: fixture._directory.path().join("other-data"),
-        cwd: fixture._directory.path().to_owned(),
-        config: fixture.config,
-        model_manager: fixture.manager,
-        tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
-    });
-    assert!(matches!(reopened, Err(EngineError::Manifest(_))));
 }
 
 #[test]

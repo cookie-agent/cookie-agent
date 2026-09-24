@@ -8,7 +8,7 @@ use cookie_agent_models::{
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot, CatalogSource,
     },
-    manifests::{ModelSnapshotManifestStore, frozen_binding},
+    manifests::{build_manifest, frozen_binding},
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
@@ -77,12 +77,8 @@ variants = { fast = { generation_options = { temperature = 0.1 } } }
     )
     .expect("test manager");
     let runtime = manager.current();
-    let store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("model-snapshots"))
-            .expect("manifest store");
-    let manifest = store
-        .write(runtime.manifest_payload().expect("manifest payload"))
-        .expect("manifest");
+    let manifest =
+        build_manifest(runtime.manifest_payload().expect("manifest payload")).expect("manifest");
     let blueprint = manifest
         .payload
         .blueprints

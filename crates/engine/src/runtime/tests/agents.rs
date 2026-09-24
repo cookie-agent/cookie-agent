@@ -683,24 +683,24 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         child_projection.creation_agent.description,
         "Python preset worker"
     );
+    // A later run of the delegated child stays on its creation preset, whatever
+    // preset the request names, and re-resolves its agent there by ID.
     let mut switched_child = child_projection.meta.creation_selection.clone();
     switched_child.preset = None;
-    assert!(matches!(
-        fixture
-            .engine
-            .start_run(
-                RunStartParams {
-                    reset_fallback: false,
-                    session_id: child.session_id,
-                    client_run_id: ClientRunId::new("delegated-preset-switch").expect("run ID"),
-                    selection: switched_child,
-                    input: "must remain pinned".into(),
-                },
-                cookie_agent_protocol::EventOrigin::new("client:test").unwrap()
-            )
-            .await,
-        Err(EngineError::NoRunnableModel)
-    ));
+    let (child_policy, child_selection) = fixture
+        .engine
+        .freeze_delegated_selection(
+            &child_projection.creation_agent,
+            child_projection.meta.creation_selection.preset.as_deref(),
+            &switched_child,
+            crate::policy::ResultLimits {
+                tool_output_max_lines: 100,
+                tool_output_max_bytes: 10_000,
+            },
+        )
+        .expect("delegated child stays pinned to its preset");
+    assert_eq!(child_selection.preset.as_deref(), Some("python"));
+    assert_eq!(child_policy.agent.description, "Python preset worker");
 
     fixture.engine.shutdown().await;
     fixture.config.agent_presets.clear();
@@ -786,4 +786,63 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
         requests[4]
     );
     reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn history_selections_fall_back_best_effort_and_explicit_ones_stay_strict() {
+    let (fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:9/v1");
+    let runtime = fixture.engine.current_runtime();
+    let repair = |selection: &RunSelection| {
+        crate::policy::best_effort_root_selection(&runtime, selection).expect("repaired")
+    };
+    // A selection that still matches the live runtime is left alone.
+    assert_eq!(repair(&selection), selection);
+
+    let missing_model = ModelSelection {
+        model: "custom.test/group/retired".parse().expect("model key"),
+        variant: None,
+    };
+    // A model that is gone falls back to the agent's default model.
+    let mut gone_model = selection.clone();
+    gone_model.model = missing_model.clone();
+    assert_eq!(repair(&gone_model), selection);
+    // A variant the model no longer offers falls back to its default.
+    let mut gone_variant = selection.clone();
+    gone_variant.model.variant = Some("retired".parse().expect("variant"));
+    assert_eq!(repair(&gone_variant), selection);
+    // A preset that is gone falls back to the shared agents.
+    let mut gone_preset = selection.clone();
+    gone_preset.preset = Some("retired".into());
+    assert_eq!(repair(&gone_preset), selection);
+    // An agent that is gone falls back to the default agent and its model.
+    let gone_agent = RunSelection {
+        agent: AgentId::new("retired").expect("agent"),
+        model: missing_model,
+        preset: None,
+    };
+    let repaired = repair(&gone_agent);
+    assert_eq!(repaired.agent.as_str(), "primary");
+    assert_eq!(repaired.model, selection.model);
+
+    // An explicit request that differs from the session's history is not
+    // repaired: naming a missing agent still fails.
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    let explicit = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("explicit-missing-agent").expect("run ID"),
+                selection: gone_agent,
+                input: "explicit".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await;
+    assert!(explicit.is_err());
+    fixture.engine.shutdown().await;
 }

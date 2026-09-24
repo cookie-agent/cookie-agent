@@ -295,14 +295,21 @@ cookie run --preset rust --agent unsafe-reviewer "Review the FFI boundary"
 The selected preset is stored in the session's creation selection and is the
 default when the session is resumed. Root sessions may select another preset for
 any later run; `cookie run --resume-session <id> --preset rust ...` applies
-`rust` to that run without rewriting the creation selection. Each run persists
-its exact preset, agent snapshot, and model bindings, so replay does not consult
-the live preset registry.
+`rust` to that run without rewriting the creation selection. Each run records
+its exact preset, agent snapshot, and model bindings in its events, so history
+always shows what ran.
 
-Delegated sessions are different: they inherit the preset from the parent run
-that created them, including when the parent switched presets after session
-creation. Their agent is resolved and frozen from that effective set, and later
-runs of the delegated session remain pinned to the inherited preset.
+A later turn resolves against the live configuration. When the selection it
+continues from names a preset, agent, model, or variant that no longer exists,
+the turn falls back instead of failing: an unknown preset to the shared agents,
+a missing agent to `primary` (or the first root-runnable agent), and a missing
+model to the agent's first available model. An explicitly requested agent or
+model that does not exist is still an error.
+
+Delegated sessions inherit the preset of the parent run that created them,
+including when the parent switched presets after session creation, and later
+runs stay on that preset. Each later run looks the delegated agent up by ID in
+the live configuration, falling back to the default agent when it is gone.
 
 ## Internal agents
 

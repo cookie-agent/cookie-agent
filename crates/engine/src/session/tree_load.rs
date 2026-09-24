@@ -47,9 +47,6 @@ pub(crate) struct TreeLoadProducts {
     )>,
     /// Restart-stable tree approval grants held in child logs.
     pub(crate) grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
-    /// Frozen model bindings referenced by child logs (4.2), validated with the
-    /// same acceptance list the startup pass applies to root logs.
-    pub(crate) bindings: Vec<(SessionId, cookie_agent_protocol::FrozenModelBinding)>,
     /// Children whose logs carry goal-producer state needing reconciliation.
     pub(crate) producer_sessions: Vec<SessionId>,
     pub(crate) producer_projections:
@@ -75,7 +72,6 @@ impl TreeLoadProducts {
             root,
             delegations: Vec::new(),
             grants: Vec::new(),
-            bindings: Vec::new(),
             producer_sessions: Vec::new(),
             producer_projections: Vec::new(),
             summaries: Vec::new(),
@@ -721,23 +717,6 @@ impl SessionStore {
             })?;
             for envelope in events.iter() {
                 match &envelope.payload {
-                    EventPayload::SessionCreated { creation_agent, .. } => {
-                        fold.products.bindings.extend(
-                            creation_agent
-                                .fallback_chain
-                                .iter()
-                                .cloned()
-                                .map(|binding| (projection.meta.session_id, binding)),
-                        )
-                    }
-                    EventPayload::RunStarted {
-                        selected_suffix, ..
-                    } => fold.products.bindings.extend(
-                        selected_suffix
-                            .iter()
-                            .cloned()
-                            .map(|binding| (projection.meta.session_id, binding)),
-                    ),
                     EventPayload::TreeApprovalGrantCommitted { grant } => {
                         // The visible-grant rebuild needs every grant; only
                         // the approval store filters to restart-stable ones.

@@ -10,10 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use cookie_agent_config::LoadedConfiguration;
 use cookie_agent_identity::ModelKey;
-use cookie_agent_models::{
-    ModelManager,
-    manifests::{ManifestError, ModelSnapshotManifestStore, RehydrationError},
-};
+use cookie_agent_models::{ModelManager, manifests::ManifestError};
 use cookie_agent_protocol::{
     AgentId, ApprovalId, ApprovalInternalDecisionKind, ApprovalRequest, ApprovalRespondErrorCode,
     ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, EventPayload as Event,
@@ -40,7 +37,7 @@ use crate::{
     events::{self, EventLogError},
     grant_journal::{GrantInvalidationJournal, GrantJournalError},
     model_history,
-    model_snapshots::{prepare_runtime_manifest, validate_referenced_binding},
+    model_snapshots::prepare_runtime_manifest,
     permissions::PermissionPipeline,
     policy::FrozenRunPolicy,
     runtime_snapshot::{
@@ -146,9 +143,6 @@ pub struct EngineOptions {
     pub config: LoadedConfiguration,
     pub model_manager: Arc<ModelManager>,
     pub tools: Vec<Arc<dyn ToolProvider>>,
-    /// Test and embedding override; production callers leave this unset so
-    /// manifests stay in the fixed user directory.
-    pub model_snapshot_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -257,8 +251,6 @@ pub enum EngineError {
     ModelManager(#[from] cookie_agent_models::ModelManagerError),
     #[error(transparent)]
     Manifest(ManifestError),
-    #[error(transparent)]
-    SnapshotRehydration(RehydrationError),
 }
 
 /// Atomic, secret-safe rejection details produced by the serialized approval transaction.
@@ -739,7 +731,6 @@ pub(crate) struct Inner {
     engine_events: broadcast::Sender<crate::EngineEvent>,
     plugin_diagnostics: PluginDiagnosticsState,
     runtime_revision_index: Mutex<RuntimeRevisionIndex>,
-    manifest_store: ModelSnapshotManifestStore,
     tools: Mutex<Vec<Arc<dyn ToolProvider>>>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
@@ -776,19 +767,14 @@ impl Engine {
         let config_store = crate::config_store::ConfigStore::new(&options.config);
         let current_models = options.model_manager.current();
         let (agents, agent_presets) = resolve_agent_registries(&options.config, &current_models)?;
-        let manifest_store = match options.model_snapshot_directory.as_deref() {
-            Some(directory) => ModelSnapshotManifestStore::open_directory(directory)?,
-            None => ModelSnapshotManifestStore::open()?,
-        };
-        let prepared_manifest = prepare_runtime_manifest(&manifest_store, &current_models)?;
+        let current_manifest = prepare_runtime_manifest(&current_models)?;
         let snapshot = build_runtime_snapshot(&current_models, &agents, &agent_presets)?;
         let published_runtime = Arc::new(PublishedRuntime {
             result: RuntimeSnapshotResult { snapshot },
             models: Arc::clone(&current_models),
             agents,
             agent_presets,
-            manifests: prepared_manifest.index,
-            current_manifest: prepared_manifest.manifest,
+            current_manifest,
         });
         let store = SessionStore::open(&options.data_dir, &options.cwd)?;
         let artifacts = ArtifactRouter::for_store(&store)?;
@@ -859,7 +845,6 @@ impl Engine {
                     task: Mutex::new(None),
                 },
                 runtime_revision_index: Mutex::new(runtime_revision_index),
-                manifest_store,
                 tools: Mutex::new(tools),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
@@ -909,7 +894,6 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
         engine.install_tree_load_observer()?;
-        engine.validate_root_manifests()?;
         engine.rebuild_approvals();
         engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
         engine.install_producer_runtime();
@@ -1185,7 +1169,7 @@ impl Engine {
             return Err(EngineError::RuntimeCompileFailed);
         }
         let (agents, agent_presets) = resolve_agent_registries(&self.inner.config, models)?;
-        let prepared = prepare_runtime_manifest(&self.inner.manifest_store, models)?;
+        let current_manifest = prepare_runtime_manifest(models)?;
         let snapshot = build_runtime_snapshot(models, &agents, &agent_presets)?;
         self.inner
             .runtime_revision_index
@@ -1208,8 +1192,7 @@ impl Engine {
                 models: Arc::clone(models),
                 agents,
                 agent_presets,
-                manifests: prepared.index,
-                current_manifest: prepared.manifest,
+                current_manifest,
             }),
             notification,
         })
@@ -1226,87 +1209,6 @@ impl Engine {
         publication.runtime
     }
 
-    /// Startup manifest pass: root logs only (§4.2). Child logs are validated by
-    /// the same logic when their tree is loaded, so the fail-closed shape is
-    /// unchanged — only deferred to the access that needs the child.
-    fn validate_root_manifests(&self) -> Result<(), EngineError> {
-        let runtime = self.current_runtime();
-        let mut bindings = Vec::new();
-        for session in self.inner.store.root_snapshots() {
-            for event in session.log.event_snapshot().iter() {
-                match &event.payload {
-                    Event::SessionCreated { creation_agent, .. } => bindings.extend(
-                        creation_agent
-                            .fallback_chain
-                            .iter()
-                            .map(|binding| (session.meta.session_id, binding.clone())),
-                    ),
-                    Event::RunStarted {
-                        selected_suffix, ..
-                    } => bindings.extend(
-                        selected_suffix
-                            .iter()
-                            .map(|binding| (session.meta.session_id, binding.clone())),
-                    ),
-                    _ => {}
-                }
-            }
-        }
-        self.validate_manifest_bindings(&bindings)?;
-        for entry in self.inner.delegation_events.entries() {
-            let manifest = runtime
-                .manifests
-                .require(&entry.revisions.manifest_revision)?;
-            if manifest.payload.catalog_revision != entry.revisions.catalog_revision
-                || manifest.payload.provider_state_revision
-                    != entry.revisions.provider_state_revision
-                || manifest.payload.model_revision != entry.revisions.model_revision
-                || manifest.payload.recipe_registry_revision
-                    != entry.revisions.recipe_registry_revision
-                || crate::runtime_snapshot::projection::runtime_revision(
-                    &entry.revisions.recipe_registry_revision,
-                    &entry.revisions.catalog_revision,
-                    &entry.revisions.provider_state_revision,
-                    &entry.revisions.model_revision,
-                    &entry.revisions.agent_revision,
-                )? != entry.revisions.runtime_revision
-            {
-                return Err(EngineError::RuntimeCompileFailed);
-            }
-            for binding in &entry.selected_suffix {
-                self.validate_manifest_bindings(&[(
-                    entry.reservation.child_session_id,
-                    binding.clone(),
-                )])?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The single acceptance rule for a referenced model binding: an unusable
-    /// snapshot reference is tolerated, anything else fails.
-    fn validate_manifest_bindings(
-        &self,
-        bindings: &[(SessionId, cookie_agent_protocol::FrozenModelBinding)],
-    ) -> Result<(), EngineError> {
-        let runtime = self.current_runtime();
-        for (_session_id, binding) in bindings {
-            let validation =
-                validate_referenced_binding(&runtime.manifests, &runtime.models, binding);
-            if !matches!(
-                &validation,
-                Ok(())
-                    | Err(EngineError::SnapshotRehydration(
-                        RehydrationError::SnapshotConfigMismatch
-                            | RehydrationError::SnapshotCredentialsUnavailable
-                    ))
-            ) {
-                validation?;
-            }
-        }
-        Ok(())
-    }
-
     /// Receives the products of a lazy tree load and folds them into the engine
     /// singletons (§3.3(d)). Validation runs first so a rejected load cannot
     /// leave half-applied state behind, and the artifact router is told the tree
@@ -1316,10 +1218,6 @@ impl Engine {
         &self,
         products: Arc<crate::session::TreeLoadProducts>,
     ) -> Result<(), EngineError> {
-        if let Err(error) = self.validate_manifest_bindings(&products.bindings) {
-            eprintln!("session tree {} rejected: {error}", products.root);
-            return Err(error);
-        }
         let extended = self
             .inner
             .delegation_events

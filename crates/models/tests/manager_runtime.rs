@@ -8,8 +8,8 @@ use std::{
 };
 
 use cookie_agent_identity::{
-    AuthFieldName, AuthMethodId, CatalogRevision, ProtocolRecipeId, ProviderId, ProviderModelId,
-    ProviderRecipeId, ProviderSetupRecipeId, RecipeCompilerVersion, SetupFieldId,
+    AuthFieldName, AuthMethodId, CatalogRevision, ProviderId, ProviderModelId,
+    ProviderSetupRecipeId, RecipeCompilerVersion, SetupFieldId,
 };
 use cookie_agent_models::{
     BoundedSetupString, HeaderName, ProviderDefinition, SafeSetupValue, SafeStaticHeaderValue,
@@ -24,12 +24,10 @@ use cookie_agent_models::{
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
         ProviderDisconnectRequest, RetainedFamilyMatch, retained_family_match,
-        safe_definition_fingerprint,
     },
     manifests::{
-        FrozenProviderSource, ManifestError, ModelSnapshotManifestSchemaVersion,
-        ModelSnapshotManifestStore, ModelSnapshotManifestV1, NormalizedDecimal, RehydrationError,
-        canonical_payload_bytes, frozen_binding,
+        FrozenProviderSource, ModelSnapshotManifestV1, NormalizedDecimal, build_manifest,
+        frozen_binding,
     },
     provider_store::{
         ClientConnectId, ClientRequestId, ConnectMutation, ConnectProposal, ProviderAuthValues,
@@ -417,7 +415,7 @@ async fn managed_openai_responses_effort_is_not_serialized_as_mode() {
 }
 
 #[tokio::test]
-async fn endpoint_switch_variants_dispatch_after_catalogless_frozen_reconstruction() {
+async fn endpoint_switch_variants_dispatch_to_selected_endpoint() {
     for (base_endpoint, selected_endpoint, expected_path, history_field) in [
         (
             "responses",
@@ -465,34 +463,14 @@ adaptor_options = {{ request_endpoint = "{selected_endpoint}" }}
             )
             .unwrap();
         let runtime = manager.current();
-        let snapshots =
-            ModelSnapshotManifestStore::open_directory(temporary.path().join("snapshots")).unwrap();
-        let manifest = snapshots
-            .write(runtime.manifest_payload().unwrap())
-            .unwrap();
+        let manifest = build_manifest(runtime.manifest_payload().unwrap()).unwrap();
         let blueprint = &manifest.payload.blueprints[0];
         let selection = cookie_agent_identity::ModelSelection {
             model: blueprint.selection.model.clone(),
             variant: Some(cookie_agent_identity::VariantId::new("switched").unwrap()),
         };
         let binding = frozen_binding(manifest.revision.clone(), blueprint, selection).unwrap();
-        let restarted =
-            ModelManager::new(BTreeMap::new(), empty_catalog(), store(&temporary)).unwrap();
-        let restored = restarted.current();
-        assert!(restored.models().is_empty());
-        let rehydrated = snapshots
-            .scan()
-            .unwrap()
-            .rehydrate(
-                &binding,
-                restored.authored(),
-                restored.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap();
-        let resolved = restored
-            .resolve_frozen(&binding, &rehydrated.blueprint)
-            .unwrap();
+        let resolved = runtime.resolve(&binding.selection).unwrap();
         assert_eq!(
             resolved.adapter_family(),
             if selected_endpoint == "responses" {
@@ -945,7 +923,7 @@ async fn kimi_for_coding_catalog_connect_compiles_full_runtime() {
 }
 
 #[tokio::test]
-async fn nested_provider_rehydration_accepts_catalog_endpoint_identity() {
+async fn nested_provider_manifest_keeps_catalog_endpoint_identity() {
     let temporary = TempDir::new().unwrap();
     let catalog = fixture_catalog(
         &temporary,
@@ -963,7 +941,7 @@ async fn nested_provider_rehydration_accepts_catalog_endpoint_identity() {
                 setup_values: BTreeMap::new(),
                 auth_method: AuthMethodId::new("anthropic-api-key-v1").unwrap(),
                 auth_values: auth_values(&[("api_key", "dummy")]),
-                client_connect_id: ClientConnectId::new("kimi-rehydrate").unwrap(),
+                client_connect_id: ClientConnectId::new("kimi-endpoint").unwrap(),
             },
             |_, _| Ok(()),
         )
@@ -974,33 +952,20 @@ async fn nested_provider_rehydration_accepts_catalog_endpoint_identity() {
         .provider(&ProviderId::new("kimi-for-coding").unwrap())
         .unwrap();
     // The stored endpoint identity is the catalog endpoint, which differs
-    // from the anthropic family default endpoint; catalog-less rehydration
-    // must still accept the connection.
+    // from the anthropic family default endpoint; the manifest must carry it
+    // and every model must still resolve.
     assert_eq!(
         connection.policy.default_endpoint_identity.as_str(),
         "https://api.kimi.com/coding/v1"
     );
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("kimi-manifest")).unwrap();
-    let manifest = manifest_store
-        .write(runtime.manifest_payload().unwrap())
-        .unwrap();
-    let index = manifest_store.scan().unwrap();
+    let manifest = build_manifest(runtime.manifest_payload().unwrap()).unwrap();
+    assert!(!manifest.payload.blueprints.is_empty());
     for blueprint in &manifest.payload.blueprints {
-        let binding = frozen_binding(
-            manifest.revision.clone(),
-            blueprint,
-            blueprint.selection.clone(),
-        )
-        .unwrap();
-        index
-            .rehydrate(
-                &binding,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap();
+        assert_eq!(
+            blueprint.endpoint_identity.as_str(),
+            "https://api.kimi.com/coding/v1"
+        );
+        runtime.resolve(&blueprint.selection).unwrap();
     }
 }
 
@@ -1545,19 +1510,8 @@ fn harmless_catalog_refresh_reuses_store_credentials_with_new_source_provenance(
         )
         .unwrap();
     let old_runtime = manager.current();
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("refresh-manifests"))
-            .unwrap();
-    let old_manifest = manifest_store
-        .write(old_runtime.manifest_payload().unwrap())
-        .unwrap();
+    let old_manifest = build_manifest(old_runtime.manifest_payload().unwrap()).unwrap();
     let old_blueprint = &old_manifest.payload.blueprints[0];
-    let old_binding = frozen_binding(
-        old_manifest.revision.clone(),
-        old_blueprint,
-        old_blueprint.selection.clone(),
-    )
-    .unwrap();
     let (old_source, old_recipe) = match &old_runtime
         .model(&old_blueprint.selection.model)
         .unwrap()
@@ -1604,49 +1558,29 @@ fn harmless_catalog_refresh_reuses_store_credentials_with_new_source_provenance(
     assert_ne!(new_source, old_source);
     assert_eq!(new_recipe, old_recipe);
 
-    let new_manifest = manifest_store
-        .write(refreshed_runtime.manifest_payload().unwrap())
-        .unwrap();
+    let new_manifest = build_manifest(refreshed_runtime.manifest_payload().unwrap()).unwrap();
     let new_blueprint = &new_manifest.payload.blueprints[0];
-    let new_binding = frozen_binding(
-        new_manifest.revision.clone(),
-        new_blueprint,
-        new_blueprint.selection.clone(),
-    )
-    .unwrap();
-    let index = manifest_store.scan().unwrap();
-    for binding in [&old_binding, &new_binding] {
-        let rehydrated = index
-            .rehydrate(
-                binding,
-                refreshed_runtime.authored(),
-                refreshed_runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap();
-        let prepared = refreshed_runtime
-            .resolve_frozen(binding, &rehydrated.blueprint)
-            .unwrap()
-            .prepare_request(oven_sdk::Request::new(Vec::new()));
-        assert!(prepared.history.is_empty());
-        assert_eq!(prepared.inference.temperature, None);
-    }
+    assert_eq!(new_blueprint.selection, old_blueprint.selection);
+    assert_ne!(new_blueprint.source, old_blueprint.source);
+    assert_eq!(
+        new_blueprint.credential_binding,
+        old_blueprint.credential_binding
+    );
+    let prepared = refreshed_runtime
+        .resolve(&new_blueprint.selection)
+        .unwrap()
+        .prepare_request(oven_sdk::Request::new(Vec::new()));
+    assert!(prepared.history.is_empty());
+    assert_eq!(prepared.inference.temperature, None);
 
     let restarted =
         ModelManager::new(BTreeMap::new(), refreshed_catalog, store(&temporary)).unwrap();
-    let reopened_index = manifest_store.scan().unwrap();
-    let rehydrated = reopened_index
-        .rehydrate(
-            &new_binding,
-            restarted.current().authored(),
-            restarted.current().store(),
-            safe_definition_fingerprint,
-        )
-        .unwrap();
-    restarted
-        .current()
-        .resolve_frozen(&new_binding, &rehydrated.blueprint)
-        .unwrap();
+    let restarted_runtime = restarted.current();
+    assert_eq!(
+        restarted_runtime.providers()[0].effective_auth,
+        EffectiveCredentialSource::ProviderStore
+    );
+    restarted_runtime.resolve(&new_blueprint.selection).unwrap();
 }
 
 #[test]
@@ -2166,31 +2100,6 @@ fn authored_auth_outranks_store_and_survives_disconnect() {
         connected.effective_auth,
         EffectiveCredentialSource::AuthoredApiKey
     );
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("authored-snapshots"))
-            .unwrap();
-    let manifest = manifest_store
-        .write(connected.runtime.manifest_payload().unwrap())
-        .unwrap();
-    let binding = frozen_binding(
-        manifest.revision.clone(),
-        &manifest.payload.blueprints[0],
-        manifest.payload.blueprints[0].selection.clone(),
-    )
-    .unwrap();
-    assert_eq!(
-        manifest_store
-            .scan()
-            .unwrap()
-            .rehydrate(
-                &binding,
-                &BTreeMap::new(),
-                connected.runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotConfigMismatch
-    );
     let connection = connected.runtime.store().provider(&provider_id).unwrap();
     let disconnect = ProviderDisconnectRequest {
         provider_id: provider_id.clone(),
@@ -2205,6 +2114,14 @@ fn authored_auth_outranks_store_and_survives_disconnect() {
         EffectiveCredentialSource::AuthoredApiKey
     );
     assert!(result.runtime.store().provider(&provider_id).is_none());
+    let model = result.runtime.models().keys().next().unwrap().clone();
+    result
+        .runtime
+        .resolve(&cookie_agent_identity::ModelSelection {
+            model,
+            variant: None,
+        })
+        .unwrap();
 }
 
 #[test]
@@ -2239,37 +2156,15 @@ fn absent_disconnect_is_durable_replayable_and_conflicts_on_changed_payload() {
 }
 
 #[test]
-fn retained_store_blueprint_rehydrates_without_current_catalog_and_fails_after_removal() {
+fn retained_store_connection_survives_catalog_removal_and_disconnects() {
     let temporary = TempDir::new().unwrap();
     let catalog = catalog();
     let manager =
         ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
     manager
-        .connect(connect_request("rehydrate", "one", &catalog), |_, _| Ok(()))
+        .connect(connect_request("retained", "one", &catalog), |_, _| Ok(()))
         .unwrap();
-    let runtime = manager.current();
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("model-snapshots"))
-            .unwrap();
-    let manifest = manifest_store
-        .write(runtime.manifest_payload().unwrap())
-        .unwrap();
-    let index = manifest_store.scan().unwrap();
-    let blueprint = manifest.payload.blueprints[0].clone();
-    let binding = frozen_binding(
-        manifest.revision.clone(),
-        &blueprint,
-        blueprint.selection.clone(),
-    )
-    .unwrap();
-    index
-        .rehydrate(
-            &binding,
-            &BTreeMap::new(),
-            runtime.store(),
-            safe_definition_fingerprint,
-        )
-        .unwrap();
+    let model = manager.current().models().keys().next().unwrap().clone();
 
     let removed_catalog = empty_catalog();
     let restarted = ModelManager::new(
@@ -2279,7 +2174,7 @@ fn retained_store_blueprint_rehydrates_without_current_catalog_and_fails_after_r
     )
     .unwrap();
     let removed_runtime = restarted.current();
-    assert!(removed_runtime.model(&blueprint.selection.model).is_none());
+    assert!(removed_runtime.model(&model).is_none());
     assert_eq!(
         removed_runtime.providers()[0].retained_family_match,
         Some(RetainedFamilyMatch::SupportedRemoved)
@@ -2300,49 +2195,34 @@ fn retained_store_blueprint_rehydrates_without_current_catalog_and_fails_after_r
         EffectiveCredentialSource::ProviderStore
     );
     let removed_runtime = reconnected.runtime;
-    let rehydrated = index
-        .rehydrate(
-            &binding,
-            removed_runtime.authored(),
-            removed_runtime.store(),
-            safe_definition_fingerprint,
-        )
-        .unwrap();
-    let resolved = removed_runtime
-        .resolve_frozen(&binding, &rehydrated.blueprint)
-        .unwrap();
-    let prepared = resolved.prepare_request(oven_sdk::Request::new(Vec::new()));
-    assert_eq!(prepared.inference.temperature, None);
+    assert!(removed_runtime.model(&model).is_none());
 
     let provider_id = ProviderId::new("openai").unwrap();
     let connection = removed_runtime.store().provider(&provider_id).unwrap();
-    restarted
+    let disconnected = restarted
         .disconnect(
             ProviderDisconnectRequest {
-                provider_id,
+                provider_id: provider_id.clone(),
                 expected_runtime_revision: removed_runtime.runtime_revision().clone(),
                 expected_provider_state_revision: removed_runtime.provider_state_revision(),
                 expected_connection_generation: Some(connection.connection_generation),
-                client_request_id: ClientRequestId::new("remove-rehydrate").unwrap(),
+                client_request_id: ClientRequestId::new("remove-retained").unwrap(),
             },
             |_, _| Ok(()),
         )
         .unwrap();
-    assert_eq!(
-        index
-            .rehydrate(
-                &binding,
-                &BTreeMap::new(),
-                restarted.current().store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotCredentialsUnavailable
+    assert!(
+        disconnected
+            .runtime
+            .store()
+            .provider(&provider_id)
+            .is_none()
     );
+    assert!(disconnected.runtime.providers().is_empty());
 }
 
 #[test]
-fn nested_family_snapshot_persists_effective_npm_and_rehydrates_store_auth() {
+fn nested_family_manifest_records_effective_npm_and_resolves_store_auth() {
     let temporary = TempDir::new().unwrap();
     let mut catalog = (*cloud_catalog(
         "azure",
@@ -2390,38 +2270,28 @@ fn nested_family_snapshot_persists_effective_npm_and_rehydrates_store_auth() {
         )
         .unwrap();
     let runtime = manager.current();
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("nested-snapshots"))
-            .unwrap();
-    let manifest = manifest_store
-        .write(runtime.manifest_payload().unwrap())
-        .unwrap();
+    let manifest = build_manifest(runtime.manifest_payload().unwrap()).unwrap();
     let blueprint = &manifest.payload.blueprints[0];
     let FrozenProviderSource::Managed { package_claim, .. } = &blueprint.source else {
         panic!("expected managed source")
     };
     assert_eq!(package_claim, "@ai-sdk/anthropic");
     assert_eq!(blueprint.auth_method.as_str(), "anthropic-api-key-v1");
-    let binding = frozen_binding(
-        manifest.revision.clone(),
-        blueprint,
-        blueprint.selection.clone(),
-    )
-    .unwrap();
+    let selection = blueprint.selection.clone();
     drop(runtime);
     drop(manager);
-    let reopened_store = store(&temporary);
-    let reopened_snapshot = reopened_store.load().unwrap();
-    manifest_store
-        .scan()
-        .unwrap()
-        .rehydrate(
-            &binding,
-            &BTreeMap::new(),
-            &reopened_snapshot,
-            safe_definition_fingerprint,
-        )
-        .unwrap();
+    let reopened =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    let reopened_runtime = reopened.current();
+    assert_eq!(
+        reopened_runtime.providers()[0].effective_auth,
+        EffectiveCredentialSource::ProviderStore
+    );
+    let resolved = reopened_runtime.resolve(&selection).unwrap();
+    assert_eq!(
+        resolved.adapter_family(),
+        OvenAdapterFamily::AnthropicCompatible
+    );
 }
 
 #[test]
@@ -2489,127 +2359,6 @@ fn bedrock_mantle_bearer_connection_constructs_responses_executable() {
 }
 
 #[test]
-fn managed_rehydration_rejects_each_recipe_identity_drift() {
-    let temporary = TempDir::new().unwrap();
-    let catalog = catalog();
-    let manager =
-        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
-    manager
-        .connect(
-            connect_request("manifest-drift", "secret", &catalog),
-            |_, _| Ok(()),
-        )
-        .unwrap();
-    let runtime = manager.current();
-    let original = runtime.manifest_payload().unwrap();
-
-    macro_rules! reject_drift {
-        ($label:literal, |$blueprint:ident| $body:block) => {{
-            let mut payload = original.clone();
-            let $blueprint = &mut payload.blueprints[0];
-            $body
-            let store = ModelSnapshotManifestStore::open_directory(
-                temporary.path().join(concat!("manifest-drift-", $label)),
-            )
-            .unwrap();
-            let manifest = store.write(payload).unwrap();
-            let blueprint = &manifest.payload.blueprints[0];
-            let binding = frozen_binding(
-                manifest.revision.clone(),
-                blueprint,
-                blueprint.selection.clone(),
-            )
-            .unwrap();
-            assert_eq!(
-                store
-                    .scan()
-                    .unwrap()
-                    .rehydrate(
-                        &binding,
-                        runtime.authored(),
-                        runtime.store(),
-                        safe_definition_fingerprint,
-                    )
-                    .unwrap_err(),
-                RehydrationError::UnsupportedSnapshotRecipe
-            );
-        }};
-    }
-
-    reject_drift!("package", |blueprint| {
-        let FrozenProviderSource::Managed { package_claim, .. } = &mut blueprint.source else {
-            unreachable!()
-        };
-        *package_claim = "@ai-sdk/openai-forged".to_owned();
-    });
-    reject_drift!("provider-recipe", |blueprint| {
-        let recipe = ProviderRecipeId::new("openai.chat.v1").unwrap();
-        blueprint.provider_recipe = recipe.clone();
-        let FrozenProviderSource::Managed {
-            provider_recipe, ..
-        } = &mut blueprint.source
-        else {
-            unreachable!()
-        };
-        *provider_recipe = recipe;
-    });
-    reject_drift!("protocol", |blueprint| {
-        blueprint.protocol_recipe = ProtocolRecipeId::new("oven.openai.chat").unwrap();
-    });
-    reject_drift!("compiler", |blueprint| {
-        blueprint.compiler_version =
-            RecipeCompilerVersion::new("family-registry-compiler-v2").unwrap();
-    });
-    reject_drift!("recipe-fingerprint", |blueprint| {
-        let FrozenProviderSource::Managed {
-            source_record_digest,
-            recipe_fingerprint,
-            ..
-        } = &mut blueprint.source
-        else {
-            unreachable!()
-        };
-        let original_source = source_record_digest.clone();
-        *recipe_fingerprint = cookie_agent_protocol::Sha256Digest::of_bytes(b"forged recipe");
-        assert_eq!(*source_record_digest, original_source);
-    });
-    reject_drift!("auth", |blueprint| {
-        blueprint.auth_method = AuthMethodId::new("no-auth-v1").unwrap();
-        blueprint.credential_binding.auth_method = AuthMethodId::new("no-auth-v1").unwrap();
-        blueprint.credential_binding.fields.clear();
-        blueprint.credential_binding.parameters.clear();
-        blueprint.credential_binding.owned_headers.clear();
-    });
-    reject_drift!("setup", |blueprint| {
-        let setup = ProviderSetupRecipeId::new("vertex-setup-v1").unwrap();
-        blueprint.setup_recipe = setup.clone();
-        blueprint.setup_binding.setup_recipe = setup;
-    });
-
-    let store = ModelSnapshotManifestStore::open_directory(
-        temporary.path().join("manifest-drift-source-record"),
-    )
-    .unwrap();
-    let manifest = store.write(original).unwrap();
-    let path = store.path().join(format!(
-        "{}.json",
-        manifest.revision.as_str().strip_prefix("sha256:").unwrap()
-    ));
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    document["payload"]["blueprints"][0]["source"]["source_record_digest"] =
-        serde_json::Value::String(
-            cookie_agent_protocol::Sha256Digest::of_bytes(b"forged source").to_string(),
-        );
-    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-    assert!(matches!(
-        store.scan(),
-        Err(ManifestError::ModelSnapshotDigestMismatch
-            | ManifestError::InvalidModelSnapshotManifest)
-    ));
-}
-
-#[test]
 fn authored_base_url_never_falls_through_to_store_on_reload() {
     let temporary = TempDir::new().unwrap();
     let catalog = catalog();
@@ -2648,7 +2397,7 @@ fn authored_base_url_never_falls_through_to_store_on_reload() {
 }
 
 #[test]
-fn manifest_variants_are_self_contained_and_forged_bindings_are_rejected() {
+fn manifest_variants_are_self_contained_and_resolve_live() {
     let temporary = TempDir::new().unwrap();
     let provider_id = ProviderId::new("custom.decimal").unwrap();
     let definition = toml::from_str::<ProviderDefinition>(
@@ -2696,11 +2445,7 @@ variants = { precise = { generation_options = { temperature = 1.25, top_p = 0.5 
             .contains("auth_values")
     );
 
-    let store = ModelSnapshotManifestStore::open_directory(
-        temporary.path().join("decimal-model-snapshots"),
-    )
-    .unwrap();
-    let manifest = store.write(payload).unwrap();
+    let manifest = build_manifest(payload).unwrap();
     let mut old_shape = serde_json::to_value(&*manifest).unwrap();
     old_shape["payload"]["blueprints"][0]["variants"][0]
         .as_object_mut()
@@ -2712,7 +2457,6 @@ variants = { precise = { generation_options = { temperature = 1.25, top_p = 0.5 
             .static_headers
             .is_empty()
     );
-    let index = store.scan().unwrap();
     let blueprint = &manifest.payload.blueprints[0];
     assert_eq!(blueprint.variants.len(), 1);
     assert_eq!(blueprint.variants[0].descriptor, blueprint.descriptor);
@@ -2736,82 +2480,35 @@ variants = { precise = { generation_options = { temperature = 1.25, top_p = 0.5 
         },
     )
     .unwrap();
-    for binding in [&base, &variant] {
-        index
-            .rehydrate(
-                binding,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap();
+    for (binding, temperature) in [(&base, 0.7_f32), (&variant, 1.25_f32)] {
+        let resolved = runtime.resolve(&binding.selection).unwrap();
+        assert_eq!(resolved.selection(), &binding.selection);
+        let prepared = resolved.prepare_request(oven_sdk::Request::new(Vec::new()));
+        assert_eq!(prepared.inference.temperature, Some(f64::from(temperature)));
     }
 
-    let mut forged_defaults = variant.clone();
-    forged_defaults.defaults.request.temperature = Some(NormalizedDecimal::from_f32(1.5).unwrap());
-    assert_eq!(
-        index
-            .rehydrate(
-                &forged_defaults,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotRehydrationMismatch
-    );
-
-    let mut forged_options = variant.clone();
-    forged_options.options = cookie_agent_protocol::ProviderOptions::OpenAiCompatible {
-        api_path: Some("/forged".to_owned()),
-    };
-    assert_eq!(
-        index
-            .rehydrate(
-                &forged_options,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotRehydrationMismatch
-    );
-
-    let mut forged_fingerprint = variant;
-    forged_fingerprint.selection_fingerprint =
-        cookie_agent_protocol::Sha256Digest::of_bytes(b"forged");
-    assert_eq!(
-        index
-            .rehydrate(
-                &forged_fingerprint,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotRehydrationMismatch
-    );
-
-    let mut corrupt_payload = manifest.payload.clone();
-    corrupt_payload.blueprints[0].variants[0]
+    // Variant defaults are covered by the variant fingerprints and the
+    // manifest revision, so changing them yields a distinct manifest.
+    let mut changed_payload = manifest.payload.clone();
+    changed_payload.blueprints[0].variants[0]
         .defaults
         .request
         .temperature = Some(NormalizedDecimal::from_f32(1.75).unwrap());
-    let canonical = canonical_payload_bytes(&corrupt_payload).unwrap();
-    let digest = format!("{:x}", Sha256::digest(canonical));
-    let corrupt = ModelSnapshotManifestV1 {
-        schema_version: ModelSnapshotManifestSchemaVersion::current(),
-        revision: cookie_agent_identity::ModelSnapshotRevision::new(format!("sha256:{digest}"))
-            .unwrap(),
-        payload: corrupt_payload,
-    };
-    let path = store.path().join(format!("{digest}.json"));
-    fs::write(&path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(matches!(
-        store.scan(),
-        Err(cookie_agent_models::manifests::ManifestError::InvalidModelSnapshotManifest)
-    ));
+    let changed = build_manifest(changed_payload).unwrap();
+    assert_ne!(changed.revision, manifest.revision);
+    let changed_blueprint = &changed.payload.blueprints[0];
+    assert_eq!(
+        changed_blueprint.behavior_fingerprint,
+        blueprint.behavior_fingerprint
+    );
+    assert_ne!(
+        changed_blueprint.variants[0].behavior_fingerprint,
+        blueprint.variants[0].behavior_fingerprint
+    );
+    assert_ne!(
+        changed_blueprint.blueprint_fingerprint,
+        blueprint.blueprint_fingerprint
+    );
 }
 
 fn header_map(values: &[(&str, &str)]) -> BTreeMap<HeaderName, SafeStaticHeaderValue> {
@@ -2827,7 +2524,7 @@ fn header_map(values: &[(&str, &str)]) -> BTreeMap<HeaderName, SafeStaticHeaderV
 }
 
 #[test]
-fn variant_header_overrides_and_deletions_rehydrate_and_mismatches_fail() {
+fn variant_header_overrides_and_deletions_reach_bindings() {
     let temporary = TempDir::new().unwrap();
     let provider_id = ProviderId::new("custom.headers").unwrap();
     let definition = toml::from_str::<ProviderDefinition>(
@@ -2851,13 +2548,7 @@ variants = { override = { headers = { x-shared = "variant" } }, deleted = { head
     )
     .unwrap();
     let runtime = manager.current();
-    let manifest_store =
-        ModelSnapshotManifestStore::open_directory(temporary.path().join("header-model-snapshots"))
-            .unwrap();
-    let manifest = manifest_store
-        .write(runtime.manifest_payload().unwrap())
-        .unwrap();
-    let index = manifest_store.scan().unwrap();
+    let manifest = build_manifest(runtime.manifest_payload().unwrap()).unwrap();
     let blueprint = &manifest.payload.blueprints[0];
 
     let mut bindings = BTreeMap::new();
@@ -2867,17 +2558,8 @@ variants = { override = { headers = { x-shared = "variant" } }, deleted = { head
             variant: Some(variant.id.clone()),
         };
         let binding = frozen_binding(manifest.revision.clone(), blueprint, selection).unwrap();
-        let rehydrated = index
-            .rehydrate(
-                &binding,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap();
-        runtime
-            .resolve_frozen(&binding, &rehydrated.blueprint)
-            .unwrap();
+        let resolved = runtime.resolve(&binding.selection).unwrap();
+        assert_eq!(resolved.selection(), &binding.selection);
         bindings.insert(variant.id.as_str().to_owned(), binding);
     }
 
@@ -2892,27 +2574,10 @@ variants = { override = { headers = { x-shared = "variant" } }, deleted = { head
             .static_headers
             .contains_key(&cookie_agent_protocol::HeaderName::new("x-delete").unwrap())
     );
-
-    let mut mismatched = bindings["override"].clone();
-    mismatched.static_headers.insert(
-        cookie_agent_protocol::HeaderName::new("x-shared").unwrap(),
-        cookie_agent_protocol::SafeStaticHeaderValue::new("forged").unwrap(),
-    );
-    assert_eq!(
-        index
-            .rehydrate(
-                &mismatched,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .unwrap_err(),
-        RehydrationError::SnapshotRehydrationMismatch
-    );
 }
 
 #[test]
-fn managed_shipped_headers_survive_snapshot_rehydration() {
+fn managed_shipped_headers_reach_manifest_blueprints() {
     let temporary = TempDir::new().unwrap();
     let provider_id = ProviderId::new("openai").unwrap();
     let definition =
@@ -2935,13 +2600,7 @@ fn managed_shipped_headers_survive_snapshot_rehydration() {
     )
     .unwrap();
     let runtime = manager.current();
-    let manifest_store = ModelSnapshotManifestStore::open_directory(
-        temporary.path().join("managed-header-snapshots"),
-    )
-    .unwrap();
-    let manifest = manifest_store
-        .write(runtime.manifest_payload().unwrap())
-        .unwrap();
+    let manifest = build_manifest(runtime.manifest_payload().unwrap()).unwrap();
     let blueprint = &manifest.payload.blueprints[0];
     assert_eq!(blueprint.static_headers.len(), shipped.len());
     for (name, value) in &shipped {
@@ -2960,17 +2619,6 @@ fn managed_shipped_headers_survive_snapshot_rehydration() {
         blueprint.selection.clone(),
     )
     .unwrap();
-    let rehydrated = manifest_store
-        .scan()
-        .unwrap()
-        .rehydrate(
-            &binding,
-            runtime.authored(),
-            runtime.store(),
-            safe_definition_fingerprint,
-        )
-        .unwrap();
-    runtime
-        .resolve_frozen(&binding, &rehydrated.blueprint)
-        .unwrap();
+    assert_eq!(binding.static_headers, blueprint.static_headers);
+    runtime.resolve(&binding.selection).unwrap();
 }

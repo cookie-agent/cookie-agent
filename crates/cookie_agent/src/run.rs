@@ -584,28 +584,31 @@ fn resolve_selection(
     if !root_session && args.agent.is_some() {
         return Err(anyhow!("--agent cannot override a delegated session"));
     }
-    let preset = args
-        .preset
-        .clone()
-        .or_else(|| previous.and_then(|selection| selection.preset.clone()));
-    if let Some(name) = preset.as_deref()
-        && !agents
+    let preset_exists = |name: &str| {
+        agents
             .iter()
             .any(|agent| agent.preset.as_deref() == Some(name))
-    {
-        return Err(anyhow!("agent preset `{name}` is not available"));
-    }
-    let base_agent = args
-        .agent
-        .as_ref()
-        .or_else(|| previous.map(|selection| &selection.agent));
-    let agent = match base_agent {
-        Some(agent_id) => agents.iter().find(|agent| {
+    };
+    // Explicit flags must name something real; a preset or agent carried over
+    // from the session's history falls back best-effort when it is gone.
+    let preset = match args.preset.clone() {
+        Some(name) if !preset_exists(&name) => {
+            return Err(anyhow!("agent preset `{name}` is not available"));
+        }
+        Some(name) => Some(name),
+        None => previous
+            .and_then(|selection| selection.preset.clone())
+            .filter(|name| preset_exists(name)),
+    };
+    let find = |agent_id: &AgentId| {
+        agents.iter().find(|agent| {
             agent.id == *agent_id
                 && agent.preset == preset
                 && (agent.runnable_as_root || !root_session)
-        }),
-        None => agents
+        })
+    };
+    let default_agent = || {
+        agents
             .iter()
             .filter(|agent| agent.runnable_as_root && agent.preset == preset)
             .find(|agent| agent.id.as_str() == "primary")
@@ -613,7 +616,13 @@ fn resolve_selection(
                 agents
                     .iter()
                     .find(|agent| agent.runnable_as_root && agent.preset == preset)
-            }),
+            })
+    };
+    let agent = match &args.agent {
+        Some(agent_id) => find(agent_id),
+        None => previous
+            .and_then(|selection| find(&selection.agent))
+            .or_else(default_agent),
     }
     .ok_or_else(|| anyhow!("selected agent is not available for this session"))?;
 
@@ -626,10 +635,11 @@ fn resolve_selection(
         }
     } else if args.agent.is_none()
         && args.preset.is_none()
-        && let Some(selection) = previous.map(|selection| &selection.model)
-        && selection_is_live(models, selection)
+        && let Some(previous) = previous
+        && previous.agent == agent.id
+        && selection_is_live(models, &previous.model)
     {
-        selection.clone()
+        previous.model.clone()
     } else {
         agent
             .resolved_fallback

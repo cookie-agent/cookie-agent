@@ -137,7 +137,6 @@ pub(crate) fn production_provider_harness(
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: None,
     })
     .expect("production engine");
     let server = Arc::new(Server::new(engine.clone()));

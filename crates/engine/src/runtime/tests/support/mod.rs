@@ -423,7 +423,6 @@ pub(crate) fn fixture() -> Fixture {
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("empty engine");
     Fixture {
@@ -556,7 +555,6 @@ pub(crate) fn open_workspace_engine(
         config,
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(data.join("model-snapshots")),
     })
     .expect("workspace engine");
     (engine, manager)
@@ -679,7 +677,6 @@ compaction = "openai-responses-compact"
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("managed engine");
     (
@@ -806,7 +803,6 @@ pub(crate) async fn retry_fixture_with_endpoint(
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("retry engine");
     fixture.manager = manager;
@@ -827,7 +823,6 @@ pub(crate) async fn reopen_fixture_with_residency(
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("reopen fixture with subagent residency settings");
 }
@@ -1149,7 +1144,6 @@ __MODEL_CAPABILITIES__
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("custom engine");
     let selection = RunSelection {
@@ -1273,7 +1267,6 @@ default_variant = "precise"
         config: config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })?;
     Ok(Fixture {
         _directory: directory,
@@ -1806,7 +1799,6 @@ pub(crate) fn reopen_engine_parts(
         config: config.clone(),
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("reopened engine")
 }
@@ -1993,7 +1985,6 @@ pub(crate) async fn anthropic_replay_fallback_fixture(endpoint: &str) -> (Fixtur
         config: fixture.config.clone(),
         model_manager: Arc::clone(&manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("replay engine");
     fixture.manager = manager;

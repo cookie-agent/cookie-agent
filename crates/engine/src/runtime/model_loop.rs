@@ -36,23 +36,31 @@ use crate::{
         assemble_model_context, persist_turn, replay_decisions_with_preflight, wire_model,
     },
     model_policy::{ErrorPolicy, classify as classify_model_error, summary as model_error_summary},
-    policy::{
-        self, FrozenRunPolicy, freeze_root_agent_policy, policy_for_session_selection,
-        resolve_agent,
-    },
+    policy::{self, FrozenRunPolicy, freeze_root_agent_policy, resolve_agent},
     tool_api::{ToolCall, ToolConcurrency, TurnAgentContext},
 };
 
 impl Engine {
+    /// Freezes a root run's policy from `selection`. With `best_effort` (a
+    /// selection carried over from the session's history) it is first repaired
+    /// against the live runtime (see [`policy::best_effort_root_selection`]);
+    /// an explicit request must name things that exist. Returns the selection
+    /// the policy was actually frozen for.
     pub(super) fn freeze_root_selection(
         &self,
         selection: &cookie_agent_protocol::RunSelection,
-    ) -> Result<FrozenRunPolicy, EngineError> {
+        best_effort: bool,
+    ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
         self.reconcile_provider_store()?;
         let runtime = self.current_runtime();
+        let selection = if best_effort {
+            policy::best_effort_root_selection(&runtime, selection)?
+        } else {
+            selection.clone()
+        };
         let agents = runtime.agents_for_preset(selection.preset.as_deref())?;
         let agent = resolve_agent(&agents, &selection.agent)?;
-        freeze_root_agent_policy(
+        let policy = freeze_root_agent_policy(
             agent,
             Arc::clone(&agents),
             runtime,
@@ -63,7 +71,90 @@ impl Engine {
                 tool_output_max_bytes: self.inner.config.runtime.tool_output.max_bytes,
             },
             self.inner.config.runtime.model_retry,
-        )
+        )?;
+        Ok((policy, selection))
+    }
+
+    /// Freezes a later run of a delegated session, re-resolved best-effort
+    /// like a root run: its agent by ID in the live registry for its creation
+    /// preset (the default agent when it is gone), and its model from the
+    /// request, the agent's own chain, or, for an agent that inherits its
+    /// parent's model, the first model it inherited at creation that is still
+    /// live. Returns the selection the policy was actually frozen for.
+    pub(super) fn freeze_delegated_selection(
+        &self,
+        creation_agent: &cookie_agent_protocol::AgentSnapshot,
+        creation_preset: Option<&str>,
+        requested: &cookie_agent_protocol::RunSelection,
+        result_limits: policy::ResultLimits,
+    ) -> Result<(FrozenRunPolicy, cookie_agent_protocol::RunSelection), EngineError> {
+        self.reconcile_provider_store()?;
+        let runtime = self.current_runtime();
+        let agents = runtime
+            .agents_for_preset(creation_preset)
+            .or_else(|_| runtime.agents_for_preset(None))?;
+        let agent = agents
+            .get(&creation_agent.agent)
+            .filter(|agent| {
+                agent.document.frontmatter.enabled
+                    && agent.document.frontmatter.mode != cookie_agent_config::AgentMode::Internal
+            })
+            .or_else(|| policy::default_root_agent(&agents))
+            .ok_or(EngineError::NoRunnableModel)?;
+        let inherited = creation_agent
+            .fallback_chain
+            .iter()
+            .filter_map(|binding| policy::live_model_selection(&runtime, &binding.selection))
+            .map(|selection| {
+                crate::model_snapshots::binding_for_selection(
+                    &runtime.current_manifest,
+                    &runtime.models,
+                    &selection,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let in_chain = |selection: &cookie_agent_protocol::ModelSelection| {
+            agent.resolved_fallback.iter().any(|candidate| {
+                matches!(
+                    candidate,
+                    crate::runtime_snapshot::ResolvedAgentFallback::Selection { selection: known, .. }
+                        if known.model == selection.model
+                )
+            })
+        };
+        let model = if agent.resolved_fallback.is_empty() {
+            inherited.first().map(|binding| binding.selection.clone())
+        } else {
+            (agent.document.id == creation_agent.agent)
+                .then(|| policy::live_model_selection(&runtime, &requested.model))
+                .flatten()
+                .filter(in_chain)
+                .or_else(|| policy::agent_default_model(&runtime, agent))
+        }
+        .ok_or(EngineError::NoRunnableModel)?;
+        let ceiling = creation_agent.delegation.as_ref().map_or(
+            self.inner.config.runtime.delegation.max_depth,
+            |delegation| delegation.effective_depth_ceiling,
+        );
+        let policy = policy::freeze_delegated_agent_policy(
+            agent,
+            Arc::clone(&agents),
+            Arc::clone(&runtime),
+            &model,
+            &inherited,
+            ceiling,
+            policy::FreezeOptions {
+                result_limits,
+                model_retry: self.inner.config.runtime.model_retry,
+                inherited_cache_strategies: None,
+            },
+        )?;
+        let selection = cookie_agent_protocol::RunSelection {
+            agent: agent.document.id.clone(),
+            model,
+            preset: agents.preset().map(str::to_owned),
+        };
+        Ok((policy, selection))
     }
 
     pub(super) async fn start_run_direct(
@@ -158,30 +249,29 @@ impl Engine {
         };
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let mut run_policy = match &session.meta.origin {
-            SessionOrigin::Root => self.freeze_root_selection(&params.selection)?,
-            SessionOrigin::Delegated { invocation_id, .. } => {
-                if params.selection.preset != session.meta.creation_selection.preset {
-                    return Err(EngineError::NoRunnableModel);
-                }
-                let runtime = self.current_runtime();
-                let agents = runtime.agents_for_preset(params.selection.preset.as_deref())?;
-                let delegation = self
-                    .inner
-                    .delegation_events
-                    .get(*invocation_id)
-                    .filter(|entry| entry.reservation.child_session_id == params.session_id);
-                policy_for_session_selection(
-                    session.creation_agent.clone(),
-                    agents,
-                    runtime,
+            SessionOrigin::Root => {
+                // A selection equal to the session's own history (an engine
+                // wake-up, or a client continuing where the session left off)
+                // falls back best-effort when what it names is gone.
+                let history = cookie_agent_protocol::SessionModelState::from_events(
+                    &session.log.event_snapshot(),
+                )
+                .selection
+                .unwrap_or_else(|| session.meta.creation_selection.clone());
+                let (policy, selection) =
+                    self.freeze_root_selection(&params.selection, params.selection == history)?;
+                params.selection = selection;
+                policy
+            }
+            SessionOrigin::Delegated { .. } => {
+                let (policy, selection) = self.freeze_delegated_selection(
+                    &session.creation_agent,
+                    session.meta.creation_selection.preset.as_deref(),
                     &params.selection,
-                    result_limits.tool_output_max_lines,
-                    result_limits.tool_output_max_bytes,
-                    self.inner.config.runtime.model_retry,
-                    delegation
-                        .as_ref()
-                        .map(|entry| entry.cache_strategies.as_slice()),
-                )?
+                    result_limits,
+                )?;
+                params.selection = selection;
+                policy
             }
         };
         let remembered =

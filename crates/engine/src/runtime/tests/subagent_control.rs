@@ -457,7 +457,6 @@ async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(snapshot.path().join("model-snapshots")),
     })
     .expect("reopen queued child snapshot");
     reopened
@@ -601,7 +600,6 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
         config,
         model_manager: manager,
         tools: Vec::new(),
-        model_snapshot_directory: Some(snapshot.path().join("model-snapshots")),
     })
     .expect("reopen background delegate snapshot");
     reopened

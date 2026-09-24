@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use cookie_agent_models::adapters::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
-    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheMode,
-    OpenAiCacheStrategyConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, OvenAdapterFamily,
+    CacheStrategyConfig, GoogleCacheMode, OpenAiCacheMode, OpenAiCacheStrategyConfig,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, OvenAdapterFamily,
 };
 use cookie_agent_protocol as protocol;
 
@@ -163,6 +163,103 @@ fn missing_model_error(
         }
     };
     Some(error)
+}
+
+/// A selection the live runtime can run: its model is available and its
+/// variant is one of that model's own. A variant the model no longer offers
+/// becomes the model's default; no variant (base behaviour) stays as it is.
+pub(crate) fn live_model_selection(
+    runtime: &PublishedRuntime,
+    selection: &protocol::ModelSelection,
+) -> Option<protocol::ModelSelection> {
+    let descriptor = runtime
+        .result
+        .snapshot
+        .models
+        .iter()
+        .find(|descriptor| descriptor.key == selection.model)?;
+    let variant = match &selection.variant {
+        Some(variant) if !descriptor.variants.iter().any(|known| &known.id == variant) => {
+            descriptor.default_variant.clone()
+        }
+        variant => variant.clone(),
+    };
+    Some(protocol::ModelSelection {
+        model: selection.model.clone(),
+        variant,
+    })
+}
+
+/// The first live model in an agent's own fallback chain.
+pub(crate) fn agent_default_model(
+    runtime: &PublishedRuntime,
+    agent: &ResolvedAgent,
+) -> Option<protocol::ModelSelection> {
+    agent
+        .resolved_fallback
+        .iter()
+        .find_map(|candidate| match candidate {
+            ResolvedAgentFallback::Selection { selection, .. } => {
+                live_model_selection(runtime, selection)
+            }
+            ResolvedAgentFallback::ParentModel { .. } => None,
+        })
+}
+
+/// The agent a run falls back to when its own is gone: `primary`, else the
+/// first root-runnable agent of the registry.
+pub(crate) fn default_root_agent(registry: &AgentRegistry) -> Option<&ResolvedAgent> {
+    let runnable = || {
+        registry
+            .agents()
+            .values()
+            .filter(|agent| agent.runnable_as_root)
+    };
+    runnable()
+        .find(|agent| agent.document.id.as_str() == "primary")
+        .or_else(|| runnable().next())
+}
+
+/// Repairs a root selection against the live runtime instead of failing. A
+/// selection carried over from history may name a preset, agent, model, or
+/// variant that no longer exists: an unknown preset falls back to the shared
+/// agents, an agent that cannot run as root to the default agent, and a model
+/// that is gone (or any model, once the agent changed) to the agent's default
+/// model. The transcript keeps showing what earlier turns actually used.
+pub(crate) fn best_effort_root_selection(
+    runtime: &PublishedRuntime,
+    selection: &protocol::RunSelection,
+) -> Result<protocol::RunSelection, EngineError> {
+    let (agents, preset) = match runtime.agents_for_preset(selection.preset.as_deref()) {
+        Ok(agents) => (agents, selection.preset.clone()),
+        Err(_) => (runtime.agents_for_preset(None)?, None),
+    };
+    let requested = agents
+        .get(&selection.agent)
+        .filter(|agent| agent.runnable_as_root);
+    let agent = requested
+        .or_else(|| default_root_agent(&agents))
+        .ok_or(EngineError::NoRunnableModel)?;
+    let model = requested
+        .and_then(|_| live_model_selection(runtime, &selection.model))
+        .or_else(|| agent_default_model(runtime, agent))
+        .or_else(|| {
+            runtime
+                .result
+                .snapshot
+                .models
+                .first()
+                .map(|descriptor| protocol::ModelSelection {
+                    model: descriptor.key.clone(),
+                    variant: descriptor.default_variant.clone(),
+                })
+        })
+        .ok_or(EngineError::NoRunnableModel)?;
+    Ok(protocol::RunSelection {
+        agent: agent.document.id.clone(),
+        model,
+        preset,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -399,53 +496,6 @@ fn freeze_with_bindings(
         model_retry: options.model_retry,
         cache_strategies,
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn policy_for_session_selection(
-    mut agent: protocol::AgentSnapshot,
-    registry: Arc<AgentRegistry>,
-    runtime: Arc<PublishedRuntime>,
-    selection: &protocol::RunSelection,
-    tool_output_max_lines: usize,
-    tool_output_max_bytes: usize,
-    model_retry: cookie_agent_config::ModelRetryConfig,
-    frozen_cache_strategies: Option<&[Option<protocol::FrozenCacheStrategy>]>,
-) -> Result<FrozenRunPolicy, EngineError> {
-    if selection.agent != agent.agent || selection.preset.as_deref() != registry.preset() {
-        return Err(EngineError::NoRunnableModel);
-    }
-    let index = agent
-        .fallback_chain
-        .iter()
-        .position(|binding| binding.selection == selection.model)
-        .ok_or(EngineError::NoRunnableModel)?;
-    let restored_cache_strategies = match frozen_cache_strategies {
-        Some(strategies) if strategies.len() == agent.fallback_chain.len() => {
-            Some(runtime_cache_strategies(&strategies[index..])?)
-        }
-        Some([]) | None => None,
-        Some(_) => {
-            return Err(EngineError::CacheStrategy(
-                "frozen cache strategies do not align with the delegated model suffix".into(),
-            ));
-        }
-    };
-    agent.selected_suffix_start = index as u32;
-    let suffix = agent.fallback_chain[index..].to_vec();
-    let mut policy = policy_from_snapshot(
-        agent,
-        suffix,
-        registry,
-        runtime,
-        tool_output_max_lines,
-        tool_output_max_bytes,
-        model_retry,
-    )?;
-    if let Some(strategies) = restored_cache_strategies {
-        policy.cache_strategies = strategies;
-    }
-    Ok(policy)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -848,101 +898,6 @@ fn wire_cache_strategy(
     })
 }
 
-pub(crate) fn runtime_cache_strategies(
-    strategies: &[Option<protocol::FrozenCacheStrategy>],
-) -> Result<Vec<Option<CacheStrategyConfig>>, EngineError> {
-    strategies
-        .iter()
-        .map(|strategy| strategy.as_ref().map(runtime_cache_strategy).transpose())
-        .collect()
-}
-
-fn runtime_cache_strategy(
-    strategy: &protocol::FrozenCacheStrategy,
-) -> Result<CacheStrategyConfig, EngineError> {
-    strategy
-        .validate()
-        .map_err(|error| EngineError::CacheStrategy(error.into()))?;
-    Ok(match strategy {
-        protocol::FrozenCacheStrategy::Anthropic {
-            system,
-            tools,
-            rolling,
-        } => CacheStrategyConfig::Anthropic(
-            cookie_agent_models::adapters::AnthropicCacheStrategyConfig {
-                system: runtime_anthropic_ttl(*system),
-                tools: runtime_anthropic_ttl(*tools),
-                rolling: runtime_anthropic_ttl(*rolling),
-            },
-        ),
-        protocol::FrozenCacheStrategy::Bedrock {
-            system,
-            tools,
-            messages,
-        } => CacheStrategyConfig::Bedrock(BedrockCacheStrategy {
-            system: runtime_bedrock_point(*system),
-            tools: runtime_bedrock_point(*tools),
-            messages: messages
-                .iter()
-                .map(|point| {
-                    Ok(BedrockMessageCachePoint {
-                        history_index: usize::try_from(point.history_index).map_err(|_| {
-                            EngineError::CacheStrategy(
-                                "frozen Bedrock cache history index exceeds this platform".into(),
-                            )
-                        })?,
-                        cache_point: runtime_bedrock_point(point.ttl).ok_or_else(|| {
-                            EngineError::CacheStrategy(
-                                "frozen Bedrock message cache point cannot be off".into(),
-                            )
-                        })?,
-                    })
-                })
-                .collect::<Result<Vec<_>, EngineError>>()?,
-        }),
-        protocol::FrozenCacheStrategy::Google {
-            mode,
-            cached_content,
-        } => CacheStrategyConfig::Google(GoogleCacheStrategyConfig {
-            mode: match mode {
-                protocol::FrozenGoogleCacheMode::Implicit => GoogleCacheMode::Implicit,
-                protocol::FrozenGoogleCacheMode::Explicit => GoogleCacheMode::Explicit,
-                protocol::FrozenGoogleCacheMode::Off => GoogleCacheMode::Off,
-            },
-            cached_content: cached_content.clone(),
-        }),
-        protocol::FrozenCacheStrategy::OpenAi {
-            prompt_cache_key,
-            prompt_cache_retention,
-            mode,
-            ttl,
-            system,
-            rolling,
-        } => CacheStrategyConfig::OpenAi(OpenAiCacheStrategyConfig {
-            prompt_cache_key: prompt_cache_key.clone(),
-            prompt_cache_retention: prompt_cache_retention.map(|retention| match retention {
-                protocol::FrozenOpenAiCacheRetention::InMemory => {
-                    OpenAiPromptCacheRetention::InMemory
-                }
-                protocol::FrozenOpenAiCacheRetention::TwentyFourHours => {
-                    OpenAiPromptCacheRetention::TwentyFourHours
-                }
-            }),
-            mode: mode.map(|mode| match mode {
-                protocol::FrozenOpenAiCacheMode::Implicit => OpenAiCacheMode::Implicit,
-                protocol::FrozenOpenAiCacheMode::Explicit => OpenAiCacheMode::Explicit,
-            }),
-            ttl: ttl.map(|ttl| match ttl {
-                protocol::FrozenOpenAiPromptCacheTtl::ThirtyMinutes => {
-                    OpenAiPromptCacheTtl::ThirtyMinutes
-                }
-            }),
-            system: system.unwrap_or_default(),
-            rolling: rolling.unwrap_or_default(),
-        }),
-    })
-}
-
 const fn wire_optional_anthropic_ttl(
     ttl: Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig>,
 ) -> protocol::FrozenCacheTtl {
@@ -966,54 +921,16 @@ fn wire_optional_bedrock_point(point: Option<&BedrockCachePoint>) -> protocol::F
     }
 }
 
-const fn runtime_anthropic_ttl(
-    ttl: protocol::FrozenCacheTtl,
-) -> Option<cookie_agent_models::adapters::AnthropicCacheTtlConfig> {
-    match ttl {
-        protocol::FrozenCacheTtl::OneHour => {
-            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::OneHour)
-        }
-        protocol::FrozenCacheTtl::FiveMinutes => {
-            Some(cookie_agent_models::adapters::AnthropicCacheTtlConfig::FiveMinutes)
-        }
-        protocol::FrozenCacheTtl::Off => None,
-    }
-}
-
-const fn runtime_bedrock_point(ttl: protocol::FrozenCacheTtl) -> Option<BedrockCachePoint> {
-    Some(BedrockCachePoint {
-        ttl: Some(match ttl {
-            protocol::FrozenCacheTtl::OneHour => BedrockCacheTtl::OneHour,
-            protocol::FrozenCacheTtl::FiveMinutes => BedrockCacheTtl::FiveMinutes,
-            protocol::FrozenCacheTtl::Off => return None,
-        }),
-    })
-}
-
 pub(crate) type ResolvedRuntimeModel = cookie_agent_models::ResolvedExecutableModel;
 
+/// Resolves a binding's model and variant against `runtime`: the runtime a run
+/// was admitted with, so every attempt of that run uses the same compiled
+/// models. Nothing is rehydrated from storage.
 pub(crate) fn resolve_model(
     binding: &protocol::FrozenModelBinding,
     runtime: &PublishedRuntime,
 ) -> Result<ResolvedRuntimeModel, EngineError> {
-    let rehydrated = runtime
-        .manifests
-        .rehydrate(
-            binding,
-            runtime.models.authored(),
-            runtime.models.store(),
-            cookie_agent_models::safe_definition_fingerprint,
-        )
-        .map_err(EngineError::SnapshotRehydration)?;
-    let resolved = runtime
-        .models
-        .resolve_frozen(binding, &rehydrated.blueprint)?;
-    if resolved.behavior_fingerprint().as_str() != binding.behavior_fingerprint.as_str() {
-        return Err(EngineError::SnapshotRehydration(
-            cookie_agent_models::manifests::RehydrationError::SnapshotRehydrationMismatch,
-        ));
-    }
-    Ok(resolved)
+    Ok(runtime.models.resolve(&binding.selection)?)
 }
 
 fn wire_digest(

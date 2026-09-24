@@ -17,7 +17,7 @@ emit only their current version and reject unsupported versions.
 | Catalog cache | 2 | 2 |
 | Provider store | 3 | 3 |
 | Family recipe registry | 1 | 1 |
-| Project model-snapshot manifest | 1 | 1 |
+| In-memory model manifest (recorded run bindings) | 1 | 1 |
 
 Agent snapshots embedded in readable events upconvert supported historical
 shapes before validation. Delegation lifecycle records are ordinary parent

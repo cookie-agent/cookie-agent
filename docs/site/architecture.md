@@ -181,10 +181,14 @@ See [Configuration](guide/configuration.md) and the
    store (`~/.cookie-agent/providers/store-v3.json`) and are shared
    across workspaces. Credentials are checked on first use, not at connect time.
 
-Each accepted run freezes its model selection into a global user manifest under
-`~/.cookie-agent/model-snapshots/`, so later catalog, configuration, or store
-changes cannot silently change an accepted run's model behavior. The manifests
-are shared across workspaces.
+Each accepted run freezes its model bindings against the runtime it was admitted
+with and keeps that runtime in memory until it ends, so configuration, catalog,
+or store changes cannot change a run's model behavior midway. Nothing is
+persisted beyond the run's events, which record the bindings as a description
+of what ran. A later turn resolves afresh and best-effort: a history-derived
+selection whose agent, model, or variant is gone falls back to the default
+agent (`primary`, else the first root-runnable one) or the agent's default
+model, while earlier turns keep showing what they actually used.
 
 Local selection/pricing identity is distinct from the effective provider wire
 model ID. Model and variant overrides resolve before execution; frozen bindings
@@ -412,9 +416,6 @@ for this directory because they cannot guarantee single-writer ownership.
 Legacy project-level `delegations.jsonl` files are ignored. In-flight
 delegations that existed only in that pre-release journal are not recovered;
 their child directories remain ordinary sessions available for inspection.
-
-Model-snapshot manifests live in the global user directory at
-`~/.cookie-agent/model-snapshots/` and are shared across workspaces.
 
 ### Event bus
 

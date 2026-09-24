@@ -5,7 +5,7 @@ pub(crate) mod projection;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use cookie_agent_models::{CompiledModelRuntime, manifests::ModelSnapshotManifestIndex};
+use cookie_agent_models::CompiledModelRuntime;
 use cookie_agent_protocol::{RuntimeChangedNotification, RuntimeSnapshotResult};
 
 pub(crate) use agents::{AgentRegistry, ResolvedAgent, ResolvedAgentFallback, delegation_targets};
@@ -18,7 +18,6 @@ pub struct PublishedRuntime {
     pub models: Arc<CompiledModelRuntime>,
     pub agents: Arc<AgentRegistry>,
     pub agent_presets: BTreeMap<String, Arc<AgentRegistry>>,
-    pub manifests: Arc<ModelSnapshotManifestIndex>,
     pub current_manifest: Arc<cookie_agent_protocol::ModelSnapshotManifestV1>,
 }
 
@@ -45,7 +44,6 @@ impl std::fmt::Debug for PublishedRuntime {
             .field("runtime_revision", &self.result.snapshot.runtime_revision)
             .field("models", &self.result.snapshot.models.len())
             .field("agents", &self.result.snapshot.agents.len())
-            .field("manifests", &self.manifests.len())
             .finish()
     }
 }

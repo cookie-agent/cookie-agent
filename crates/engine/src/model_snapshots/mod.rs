@@ -1,31 +1,23 @@
-//! Durable-before-reference model manifest integration.
+//! The current runtime's in-memory model manifest and run bindings.
+//!
+//! Bindings are frozen against the manifest of the runtime a run was admitted
+//! with and recorded in its events as a description of what ran. Nothing is
+//! persisted or rehydrated: a later run resolves its models afresh.
 
 use std::sync::Arc;
 
 use cookie_agent_models::{
     CompiledModelRuntime,
-    manifests::{
-        ManifestError, ModelSnapshotManifestIndex, ModelSnapshotManifestStore, RehydrationError,
-        behavior_fingerprint, frozen_binding, selection_fingerprint,
-    },
+    manifests::{ManifestError, build_manifest, frozen_binding},
 };
 use cookie_agent_protocol::{FrozenModelBinding, ModelSelection};
 
 use crate::EngineError;
 
-#[derive(Debug)]
-pub(crate) struct RuntimeManifest {
-    pub manifest: Arc<cookie_agent_protocol::ModelSnapshotManifestV1>,
-    pub index: Arc<ModelSnapshotManifestIndex>,
-}
-
 pub(crate) fn prepare_runtime_manifest(
-    store: &ModelSnapshotManifestStore,
     runtime: &CompiledModelRuntime,
-) -> Result<RuntimeManifest, EngineError> {
-    let manifest = store.write(runtime.manifest_payload()?)?;
-    let index = Arc::new(store.scan()?);
-    Ok(RuntimeManifest { manifest, index })
+) -> Result<Arc<cookie_agent_protocol::ModelSnapshotManifestV1>, EngineError> {
+    Ok(build_manifest(runtime.manifest_payload()?)?)
 }
 
 pub(crate) fn binding_for_selection(
@@ -53,42 +45,6 @@ pub(crate) fn binding_for_selection(
     }
     frozen_binding(manifest.revision.clone(), blueprint, selection.clone())
         .map_err(EngineError::from)
-}
-
-pub(crate) fn validate_referenced_binding(
-    index: &ModelSnapshotManifestIndex,
-    _runtime: &CompiledModelRuntime,
-    binding: &FrozenModelBinding,
-) -> Result<(), EngineError> {
-    if cookie_agent_models::adapters::wire_adapter_for_protocol(
-        binding.descriptor.adapter_id.as_str(),
-    )
-    .is_none()
-    {
-        return Err(EngineError::RuntimeCompileFailed);
-    }
-    let manifest = index.require(&binding.manifest_revision).map_err(|_| {
-        EngineError::SnapshotRehydration(RehydrationError::SnapshotRehydrationMismatch)
-    })?;
-    let blueprint = manifest
-        .payload
-        .blueprints
-        .iter()
-        .find(|blueprint| blueprint.blueprint_fingerprint == binding.blueprint_fingerprint)
-        .ok_or(EngineError::SnapshotRehydration(
-            RehydrationError::SnapshotRehydrationMismatch,
-        ))?;
-    if !binding.matches_blueprint(blueprint)
-        || behavior_fingerprint(blueprint, &binding.selection)
-            .map_or(true, |value| value != binding.behavior_fingerprint)
-        || selection_fingerprint(blueprint, &binding.selection)
-            .map_or(true, |value| value != binding.selection_fingerprint)
-    {
-        return Err(EngineError::SnapshotRehydration(
-            RehydrationError::SnapshotRehydrationMismatch,
-        ));
-    }
-    Ok(())
 }
 
 impl From<ManifestError> for EngineError {

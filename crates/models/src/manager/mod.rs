@@ -716,33 +716,7 @@ impl CompiledModelRuntime {
             .resolve(selection)
     }
 
-    pub fn resolve_frozen(
-        &self,
-        binding: &protocol::FrozenModelBinding,
-        blueprint: &CompiledSafeModelBlueprint,
-    ) -> Result<ResolvedExecutableModel, ModelManagerError> {
-        validate_frozen_provider_cache(self, binding)?;
-        if !binding.matches_blueprint(blueprint)
-            || behavior_fingerprint(blueprint, &binding.selection)? != binding.behavior_fingerprint
-            || selection_fingerprint(blueprint, &binding.selection)?
-                != binding.selection_fingerprint
-        {
-            return Err(ModelManagerError::RuntimeCompileFailed);
-        }
-        if let Some(current) = self.model(&binding.selection.model) {
-            let current_blueprint = current.blueprint()?;
-            if binding.matches_blueprint(&current_blueprint) {
-                let mut resolved = current.resolve(&binding.selection)?;
-                resolved.behavior_fingerprint =
-                    Sha256Digest::new(binding.behavior_fingerprint.as_str().to_owned())
-                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;
-                return Ok(resolved);
-            }
-        }
-        compile_frozen_managed(self, binding, blueprint)
-    }
-
-    /// Allocates a secret-free schema-1 payload for durable-before-reference storage.
+    /// Allocates the secret-free schema-1 payload that run bindings are frozen against.
     pub fn manifest_payload(&self) -> Result<ModelSnapshotPayloadV1, ModelManagerError> {
         let mut blueprints = self
             .models
@@ -1314,40 +1288,6 @@ fn validate_unresolved_managed_cache(
     })
 }
 
-fn validate_frozen_provider_cache(
-    runtime: &CompiledModelRuntime,
-    binding: &protocol::FrozenModelBinding,
-) -> Result<(), ModelManagerError> {
-    let provider_id = binding.selection.model.provider_id();
-    let Some(cache) = runtime
-        .authored
-        .get(&provider_id)
-        .and_then(|definition| match definition {
-            ProviderDefinition::ModelsDev(provider) => provider.cache.as_ref(),
-            ProviderDefinition::Custom(provider) => provider.cache.as_ref(),
-        })
-    else {
-        return Ok(());
-    };
-    let adapter = if binding
-        .descriptor
-        .adapter_id
-        .as_str()
-        .starts_with("oven.openai-compatible.")
-    {
-        OvenAdapterFamily::OpenaiCompatible
-    } else {
-        crate::adapters::wire_adapter_for_protocol(binding.descriptor.adapter_id.as_str())
-            .ok_or(ModelManagerError::RuntimeCompileFailed)?
-    };
-    crate::authoring::validate_provider_cache(Some(cache), adapter.id()).map_err(|reason| {
-        ModelManagerError::ProviderCache {
-            provider: provider_id,
-            reason,
-        }
-    })
-}
-
 fn compile_runtime(
     authored: Arc<BTreeMap<ProviderId, ProviderDefinition>>,
     global_headers: Arc<BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>>,
@@ -1903,366 +1843,6 @@ fn mapped_credentials(
     })
 }
 
-fn compile_frozen_managed(
-    runtime: &CompiledModelRuntime,
-    binding: &protocol::FrozenModelBinding,
-    blueprint: &CompiledSafeModelBlueprint,
-) -> Result<ResolvedExecutableModel, ModelManagerError> {
-    if !matches!(blueprint.source, FrozenProviderSource::Managed { .. }) {
-        return Err(ModelManagerError::ModelUnavailable(
-            binding.selection.model.clone(),
-        ));
-    }
-    let provider_id = binding.selection.model.provider_id();
-    family_registry()
-        .by_npm(match &blueprint.source {
-            FrozenProviderSource::Managed { package_claim, .. } => package_claim,
-            FrozenProviderSource::Custom { .. } => {
-                return Err(ModelManagerError::RuntimeCompileFailed);
-            }
-        })
-        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-    let frozen_behavior = selected_behavior(blueprint, &binding.selection)
-        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-    let adapter = adapter_for_protocol(frozen_behavior.descriptor.adapter_id.as_str())
-        .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-    let setup_values = blueprint
-        .setup_binding
-        .values
-        .iter()
-        .map(|(id, value)| {
-            let value = match value {
-                protocol::SafeSetupValue::String(value) => value.as_str(),
-                protocol::SafeSetupValue::Code(value) => value.as_str(),
-                protocol::SafeSetupValue::Integer(_) | protocol::SafeSetupValue::Bool(_) => {
-                    return Err(ModelManagerError::RuntimeCompileFailed);
-                }
-            };
-            Ok((id.as_str().to_owned(), value.to_owned()))
-        })
-        .collect::<Result<BTreeMap<_, _>, ModelManagerError>>()?;
-    let defaults = thaw_defaults(frozen_behavior.defaults)?;
-    let options = thaw_provider_options(frozen_behavior.options)?;
-    let capabilities = thaw_capabilities(&frozen_behavior.descriptor.capabilities);
-    let model = CompiledDynamicModel {
-        // compile_frozen_managed rejects Custom sources above; custom frozen
-        // bindings resolve through the current-runtime fast path instead.
-        custom: false,
-        id: binding.selection.model.model_id(),
-        wire_model_id: frozen_wire_model_id(
-            frozen_behavior.descriptor,
-            &binding.selection.model.model_id(),
-            frozen_behavior.options,
-        )?,
-        display_name: binding.selection.model.to_string(),
-        family_id: blueprint.provider_recipe.as_str().to_owned(),
-        effective_npm: match &blueprint.source {
-            FrozenProviderSource::Managed { package_claim, .. } => package_claim.clone(),
-            FrozenProviderSource::Custom { .. } => "custom".to_owned(),
-        },
-        adapter_id: frozen_behavior.descriptor.adapter_id.as_str().to_owned(),
-        resolved_shape: if matches!(
-            adapter,
-            OvenAdapterFamily::OpenaiResponses | OvenAdapterFamily::AzureOpenaiResponses
-        ) {
-            "responses"
-        } else {
-            "chat"
-        }
-        .to_owned(),
-        reasoning_field: "reasoning_content".to_owned(),
-        adapter,
-        endpoint: Some(blueprint.endpoint_identity.as_str().to_owned()),
-        setup: Some(crate::recipes::ValidatedSetup {
-            recipe_id: "family-derived-setup-v1",
-            values: setup_values,
-        }),
-        auth: CompiledAuthShape {
-            method: blueprint.auth_method.as_str().to_owned(),
-            safe_parameters: blueprint
-                .credential_binding
-                .parameters
-                .iter()
-                .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
-                .collect(),
-            credential_fields: blueprint
-                .credential_binding
-                .fields
-                .iter()
-                .map(|field| field.as_str().to_owned())
-                .collect(),
-            owned_headers: blueprint
-                .credential_binding
-                .owned_headers
-                .iter()
-                .map(|header| header.as_str().to_owned())
-                .collect(),
-            source: AuthSourceCategory::Unavailable,
-        },
-        replay_declaration: Some(capabilities.native_replay),
-        capabilities,
-        defaults: defaults.request.clone(),
-        options: options.clone(),
-        headers: binding
-            .static_headers
-            .iter()
-            .map(|(name, value)| {
-                Ok((
-                    crate::HeaderName::new(name.as_str())
-                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                    crate::SafeStaticHeaderValue::new(value.as_str())
-                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                ))
-            })
-            .collect::<Result<_, ModelManagerError>>()?,
-        cost: None,
-        variants: BTreeMap::new(),
-        variant_order: Vec::new(),
-        default_variant: None,
-        status: CompiledModelStatus::Available,
-        behavior_fingerprint: Sha256Digest::new(
-            frozen_behavior
-                .behavior_fingerprint
-                .as_str()
-                .strip_prefix("sha256:")
-                .unwrap_or(frozen_behavior.behavior_fingerprint.as_str()),
-        )
-        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-    };
-    let credentials = frozen_credentials(runtime, blueprint)?;
-    let headers = binding
-        .static_headers
-        .iter()
-        .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
-        .collect();
-    let compiled = compile_executable(
-        provider_id.as_str(),
-        &model,
-        frozen_behavior.descriptor.capabilities.clone(),
-        headers,
-        &credentials,
-        ExecutableBehaviorInput {
-            defaults: &defaults.request,
-            options: &options,
-            reasoning: defaults.reasoning.as_ref(),
-        },
-    )?;
-    Ok(ResolvedExecutableModel {
-        selection: binding.selection.clone(),
-        adapter,
-        model: compiled.model,
-        defaults,
-        provider_options: compiled.provider_options,
-        behavior_fingerprint: model.behavior_fingerprint,
-    })
-}
-
-fn adapter_for_protocol(value: &str) -> Option<OvenAdapterFamily> {
-    crate::adapters::wire_adapter_for_protocol(value).or_else(|| {
-        if value.starts_with("oven.openai-compatible.chat.") {
-            Some(OvenAdapterFamily::OpenaiCompatible)
-        } else if value.starts_with("oven.anthropic-compatible.messages.") {
-            Some(OvenAdapterFamily::AnthropicCompatible)
-        } else {
-            None
-        }
-    })
-}
-
-fn thaw_capabilities(value: &OvenCapabilities) -> crate::ModelCapabilities {
-    crate::ModelCapabilities {
-        input: BTreeSet::from([crate::Modality::Text]),
-        output: BTreeSet::from([crate::Modality::Text]),
-        context_tokens: value.limits.context.unwrap_or(1),
-        output_tokens: value.limits.output.unwrap_or(1),
-        tool_calling: value.features.contains(Capability::TOOL_CALLING),
-        parallel_tool_calls: value.features.contains(Capability::PARALLEL_TOOLS),
-        structured_output: value.features.contains(Capability::STRUCTURED_OUTPUT),
-        reasoning: value.features.contains(Capability::REASONING),
-        temperature: value.features.contains(Capability::TEMPERATURE),
-        top_p: value.features.contains(Capability::TOP_P),
-        seed: false,
-        compaction: match value.compaction {
-            OvenCompaction::Unsupported => crate::CompactionCapability::Unsupported,
-            OvenCompaction::Native => crate::CompactionCapability::Native,
-        },
-        native_replay: match value.replay.capability {
-            OvenReplay::Unsupported => crate::ReplayCapability::Unsupported,
-            OvenReplay::Optional => crate::ReplayCapability::Optional,
-            OvenReplay::Required => crate::ReplayCapability::Required,
-        },
-        cancellation: match value.cancellation {
-            OvenCancellation::Unsupported | OvenCancellation::LocalOnly => {
-                crate::CancellationCapability::LocalOnly
-            }
-            OvenCancellation::RemoteBestEffort => crate::CancellationCapability::Provider,
-        },
-        media: BTreeMap::new(),
-    }
-}
-
-fn thaw_provider_options(
-    value: &protocol::FrozenProviderOptions,
-) -> Result<crate::ProviderOptions, ModelManagerError> {
-    let mut options = crate::ProviderOptions::default();
-    match value {
-        protocol::ProviderOptions::Anthropic { api_version, beta } => {
-            options.api_version.clone_from(api_version);
-            options.beta.clone_from(beta);
-        }
-        protocol::ProviderOptions::OpenAiChat {
-            organization,
-            project,
-        } => {
-            options.organization.clone_from(organization);
-            options.project.clone_from(project);
-        }
-        protocol::ProviderOptions::OpenAiResponses {
-            organization,
-            project,
-            store,
-        } => {
-            options.organization.clone_from(organization);
-            options.project.clone_from(project);
-            options.store = *store;
-        }
-        protocol::ProviderOptions::OpenAiCompatible { api_path } => {
-            options.api_path.clone_from(api_path);
-        }
-        protocol::ProviderOptions::GoogleGemini { api_version }
-        | protocol::ProviderOptions::CohereV2Chat { api_version } => {
-            options.api_version.clone_from(api_version);
-        }
-        protocol::ProviderOptions::GoogleVertexGemini { project, location } => {
-            options.project = Some(project.clone());
-            options.location = Some(location.clone());
-        }
-        protocol::ProviderOptions::AwsBedrockConverse { region } => {
-            options.region = Some(region.clone());
-        }
-        protocol::ProviderOptions::AzureOpenAiChat {
-            deployment,
-            api_version,
-        }
-        | protocol::ProviderOptions::AzureOpenAiResponses {
-            deployment,
-            api_version,
-        } => {
-            options.deployment = Some(deployment.clone());
-            options.api_version = Some(api_version.clone());
-        }
-    }
-    Ok(options)
-}
-
-fn frozen_credentials(
-    runtime: &CompiledModelRuntime,
-    blueprint: &CompiledSafeModelBlueprint,
-) -> Result<ExecutableCredentialMaterial, ModelManagerError> {
-    let provider_id = blueprint.selection.model.provider_id();
-    let (source_method, values) = match blueprint.credential_binding.source {
-        FrozenCredentialSource::AuthoredApiKey => {
-            let ProviderDefinition::ModelsDev(provider) = runtime
-                .authored
-                .get(&provider_id)
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?
-            else {
-                return Err(ModelManagerError::RuntimeCompileFailed);
-            };
-            let method = runtime
-                .catalog
-                .provider(&provider_id)
-                .and_then(|entry| entry.record.as_ref())
-                .and_then(|record| family_registry().classify(record))
-                .map(|recipe| recipe.default_auth_method.to_owned())
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-            (
-                method,
-                BTreeMap::from([(
-                    AuthFieldName::new("api_key")
-                        .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
-                    provider
-                        .api_key
-                        .as_ref()
-                        .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                        .expose()
-                        .to_owned(),
-                )]),
-            )
-        }
-        FrozenCredentialSource::AuthoredOverride => {
-            let ProviderDefinition::ModelsDev(provider) = runtime
-                .authored
-                .get(&provider_id)
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?
-            else {
-                return Err(ModelManagerError::RuntimeCompileFailed);
-            };
-            let auth = provider
-                .auth_override
-                .as_ref()
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-            (
-                auth.method.as_str().to_owned(),
-                auth.values
-                    .iter()
-                    .map(|(field, value)| (field.clone(), value.expose().to_owned()))
-                    .collect(),
-            )
-        }
-        FrozenCredentialSource::ProviderStore => {
-            let connection = runtime
-                .store
-                .provider(&provider_id)
-                .ok_or(ModelManagerError::RuntimeCompileFailed)?;
-            (
-                connection.auth_method.as_str().to_owned(),
-                connection
-                    .credential_fields()
-                    .map(|field| {
-                        Ok((
-                            field.clone(),
-                            connection
-                                .credential(field)
-                                .ok_or(ModelManagerError::RuntimeCompileFailed)?
-                                .to_owned(),
-                        ))
-                    })
-                    .collect::<Result<_, ModelManagerError>>()?,
-            )
-        }
-        FrozenCredentialSource::NoAuth => ("no-auth-v1".to_owned(), BTreeMap::new()),
-    };
-    mapped_credentials(
-        &ExecutableCredentialMaterial {
-            method: source_method,
-            values,
-        },
-        &CompiledAuthShape {
-            method: blueprint.auth_method.as_str().to_owned(),
-            safe_parameters: blueprint
-                .credential_binding
-                .parameters
-                .iter()
-                .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
-                .collect(),
-            credential_fields: blueprint
-                .credential_binding
-                .fields
-                .iter()
-                .map(|field| field.as_str().to_owned())
-                .collect(),
-            owned_headers: blueprint
-                .credential_binding
-                .owned_headers
-                .iter()
-                .map(|header| header.as_str().to_owned())
-                .collect(),
-            source: AuthSourceCategory::AuthoredOverride,
-        },
-    )
-}
-
 #[must_use]
 pub fn retained_family_match(
     provider_id: &ProviderId,
@@ -2335,8 +1915,8 @@ fn retained_recipe_for_endpoint(
     let recipe_fingerprint =
         retained_recipe_fingerprint(recipe, connection.auth_method.as_str()).ok()?;
     // Endpoint identity is only enforced when the caller can resolve the
-    // current catalog endpoint. Callers without catalog access (snapshot
-    // rehydration, removed-provider reconnect) cannot perform this check:
+    // current catalog endpoint. Callers without catalog access (a
+    // removed-provider reconnect) cannot perform this check:
     // comparing against the family default endpoint would falsely reject
     // nested providers whose catalog endpoint differs from the default.
     if current_endpoint
@@ -2559,7 +2139,7 @@ pub(crate) fn setup_fingerprint(values: &BTreeMap<SetupFieldId, SafeSetupValue>)
         .expect("normalized setup values have a canonical provider-store fingerprint")
 }
 
-/// Secret-free exact authored provider fingerprint used by manifests and rehydration.
+/// Secret-free exact authored provider fingerprint recorded in manifests.
 #[must_use]
 pub fn safe_definition_fingerprint(
     provider_id: &ProviderId,
@@ -2794,23 +2374,6 @@ fn frozen_defaults(
     Ok(frozen)
 }
 
-fn thaw_defaults(
-    value: &FrozenResolvedRequestDefaults,
-) -> Result<crate::ResolvedRequestDefaults, ModelManagerError> {
-    serde_json::from_value(json!({
-        "request": {
-            "temperature": value.request.temperature.as_ref().map(NormalizedDecimal::get),
-            "top_p": value.request.top_p.as_ref().map(NormalizedDecimal::get),
-            "max_output_tokens": value.request.max_output_tokens,
-            "stop": value.request.stop,
-            "seed": value.request.seed,
-            "tool_choice": value.request.tool_choice,
-        },
-        "reasoning": value.reasoning,
-    }))
-    .map_err(|_| ModelManagerError::RuntimeCompileFailed)
-}
-
 fn safe_descriptor(
     provider_id: &ProviderId,
     model: &CompiledDynamicModel,
@@ -2844,28 +2407,6 @@ fn safe_descriptor(
         ]))
     })
     .map_err(|_| ModelManagerError::RuntimeCompileFailed)
-}
-
-fn frozen_wire_model_id(
-    descriptor: &LanguageModelDescriptor,
-    local_id: &cookie_agent_identity::ProviderModelId,
-    options: &protocol::ProviderOptions,
-) -> Result<crate::authoring::WireModelId, ModelManagerError> {
-    let wire = match descriptor
-        .provider_metadata
-        .get("cookie_agent.wire_model_id")
-    {
-        Some(Value::String(wire)) => wire.as_str(),
-        Some(_) => return Err(ModelManagerError::RuntimeCompileFailed),
-        None => match options {
-            protocol::ProviderOptions::AzureOpenAiChat { deployment, .. }
-            | protocol::ProviderOptions::AzureOpenAiResponses { deployment, .. } => {
-                deployment.as_str()
-            }
-            _ => local_id.as_str(),
-        },
-    };
-    crate::authoring::WireModelId::new(wire).map_err(|_| ModelManagerError::RuntimeCompileFailed)
 }
 
 fn oven_capabilities(

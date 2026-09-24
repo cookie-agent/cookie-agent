@@ -353,7 +353,7 @@ and explicit request settings can further constrain the effective request.
 | `tool_choice` | string or table | `"auto"`, `"none"`, `"required"`, or `{ named = "tool-name" }`; requires `capabilities.tool_calling`. |
 
 Current integration limitation: authored `stop`, `seed`, and `tool_choice` are
-accepted, validated, inherited, and retained in model snapshots, but the shared
+accepted, validated, inherited, and recorded in run bindings, but the shared
 request-default application does not forward them to SDK requests. Do not rely
 on those authored fields to control a live request. Temperature, top-p,
 maximum output tokens, and supported reasoning settings do reach request

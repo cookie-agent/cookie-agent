@@ -238,7 +238,6 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
         config,
         model_manager: Arc::clone(&model_manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(directory.path().join("model-snapshots")),
     })
     .expect("open engine");
     if with_skills {

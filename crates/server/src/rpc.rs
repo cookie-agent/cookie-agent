@@ -298,7 +298,6 @@ fn run_start_debug_code(error: &EngineError) -> &'static str {
         EngineError::Messaging(_) => "messaging",
         EngineError::ModelManager(_) => "model_manager",
         EngineError::Manifest(_) => "manifest",
-        EngineError::SnapshotRehydration(_) => "snapshot_rehydration",
     }
 }
 

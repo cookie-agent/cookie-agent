@@ -506,7 +506,6 @@ async fn session_tree_usage_aggregates_nested_and_evicted_children() {
         config: fixture.config.clone(),
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-        model_snapshot_directory: Some(fixture._directory.path().join("model-snapshots")),
     })
     .expect("tree usage engine");
     fixture

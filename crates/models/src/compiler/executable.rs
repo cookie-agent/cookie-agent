@@ -567,8 +567,8 @@ mod tests {
             CatalogAgeState, CatalogAvailability, CatalogRuntimeState, CatalogSnapshot,
             CatalogSource,
         },
-        manager::{ModelManager, safe_definition_fingerprint},
-        manifests::{ModelSnapshotManifestStore, frozen_binding},
+        manager::ModelManager,
+        manifests::{build_manifest, frozen_binding},
         provider_store::ProviderStore,
     };
 
@@ -580,7 +580,7 @@ mod tests {
     fn empty_catalog() -> Arc<CatalogSnapshot> {
         let now = Timestamp::now();
         Arc::new(CatalogSnapshot {
-            revision: revision("custom-responses-rehydration"),
+            revision: revision("custom-responses-runtime"),
             source: CatalogSource::Network,
             state: CatalogRuntimeState {
                 availability: CatalogAvailability::Ready,
@@ -597,15 +597,15 @@ mod tests {
     }
 
     #[test]
-    fn custom_responses_identity_survives_manifest_rehydration() {
+    fn custom_responses_identity_survives_manifest_and_resolution() {
         // Custom Responses providers keep their full authored ID as replay
         // identity: prefixed, bare, and even a catalog-colliding bare ID.
         for id in ["custom.gateway", "gateway", "openai"] {
-            custom_responses_identity_survives_manifest_rehydration_for(id);
+            custom_responses_identity_survives_manifest_and_resolution_for(id);
         }
     }
 
-    fn custom_responses_identity_survives_manifest_rehydration_for(id: &str) {
+    fn custom_responses_identity_survives_manifest_and_resolution_for(id: &str) {
         let temporary = TempDir::new().expect("temporary directory");
         let provider_id = ProviderId::new(id).expect("provider ID");
         let definition = toml::from_str::<ProviderDefinition>(
@@ -627,12 +627,8 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, ou
             ModelManager::new(authored, empty_catalog(), provider_store).expect("model manager");
         let runtime = manager.current();
 
-        let manifest_store =
-            ModelSnapshotManifestStore::open_directory(temporary.path().join("manifests"))
-                .expect("manifest store");
-        let manifest = manifest_store
-            .write(runtime.manifest_payload().expect("manifest payload"))
-            .expect("write manifest");
+        let manifest = build_manifest(runtime.manifest_payload().expect("manifest payload"))
+            .expect("build manifest");
         let blueprint = manifest
             .payload
             .blueprints
@@ -644,19 +640,13 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, ou
             blueprint.selection.clone(),
         )
         .expect("frozen binding");
-        let rehydrated = manifest_store
-            .scan()
-            .expect("manifest index")
-            .rehydrate(
-                &binding,
-                runtime.authored(),
-                runtime.store(),
-                safe_definition_fingerprint,
-            )
-            .expect("rehydrated blueprint");
+        assert_eq!(
+            binding.descriptor.identity.provider_id.as_str(),
+            provider_id.as_str()
+        );
         let resolved = runtime
-            .resolve_frozen(&binding, &rehydrated.blueprint)
-            .expect("rehydrated executable");
+            .resolve(&binding.selection)
+            .expect("live executable");
 
         assert_eq!(
             resolved.model().descriptor().identity.provider_id.as_str(),
