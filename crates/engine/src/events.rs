@@ -1095,6 +1095,10 @@ struct AttemptAttribution {
     run_id: RunId,
     resolved_model: cookie_agent_protocol::ResolvedModelRef,
     finished: bool,
+    /// A `ModelTurnCommitted` closed this attempt.
+    committed: bool,
+    /// An `AttemptAbandoned` closed this attempt.
+    abandoned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2212,6 +2216,8 @@ fn validate_record_incremental(
                     run_id,
                     resolved_model: resolved_model.clone(),
                     finished: false,
+                    committed: false,
+                    abandoned: false,
                 },
             );
         }
@@ -2221,7 +2227,8 @@ fn validate_record_incremental(
             validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
         }
         EventPayload::AttemptAbandoned { attempt_id, .. } => {
-            let run_id = validate_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
+            let run_id =
+                validate_abandoned_attempt_owner(path, attempts, *attempt_id, record.run_id)?;
             let run = runs.get_mut(&run_id).expect("started run is indexed");
             run.ordering_tainted |= taint.run_ordering_between(run_id, run.start_seq, record.seq);
             if strict && run.ordering_tainted {
@@ -2925,6 +2932,33 @@ fn validate_attempt_owner(
     Ok(attempt.run_id)
 }
 
+/// `AttemptAbandoned` may follow the commit that already closed its attempt.
+///
+/// An interrupted model attempt commits its partial turn (`ModelTurnCommitted`,
+/// which closes the attempt) and then records the abandonment, so the abandon
+/// of an already-committed attempt is terminal-isolation for the commit rather
+/// than a second terminal event. Every other lifecycle event stays strict.
+fn validate_abandoned_attempt_owner(
+    path: &Path,
+    attempts: &HashMap<AttemptId, AttemptAttribution>,
+    attempt_id: AttemptId,
+    run_id: Option<RunId>,
+) -> Result<RunId, EventLogError> {
+    let Some(attempt) = attempts.get(&attempt_id) else {
+        return corrupt_value(path, "attempt event appeared before ModelAttemptStarted");
+    };
+    if run_id != Some(attempt.run_id) {
+        return corrupt_value(path, "attempt event uses a non-owning run_id");
+    }
+    if attempt.finished && (attempt.abandoned || !attempt.committed) {
+        return corrupt_value(
+            path,
+            "attempt lifecycle event appeared after its terminal event",
+        );
+    }
+    Ok(attempt.run_id)
+}
+
 fn validate_attempt_model(
     path: &Path,
     attempts: &HashMap<AttemptId, AttemptAttribution>,
@@ -2953,13 +2987,23 @@ fn finish_attempt(
     let attempt = attempts
         .get_mut(&attempt_id)
         .expect("validated attempt is indexed");
+    let already_committed = attempt.committed;
     attempt.finished = true;
+    attempt.committed |= committed;
+    attempt.abandoned |= !committed;
     let run = runs.get_mut(&run_id).expect("started run is indexed");
     if !run.ordering_tainted && run.active_attempt != Some(attempt_id) {
-        return corrupt(
-            path,
-            "attempt terminal event is inconsistent with the active attempt",
-        );
+        // `ModelTurnCommitted` already closed a committed attempt and cleared
+        // `active_attempt`, so the abandon an interrupt writes afterwards is
+        // expected rather than an ordering violation.
+        let abandoned_after_commit =
+            !committed && already_committed && run.active_attempt.is_none();
+        if !abandoned_after_commit {
+            return corrupt(
+                path,
+                "attempt terminal event is inconsistent with the active attempt",
+            );
+        }
     }
     run.active_attempt = None;
     if committed {

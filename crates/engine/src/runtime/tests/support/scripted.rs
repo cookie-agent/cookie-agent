@@ -364,6 +364,45 @@ pub(crate) async fn write_scripted_sse(socket: &mut tokio::net::TcpStream, body:
         .expect("scripted SSE response");
 }
 
+/// Streams one text delta and then holds the connection open, so an attempt
+/// can be interrupted while it is genuinely mid-stream.
+pub(crate) async fn scripted_stalled_stream_server(
+    first_delta: &str,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    use tokio::io::AsyncWriteExt as _;
+
+    let first_delta = first_delta.to_owned();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stalled listener");
+    let address = listener.local_addr().expect("stalled listener address");
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        // Accepted sockets stay open for the whole test: the stream must not
+        // reach EOF while the test interrupts it.
+        let mut held = Vec::new();
+        while let Ok((mut socket, _)) = listener.accept().await {
+            requests.push(
+                String::from_utf8(read_scripted_http_request(&mut socket).await)
+                    .expect("UTF-8 stalled request"),
+            );
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+            let body = format!(
+                "data: {}\n\n",
+                serde_json::json!({"choices":[{"delta":{"content":first_delta},"finish_reason":null}]})
+            );
+            let chunk = format!("{:x}\r\n{body}\r\n", body.len());
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(chunk.as_bytes()).await;
+            let _ = socket.flush().await;
+            held.push(socket);
+        }
+        drop(held);
+        requests
+    });
+    (format!("http://{address}/v1"), task)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum RetryModelResponse {
     Status(u16),

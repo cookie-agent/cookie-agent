@@ -9,6 +9,24 @@ use cookie_agent_protocol::{
 const PICO_USD_PER_USD: u128 = 1_000_000_000_000;
 const TOKENS_PER_MILLION: u128 = 1_000_000;
 
+/// Whether the provider reported at least one token count for this observation.
+///
+/// A turn an interrupt cut off carries a default [`Usage`] whose fields are
+/// all `None`. Recording it as a stamped-but-unpriced observation would make
+/// [`observations_cost`] report `None`, hiding the whole session's estimated
+/// cost, and would count a request the provider never finished. The fold skips
+/// only such interrupted turns: a completed turn without usage still counts as
+/// an unpriced request, so the cost stays honestly unknown.
+pub(crate) fn has_observed_tokens(usage: &Usage) -> bool {
+    usage.input_tokens.is_some()
+        || usage.input_tokens_no_cache.is_some()
+        || usage.input_tokens_cache_read.is_some()
+        || usage.input_tokens_cache_write.is_some()
+        || usage.output_tokens.is_some()
+        || usage.output_tokens_text.is_some()
+        || usage.output_tokens_reasoning.is_some()
+}
+
 pub(crate) fn record_stamped(
     rollup: &mut UsageRollup,
     model: &ResolvedModelRef,

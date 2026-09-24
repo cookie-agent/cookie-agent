@@ -355,6 +355,279 @@ fn abandoned_attempt_renders_its_model_error() {
 }
 
 #[test]
+fn aborted_attempt_notes_an_interruption_inside_the_assistant_block() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let attempt_id = AttemptId::new_v7();
+    let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"abort","message":"model request aborted","retryable":false,"stage":"stream_read","http_status":null,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
+    let events = vec![
+        stored_event(
+            session,
+            Some(run),
+            1,
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model(),
+                prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            2,
+            EventPayload::TextDelta {
+                attempt_id,
+                text: "partial".into(),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            3,
+            EventPayload::AttemptAbandoned {
+                attempt_id,
+                model_error: Some(model_error),
+            },
+        ),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    assert!(
+        !state.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Event {
+                level: EventLevel::Warning,
+                ..
+            }
+        )),
+        "an abort must not push an abandon warning row"
+    );
+    let notice = state
+        .transcript
+        .iter()
+        .find_map(|item| match item {
+            TranscriptItem::Assistant { children, .. } => {
+                children.iter().find_map(|child| match child {
+                    AssistantChild::Notice { text } => Some(text.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("assistant interruption notice");
+    assert_eq!(notice, "model interrupted");
+}
+
+#[test]
+fn committed_partial_turn_survives_the_abort_that_follows_it() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let attempt_id = AttemptId::new_v7();
+    let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"abort","message":"model stream was cancelled","retryable":false,"stage":"stream_read","http_status":null,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
+    let events = vec![
+        stored_event(
+            session,
+            Some(run),
+            1,
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: 1,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model(),
+                prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            2,
+            EventPayload::TextDelta {
+                attempt_id,
+                text: "partial an".into(),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            3,
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq: 1,
+                resolved_model: resolved_model(),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                        text: "partial an".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: cookie_agent_protocol::ModelFinishReason::Aborted,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            4,
+            EventPayload::AttemptAbandoned {
+                attempt_id,
+                model_error: Some(model_error),
+            },
+        ),
+        stored_event(
+            session,
+            Some(run),
+            5,
+            EventPayload::RunCancelled { reason: None },
+        ),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    let TranscriptItem::Assistant { children, .. } = state
+        .transcript
+        .iter()
+        .find(|item| matches!(item, TranscriptItem::Assistant { .. }))
+        .expect("assistant item")
+    else {
+        unreachable!()
+    };
+    assert!(
+        children.iter().any(|child| matches!(
+            child,
+            AssistantChild::Text { markdown, .. } if markdown.as_str() == "partial an"
+        )),
+        "the committed partial text survives the abort: {children:?}"
+    );
+    assert!(
+        children.last().is_some_and(|child| matches!(
+            child,
+            AssistantChild::Notice { text } if text == "model interrupted"
+        )),
+        "the interruption notice follows the partial text: {children:?}"
+    );
+    assert!(
+        !state.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Event {
+                level: EventLevel::Warning,
+                ..
+            }
+        )),
+        "an abort must not also push an abandon warning row"
+    );
+}
+
+#[test]
+fn abort_of_an_untracked_attempt_still_shows_an_interruption_row() {
+    // The attempt started before this replay window, so there is no block
+    // to hold the notice.
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"abort","message":"model stream was cancelled","retryable":false,"stage":"stream_read","http_status":null,"bytes_received":0,"vendor_code":null,"request_id":null,"retry_after_ms":null})).unwrap();
+    let events = vec![stored_event(
+        session,
+        Some(run),
+        7,
+        EventPayload::AttemptAbandoned {
+            attempt_id: AttemptId::new_v7(),
+            model_error: Some(model_error),
+        },
+    )];
+    let state = reduce_session_events(session, 6, &events);
+    assert!(
+        state.transcript.iter().any(|item| matches!(
+            item,
+            TranscriptItem::Event {
+                level: EventLevel::Warning,
+                text,
+                ..
+            } if text == "model interrupted"
+        )),
+        "{:?}",
+        state.transcript
+    );
+}
+
+#[test]
+fn interrupted_commit_keeps_the_previous_context_estimate() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let (first, second) = (AttemptId::new_v7(), AttemptId::new_v7());
+    let started = |seq, attempt_id, ordinal| {
+        stored_event(
+            session,
+            Some(run),
+            seq,
+            EventPayload::ModelAttemptStarted {
+                attempt_id,
+                attempt_ordinal: ordinal,
+                fallback_index: 0,
+                retry_ordinal: 0,
+                resolved_model: resolved_model(),
+                prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(b"prompt"),
+            },
+        )
+    };
+    let committed = |seq, attempt_id, model_turn_seq, finish_reason, usage| {
+        stored_event(
+            session,
+            Some(run),
+            seq,
+            EventPayload::ModelTurnCommitted {
+                attempt_id,
+                model_turn_seq,
+                resolved_model: resolved_model(),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![cookie_agent_protocol::PersistedAssistantPart::Text {
+                        text: "answer".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason,
+                    usage,
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        )
+    };
+    let events = vec![
+        started(1, first, 1),
+        committed(
+            2,
+            first,
+            1,
+            cookie_agent_protocol::ModelFinishReason::Stop,
+            Usage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                ..Usage::default()
+            },
+        ),
+        started(3, second, 2),
+        committed(
+            4,
+            second,
+            2,
+            cookie_agent_protocol::ModelFinishReason::Aborted,
+            Usage::default(),
+        ),
+    ];
+    let state = reduce_session_events(session, 0, &events);
+    assert_eq!(state.context_tokens, Some(120));
+}
+
+#[test]
 fn terminal_and_internal_diagnostics_survive_replay_without_lowercasing() {
     let session = SessionId::new_v7();
     let model_error: ModelErrorSummary = serde_json::from_value(serde_json::json!({"kind":"invalid_request","message":"Invalid request","retryable":false,"stage":"response_body","http_status":400,"bytes_received":12,"vendor_code":"bad_parameter","request_id":"Request-ID","retry_after_ms":null,"response_body":r#"Couldn't decode upstream response: {"message":"Temperature unsupported","password":"review\"secret-tail","items":[{"name":"X-Api-Key","value":"opaque-review-credential"}]}"#})).unwrap();

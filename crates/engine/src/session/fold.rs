@@ -311,7 +311,12 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
                     &mut total.output_tokens_reasoning,
                     reported.output_tokens_reasoning,
                 );
-                if !recorded_usage_turns.contains(model_turn_seq) {
+                // An interrupted turn without observed tokens is not a
+                // request the provider finished; every other turn counts.
+                let interrupted_without_usage = turn.finish_reason
+                    == cookie_agent_protocol::ModelFinishReason::Aborted
+                    && !crate::usage::has_observed_tokens(reported);
+                if !recorded_usage_turns.contains(model_turn_seq) && !interrupted_without_usage {
                     crate::usage::record_stamped(&mut usage_rollup, resolved_model, reported, None);
                     if let Some(agent) = runs.get(&run_id).map(|run| run.agent.agent.clone()) {
                         crate::usage::record_stamped(

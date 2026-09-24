@@ -3558,3 +3558,213 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
         "seed {seed}: full folds happen exactly on fold-consumed payloads"
     );
 }
+
+/// Folds a priced turn followed by a usage-less commit that finishes with
+/// `finish_reason` and is then abandoned.
+fn usage_rollup_after_a_usage_less_commit(
+    finish_reason: ModelFinishReason,
+) -> (super::SessionProjection, cookie_agent_protocol::AgentId) {
+    let temp = private_tempdir();
+    let path = temp.path().join("events.jsonl");
+    let session_id = SessionId::new_v7();
+    let run_id = RunId::new_v7();
+    let agent = crate::test_support::agent_snapshot("test", AgentMode::Primary);
+    let selection = crate::test_support::run_selection("test");
+    let binding = agent.fallback_chain[0].clone();
+    let resolved_model = crate::model_history::wire_model(&binding);
+    let revision = |value: char| format!("sha256:{}", value.to_string().repeat(64));
+    let runtime_revision = RuntimeRevision::new(revision('1')).unwrap();
+    let catalog_revision = CatalogRevision::new(revision('2')).unwrap();
+    let provider_state_revision = ProviderStateRevision::new(revision('3')).unwrap();
+    let model_revision = ModelRevision::new(revision('4')).unwrap();
+    let agent_revision = AgentRevision::new(revision('5')).unwrap();
+    let recipe_registry_revision = RecipeRegistryRevision::new(revision('6')).unwrap();
+    let log = crate::events::EventLog::create(
+        path.clone(),
+        session_id,
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::SessionCreated {
+            short_id: None,
+            origin: SessionOrigin::Root,
+            cwd_identity: cookie_agent_protocol::CwdIdentity::new("workspace:test").unwrap(),
+            creation_selection: selection.clone(),
+            creation_agent: Box::new(agent.clone()),
+            runtime_revision: runtime_revision.clone(),
+            catalog_revision: catalog_revision.clone(),
+            provider_state_revision: provider_state_revision.clone(),
+            model_revision: model_revision.clone(),
+            agent_revision: agent_revision.clone(),
+            recipe_registry_revision: recipe_registry_revision.clone(),
+            manifest_revision: binding.manifest_revision.clone(),
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::RunStarted {
+            client_run_id: ClientRunId::new("aborted-usage-rollup").unwrap(),
+            selection,
+            agent: Box::new(agent.clone()),
+            runtime_revision,
+            catalog_revision,
+            provider_state_revision,
+            model_revision,
+            agent_revision,
+            recipe_registry_revision,
+            manifest_revision: binding.manifest_revision.clone(),
+            selected_suffix: vec![binding],
+            internal_agents: Vec::new(),
+            input_through_seq: 1,
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::UserInputSubmitted {
+            input: "question".into(),
+        },
+    )
+    .unwrap();
+    let usage = Usage {
+        input_tokens: Some(120),
+        output_tokens: Some(30),
+        ..Usage::default()
+    };
+    let priced_attempt = AttemptId::new_v7();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::ModelAttemptStarted {
+            attempt_id: priced_attempt,
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint: agent.prompt_fingerprint.clone(),
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::ModelTurnCommitted {
+            attempt_id: priced_attempt,
+            model_turn_seq: 1,
+            resolved_model: resolved_model.clone(),
+            input_through_seq: 1,
+            turn: PersistedModelTurn {
+                content: Vec::new(),
+                provider_options: BTreeMap::new(),
+                finish_reason: ModelFinishReason::Stop,
+                usage: usage.clone(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::ModelUsageRecorded {
+            model_turn_seq: 1,
+            agent_id: agent.agent.clone(),
+            resolved_model: resolved_model.clone(),
+            usage,
+            estimated_cost_pico_usd: Some(1_000_000_000_000),
+        },
+    )
+    .unwrap();
+    // An interrupted attempt commits a turn with no observed usage and never
+    // records usage for it. It must not contribute a request or an unpriced
+    // observation.
+    let aborted_attempt = AttemptId::new_v7();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::ModelAttemptStarted {
+            attempt_id: aborted_attempt,
+            attempt_ordinal: 2,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint: agent.prompt_fingerprint.clone(),
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::ModelTurnCommitted {
+            attempt_id: aborted_attempt,
+            model_turn_seq: 2,
+            resolved_model,
+            input_through_seq: 1,
+            turn: PersistedModelTurn {
+                content: Vec::new(),
+                provider_options: BTreeMap::new(),
+                finish_reason,
+                usage: Usage::default(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        },
+    )
+    .unwrap();
+    log.append(
+        Some(run_id),
+        cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+        EventPayload::AttemptAbandoned {
+            attempt_id: aborted_attempt,
+            model_error: None,
+        },
+    )
+    .unwrap();
+    drop(log);
+
+    let reopened = crate::events::EventLog::open(path, session_id).unwrap();
+    (projection(reopened).unwrap(), agent.agent)
+}
+
+#[test]
+fn aborted_commit_without_usage_does_not_poison_the_usage_rollup() {
+    let (rebuilt, agent) = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Aborted);
+    assert_eq!(
+        rebuilt.usage_rollup.request_count, 1,
+        "the aborted commit records no request"
+    );
+    assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
+    assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
+    assert_eq!(rebuilt.agent_usage[&agent].request_count, 1);
+    let priced = crate::usage::with_pricing(
+        rebuilt.usage_rollup,
+        &PricingConfig::default(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(
+        priced.estimated_cost_usd,
+        Some(1.0),
+        "the priced turn keeps the session cost visible"
+    );
+}
+
+#[test]
+fn completed_commit_without_usage_still_counts_as_an_unpriced_request() {
+    // Only an interrupt is exempt: a provider that finished a turn without
+    // reporting usage leaves the session cost unknown rather than understated.
+    let (rebuilt, agent) = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Stop);
+    assert_eq!(rebuilt.usage_rollup.request_count, 2);
+    assert_eq!(rebuilt.agent_usage[&agent].request_count, 2);
+    let priced = crate::usage::with_pricing(
+        rebuilt.usage_rollup,
+        &PricingConfig::default(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(priced.estimated_cost_usd, None);
+}

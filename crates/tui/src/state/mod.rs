@@ -311,6 +311,11 @@ pub enum AssistantChild {
         content_index: u32,
         file: cookie_agent_protocol::PersistedFilePart,
     },
+    /// A UI-only annotation rendered inline inside the assistant block
+    /// (e.g. `model interrupted` when the run was cancelled mid-attempt).
+    Notice {
+        text: String,
+    },
 }
 
 impl AssistantChild {
@@ -320,7 +325,8 @@ impl AssistantChild {
             Self::Tool { .. }
             | Self::Attribution { .. }
             | Self::CommittedTool { .. }
-            | Self::MediaFile { .. } => 0,
+            | Self::MediaFile { .. }
+            | Self::Notice { .. } => 0,
         }
     }
 
@@ -330,7 +336,8 @@ impl AssistantChild {
             Self::Tool { .. }
             | Self::Attribution { .. }
             | Self::CommittedTool { .. }
-            | Self::MediaFile { .. } => 0,
+            | Self::MediaFile { .. }
+            | Self::Notice { .. } => 0,
         }
     }
 }

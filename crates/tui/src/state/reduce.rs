@@ -535,17 +535,39 @@ pub(super) fn reduce_event(
             if state.pending_attempt == Some(attempt_id) {
                 state.pending_attempt = None;
             }
-            if let Some(attempt) = state.attempts.remove(&attempt_id)
+            let attempt = state.attempts.remove(&attempt_id);
+            if let Some(attempt) = &attempt
                 && attempt.run_id.is_some()
             {
                 prune_split_segments(state, &attempt.split_segments);
                 prune_abandoned_attempt(state, attempt.item_id, attempt.committed_prefix);
             }
-            let message = match &model_error {
-                Some(error) => format!("model attempt abandoned: {}", render_model_error(error)),
-                None => "model attempt abandoned".into(),
-            };
-            push_event(state, EventLevel::Warning, message, timestamp);
+            let interrupted = model_error
+                .as_ref()
+                .is_some_and(|error| error.kind == cookie_agent_protocol::ModelErrorKind::Abort);
+            if interrupted {
+                // Without a tracked block (the attempt started before this
+                // view's replay window) the interruption still shows, as a row.
+                let noted = attempt.as_ref().and_then(|attempt| {
+                    append_assistant_notice(state, attempt.item_id, "model interrupted".into())
+                });
+                if noted.is_none() {
+                    push_event(
+                        state,
+                        EventLevel::Warning,
+                        "model interrupted".into(),
+                        timestamp,
+                    );
+                }
+            } else {
+                let message = match &model_error {
+                    Some(error) => {
+                        format!("model attempt abandoned: {}", render_model_error(error))
+                    }
+                    None => "model attempt abandoned".into(),
+                };
+                push_event(state, EventLevel::Warning, message, timestamp);
+            }
         }
         EventPayload::ModelTurnCommitted {
             attempt_id,
@@ -564,11 +586,15 @@ pub(super) fn reduce_event(
             }
             close_open_assistant(state, timestamp);
             // The context the turn left behind: what it consumed plus what
-            // it generated. A usage-less turn clears the display.
-            state.context_tokens = match (turn.usage.input_tokens, turn.usage.output_tokens) {
-                (Some(input), Some(output)) => Some(input.saturating_add(output)),
-                _ => None,
-            };
+            // it generated. A usage-less turn clears the display, except an
+            // interrupted one: it never reports usage, and the previous
+            // turn's context remains the best estimate.
+            if turn.finish_reason != cookie_agent_protocol::ModelFinishReason::Aborted {
+                state.context_tokens = match (turn.usage.input_tokens, turn.usage.output_tokens) {
+                    (Some(input), Some(output)) => Some(input.saturating_add(output)),
+                    _ => None,
+                };
+            }
             // Generation wall time: the durable span between the event that
             // closed this turn's input window and the commit itself.
             // Missing or clock-skewed (negative/zero) spans contribute
@@ -639,6 +665,23 @@ pub(super) fn reduce_event(
                     .map(|attempt| std::mem::take(&mut attempt.split_segments))
                     .unwrap_or_default();
                 prune_split_segments(state, &segments);
+                // The block now holds committed content, so the attempt's
+                // prune boundary must cover it: an interrupt commits the
+                // partial turn and then abandons the attempt, and the abandon
+                // must not prune the content the commit just made canonical.
+                let committed = state
+                    .transcript
+                    .iter()
+                    .find_map(|item| match item {
+                        TranscriptItem::Assistant { id, children, .. } if *id == item_id => {
+                            Some(children.len())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                if let Some(attempt) = state.attempts.get_mut(&attempt_id) {
+                    attempt.committed_prefix = committed;
+                }
             } else {
                 index_turn_tool_content(state, model_turn_seq, &turn);
             }
@@ -1633,6 +1676,26 @@ pub(super) fn append_attribution(
     None
 }
 
+pub(super) fn append_assistant_notice(
+    state: &mut SessionState,
+    item_id: u64,
+    text: String,
+) -> Option<usize> {
+    if let Some(TranscriptItem::Assistant {
+        version, children, ..
+    }) = state
+        .transcript
+        .iter_mut()
+        .find(|item| item.id() == item_id)
+    {
+        let index = children.len();
+        children.push(AssistantChild::Notice { text });
+        *version = version.wrapping_add(1);
+        return Some(index);
+    }
+    None
+}
+
 pub(super) fn prune_abandoned_attempt(
     state: &mut SessionState,
     item_id: u64,
@@ -1775,6 +1838,7 @@ pub(super) fn rebuild_committed_children(
             AssistantChild::Attribution { .. }
             | AssistantChild::CommittedTool { .. }
             | AssistantChild::MediaFile { .. }
+            | AssistantChild::Notice { .. }
             | AssistantChild::Tool { .. } => {}
         }
     }

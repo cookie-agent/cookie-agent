@@ -96,6 +96,13 @@ pub(super) fn assistant_item_layout(
                     context.theme,
                 ));
             }
+            AssistantChild::Notice { text } => {
+                layout.lines.extend(assistant_body_line(
+                    Line::from(Span::styled(text.clone(), context.theme.muted())),
+                    context.width,
+                    context.theme,
+                ));
+            }
             AssistantChild::CommittedTool {
                 turn_seq,
                 content_index,
@@ -163,7 +170,8 @@ pub(super) fn assistant_part_layout_key(
         | AssistantChild::Tool { .. }
         | AssistantChild::Attribution { .. }
         | AssistantChild::CommittedTool { .. }
-        | AssistantChild::MediaFile { .. } => None,
+        | AssistantChild::MediaFile { .. }
+        | AssistantChild::Notice { .. } => None,
     };
     let streaming = matches!(child, AssistantChild::Thinking { id, .. } if state.is_open_thinking(item_id, *id));
     let duration = match child {
@@ -376,7 +384,8 @@ pub(super) fn assistant_child_layout(
         AssistantChild::Tool { .. }
         | AssistantChild::Attribution { .. }
         | AssistantChild::CommittedTool { .. }
-        | AssistantChild::MediaFile { .. } => {
+        | AssistantChild::MediaFile { .. }
+        | AssistantChild::Notice { .. } => {
             unreachable!("tool children use tool_child_layout")
         }
     }

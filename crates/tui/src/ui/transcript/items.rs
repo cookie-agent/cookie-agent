@@ -72,7 +72,8 @@ pub(super) fn for_each_item_block_id(
                     }),
                     AssistantChild::Text { .. }
                     | AssistantChild::Attribution { .. }
-                    | AssistantChild::CommittedTool { .. } => None,
+                    | AssistantChild::CommittedTool { .. }
+                    | AssistantChild::Notice { .. } => None,
                 };
                 let Some(id) = id else {
                     continue;
@@ -159,7 +160,8 @@ pub(super) fn item_is_live(state: &SessionState, item: &TranscriptItem) -> bool 
                 AssistantChild::Text { .. }
                 | AssistantChild::Attribution { .. }
                 | AssistantChild::CommittedTool { .. }
-                | AssistantChild::MediaFile { .. } => false,
+                | AssistantChild::MediaFile { .. }
+                | AssistantChild::Notice { .. } => false,
             })
         }
         TranscriptItem::User { .. }

@@ -28,6 +28,15 @@ pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being contin
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
 pub(crate) const TOOL_EMITTED_SYSTEM_USER_MARKER: &str =
     "[tool-emitted system message; materialized as user history]";
+/// Model-visible annotation that follows a turn an interrupt cut off.
+///
+/// It is injected at history-assembly time only: the durable log records what
+/// the model actually produced, and the marker tells the next request that the
+/// fragment it sees is neither the model's ending nor a user's message. The
+/// wording names no cause: the user, a delegating parent, or shutdown may
+/// have cancelled the run.
+pub(crate) const INTERRUPTED_TURN_MARKER: &str =
+    "[Response interrupted — it was cut off before it finished]";
 
 pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
@@ -286,6 +295,11 @@ struct AssistantRecord {
     resolved_model: ResolvedModelRef,
     run_id: Option<cookie_agent_protocol::RunId>,
     calls: Vec<CallRecord>,
+    /// The turn an interrupt cut off. The marker that annotates it is injected
+    /// only when the restored turn actually survives as assistant content, so a
+    /// reasoning-only salvage that restore drops does not leave a dangling
+    /// user-role marker.
+    interrupted: bool,
 }
 
 #[derive(Clone)]
@@ -919,6 +933,14 @@ fn assemble_history_with_replay(
                     resolved_model: resolved_model.clone(),
                     run_id: envelope.run_id,
                     calls,
+                    // A turn that an interrupt cut off is annotated for the next
+                    // request only: the durable event stays a faithful record of
+                    // what the model produced, while the marker tells the model
+                    // that the fragment it sees was not its own ending. Only the
+                    // engine's salvage commits `Aborted`; a provider-reported
+                    // `Cancelled` finish is the provider's ending, not an
+                    // interrupt.
+                    interrupted: turn.finish_reason == ModelFinishReason::Aborted,
                 })));
             }
             EventPayload::ToolCallStarted { start } => {
@@ -1173,15 +1195,27 @@ fn assemble_history_with_replay(
                 } else {
                     None
                 };
-                let has_content = !assistant.turn.content.is_empty();
-                if has_content {
-                    let history_index = history.len() as u64;
-                    let (restored, disposition) = restore_turn_with_store(
+                let restored = if assistant.turn.content.is_empty() {
+                    None
+                } else {
+                    Some(restore_turn_with_store(
                         &assistant.turn,
                         &assistant.resolved_model,
                         store,
                         binding,
-                    )?;
+                    )?)
+                };
+                // `restore_turn_with_store` drops provider reasoning the target
+                // cannot replay, so a reasoning-only salvage can restore to an
+                // empty message. Judge emptiness after restore so neither an
+                // empty assistant turn nor its interrupt marker reaches history.
+                let has_content = restored
+                    .as_ref()
+                    .is_some_and(|(restored, _)| !restored.message.content.is_empty());
+                if let Some((restored, disposition)) = restored
+                    && has_content
+                {
+                    let history_index = history.len() as u64;
                     if let Some(disposition) = forced_disposition.or(disposition) {
                         replay_decisions.push(ReplayDecision {
                             history_index,
@@ -1231,6 +1265,14 @@ fn assemble_history_with_replay(
                     for message in additional_messages {
                         append_tool_emitted_message(&mut history, &message, store)?;
                     }
+                }
+                // A turn an interrupt cut off is annotated right after it is
+                // restored: the marker tells the next request that the fragment
+                // it sees was not the model's own ending. It is placed after the
+                // turn's own tool results so it never splits a call from its
+                // result, and is skipped entirely when restore emptied the turn.
+                if has_content && assistant.interrupted {
+                    history.push(HistoryTurn::user(user_text(INTERRUPTED_TURN_MARKER)));
                 }
                 let _ = assistant.run_id;
             }

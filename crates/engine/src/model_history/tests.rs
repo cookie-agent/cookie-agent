@@ -25,11 +25,12 @@ use oven_sdk::{
 use crate::goal_projection::GoalProducerProjection;
 
 use super::{
-    COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, TOOL_EMITTED_SYSTEM_USER_MARKER,
-    assemble_full_history, assemble_model_context, checkpoint_retained_history,
-    compaction_prefix_history, compaction_tail_candidates, framed_compaction_summary,
-    project_summary_context, replay_decisions, replay_decisions_with_preflight, restore_replay,
-    tool_output_elision_marker, tool_result_part, wire_model,
+    COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, INTERRUPTED_TURN_MARKER,
+    TOOL_EMITTED_SYSTEM_USER_MARKER, assemble_full_history, assemble_model_context,
+    checkpoint_retained_history, compaction_prefix_history, compaction_tail_candidates,
+    framed_compaction_summary, project_summary_context, replay_decisions,
+    replay_decisions_with_preflight, restore_replay, tool_output_elision_marker, tool_result_part,
+    wire_model,
 };
 
 #[test]
@@ -2547,4 +2548,155 @@ fn assembled_tool_transcript_snapshot_is_stable() {
     let encoded = serde_json::to_string(&prefix).expect("prefix JSON");
     assert!(!encoded.contains("contents"));
     assert!(encoded.contains("2 tool-emitted message(s) were elided"));
+}
+
+#[test]
+fn aborted_committed_turn_keeps_its_partial_text_and_gains_an_interrupt_marker() {
+    let binding = binding();
+    let resolved = wire_model(&binding);
+    let run = RunId::new_v7();
+    let events = [
+        run_started_event(1, run, &binding),
+        event(
+            2,
+            run,
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::Text {
+                        text: "partial answer".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Aborted,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        ),
+    ];
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+        .expect("interrupted context");
+    let HistoryTurn::Assistant(assistant) = &context.history[1] else {
+        panic!("the partial turn survives as an assistant turn");
+    };
+    assert_eq!(
+        assistant.finish.finish_reason,
+        super::FinishReason::Aborted,
+        "the interrupted turn keeps its finish reason"
+    );
+    let HistoryTurn::User(marker) = &context.history[2] else {
+        panic!("the interrupted turn is annotated for the next request");
+    };
+    assert_eq!(
+        serde_json::to_string(marker).expect("marker JSON"),
+        serde_json::to_string(&super::user_text(INTERRUPTED_TURN_MARKER)).expect("marker JSON")
+    );
+    let encoded = serde_json::to_string(&context.history).expect("history JSON");
+    assert_eq!(encoded.matches("partial answer").count(), 1);
+}
+
+#[test]
+fn provider_cancelled_turn_gains_no_interrupt_marker() {
+    // Chat Completions providers may report a `cancelled` finish themselves;
+    // only the engine's salvage (`Aborted`) is an interrupt.
+    let binding = binding();
+    let resolved = wire_model(&binding);
+    let run = RunId::new_v7();
+    let events = [
+        run_started_event(1, run, &binding),
+        event(
+            2,
+            run,
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::Text {
+                        text: "provider stopped here".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Cancelled,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        ),
+    ];
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+        .expect("cancelled context");
+    assert_eq!(context.history.len(), 2, "{:?}", context.history);
+    assert!(matches!(context.history[1], HistoryTurn::Assistant(_)));
+    let encoded = serde_json::to_string(&context.history).expect("history JSON");
+    assert!(!encoded.contains(INTERRUPTED_TURN_MARKER));
+}
+
+#[test]
+fn aborted_reasoning_only_turn_is_skipped_without_an_interrupt_marker() {
+    // The target cannot replay provider reasoning, so `restore_turn_with_store`
+    // drops the only part the aborted commit carried. The resulting empty
+    // assistant turn — and the marker that would annotate it — must not reach
+    // history.
+    let binding = binding();
+    let resolved = wire_model(&binding);
+    let run = RunId::new_v7();
+    let events = [
+        run_started_event(1, run, &binding),
+        event(
+            2,
+            run,
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: resolved,
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content: vec![PersistedAssistantPart::Reasoning {
+                        text: "hidden reasoning".into(),
+                        metadata: None,
+                    }],
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Aborted,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+            },
+        ),
+    ];
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let context = assemble_model_context(&events, &store, &binding, "System prompt.")
+        .expect("interrupted context");
+    assert_eq!(
+        context.history.len(),
+        1,
+        "only the system turn survives: {:?}",
+        context.history
+    );
+    assert!(matches!(context.history[0], HistoryTurn::System(_)));
+    let encoded = serde_json::to_string(&context.history).expect("history JSON");
+    assert!(!encoded.contains(INTERRUPTED_TURN_MARKER));
+    assert!(!encoded.contains("hidden reasoning"));
 }

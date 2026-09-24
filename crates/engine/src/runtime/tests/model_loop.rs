@@ -181,6 +181,112 @@ async fn infinite_overload_retry_is_cancelled_during_backoff_without_fallback() 
 }
 
 #[tokio::test]
+async fn interrupted_stream_commits_its_partial_turn_before_the_abandonment() {
+    let (endpoint, server) = scripted_stalled_stream_server("partial answer").await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let run = fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("interrupted-partial-turn").unwrap(),
+                selection,
+                input: "start a long answer".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    // Interrupt only once the streamed text reached the durable log, so the
+    // attempt is genuinely mid-stream when the abort lands.
+    await_event(
+        &fixture.engine,
+        session.session_id,
+        "partial text delta",
+        |event| matches!(event.payload, EventPayload::TextDelta { .. }),
+    )
+    .await;
+    fixture
+        .engine
+        .cancel_run(run.run_id)
+        .await
+        .expect("cancel run");
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "interrupted partial turn",
+        |projection| projection.status == SessionStatus::Cancelled,
+    )
+    .await;
+    let events = projection.log.events();
+    let commit = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::ModelTurnCommitted { .. }))
+        .expect("the partial turn is committed");
+    let EventPayload::ModelTurnCommitted {
+        attempt_id, turn, ..
+    } = &commit.payload
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        turn.finish_reason,
+        cookie_agent_protocol::ModelFinishReason::Aborted
+    );
+    assert!(
+        turn.content.iter().any(|part| matches!(
+            part,
+            cookie_agent_protocol::PersistedAssistantPart::Text { text, .. }
+                if text == "partial answer"
+        )),
+        "the committed turn keeps the partial text: {:?}",
+        turn.content
+    );
+    assert_eq!(
+        turn.response_metadata
+            .get("oven.http_status")
+            .and_then(serde_json::Value::as_u64),
+        Some(200),
+        "the abort commit keeps the telemetry from the response head"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ModelUsageRecorded { .. })),
+        "an interrupted turn records no usage"
+    );
+    let abandoned = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::AttemptAbandoned { .. }))
+        .expect("the attempt is abandoned");
+    let EventPayload::AttemptAbandoned {
+        attempt_id: abandoned_attempt,
+        model_error,
+    } = &abandoned.payload
+    else {
+        unreachable!()
+    };
+    assert_eq!(abandoned_attempt, attempt_id);
+    assert_eq!(
+        model_error.as_ref().map(|error| error.kind),
+        Some(cookie_agent_protocol::ModelErrorKind::Abort)
+    );
+    assert!(
+        commit.seq < abandoned.seq,
+        "the commit precedes the abandonment"
+    );
+    let cancelled = events
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::RunCancelled { .. }))
+        .expect("the run is cancelled");
+    assert!(abandoned.seq < cancelled.seq);
+    server.abort();
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn empty_stream_deltas_are_not_logged() {
     let (endpoint, responses, _captured) = scripted_channel_server(1).await;
     // Some providers emit empty content/reasoning chunks ahead of the real

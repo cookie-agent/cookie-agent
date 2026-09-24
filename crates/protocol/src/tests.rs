@@ -1677,6 +1677,44 @@ fn setup_bounds_and_shared_identity_types_are_enforced() {
 }
 
 #[test]
+fn aborted_partial_model_turn_round_trips_through_the_wire_form() {
+    let resolved_model: ResolvedModelRef = serde_json::from_value(json!({
+        "selection": {"model": "openai/gpt-5.6-sol", "variant": null},
+        "provider_id": "openai",
+        "model_id": "gpt-5.6-sol",
+        "adapter_id": "openai-responses",
+        "selection_fingerprint": "a".repeat(64),
+    }))
+    .unwrap();
+    let payload = EventPayload::ModelTurnCommitted {
+        attempt_id: AttemptId::new_v7(),
+        model_turn_seq: 1,
+        resolved_model,
+        input_through_seq: 1,
+        turn: PersistedModelTurn {
+            content: vec![PersistedAssistantPart::Text {
+                text: "partial answer".into(),
+                metadata: None,
+            }],
+            provider_options: BTreeMap::new(),
+            finish_reason: ModelFinishReason::Aborted,
+            usage: Usage::default(),
+            response_metadata: BTreeMap::new(),
+            provider_metadata: BTreeMap::new(),
+            native_replay: None,
+        },
+        warnings: vec![],
+    };
+    let encoded = serde_json::to_value(&payload).unwrap();
+    assert_eq!(encoded["type"], json!("model_turn_committed"));
+    assert_eq!(encoded["turn"]["finish_reason"], json!("aborted"));
+    assert_eq!(
+        serde_json::from_value::<EventPayload>(encoded).unwrap(),
+        payload
+    );
+}
+
+#[test]
 fn bounded_display_text_bounds_bytes_but_permits_controls() {
     assert_eq!(
         BoundedDisplayText::new("line one\nline two\u{1b}")

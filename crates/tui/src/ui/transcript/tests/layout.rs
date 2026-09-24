@@ -868,6 +868,7 @@ fn canonical_parallel_ownership_preserves_content_index_order() {
             AssistantChild::Attribution { .. } => "attribution",
             AssistantChild::CommittedTool { .. } => "placeholder",
             AssistantChild::MediaFile { .. } => "media",
+            AssistantChild::Notice { .. } => "notice",
         })
         .collect::<Vec<_>>();
     assert_eq!(

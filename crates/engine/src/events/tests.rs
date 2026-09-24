@@ -759,6 +759,8 @@ fn reference_validate_records(
                         run_id,
                         resolved_model: resolved_model.clone(),
                         finished: false,
+                        committed: false,
+                        abandoned: false,
                     },
                 );
             }
@@ -768,7 +770,8 @@ fn reference_validate_records(
                 validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
             }
             EventPayload::AttemptAbandoned { attempt_id, .. } => {
-                let run_id = validate_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
+                let run_id =
+                    validate_abandoned_attempt_owner(path, &attempts, *attempt_id, record.run_id)?;
                 let run = runs.get_mut(&run_id).expect("started run is indexed");
                 run.ordering_tainted |=
                     taint.run_ordering_between(run_id, run.start_seq, record.seq);
@@ -1285,6 +1288,63 @@ fn incremental_validation_matches_historical_reference_corpus() {
     attempt_before_run[1].seq = 2;
     attempt_before_run[1].timestamp = jiff::Timestamp::new(2, 0).unwrap();
 
+    // An interrupted attempt commits its partial turn — which closes the attempt
+    // — and only then records the abandonment. The reference validator must
+    // accept the same relaxation the incremental one does.
+    let mut commit_then_abandon = valid.clone();
+    let prompt_fingerprint = match &valid[1].payload {
+        EventPayload::RunStarted { agent, .. } => agent.prompt_fingerprint.clone(),
+        _ => unreachable!("run started at index 1"),
+    };
+    let interrupted_attempt = AttemptId(Uuid::from_u128(901));
+    let interrupted_model = wire_resolved(&fallback_binding("fallback-two"));
+    push_run_event(
+        &mut commit_then_abandon,
+        session_id,
+        run_id,
+        EventPayload::ModelAttemptStarted {
+            attempt_id: interrupted_attempt,
+            attempt_ordinal: 6,
+            fallback_index: 2,
+            retry_ordinal: 1,
+            resolved_model: interrupted_model.clone(),
+            prompt_fingerprint,
+        },
+    );
+    push_run_event(
+        &mut commit_then_abandon,
+        session_id,
+        run_id,
+        EventPayload::ModelTurnCommitted {
+            attempt_id: interrupted_attempt,
+            model_turn_seq: 1,
+            resolved_model: interrupted_model,
+            input_through_seq: 1,
+            turn: PersistedModelTurn {
+                content: vec![PersistedAssistantPart::Text {
+                    text: "partial answer".into(),
+                    metadata: None,
+                }],
+                provider_options: BTreeMap::new(),
+                finish_reason: ModelFinishReason::Aborted,
+                usage: Usage::default(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        },
+    );
+    push_run_event(
+        &mut commit_then_abandon,
+        session_id,
+        run_id,
+        EventPayload::AttemptAbandoned {
+            attempt_id: interrupted_attempt,
+            model_error: None,
+        },
+    );
+
     let mut timestamp_reversal = valid.clone();
     timestamp_reversal[2].timestamp = jiff::Timestamp::new(1, 0).unwrap();
 
@@ -1367,6 +1427,12 @@ fn incremental_validation_matches_historical_reference_corpus() {
         (
             "attempt_before_run",
             attempt_before_run,
+            ValidationTaint::default(),
+            true,
+        ),
+        (
+            "commit_then_abandon",
+            commit_then_abandon,
             ValidationTaint::default(),
             true,
         ),
@@ -2967,6 +3033,83 @@ fn event_log_rejects_cross_run_approval_lifecycle() {
 #[test]
 fn event_log_accepts_valid_multi_fallback_retry_attribution() {
     assert_log_open(&attribution_records(), true, "valid fallback attribution");
+}
+
+#[test]
+fn event_log_accepts_abandoned_attempt_after_its_committed_partial_turn() {
+    let base = attribution_records();
+    let session = base[0].session_id;
+    let run = base[1].run_id.expect("run id");
+    let resolved_model = wire_resolved(&fallback_binding("fallback-zero"));
+    let attempt_id = AttemptId(Uuid::from_u128(900));
+    let prompt_fingerprint = match &base[1].payload {
+        EventPayload::RunStarted { agent, .. } => agent.prompt_fingerprint.clone(),
+        _ => unreachable!(),
+    };
+    let mut records = vec![base[0].clone(), base[1].clone()];
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::ModelAttemptStarted {
+            attempt_id,
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint,
+        },
+    );
+    // An interrupted attempt commits its partial turn — which closes the
+    // attempt — and only then records the abandonment.
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::ModelTurnCommitted {
+            attempt_id,
+            model_turn_seq: 1,
+            resolved_model,
+            input_through_seq: 1,
+            turn: PersistedModelTurn {
+                content: vec![PersistedAssistantPart::Text {
+                    text: "partial answer".into(),
+                    metadata: None,
+                }],
+                provider_options: BTreeMap::new(),
+                finish_reason: ModelFinishReason::Aborted,
+                usage: Usage::default(),
+                response_metadata: BTreeMap::new(),
+                provider_metadata: BTreeMap::new(),
+                native_replay: None,
+            },
+            warnings: Vec::new(),
+        },
+    );
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::AttemptAbandoned {
+            attempt_id,
+            model_error: None,
+        },
+    );
+    assert_log_open(&records, true, "committed partial turned abandoned");
+
+    // The relaxation is not an amnesty: a second terminal abandonment of the
+    // same attempt stays corrupt.
+    let mut repeated = records.clone();
+    push_run_event(
+        &mut repeated,
+        session,
+        run,
+        EventPayload::AttemptAbandoned {
+            attempt_id,
+            model_error: None,
+        },
+    );
+    assert_log_open(&repeated, false, "second abandonment after a commit");
 }
 
 #[test]

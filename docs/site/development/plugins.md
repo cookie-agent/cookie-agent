@@ -436,7 +436,9 @@ It never receives body data.
 `model_turn_committed`. It may replace content but not the assistant role. The replacement is
 validated as a complete persisted turn and becomes the durable turn; already emitted text and
 reasoning deltas remain historical stream records. TUI and replay projections
-replace accumulated partials with that committed content.
+replace accumulated partials with that committed content. It does not run for a turn an interrupt
+cut off: the engine commits that partial text and reasoning as an `aborted` turn without
+interception, because a replacement assumes a finished message.
 
 `model_before_select`, `session_before_fork`, and `session_before_revert` may block their operation
 with a user-facing reason. Model selection interception occurs when the configured selection is

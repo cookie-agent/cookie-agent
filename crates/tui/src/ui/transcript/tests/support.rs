@@ -1365,6 +1365,7 @@ pub(crate) fn assistant_projection(
                             content_index,
                             ..
                         } => format!("media:{turn_seq}:{content_index}"),
+                        AssistantChild::Notice { text } => format!("notice:{text}"),
                     })
                     .collect(),
             )),
@@ -1656,6 +1657,7 @@ pub(crate) fn transcript_shape(state: &crate::state::SessionState) -> Vec<String
                         AssistantChild::CommittedTool { .. } => "committed-tool".to_owned(),
                         AssistantChild::MediaFile { .. } => "media".to_owned(),
                         AssistantChild::Attribution { .. } => "attribution".to_owned(),
+                        AssistantChild::Notice { text } => format!("notice:{text}"),
                     })
                     .collect::<Vec<_>>()
                     .join(",")

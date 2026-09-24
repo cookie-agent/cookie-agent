@@ -40,6 +40,52 @@ use crate::{
     tool_api::{ToolCall, ToolConcurrency, TurnAgentContext},
 };
 
+/// Initial response metadata captured before the provider stream is consumed.
+///
+/// A normal commit merges this into its turn. An interrupted attempt commits the
+/// partial turn it salvaged, so it must merge the same metadata: the response
+/// head arrives before streaming, so it is available even when the stream dies
+/// mid-flight. A request-level cancel that never reached a response has nothing
+/// to merge, and the abort path simply skips it.
+struct ResponseTelemetry {
+    response_metadata: oven_sdk::ResponseMetadata,
+    http_status: Option<u16>,
+    request_id: Option<String>,
+    provider_metadata: oven_sdk::ProviderMetadata,
+}
+
+impl ResponseTelemetry {
+    /// Merges the initial response metadata into a turn exactly as a completed
+    /// attempt does, without overwriting anything the turn already carries.
+    fn merge_into(&self, turn: &mut oven_sdk::CompletedTurn) {
+        for (key, value) in &self.response_metadata {
+            turn.finish
+                .response_metadata
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        if let Some(status) = self.http_status {
+            turn.finish
+                .response_metadata
+                .entry("oven.http_status".into())
+                .or_insert_with(|| serde_json::Value::from(status));
+        }
+        if let Some(request_id) = &self.request_id {
+            turn.finish
+                .response_metadata
+                .entry("oven.request_id".into())
+                .or_insert_with(|| serde_json::Value::from(request_id.clone()));
+        }
+        if !self.provider_metadata.is_empty() {
+            turn.finish.provider_metadata.insert(
+                "oven.request".into(),
+                serde_json::to_value(&self.provider_metadata)
+                    .expect("safe request metadata serializes"),
+            );
+        }
+    }
+}
+
 impl Engine {
     /// Freezes a root run's policy from `selection`. With `best_effort` (a
     /// selection carried over from the session's history) it is first repaired
@@ -1903,7 +1949,7 @@ impl Engine {
                         Err(ModelError::abort("model request was cancelled"))
                     }
                 };
-                let (result, meaningful_output) = match response {
+                let (result, meaningful_output, partial, telemetry) = match response {
                     Ok(response) => {
                         let oven_sdk::StreamResponse {
                             mut stream,
@@ -2000,40 +2046,32 @@ impl Engine {
                                 }
                             }
                         }
-                        let completed = match failure {
-                            Some(error) => Err(error),
-                            None => accumulator.finish(),
+                        let telemetry = ResponseTelemetry {
+                            response_metadata: response.response_metadata,
+                            http_status: response.http_status,
+                            request_id: response.request_id,
+                            provider_metadata: request.provider_metadata,
+                        };
+                        let (completed, partial) = match failure {
+                            Some(error) => (Err(error), Some(accumulator)),
+                            None => (accumulator.finish(), None),
                         };
                         let completed = completed.map(|mut turn| {
-                            for (key, value) in response.response_metadata {
-                                turn.finish.response_metadata.entry(key).or_insert(value);
-                            }
-                            if let Some(status) = response.http_status {
-                                turn.finish
-                                    .response_metadata
-                                    .entry("oven.http_status".into())
-                                    .or_insert_with(|| serde_json::Value::from(status));
-                            }
-                            if let Some(request_id) = response.request_id {
-                                turn.finish
-                                    .response_metadata
-                                    .entry("oven.request_id".into())
-                                    .or_insert_with(|| serde_json::Value::from(request_id));
-                            }
-                            if !request.provider_metadata.is_empty() {
-                                turn.finish.provider_metadata.insert(
-                                    "oven.request".into(),
-                                    serde_json::to_value(request.provider_metadata)
-                                        .expect("safe request metadata serializes"),
-                                );
-                            }
+                            telemetry.merge_into(&mut turn);
                             turn
                         });
-                        (completed, meaningful_output)
+                        (completed, meaningful_output, partial, Some(telemetry))
                     }
-                    Err(error) => (Err(Box::new(error)), false),
+                    Err(error) => (Err(Box::new(error)), false, None, None),
                 };
-                if result.is_err() {
+                // An `Abort` fails the run, but its partial turn is committed
+                // first (below). That commit must happen under the still-held
+                // claim lease, so the early release is deferred for it.
+                let defer_release_for_abort = result.as_ref().is_err_and(|error| {
+                    error.kind == oven_sdk::ModelErrorKind::Abort
+                        && classify_model_error(error) == ErrorPolicy::FailRun
+                });
+                if result.is_err() && !defer_release_for_abort {
                     request_claim.release().await?;
                 }
                 match result {
@@ -2237,6 +2275,46 @@ impl Engine {
                         return Err(EngineError::Model(error));
                     }
                     Err(error) if classify_model_error(&error) == ErrorPolicy::FailRun => {
+                        // A user interrupt aborts the attempt mid-stream; the
+                        // partial text and reasoning are already visible, so
+                        // commit them as an aborted turn before recording the
+                        // abandonment. Only an abort salvages: every other
+                        // `FailRun` kind never leaves user-meaningful output.
+                        if error.kind == oven_sdk::ModelErrorKind::Abort
+                            && let Some(mut turn) = partial.and_then(TurnAccumulator::partial)
+                        {
+                            // The response head arrived before the stream died,
+                            // so an in-flight abort still carries the provider
+                            // telemetry a normal commit would have attached. A
+                            // request-level cancel that never reached a response
+                            // has none, and this is skipped.
+                            if let Some(telemetry) = &telemetry {
+                                telemetry.merge_into(&mut turn);
+                            }
+                            let (turn, warnings) =
+                                persist_turn(turn, &self.inner.artifacts, session, binding)?;
+                            // MessageEnd interception is deliberately skipped:
+                            // a replacement assumes a finished model message,
+                            // and no plugin output can repair a truncated one.
+                            let model_turn_seq = self.next_model_turn_seq(session)?;
+                            self.append(
+                                session,
+                                Some(run),
+                                event_origin("engine:model-loop"),
+                                Event::ModelTurnCommitted {
+                                    attempt_id,
+                                    model_turn_seq,
+                                    resolved_model: wire_model(binding),
+                                    input_through_seq,
+                                    turn,
+                                    warnings,
+                                },
+                            )
+                            .await?;
+                            // No `ModelUsageRecorded`: an interrupted stream has
+                            // no trustworthy usage, and the usage fold skips a
+                            // commit whose usage carries no observed tokens.
+                        }
                         self.append(
                             session,
                             Some(run),
@@ -2247,6 +2325,9 @@ impl Engine {
                             },
                         )
                         .await?;
+                        // The claim stayed held through the partial commit and
+                        // the abandonment; release it once both are durable.
+                        request_claim.release().await?;
                         return Err(EngineError::Model(error));
                     }
                     Err(error)

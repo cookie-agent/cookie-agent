@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use oven_sdk::{
     AbortRegistration, AbortSignal, AssistantMessage, AssistantPart, CompletedTurn, Finish,
-    FinishReason, ModelError, ReasoningPart, StreamPart, TextPart, is_semantic_text,
+    FinishReason, ModelError, ReasoningPart, StreamPart, TextPart, Usage, is_semantic_text,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -412,6 +412,81 @@ impl TurnAccumulator {
         Ok(turn)
     }
 
+    /// Salvages the output accumulated so far as an aborted turn.
+    ///
+    /// An interrupt aborts the attempt mid-stream, so strict collection never
+    /// sees a terminal `finish`. The text and reasoning already streamed are
+    /// nevertheless user-meaningful, so they are committed as a
+    /// [`FinishReason::Aborted`] turn instead of being discarded.
+    ///
+    /// Tool-call state never survives: the run is ending, so no streamed call
+    /// can execute. Open blocks, ended-but-unfinalized blocks, and finalized
+    /// calls (or approvals, or results) already placed in the content are all
+    /// dropped — committing a call nothing will run would render a permanent
+    /// placeholder and index a phantom tool call.
+    ///
+    /// Returns `None` when nothing meaningful accumulated (no stream start, or
+    /// no text/reasoning/non-tool content), which keeps an interrupt that
+    /// produced no output behaving exactly as before.
+    pub(crate) fn partial(mut self) -> Option<CompletedTurn> {
+        if !self.stream_started {
+            return None;
+        }
+        // Drain the blocks the truncation left open into their content slots,
+        // exactly as `TextEnd`/`ReasoningEnd` would have.
+        for block in std::mem::take(&mut self.text).into_values() {
+            self.content[block.slot] = Some(AssistantPart::Text(TextPart {
+                text: block.text,
+                metadata: block.metadata,
+            }));
+        }
+        for block in std::mem::take(&mut self.reasoning).into_values() {
+            self.content[block.slot] = Some(AssistantPart::Reasoning(ReasoningPart {
+                text: block.text,
+                metadata: block.metadata,
+            }));
+        }
+        self.tools.clear();
+        self.ended_tools.clear();
+        // Unfilled slots belong to dropped tool blocks; tool parts are dropped
+        // wholesale so the committed turn never references a call that has no
+        // execution behind it.
+        let content: Vec<_> = self
+            .content
+            .into_iter()
+            .flatten()
+            .filter(|part| {
+                !matches!(
+                    part,
+                    AssistantPart::ToolCall(_)
+                        | AssistantPart::ToolApproval(_)
+                        | AssistantPart::ToolResult(_)
+                )
+            })
+            .collect();
+        // Same whitespace rule as `finish()`: blank text is not content. Here
+        // an all-blank salvage commits nothing at all. Reasoning is filtered
+        // too: a provider that only emitted whitespace reasoning before the
+        // interrupt leaves nothing worth rendering (or replaying).
+        let content: Vec<_> = content
+            .into_iter()
+            .filter(|part| match part {
+                AssistantPart::Text(text) => is_semantic_text(&text.text),
+                AssistantPart::Reasoning(reasoning) => is_semantic_text(&reasoning.text),
+                _ => true,
+            })
+            .collect();
+        if content.is_empty() {
+            return None;
+        }
+        let mut turn = CompletedTurn::new(
+            AssistantMessage::new(content),
+            Finish::new(Usage::default(), FinishReason::Aborted),
+        );
+        turn.warnings = self.warnings;
+        Some(turn)
+    }
+
     fn ensure_fresh_block(&self, id: &str) -> Result<(), Box<ModelError>> {
         if self.text.contains_key(id)
             || self.reasoning.contains_key(id)
@@ -764,6 +839,194 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["reasoning", "tool_call"]);
+    }
+
+    #[test]
+    fn partial_salvages_open_text_and_reasoning_and_drops_tool_state() {
+        use oven_sdk::AssistantPart;
+
+        let mut accumulator = TurnAccumulator::default();
+        for part in [
+            StreamPart::StreamStart {
+                warnings: vec!["provider warning".into()],
+            },
+            StreamPart::ReasoningStart {
+                id: "reasoning".into(),
+                metadata: None,
+            },
+            StreamPart::ReasoningDelta {
+                id: "reasoning".into(),
+                delta: "thinking".into(),
+                metadata: None,
+            },
+            StreamPart::TextStart {
+                id: "earlier".into(),
+                metadata: None,
+            },
+            StreamPart::TextDelta {
+                id: "earlier".into(),
+                delta: "finalized".into(),
+                metadata: None,
+            },
+            StreamPart::TextEnd {
+                id: "earlier".into(),
+                metadata: None,
+            },
+            StreamPart::TextStart {
+                id: "open".into(),
+                metadata: None,
+            },
+            StreamPart::TextDelta {
+                id: "open".into(),
+                delta: "partial".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallStart {
+                id: "open-call".into(),
+                name: "read".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallDelta {
+                id: "open-call".into(),
+                delta: "{}".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallStart {
+                id: "ended-call".into(),
+                name: "read".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallDelta {
+                id: "ended-call".into(),
+                delta: "{}".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCallEnd {
+                id: "ended-call".into(),
+                metadata: None,
+            },
+            StreamPart::ToolCall {
+                tool_call: ToolCallPart::new("finalized-call", "read", serde_json::json!({})),
+            },
+            StreamPart::ApprovalRequested {
+                approval: ToolApprovalPart::new("finalized-call"),
+            },
+        ] {
+            accumulator.push(part).expect("part");
+        }
+        let turn = accumulator.partial().expect("partial output is salvaged");
+        assert_eq!(turn.finish.finish_reason, FinishReason::Aborted);
+        assert_eq!(turn.finish.usage, Usage::default());
+        assert_eq!(turn.warnings, ["provider warning"]);
+        assert_eq!(
+            turn.message
+                .content
+                .iter()
+                .map(|part| match part {
+                    AssistantPart::Text(text) => format!("text:{}", text.text),
+                    AssistantPart::Reasoning(text) => format!("reasoning:{}", text.text),
+                    AssistantPart::ToolCall(call) => format!("tool_call:{}", call.id),
+                    AssistantPart::ToolApproval(approval) =>
+                        format!("tool_approval:{}", approval.tool_call_id),
+                    AssistantPart::ToolResult(result) => {
+                        format!("tool_result:{}", result.tool_call_id)
+                    }
+                    _ => "other".into(),
+                })
+                .collect::<Vec<_>>(),
+            // Open blocks drain in slot order; every tool part is dropped.
+            ["reasoning:thinking", "text:finalized", "text:partial"],
+        );
+    }
+
+    #[test]
+    fn partial_salvage_is_none_without_meaningful_output() {
+        assert!(
+            TurnAccumulator::default().partial().is_none(),
+            "a stream that never started cannot be salvaged"
+        );
+
+        let empty = {
+            let mut accumulator = TurnAccumulator::default();
+            accumulator
+                .push(StreamPart::StreamStart { warnings: vec![] })
+                .expect("part");
+            accumulator
+        };
+        assert!(
+            empty.partial().is_none(),
+            "an abort before any output commits nothing"
+        );
+
+        let whitespace = {
+            let mut accumulator = TurnAccumulator::default();
+            for part in [
+                StreamPart::StreamStart { warnings: vec![] },
+                StreamPart::TextStart {
+                    id: "text".into(),
+                    metadata: None,
+                },
+                StreamPart::TextDelta {
+                    id: "text".into(),
+                    delta: "  \n ".into(),
+                    metadata: None,
+                },
+            ] {
+                accumulator.push(part).expect("part");
+            }
+            accumulator
+        };
+        assert!(
+            whitespace.partial().is_none(),
+            "blank-only output commits nothing"
+        );
+
+        let whitespace_reasoning = {
+            let mut accumulator = TurnAccumulator::default();
+            for part in [
+                StreamPart::StreamStart { warnings: vec![] },
+                StreamPart::ReasoningStart {
+                    id: "reasoning".into(),
+                    metadata: None,
+                },
+                StreamPart::ReasoningDelta {
+                    id: "reasoning".into(),
+                    delta: "  \n ".into(),
+                    metadata: None,
+                },
+            ] {
+                accumulator.push(part).expect("part");
+            }
+            accumulator
+        };
+        assert!(
+            whitespace_reasoning.partial().is_none(),
+            "blank-only reasoning commits nothing"
+        );
+
+        let tool_only = {
+            let mut accumulator = TurnAccumulator::default();
+            for part in [
+                StreamPart::StreamStart { warnings: vec![] },
+                StreamPart::ToolCallStart {
+                    id: "call".into(),
+                    name: "read".into(),
+                    metadata: None,
+                },
+                StreamPart::ToolCallDelta {
+                    id: "call".into(),
+                    delta: "{}".into(),
+                    metadata: None,
+                },
+            ] {
+                accumulator.push(part).expect("part");
+            }
+            accumulator
+        };
+        assert!(
+            tool_only.partial().is_none(),
+            "a truncated tool call alone commits nothing"
+        );
     }
 
     #[test]
