@@ -15,14 +15,12 @@ SHA256 checksum, and installs `cookie` under `$CARGO_HOME/bin` (normally
 
 ## PowerShell installer
 
-CI publishes Windows x86_64 and ARM64 installers with nightly prereleases. The
-latest tagged release, `v0.2.0`, predates those assets, so Windows installers
-currently ship through nightly prereleases and will also ship with the next
-tagged release.
+On Windows x86_64 or ARM64, install the latest stable release with the
+cargo-dist PowerShell installer:
 
-Open a nightly prerelease and run its generated, tag-pinned PowerShell installer
-command. After the next tagged release, the stable `releases/latest` installer
-URL will work for Windows as well.
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.ps1 | iex"
+```
 
 The installer selects the matching MSVC ZIP archive, verifies its SHA256
 checksum, and installs `cookie.exe` under `%CARGO_HOME%\bin` (normally
@@ -30,7 +28,7 @@ checksum, and installs `cookie.exe` under `%CARGO_HOME%\bin` (normally
 
 ## Release archives
 
-Current nightly [GitHub releases](https://github.com/cookie-agent/cookie-agent/releases)
+Stable and nightly [GitHub releases](https://github.com/cookie-agent/cookie-agent/releases)
 provide an archive and `.sha256` checksum for:
 
 - Linux x86_64 with glibc

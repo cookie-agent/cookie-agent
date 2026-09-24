@@ -37,13 +37,19 @@ and observability are all built in.
 
 ## Quick start
 
-Install the latest release with the generated shell installer:
+Install the latest release on Linux or macOS:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.sh | sh
 ```
 
-See the [installation guide](https://cookie-agent.github.io/doc/dev/install/)
+On Windows, use PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/cookie-agent/cookie-agent/releases/latest/download/cookie_agent-installer.ps1 | iex"
+```
+
+See the [installation guide](https://cookie-agent.github.io/doc/latest/install/)
 for direct binary downloads, nightly builds, configuration, and the first run.
 Running `cookie` starts a local daemon and opens the TUI. In the TUI, type
 `/connect` to store a provider connection, then start a session.
