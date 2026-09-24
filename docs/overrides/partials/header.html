@@ -1,0 +1,45 @@
+{#-
+  Mirrors the cookie-agent.github.io header: the brand links back to the
+  landing page and the right side carries the same Docs and GitHub links.
+  Based on Material 9.6 partials/header.html; the page-title swap and the
+  repository widget are dropped. The version selector still mounts in the
+  first .md-header__topic.
+-#}
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="{{ lang.t('header') }}">
+    <label class="md-header__button md-icon" for="__drawer">
+      {% set icon = config.theme.icon.menu or "material/menu" %}
+      {% include ".icons/" ~ icon ~ ".svg" %}
+    </label>
+    <div class="md-header__title cookie-title">
+      <div class="md-header__topic">
+        <a class="cookie-brand" href="{{ config.extra.homepage }}">
+          <img src="{{ config.theme.logo | url }}" alt="" width="32" height="32">
+          <span>{{ config.site_name }}</span>
+        </a>
+      </div>
+    </div>
+    {% if config.theme.palette %}
+      {% if not config.theme.palette is mapping %}
+        {% include "partials/palette.html" %}
+      {% endif %}
+    {% endif %}
+    {% if not config.theme.palette is mapping %}
+      {% include "partials/javascripts/palette.html" %}
+    {% endif %}
+    {% if "material/search" in config.plugins %}
+      {% set search = config.plugins["material/search"] | attr("config") %}
+      {% if search.enabled %}
+        <label class="md-header__button md-icon" for="__search">
+          {% set icon = config.theme.icon.search or "material/magnify" %}
+          {% include ".icons/" ~ icon ~ ".svg" %}
+        </label>
+        {% include "partials/search.html" %}
+      {% endif %}
+    {% endif %}
+    <div class="cookie-nav" aria-label="Primary">
+      <a href="{{ nav.homepage.url | url }}" aria-current="page">Docs</a>
+      <a href="{{ config.repo_url }}">GitHub</a>
+    </div>
+  </nav>
+</header>

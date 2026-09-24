@@ -1,0 +1,187 @@
+/* Bakery Paper: the palette and type of cookie-agent.github.io, which in turn
+   mirror the TUI themes in crates/tui/src/theme.rs. */
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap");
+
+:root {
+  --cookie-display: "Fraunces", Georgia, serif;
+}
+
+[data-md-color-scheme="default"] {
+  --cookie-bg: #fbf4e6;       /* cream */
+  --cookie-panel: #f2e5cc;    /* parchment */
+  --cookie-rule: #e6ce9e;     /* toasted */
+  --cookie-text: #46301f;     /* espresso */
+  --cookie-muted: #625240;    /* ink */
+  --cookie-accent: #9c5a10;   /* caramel */
+
+  --md-default-bg-color: var(--cookie-bg);
+  --md-default-fg-color: var(--cookie-text);
+  --md-default-fg-color--light: #46301fcc;
+  --md-default-fg-color--lighter: #46301f66;
+  --md-default-fg-color--lightest: #46301f1a;
+  --md-code-bg-color: var(--cookie-panel);
+  --md-code-fg-color: var(--cookie-text);
+  --md-code-hl-color: #e6ce9e;
+  --md-code-hl-color--light: #e6ce9e80;
+  --md-footer-bg-color: #efe2c6;
+  --md-footer-bg-color--dark: #e6d5b3;
+  --md-footer-fg-color: var(--cookie-text);
+  --md-footer-fg-color--light: var(--cookie-muted);
+  --md-footer-fg-color--lighter: #62524099;
+  --md-admonition-bg-color: var(--cookie-bg);
+}
+
+[data-md-color-scheme="slate"] {
+  --cookie-bg: #201c16;
+  --cookie-panel: #29251d;
+  --cookie-rule: #393326;
+  --cookie-text: #edc7ab;
+  --cookie-muted: #c9b59c;
+  --cookie-accent: #e78c33;   /* maple */
+
+  --md-hue: 36;
+  --md-default-bg-color: var(--cookie-bg);
+  --md-default-fg-color: var(--cookie-text);
+  --md-default-fg-color--light: #edc7abcc;
+  --md-default-fg-color--lighter: #edc7ab66;
+  --md-default-fg-color--lightest: #edc7ab1a;
+  --md-code-bg-color: var(--cookie-panel);
+  --md-code-fg-color: var(--cookie-text);
+  --md-code-hl-color: #63563b;
+  --md-code-hl-color--light: #63563b80;
+  --md-footer-bg-color: #1a1712;
+  --md-footer-bg-color--dark: #15130f;
+  --md-footer-fg-color: var(--cookie-text);
+  --md-footer-fg-color--light: var(--cookie-muted);
+  --md-footer-fg-color--lighter: #c9b59c99;
+  --md-admonition-bg-color: var(--cookie-bg);
+}
+
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: var(--cookie-bg);
+  --md-primary-fg-color--light: var(--cookie-panel);
+  --md-primary-fg-color--dark: var(--cookie-text);
+  --md-primary-bg-color: var(--cookie-text);
+  --md-primary-bg-color--light: var(--cookie-muted);
+  --md-typeset-a-color: var(--cookie-accent);
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: var(--cookie-accent);
+  --md-accent-fg-color--transparent: color-mix(in srgb, var(--cookie-accent) 10%, transparent);
+  --md-accent-bg-color: var(--cookie-bg);
+  --md-accent-bg-color--light: var(--cookie-panel);
+}
+
+/* Header: the landing page's bar. A 64px header instead of Material's 48px, so
+   the sticky sidebars and anchor targets move down by the same 0.8rem. */
+
+.md-header {
+  border-bottom: 1px solid var(--cookie-rule);
+}
+
+.md-header__inner {
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar {
+    top: 3.2rem;
+  }
+}
+
+.md-typeset :target {
+  --md-scroll-margin: 4.4rem;
+}
+
+.cookie-title .md-header__topic {
+  position: static;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: 0.4rem;
+}
+
+.cookie-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--cookie-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.cookie-brand img {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.md-header a.cookie-brand:hover {
+  color: inherit;
+}
+
+.cookie-nav {
+  display: flex;
+  gap: 1.4rem;
+  margin: 0 0.8rem 0 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.cookie-nav a:hover {
+  color: var(--cookie-accent);
+}
+
+.md-search__form {
+  border-radius: 0.4rem;
+  background-color: var(--cookie-panel);
+}
+
+.md-search__form:hover {
+  background-color: var(--cookie-rule);
+}
+
+/* Section tabs sit on the page colour like the landing page's sections. */
+
+.md-tabs {
+  background-color: var(--cookie-bg);
+  color: var(--cookie-text);
+  border-bottom: 1px solid var(--cookie-rule);
+}
+
+.md-tabs__link--active,
+.md-tabs__item--active .md-tabs__link {
+  color: var(--cookie-accent);
+}
+
+/* Type */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: var(--cookie-display);
+  color: var(--cookie-text);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.md-typeset h1 {
+  font-size: 2.2em;
+}
+
+.md-typeset pre > code,
+.md-typeset .highlight {
+  border-radius: 0.4rem;
+}
+
+.md-typeset pre > code {
+  border: 1px solid var(--cookie-rule);
+}
+
+/* On narrow screens the drawer carries the GitHub link. */
+@media screen and (max-width: 44.984375em) {
+  .cookie-nav {
+    display: none;
+  }
+}

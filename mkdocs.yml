@@ -18,6 +18,12 @@ validation:
 
 theme:
   name: material
+  custom_dir: docs/overrides
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font:
+    text: Instrument Sans
+    code: JetBrains Mono
   features:
     - navigation.tabs
     - navigation.instant
@@ -27,14 +33,21 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+
+extra_css:
+  - stylesheets/cookie.css
 
 plugins:
   - search
@@ -106,5 +119,6 @@ nav:
       - Security boundaries: guide/security.md
 
 extra:
+  homepage: https://cookie-agent.github.io/
   version:
     provider: mike
