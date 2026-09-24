@@ -1176,7 +1176,6 @@ impl App {
             .insert(session_id, generation);
         if !self.owned_sessions.contains(&session_id) {
             self.read_only_sessions.insert(session_id);
-            if self.selected == Some(session_id) {}
         }
         generation
     }
@@ -1238,9 +1237,6 @@ impl App {
                 self.note_sessions_changed();
                 self.pending_live_subscriptions.insert(session_id);
                 self.replay_ended_for_live_subscription.remove(&session_id);
-                if self.selected == Some(session_id) {
-                    self.status = "Session is writable.".into();
-                }
                 self.start_pending_live_subscription(session_id);
             }
             SessionOwnershipOutcome::Foreign => {

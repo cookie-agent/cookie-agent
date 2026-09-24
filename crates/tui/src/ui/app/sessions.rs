@@ -195,7 +195,9 @@ impl App {
         )
         .await
         {
-            Ok(Ok(())) => {}
+            // A replay already running for this session brings it up to
+            // date on its own, so a refused second one is not an error.
+            Ok(Ok(()) | Err(crate::client::ClientError::ReplayInProgress)) => {}
             Ok(Err(error)) => self.status = error.to_string(),
             Err(_) => self.status = "session subscription timed out".into(),
         }
