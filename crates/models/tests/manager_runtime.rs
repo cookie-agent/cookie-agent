@@ -2590,6 +2590,7 @@ fn managed_shipped_headers_reach_manifest_blueprints() {
         ),
         ("x-session-id", "${session_id}"),
         ("x-session-affinity", "${session_id}"),
+        ("x-opencode-session", "${session_id}"),
         ("x-session-parent-id", "${parent_session_id}"),
     ]);
     let manager = ModelManager::new_with_headers(

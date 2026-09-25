@@ -28,6 +28,7 @@ result is limited to 64 entries, 128 bytes per name, 8192 bytes per value, and
 | `user-agent` | `cookie-agent/<build version>` |
 | `x-session-id` | `${session_id}` |
 | `x-session-affinity` | `${session_id}` |
+| `x-opencode-session` | `${session_id}`; OpenCode Zen/Go pins a session to one upstream with it |
 | `x-session-parent-id` | `${parent_session_id}`; omitted for root sessions |
 
 `${session_id}` and `${parent_session_id}` are expanded for each request.

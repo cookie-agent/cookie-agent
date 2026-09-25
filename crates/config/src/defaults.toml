@@ -2,4 +2,5 @@
 user-agent = "cookie-agent/${cookie_agent_version}"
 x-session-id = "${session_id}"
 x-session-affinity = "${session_id}"
+x-opencode-session = "${session_id}"
 x-session-parent-id = "${parent_session_id}"
