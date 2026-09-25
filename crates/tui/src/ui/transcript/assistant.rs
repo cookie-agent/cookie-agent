@@ -372,8 +372,9 @@ pub(super) fn assistant_child_layout(
                         paint_band(row, gutter.min(1), width, title_band, None, true);
                     }
                 }
-                // Hover starts behind the margin, as on a tool title.
-                (rows, (gutter > 0).then_some(3))
+                // Hover starts on the margin, as on a tool title, so the
+                // highlight covers the padding too.
+                (rows, (gutter > 0).then_some(2))
             } else {
                 (assistant_body_line(label, width, theme), None)
             };

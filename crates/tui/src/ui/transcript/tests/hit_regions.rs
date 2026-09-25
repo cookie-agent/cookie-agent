@@ -210,6 +210,28 @@ async fn hovering_a_block_only_repaints_its_own_content_columns() {
                 != hovered[usize::from(row.y)][usize::from(rect.x)]),
         "the header row is highlighted"
     );
+    // The highlight starts on the title's margin, right behind `│ `, so the
+    // padding is highlighted with the text.
+    let rows = frame_rows(&mut app, 80, 24);
+    let title = rows[usize::from(rect.y)].chars().collect::<Vec<_>>();
+    assert_eq!(
+        title[usize::from(rect.x) - 2],
+        '│',
+        "{}",
+        rows[usize::from(rect.y)]
+    );
+    assert_eq!(
+        title[usize::from(rect.x)],
+        ' ',
+        "{}",
+        rows[usize::from(rect.y)]
+    );
+    assert_ne!(
+        title[usize::from(rect.x) + 1],
+        ' ',
+        "{}",
+        rows[usize::from(rect.y)]
+    );
     for (y, row) in hovered.iter().enumerate() {
         for (x, style) in row.iter().enumerate() {
             if rect.contains(ratatui::layout::Position::new(x as u16, y as u16)) {
@@ -457,4 +479,45 @@ async fn composer_loses_focus_only_under_an_overlay_or_in_a_read_only_view() {
 
     app.read_only_sessions.insert(approval.session_id);
     assert!(!app.composer_focused());
+}
+
+#[test]
+fn title_hover_starts_on_the_margin_so_the_highlight_covers_the_padding() {
+    let call_id = ToolCallId::new_v7();
+    let mut state = assistant_state(vec![
+        crate::state::AssistantChild::Thinking {
+            id: 10,
+            version: 0,
+            text: "a thought".into(),
+        },
+        crate::state::AssistantChild::Tool { call_id },
+    ]);
+    state.tools.insert(
+        call_id,
+        ToolCallState {
+            id: call_id,
+            owner: owner(1, "call-1"),
+            presentation: presentation("bash", Some("ls")),
+            arguments: r#"{"command":"ls"}"#.into(),
+            status: ToolStatus::Completed,
+            detail: "a.txt".into(),
+            has_output_chunks: false,
+        },
+    );
+    let expanded = HashSet::from([BlockId::Tool(call_id), BlockId::Thinking(10)]);
+    for blocks in [None, Some(&expanded)] {
+        let layout = transcript_layout(&state, blocks, 60);
+        for id in [BlockId::Tool(call_id), BlockId::Thinking(10)] {
+            let region = layout
+                .regions
+                .iter()
+                .find(|region| region.id == id)
+                .unwrap();
+            let title = &layout.lines[region.start_line];
+            // `│ ` is the only chrome the highlight skips; the margin column
+            // behind it is highlighted with the title text.
+            assert_eq!(region.header_gutter, Some(2), "{id:?}: {title}");
+            assert_eq!(title.spans[1].content, " ", "{id:?}: {title}");
+        }
+    }
 }

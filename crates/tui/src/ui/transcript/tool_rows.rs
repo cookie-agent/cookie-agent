@@ -1007,23 +1007,18 @@ pub(super) fn tool_block_lines_with(
                 lines.extend(prefixed_wrapped_line(prefix, style, line, width));
                 gutters.resize(lines.len(), 1);
             }
+            // Only the `│ ` span is chrome here: the margin behind it takes the
+            // hover fill with the row's text, so a highlighted title or notice
+            // covers its padding. Copying still skips it by its style.
             ToolBodyLineKind::Wrapped => {
                 let gutter = gutter();
-                let chrome = if gutter_fits(&gutter, &line, wrap_width) {
-                    gutter.len()
-                } else {
-                    0
-                };
+                let chrome = usize::from(gutter_fits(&gutter, &line, wrap_width));
                 lines.extend(repeated_prefixed_wrapped_line(gutter, line, wrap_width));
                 gutters.resize(lines.len(), chrome);
             }
             ToolBodyLineKind::Hanging { indent } => {
                 let gutter = gutter();
-                let chrome = if gutter_fits(&gutter, &line, wrap_width) {
-                    gutter.len()
-                } else {
-                    0
-                };
+                let chrome = usize::from(gutter_fits(&gutter, &line, wrap_width));
                 lines.extend(repeated_prefixed_hanging_line(
                     gutter, line, wrap_width, indent,
                 ));
