@@ -18,6 +18,7 @@ mod producers;
 mod providers;
 mod queue;
 mod read_output;
+mod render_preview;
 mod scrolling;
 mod selection;
 mod sessions_tree;
