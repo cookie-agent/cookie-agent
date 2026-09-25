@@ -731,7 +731,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .engine
         .inner
         .artifacts
-        .retain(crate::test_session_id(), b"fork-shared-artifact")
+        .retain(session.session_id, b"fork-shared-artifact")
         .expect("retain shared artifact");
     assert_eq!(artifact.uri, format!("artifact://sha256/{digest}"));
     assert!(
@@ -739,7 +739,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
             .engine
             .inner
             .artifacts
-            .open_existing(&digest)
+            .open_existing(session.session_id, &digest)
             .expect("resolve shared artifact")
             .is_some()
     );
@@ -958,7 +958,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         reopened
             .inner
             .artifacts
-            .open_existing(&digest)
+            .open_existing(session.session_id, &digest)
             .expect("resolve shared artifact after restart")
             .is_some()
     );

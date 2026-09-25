@@ -22,7 +22,7 @@ use oven_sdk::{
 };
 use thiserror::Error;
 
-use crate::{ArtifactRouter, goal_projection::GoalProducerProjection};
+use crate::{ArtifactRouter, SessionArtifacts, goal_projection::GoalProducerProjection};
 
 pub(crate) const COMPACTION_SUMMARY_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n<summary>\n";
 pub(crate) const COMPACTION_SUMMARY_SUFFIX: &str = "\n</summary>\n\nPlease continue the conversation from where we left off without asking the user any further questions.";
@@ -782,6 +782,13 @@ fn assemble_history_with_replay(
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<AssembledHistory, HistoryError> {
+    // Attachments resolve in the tree of the session whose log this is.
+    let store = store.for_session(
+        context_events
+            .first()
+            .or(events.first())
+            .map(|event| event.session_id),
+    );
     let producer_projection = GoalProducerProjection::from_events(context_events);
     let current_run = context_events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. })
@@ -1375,7 +1382,7 @@ fn attach_result(
 fn append_tool_emitted_message(
     history: &mut Vec<HistoryTurn>,
     message: &ToolEmittedMessage,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
 ) -> Result<(), HistoryError> {
     let mut content = Vec::with_capacity(
         message.content.len() + usize::from(message.role == ToolEmittedMessageRole::System),
@@ -1422,7 +1429,7 @@ fn denied_failure(message: &str) -> Option<DeniedToolFailure> {
 
 fn tool_result_part(
     result: &PersistedToolResult,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
 ) -> Result<ToolResultPart, HistoryError> {
     let truncation = if let Some(truncation) = &result.truncation {
         let artifact_id = retained_artifact_id(&truncation.retained)?;
@@ -1457,7 +1464,7 @@ fn tool_result_part(
 
 fn attachment_file(
     attachment: &ToolAttachment,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
 ) -> Result<FilePart, HistoryError> {
     let bytes = store.read_verified_attachment(attachment)?;
     Ok(FilePart {
@@ -1722,7 +1729,7 @@ fn restore_file(file: &PersistedFilePart) -> Result<FilePart, HistoryError> {
 
 fn restore_file_with_store(
     file: &PersistedFilePart,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
 ) -> Result<FilePart, HistoryError> {
     if let PersistedFileSource::Artifact {
         byte_length,
@@ -1985,7 +1992,7 @@ fn restore_finish_reason(reason: &ModelFinishReason) -> FinishReason {
 // Artifact-backed files need the store only while assembling a live request.
 fn restore_assistant_part_with_store(
     part: &PersistedAssistantPart,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
 ) -> Result<AssistantPart, HistoryError> {
     match part {
         PersistedAssistantPart::File { file } => {
@@ -2021,7 +2028,7 @@ fn restore_assistant_part_with_store(
 fn restore_turn_with_store(
     turn: &PersistedModelTurn,
     resolved_model: &ResolvedModelRef,
-    store: &ArtifactRouter,
+    store: SessionArtifacts<'_>,
     binding: &FrozenModelBinding,
 ) -> Result<(CompletedTurn, Option<ReplayDisposition>), HistoryError> {
     let (native_replay, replay_disposition) =

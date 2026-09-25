@@ -363,7 +363,14 @@ impl ToolExecutionContext {
         offset: u64,
         limit: u64,
     ) -> Result<crate::ArtifactReadPage, ToolError> {
-        crate::runtime::read_artifact_async(self.artifacts.clone(), path, offset, limit).await
+        crate::runtime::read_artifact_async(
+            self.artifacts.clone(),
+            self.session,
+            path,
+            offset,
+            limit,
+        )
+        .await
     }
 
     #[cfg(feature = "test-support")]

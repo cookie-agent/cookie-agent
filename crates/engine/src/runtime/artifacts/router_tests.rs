@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, path::Path, sync::Arc, time::Duration};
 
 use cookie_agent_protocol::SessionId;
 
-use super::{ArtifactRouter, SHARED_ARTIFACTS_DIR};
+use super::ArtifactRouter;
 
 struct Placement {
     workdir: tempfile::TempDir,
@@ -109,13 +109,8 @@ fn writes_land_in_the_directory_of_the_writing_trees_root() {
     assert!(tree_blob(fixture.workdir.path(), fixture.roots[0], &first).is_file());
     assert!(tree_blob(fixture.workdir.path(), fixture.roots[1], &second).is_file());
     assert!(
-        !fixture
-            .workdir
-            .path()
-            .join(SHARED_ARTIFACTS_DIR)
-            .join(&first)
-            .exists(),
-        "a routed write never uses the shared store"
+        !fixture.workdir.path().join("artifacts.shared").exists(),
+        "no work-dir-wide store exists at all"
     );
 
     // Identical content is copied into the other tree rather than shared.
@@ -128,79 +123,127 @@ fn writes_land_in_the_directory_of_the_writing_trees_root() {
 }
 
 #[test]
-fn unrouted_writes_fall_back_to_the_shared_store() {
+fn unrouted_writes_land_in_the_sessions_own_tree() {
     let workdir = tempfile::tempdir().expect("workdir");
     let router = ArtifactRouter::open(workdir.path().to_path_buf()).expect("router");
-    let (_, digest) = router
-        .retain(SessionId::new_v7(), b"orphaned")
-        .expect("orphan retain");
-    assert!(
-        workdir
-            .path()
-            .join(SHARED_ARTIFACTS_DIR)
-            .join(&digest)
-            .is_file()
-    );
-    assert!(!workdir.path().join("sessions").exists());
+    let session = SessionId::new_v7();
+    let (_, digest) = router.retain(session, b"unrouted").expect("retain");
+    assert!(tree_blob(workdir.path(), session, &digest).is_file());
+    assert!(!workdir.path().join("artifacts.shared").exists());
 }
 
+/// Tree-local sessions D1: a read resolves in the reading session's own tree
+/// and nowhere else, and reading from a tree that never stored anything does
+/// not create its directory.
 #[test]
-fn reads_find_content_another_tree_stored() {
+fn reads_resolve_only_in_the_readers_tree() {
     let fixture = placement();
-    let (reference, digest) = fixture
+    let (_, digest) = fixture
         .router
-        .retain(fixture.children[0], b"cross-tree")
+        .retain(fixture.children[0], b"tree-zero")
         .expect("retain");
-    // A reopened router has no write index: the directory-name scan must find it.
+    for reader in [fixture.children[0], fixture.roots[0]] {
+        assert_eq!(
+            fixture
+                .router
+                .read_paged(reader, &digest, 0, 10)
+                .expect("same tree")
+                .content,
+            "tree-zero"
+        );
+    }
+    for reader in [fixture.children[1], fixture.roots[1]] {
+        assert!(
+            fixture
+                .router
+                .read_paged(reader, &digest, 0, 10)
+                .unwrap_err()
+                .to_string()
+                .contains("artifact missing"),
+            "another tree's content never resolves"
+        );
+    }
+    assert!(
+        !tree_dir(fixture.workdir.path(), fixture.roots[1]).exists(),
+        "a read never creates a tree directory"
+    );
+
+    // A fresh router finds a tree's content on disk without any write of its own.
     let reopened =
         ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");
-    let page = reopened
-        .read_paged(&digest, 0, 10)
-        .expect("read content stored by another tree");
-    assert_eq!(page.content, "cross-tree");
-    assert_eq!(reference.uri, format!("artifact://sha256/{digest}"));
-    assert!(
+    assert_eq!(
         reopened
-            .read_paged(&"f".repeat(64), 0, 1)
-            .unwrap_err()
-            .to_string()
-            .contains("artifact missing")
+            .read_paged(fixture.roots[0], &digest, 0, 10)
+            .expect("read after reopen")
+            .content,
+        "tree-zero"
     );
 }
 
+/// Tree-local sessions D2: content copied into a fork's tree includes what a
+/// manifest names, and survives the source tree going away.
 #[test]
-fn collection_retains_content_another_tree_references() {
+fn copying_into_a_tree_takes_manifests_and_their_streams_along() {
+    let fixture = placement();
+    let (source, target) = (fixture.roots[0], fixture.roots[1]);
+    let (_, stream) = fixture
+        .router
+        .retain(source, b"stream bytes\n")
+        .expect("stream");
+    let manifest = serde_json::json!({
+        "streams": [{"name": "stdout", "uri": format!("artifact://sha256/{stream}")}]
+    })
+    .to_string();
+    let (_, manifest_digest) = fixture
+        .router
+        .retain(source, manifest.as_bytes())
+        .expect("manifest");
+    fixture
+        .router
+        .copy_into_tree(
+            source,
+            target,
+            [manifest_digest.clone(), "f".repeat(64)]
+                .into_iter()
+                .collect(),
+        )
+        .expect("copy into the fork's tree");
+    fs::remove_dir_all(tree_dir(fixture.workdir.path(), source)).expect("drop the source tree");
+    let reopened =
+        ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");
+    for (digest, content) in [
+        (&manifest_digest, manifest.as_str()),
+        (&stream, "stream bytes\n"),
+    ] {
+        assert_eq!(
+            reopened
+                .read_paged(target, digest, 0, 10)
+                .expect("copied content")
+                .content,
+            content
+        );
+    }
+}
+
+/// Tree-local sessions D4: a tree is collected against its own logs only. A
+/// reference from another tree keeps nothing alive, because a tree that needs
+/// content holds its own copy.
+#[test]
+fn collection_ignores_references_from_other_trees() {
     let fixture = placement();
     let (_, digest) = fixture
         .router
         .retain(fixture.children[0], b"referenced-by-other-tree")
         .expect("retain");
     let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
-    let log = write_root_log(fixture.workdir.path(), fixture.roots[1], &[&digest]);
-
-    // First sweep records the cross-reference in the ledger.
+    write_root_log(fixture.workdir.path(), fixture.roots[1], &[&digest]);
     fixture.router.note_tree_loaded(fixture.roots[0]);
     let report = fixture
         .router
         .collect_garbage(Duration::ZERO)
         .expect("sweep");
-    assert_eq!(report.deleted, 0);
-    assert!(blob.is_file());
-
-    // The referencing log disappearing must not retroactively free the blob.
-    drop(fixture.router);
-    fs::remove_file(log).expect("remove referencing log");
-    let reopened =
-        ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");
-    reopened.note_tree_loaded(fixture.roots[0]);
-    let report = reopened
-        .collect_garbage(Duration::ZERO)
-        .expect("second sweep");
-    assert_eq!(
-        report.deleted, 0,
-        "the ledger keeps the foreign reference alive"
-    );
-    assert!(blob.is_file());
+    assert_eq!(report.deleted, 1);
+    assert!(!blob.exists());
 }
 
 #[test]
@@ -211,22 +254,13 @@ fn collection_only_sweeps_loaded_trees() {
         .retain(fixture.roots[0], b"unreferenced-in-tree")
         .expect("retain");
     let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &owned);
-    fs::write(
-        fixture
-            .workdir
-            .path()
-            .join(SHARED_ARTIFACTS_DIR)
-            .join("b".repeat(64)),
-        b"unreferenced-shared",
-    )
-    .expect("shared blob");
 
     let report = fixture
         .router
         .collect_garbage(Duration::ZERO)
         .expect("sweep without loading the tree");
     assert!(blob.is_file(), "an unloaded tree is never collected (§5.2)");
-    assert_eq!(report.deleted, 1, "only the shared store was swept");
+    assert_eq!(report.deleted, 0);
 
     fixture.router.note_tree_loaded(fixture.roots[0]);
     let report = fixture
@@ -245,7 +279,7 @@ fn collection_only_sweeps_loaded_trees() {
 /// alone would call the harvested set current and delete the blob only that
 /// buffered record points at.
 #[test]
-fn a_resident_unflushed_child_append_aborts_the_sweep() {
+fn a_resident_unflushed_child_append_skips_its_tree() {
     let fixture = placement();
     let (root, child) = (fixture.roots[0], fixture.children[0]);
     let harvested_digest = "a".repeat(64);
@@ -304,7 +338,7 @@ fn a_resident_unflushed_child_append_aborts_the_sweep() {
     assert_eq!(
         (report.deleted, report.retained),
         (0, 0),
-        "the live set is incomplete, so the sweep must not run at all"
+        "the tree's live set is incomplete, so it must not be swept"
     );
     assert!(
         blob.is_file(),
@@ -378,12 +412,10 @@ fn collection_retains_a_blob_only_an_escaped_uri_references() {
         .retain(fixture.roots[0], b"referenced-through-an-escape")
         .expect("retain");
     let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
-    // The referencing log belongs to the *other* tree and uses an escape, so
-    // the scanner has to decode it before it can recognise the reference.
-    let directory = tree_dir(fixture.workdir.path(), fixture.roots[1]);
-    fs::create_dir_all(&directory).expect("tree directory");
+    // The tree's own log uses an escape, so the scanner has to decode it
+    // before it can recognise the reference.
     fs::write(
-        directory.join(crate::session::EVENTS_FILE),
+        tree_dir(fixture.workdir.path(), fixture.roots[0]).join(crate::session::EVENTS_FILE),
         format!("{}\n", escaped_reference_line(&digest)),
     )
     .expect("escaped log");
@@ -395,26 +427,14 @@ fn collection_retains_a_blob_only_an_escaped_uri_references() {
         .expect("sweep");
     assert_eq!(report.deleted, 0);
     assert!(blob.is_file(), "an escaped reference is a live reference");
-    assert!(
-        fixture
-            .router
-            .cross_ref_ledger()
-            .contains(&(digest.clone(), fixture.roots[1])),
-        "the escaped reference is also recorded as a cross-tree one"
-    );
-    assert!(
-        fs::read_to_string(fixture.workdir.path().join(super::CROSS_REFS_FILE))
-            .expect("ledger")
-            .contains(&digest),
-        "the ledger on disk names the escaped digest"
-    );
 }
 
-/// §5.2: a sweep may only delete what it has *proven* unreferenced. If the
-/// child logs of a loaded tree cannot be listed, liveness is unproven and
-/// the whole sweep must abort without unlinking anything.
+/// §5.2 per tree: a sweep may only delete what it has *proven* unreferenced.
+/// If the child logs of a loaded tree cannot be listed, that tree's liveness
+/// is unproven and it is left untouched, while every other loaded tree is
+/// still collected (tree-local D4).
 #[test]
-fn collection_aborts_without_deleting_when_a_loaded_tree_cannot_be_listed() {
+fn a_loaded_tree_that_cannot_be_listed_is_skipped_alone() {
     let fixture = placement();
     let (_, digest) = fixture
         .router
@@ -444,146 +464,26 @@ fn collection_aborts_without_deleting_when_a_loaded_tree_cannot_be_listed() {
     assert_eq!(report.deleted, 0, "the child log keeps the blob alive");
     assert!(blob.is_file());
 
-    // A sweep that would delete an expired shared blob if it ran at all.
-    let shared_blob = fixture
-        .workdir
-        .path()
-        .join(SHARED_ARTIFACTS_DIR)
-        .join("d".repeat(64));
-    fs::write(&shared_blob, b"expired and unreferenced").expect("shared blob");
+    // Another loaded tree with an expired, unreferenced blob.
+    let (_, other) = fixture
+        .router
+        .retain(fixture.roots[1], b"expired and unreferenced")
+        .expect("retain in the other tree");
+    let other_blob = tree_blob(fixture.workdir.path(), fixture.roots[1], &other);
+    fixture.router.note_tree_loaded(fixture.roots[1]);
 
     // Inject the enumeration failure: listing `subagents/` now errors with
     // something that is not "no such directory".
     fs::remove_dir_all(&subagents).expect("remove subagents");
     fs::write(&subagents, b"not a directory").expect("subagents becomes a file");
-    let error = fixture
+    let report = fixture
         .router
         .collect_garbage(Duration::ZERO)
-        .expect_err("an incomplete live set must abort the sweep");
-    assert_ne!(
-        error.kind(),
-        std::io::ErrorKind::NotFound,
-        "only an absent directory may mean \"no children\": {error}"
-    );
+        .expect("one unprovable tree does not fail the sweep");
     assert!(
         blob.is_file(),
         "the sole referencer of the blob was hidden from the sweep"
     );
-    assert!(
-        shared_blob.is_file(),
-        "the sweep deleted despite an unproven live set"
-    );
-}
-
-/// §5.2: the same rule one level up. If the sessions root cannot be listed,
-/// nothing is known to be live, which is not the same as nothing being live.
-#[test]
-fn collection_aborts_without_deleting_when_the_sessions_root_cannot_be_listed() {
-    let fixture = placement();
-    let (_, digest) = fixture
-        .router
-        .retain(fixture.roots[0], b"referenced-by-a-root-log")
-        .expect("retain");
-    let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
-    write_root_log(fixture.workdir.path(), fixture.roots[0], &[&digest]);
-    let shared_blob = fixture
-        .workdir
-        .path()
-        .join(SHARED_ARTIFACTS_DIR)
-        .join("e".repeat(64));
-    fs::write(&shared_blob, b"expired and unreferenced").expect("shared blob");
-
-    // A router whose sessions root is a plain file: enumeration fails with
-    // `NotADirectory`, and treating that as "no sessions" would free both
-    // blobs below.
-    let blocked = fixture.workdir.path().join("not-a-sessions-root");
-    fs::write(&blocked, b"").expect("blocking file");
-    let broken = ArtifactRouter::open_layout(
-        fixture.workdir.path().to_path_buf(),
-        fixture.workdir.path().join(SHARED_ARTIFACTS_DIR),
-        blocked,
-    )
-    .expect("router over an unlistable sessions root");
-    broken.note_tree_loaded(fixture.roots[0]);
-
-    let error = broken
-        .collect_garbage(Duration::ZERO)
-        .expect_err("an unlistable sessions root must abort the sweep");
-    assert_ne!(
-        error.kind(),
-        std::io::ErrorKind::NotFound,
-        "only an absent sessions root may mean \"no sessions\": {error}"
-    );
-    assert!(
-        blob.is_file(),
-        "a tree blob was freed on an unknown live set"
-    );
-    assert!(
-        shared_blob.is_file(),
-        "the shared store was swept on an unknown live set"
-    );
-
-    // Sanity: the same fixture with a readable sessions root does collect
-    // the unreferenced shared blob.
-    let healthy =
-        ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("healthy router");
-    healthy.note_tree_loaded(fixture.roots[0]);
-    let report = healthy.collect_garbage(Duration::ZERO).expect("sweep");
-    assert_eq!(report.deleted, 1);
-    assert!(blob.is_file());
-}
-
-/// B2: a lost ledger append must never leave the durable ledger short of a
-/// reference this process already proved — the next sweep rewrites it.
-#[test]
-fn a_lost_ledger_append_is_rewritten_by_the_next_sweep() {
-    let fixture = placement();
-    let (_, digest) = fixture
-        .router
-        .retain(fixture.roots[0], b"foreign-but-for-a-lost-append")
-        .expect("retain");
-    let blob = tree_blob(fixture.workdir.path(), fixture.roots[0], &digest);
-    write_root_log(fixture.workdir.path(), fixture.roots[1], &[&digest]);
-    fixture.router.note_tree_loaded(fixture.roots[0]);
-
-    fixture.router.fail_next_ledger_append();
-    fixture
-        .router
-        .collect_garbage(Duration::ZERO)
-        .expect("sweep with a lost append");
-    let ledger_path = fixture.workdir.path().join(super::CROSS_REFS_FILE);
-    assert!(
-        !fs::read_to_string(&ledger_path)
-            .unwrap_or_default()
-            .contains(&digest),
-        "the injected failure must actually lose the entry"
-    );
-
-    // The next sweep repairs the file wholesale, so a later process cannot
-    // see a ledger missing a reference this one proved.
-    fixture
-        .router
-        .collect_garbage(Duration::ZERO)
-        .expect("repairing sweep");
-    let text = fs::read_to_string(&ledger_path).expect("rebuilt ledger");
-    assert!(
-        text.contains(&digest),
-        "the ledger was not rebuilt after the lost append: {text}"
-    );
-    assert!(blob.is_file());
-
-    // A reopened router reads the rebuilt file back into its live set.
-    drop(fixture.router);
-    let reopened =
-        ArtifactRouter::open(fixture.workdir.path().to_path_buf()).expect("reopened router");
-    reopened.note_tree_loaded(fixture.roots[0]);
-    let live = reopened
-        .live_references_and_unprovable()
-        .expect("live set")
-        .0;
-    assert!(
-        live.contains(&digest),
-        "the durable ledger no longer carries the reference back"
-    );
-    assert!(blob.is_file());
+    assert_eq!(report.deleted, 1, "the other tree was still collected");
+    assert!(!other_blob.exists());
 }

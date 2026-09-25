@@ -499,7 +499,12 @@ async fn cancellation_after_successful_finalization_is_reconciled_at_terminal_co
     assert_eq!(
         fixture
             .engine
-            .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+            .read_artifact(
+                session.session_id,
+                &format!("artifact://{}", retained.streams[0].sha256),
+                0,
+                10
+            )
             .unwrap()
             .content,
         "race completed"
@@ -670,7 +675,12 @@ async fn plugin_named_output_contract_reaches_capture_manifest_and_model_history
         assert_eq!(
             fixture
                 .engine
-                .read_artifact(&format!("artifact://{manifest_id}/{name}"), 0, 1)
+                .read_artifact(
+                    session.session_id,
+                    &format!("artifact://{manifest_id}/{name}"),
+                    0,
+                    1
+                )
                 .unwrap()
                 .content,
             expected
@@ -1068,7 +1078,12 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert_eq!(
             fixture
                 .engine
-                .read_artifact(&format!("artifact://{manifest}/results"), 0, 1)
+                .read_artifact(
+                    session.session_id,
+                    &format!("artifact://{manifest}/results"),
+                    0,
+                    1
+                )
                 .unwrap()
                 .content,
             "x".repeat(128 * 1024)
@@ -1076,7 +1091,12 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert_eq!(
             fixture
                 .engine
-                .read_artifact(&format!("artifact://{manifest}/diagnostics"), 0, 1)
+                .read_artifact(
+                    session.session_id,
+                    &format!("artifact://{manifest}/diagnostics"),
+                    0,
+                    1
+                )
                 .unwrap()
                 .content,
             "diagnostic\n"
@@ -1084,7 +1104,12 @@ async fn named_output_streams_publish_readable_manifests_without_display_leaking
         assert!(
             fixture
                 .engine
-                .read_artifact(&format!("artifact://{manifest}/empty"), 0, 1)
+                .read_artifact(
+                    session.session_id,
+                    &format!("artifact://{manifest}/empty"),
+                    0,
+                    1
+                )
                 .unwrap()
                 .content
                 .is_empty()

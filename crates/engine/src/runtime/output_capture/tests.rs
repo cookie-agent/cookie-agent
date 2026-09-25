@@ -90,7 +90,7 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
     {
         assert_eq!(
             store
-                .read_paged(stream.sha256.as_str(), 0, 10)
+                .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 10)
                 .unwrap()
                 .content,
             expected
@@ -101,8 +101,13 @@ async fn named_streams_capture_in_declaration_order_with_independent_previews() 
         .uri
         .strip_prefix("artifact://sha256/")
         .unwrap();
-    let manifest: ToolOutputManifest =
-        serde_json::from_str(&store.read_paged(manifest_digest, 0, 1).unwrap().content).unwrap();
+    let manifest: ToolOutputManifest = serde_json::from_str(
+        &store
+            .read_paged(crate::test_session_id(), manifest_digest, 0, 1)
+            .unwrap()
+            .content,
+    )
+    .unwrap();
     manifest.validate().unwrap();
     assert_eq!(manifest.streams, retained.streams);
 }
@@ -151,7 +156,12 @@ async fn streamed_completion_rejects_resupply_and_preserves_incomplete_utf8_outp
     assert_eq!(retained.streams[0].byte_length, 5);
     assert_eq!(
         store
-            .read_paged(retained.streams[0].sha256.as_str(), 0, 1)
+            .read_paged(
+                crate::test_session_id(),
+                retained.streams[0].sha256.as_str(),
+                0,
+                1
+            )
             .unwrap()
             .content,
         "a\u{20ac}z"
@@ -222,7 +232,7 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
     assert_eq!(stream.line_count, 2);
     assert_eq!(
         store
-            .read_paged(stream.sha256.as_str(), 1, 1)
+            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 1, 1)
             .unwrap()
             .content,
         "two\n"
@@ -232,12 +242,14 @@ async fn terminal_output_uses_capture_and_opt_out_never_publishes_an_artifact() 
 #[tokio::test]
 async fn output_publication_is_protected_until_terminal_references_are_persisted() {
     let root = tempfile::tempdir().unwrap();
-    let sessions = root.path().join("sessions");
-    std::fs::create_dir_all(sessions.join("session")).unwrap();
-    let store = ArtifactRouter::open_flat(root.path().join("artifacts")).unwrap();
+    let session = crate::test_session_id();
+    let store = ArtifactRouter::open(root.path().to_path_buf()).unwrap();
+    // Loaded up front, so only the in-flight publication protects the blobs
+    // from the first sweep.
+    store.note_tree_loaded(session);
     let capture = OutputCapture::new(
         store.clone(),
-        crate::test_session_id(),
+        session,
         ToolOutputDeclaration::Named {
             streams: vec!["a".into(), "b".into()],
         },
@@ -272,7 +284,9 @@ async fn output_publication_is_protected_until_terminal_references_are_persisted
         0
     );
     std::fs::write(
-        sessions.join("session/events.jsonl"),
+        root.path()
+            .join(session.to_string())
+            .join(crate::session::EVENTS_FILE),
         serde_json::to_vec(&result).unwrap(),
     )
     .unwrap();
@@ -380,7 +394,7 @@ async fn display_budget_does_not_stop_authoritative_capture() {
     let stream = &result.retained_output.as_ref().unwrap().streams[0];
     assert_eq!(
         store
-            .read_paged(stream.sha256.as_str(), 0, 200)
+            .read_paged(crate::test_session_id(), stream.sha256.as_str(), 0, 200)
             .unwrap()
             .content,
         "data\n".repeat(100)
@@ -434,6 +448,7 @@ async fn progress_backpressure_precedes_acceptance_and_never_drops_output() {
     assert_eq!(
         store
             .read_paged(
+                crate::test_session_id(),
                 result.retained_output.as_ref().unwrap().streams[0]
                     .sha256
                     .as_str(),
@@ -501,7 +516,12 @@ async fn capture_io_errors_latch_and_preserve_previously_accepted_output() {
     assert!(retained.incomplete);
     assert_eq!(
         store
-            .read_paged(retained.streams[0].sha256.as_str(), 0, 10)
+            .read_paged(
+                crate::test_session_id(),
+                retained.streams[0].sha256.as_str(),
+                0,
+                10
+            )
             .unwrap()
             .content,
         "accepted\n"
@@ -598,7 +618,12 @@ async fn cancelled_append_awaiter_cannot_lose_bytes_or_let_finalization_overtake
     assert!(retained.incomplete);
     assert_eq!(
         store
-            .read_paged(retained.streams[0].sha256.as_str(), 0, 10)
+            .read_paged(
+                crate::test_session_id(),
+                retained.streams[0].sha256.as_str(),
+                0,
+                10
+            )
             .unwrap()
             .content,
         "accepted before cancellation\n"

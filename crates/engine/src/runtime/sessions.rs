@@ -467,6 +467,17 @@ impl Engine {
             }
         }
         let forked = self.inner.store.fork(session_id, through_seq, origin)?;
+        // A fork into a new tree takes the artifacts its history references
+        // along, so it never resolves anything in the tree it came from
+        // (tree-local D2).
+        let mut referenced = std::collections::HashSet::new();
+        crate::runtime::artifacts::collect_artifact_references_in_events(
+            &self.inner.store.get(forked)?.log.event_snapshot(),
+            &mut referenced,
+        )?;
+        self.inner
+            .artifacts
+            .copy_into_tree(session_id, forked, referenced)?;
         let producer_state = self.goal_producer_projection(forked)?;
         if producer_state.goal.is_some()
             || producer_state

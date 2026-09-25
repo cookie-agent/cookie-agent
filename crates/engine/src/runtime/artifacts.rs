@@ -1683,10 +1683,7 @@ pub(crate) use windows::*;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use cookie_agent_protocol::{ArtifactReference, SessionId, ToolAttachment};
@@ -1713,31 +1710,6 @@ fn entry_is_directory(path: &std::path::Path) -> std::io::Result<bool> {
 
 /// Directory holding a tree's own artifacts (`<root>/artifacts`).
 pub(crate) const ARTIFACTS_DIR: &str = "artifacts";
-/// Workdir-wide store for cross-tree and orphaned content (§5.1).
-pub(crate) const SHARED_ARTIFACTS_DIR: &str = "artifacts.shared";
-/// Append-only ledger of digests one tree references from another (§5.3).
-pub(crate) const CROSS_REFS_FILE: &str = "cross-refs.jsonl";
-
-/// Index entry for a digest written into a root tree or the shared store.
-fn location_of(tree: Option<SessionId>) -> ArtifactLocation {
-    match tree {
-        Some(tree) => ArtifactLocation::Root(tree),
-        None => ArtifactLocation::Shared,
-    }
-}
-
-/// Where the bytes behind an `artifact://sha256/<digest>` URI live.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ArtifactLocation {
-    Root(SessionId),
-    Shared,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct StoredCrossReference {
-    digest: String,
-    tree: String,
-}
 
 /// Child references a lazy tree load harvested, and the proof they are still
 /// complete: the [`LogFingerprint`](crate::session::LogFingerprint) of every
@@ -1764,33 +1736,28 @@ enum HarvestedRefs {
     Unprovable,
 }
 
-/// Content-addressed artifacts routed to the tree that wrote them (§5.1).
+/// Content-addressed artifacts, each belonging to exactly one root tree
+/// (tree-local sessions, D).
 ///
-/// Writes always land in the writing session's own root directory, which keeps
-/// garbage collection tree-local. Reads resolve a digest through a process-wide
-/// index and fall back to a directory-name scan, so a URI that names content
-/// stored in another tree still works.
+/// A work-dir router keeps every tree's artifacts in that root's `artifacts/`
+/// directory: a session writes to and reads from its own tree only, a fork
+/// copies what it references into its new tree, and a sweep collects one tree
+/// against that tree's own logs. A flat router — a standalone tool context
+/// with no sessions around it — keeps everything in the one directory it was
+/// opened on.
 pub(crate) struct ArtifactRouter {
-    /// Workdir-wide content that no single tree owns (§5.1).
-    shared_directory: PathBuf,
+    /// Set for a flat router: the one store every session uses.
+    flat: Option<Arc<ArtifactStore>>,
+    #[cfg(test)]
+    flat_directory: Option<PathBuf>,
     /// Directory whose children are the per-root tree directories.
     sessions_dir: PathBuf,
-    /// Append-only ledger of digests one tree references from another.
-    cross_refs_path: PathBuf,
-    shared: Arc<ArtifactStore>,
     /// A sweep holds this while a capture publication may still be in flight,
     /// subsuming the per-store lock it replaces.
     publication: Arc<tokio::sync::RwLock<()>>,
     #[cfg(test)]
     io_test_hook: Arc<ArtifactIoTestHook>,
     roots: Mutex<HashMap<SessionId, Arc<ArtifactStore>>>,
-    digest_index: Mutex<HashMap<String, ArtifactLocation>>,
-    cross_refs: Mutex<HashSet<(String, SessionId)>>,
-    /// The durable ledger is missing at least one entry this process proved;
-    /// rewritten wholesale before the next sweep trusts it again.
-    cross_refs_dirty: AtomicBool,
-    #[cfg(test)]
-    ledger_append_test_failure: AtomicBool,
     loaded_trees: Mutex<HashSet<SessionId>>,
     /// Per loaded tree: the child references the one bulk fold harvested, plus
     /// the log fingerprints it was taken at (§3.3(b), §5.2).
@@ -1798,8 +1765,9 @@ pub(crate) struct ArtifactRouter {
     /// Asks the store what a session log looks like right now. Without it the
     /// harvested sets can never be proven current, so they are never reused.
     fingerprint_probe: Mutex<Option<LogFingerprintProbe>>,
-    /// Maps a session to the root whose directory holds its writes (§5.1). The
-    /// engine installs this once the store exists; unrouted callers share.
+    /// Maps a session to the root whose directory holds its artifacts (§5.1).
+    /// The engine installs this once the store exists; a session no resolver
+    /// places is treated as its own tree.
     tree_resolver: Mutex<Option<TreeResolver>>,
 }
 
@@ -1807,22 +1775,17 @@ impl std::fmt::Debug for ArtifactRouter {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ArtifactRouter")
-            .field("shared_directory", &self.shared_directory)
-            .field("cross_refs_path", &self.cross_refs_path)
+            .field("flat", &self.flat.is_some())
             .field("sessions_dir", &self.sessions_dir)
             .finish_non_exhaustive()
     }
 }
 
 impl ArtifactRouter {
-    /// Hierarchical (v2) workdir: root session directories, `artifacts.shared/`
-    /// and `cross-refs.jsonl` are siblings inside `<data>/sessions/<workdirkey>`.
+    /// Work-dir router: root session directories are children of `workdir_dir`
+    /// and each keeps its tree's artifacts in its own `artifacts/`.
     pub(crate) fn open(workdir_dir: PathBuf) -> std::io::Result<Arc<Self>> {
-        Self::open_layout(
-            workdir_dir.clone(),
-            workdir_dir.join(SHARED_ARTIFACTS_DIR),
-            workdir_dir,
-        )
+        Ok(Self::with_layout(None, workdir_dir))
     }
 
     /// Router for an open store: a v2 store partitions artifacts by tree (§5.1).
@@ -1830,60 +1793,345 @@ impl ArtifactRouter {
         Self::open(store.workdir_dir_path().to_path_buf())
     }
 
-    /// Router for callers without a store at all: every write lands in the given
-    /// directory and nothing is tree-partitioned.
+    /// Flat router: every session reads and writes the one store at `directory`.
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn open_flat(shared_directory: PathBuf) -> std::io::Result<Arc<Self>> {
-        let workdir_dir = shared_directory
+    pub(crate) fn open_flat(directory: PathBuf) -> std::io::Result<Arc<Self>> {
+        let store = ArtifactStore::open(directory.clone())?;
+        let sessions_dir = directory
             .parent()
-            .map_or_else(|| PathBuf::from("."), PathBuf::from);
-        let sessions_dir = workdir_dir.join(crate::session::SESSIONS_ROOT_DIR);
-        Self::open_layout(workdir_dir, shared_directory, sessions_dir)
-    }
-
-    fn open_layout(
-        workdir_dir: PathBuf,
-        shared_directory: PathBuf,
-        sessions_dir: PathBuf,
-    ) -> std::io::Result<Arc<Self>> {
-        let shared = ArtifactStore::open(shared_directory.clone())?;
-        #[cfg(test)]
-        let io_test_hook = Arc::new(ArtifactIoTestHook::default());
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
+            .join(crate::session::SESSIONS_ROOT_DIR);
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut router = Self::with_layout(Some(store), sessions_dir);
         #[cfg(test)]
         {
-            shared.io_test_hook.attach_parent(&io_test_hook);
+            let inner = Arc::get_mut(&mut router).expect("a new router is unshared");
+            inner.flat_directory = Some(directory);
+            if let Some(flat) = &inner.flat {
+                flat.io_test_hook.attach_parent(&inner.io_test_hook);
+            }
         }
-        let cross_refs_path = workdir_dir.join(CROSS_REFS_FILE);
-        // A ledger this process cannot read is not an empty ledger: reads still
-        // work, and every sweep re-reads the file and aborts if it stays
-        // unreadable, so no blob is freed on the strength of an unknown set.
-        let cross_refs = Self::read_cross_refs(&cross_refs_path).unwrap_or_else(|error| {
-            eprintln!("cross-reference ledger unreadable: {error}");
-            HashSet::new()
-        });
-        Ok(Arc::new(Self {
-            shared_directory,
-            cross_refs_path,
+        Ok(router)
+    }
+
+    fn with_layout(flat: Option<Arc<ArtifactStore>>, sessions_dir: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            flat,
+            #[cfg(test)]
+            flat_directory: None,
             sessions_dir,
-            shared,
             publication: Arc::new(tokio::sync::RwLock::new(())),
             #[cfg(test)]
-            io_test_hook,
+            io_test_hook: Arc::new(ArtifactIoTestHook::default()),
             roots: Mutex::new(HashMap::new()),
-            digest_index: Mutex::new(HashMap::new()),
-            cross_refs: Mutex::new(cross_refs),
-            cross_refs_dirty: AtomicBool::new(false),
-            #[cfg(test)]
-            ledger_append_test_failure: AtomicBool::new(false),
             loaded_trees: Mutex::new(HashSet::new()),
             tree_live_refs: Mutex::new(HashMap::new()),
             fingerprint_probe: Mutex::new(None),
             tree_resolver: Mutex::new(None),
-        }))
+        })
     }
 
-    /// Teach the router where a session's writes belong; `None` routes to the
-    /// shared store.
+    /// The tree a session's artifacts belong to.
+    fn tree_for(&self, session: SessionId) -> SessionId {
+        self.tree_of(session).unwrap_or(session)
+    }
+
+    /// The store a session writes to, created on first write.
+    fn write_store(&self, session: SessionId) -> std::io::Result<Arc<ArtifactStore>> {
+        match &self.flat {
+            Some(flat) => Ok(Arc::clone(flat)),
+            None => self.tree_store(self.tree_for(session)),
+        }
+    }
+
+    /// The store a session reads from, or `None` when its tree has never
+    /// stored anything. A read never creates a tree directory, so it cannot
+    /// race an unpublished root's publication.
+    fn read_store(&self, session: SessionId) -> std::io::Result<Option<Arc<ArtifactStore>>> {
+        if let Some(flat) = &self.flat {
+            return Ok(Some(Arc::clone(flat)));
+        }
+        let tree = self.tree_for(session);
+        if let Some(store) = self.cached_tree_store(tree) {
+            return Ok(Some(store));
+        }
+        match std::fs::metadata(self.tree_dir(tree).join(ARTIFACTS_DIR)) {
+            Ok(metadata) if metadata.is_dir() => self.tree_store(tree).map(Some),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Where a session's blob with this digest is stored (placement visibility
+    /// for tests and diagnostics).
+    #[cfg(test)]
+    pub(crate) fn blob_path(&self, session: SessionId, digest: &str) -> PathBuf {
+        match &self.flat_directory {
+            Some(directory) => directory.join(digest),
+            None => self
+                .tree_dir(self.tree_for(session))
+                .join(ARTIFACTS_DIR)
+                .join(digest),
+        }
+    }
+
+    pub(crate) fn retain(
+        &self,
+        session: SessionId,
+        content: &[u8],
+    ) -> std::io::Result<(ArtifactReference, String)> {
+        self.write_store(session)?.retain(content)
+    }
+
+    pub(crate) fn create_capture_file(
+        &self,
+        session: SessionId,
+        name: &str,
+    ) -> std::io::Result<File> {
+        self.write_store(session)?.create_capture_file(name)
+    }
+
+    pub(crate) fn commit_capture(
+        &self,
+        session: SessionId,
+        name: &str,
+        capture: &Mutex<File>,
+    ) -> std::io::Result<(CapturedArtifact, u64)> {
+        self.write_store(session)?.commit_capture(name, capture)
+    }
+
+    pub(crate) fn discard_capture(&self, session: SessionId, name: &str) {
+        let store = match &self.flat {
+            Some(flat) => Arc::clone(flat),
+            None => match self.cached_tree_store(self.tree_for(session)) {
+                Some(store) => store,
+                None => return,
+            },
+        };
+        store.discard_capture(name);
+    }
+
+    /// A handle that reads as `session`, for code that walks one session's
+    /// history without carrying its ID along; `None` reads nothing.
+    pub(crate) fn for_session(&self, session: Option<SessionId>) -> SessionArtifacts<'_> {
+        SessionArtifacts {
+            router: self,
+            session,
+        }
+    }
+
+    /// Opens a blob of the reading session's own tree; content stored in any
+    /// other tree is never found (tree-local D1).
+    #[cfg(test)]
+    pub(crate) fn open_existing(
+        &self,
+        session: SessionId,
+        digest: &str,
+    ) -> std::io::Result<Option<std::fs::File>> {
+        match self.read_store(session)? {
+            Some(store) => store.open_existing(digest),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn read_paged(
+        &self,
+        session: SessionId,
+        digest: &str,
+        offset_lines: u64,
+        limit_lines: u64,
+    ) -> std::io::Result<ArtifactPage> {
+        match self.read_store(session)? {
+            Some(store) => store.read_paged(digest, offset_lines, limit_lines),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "artifact missing",
+            )),
+        }
+    }
+
+    pub(crate) fn read_verified_attachment(
+        &self,
+        session: SessionId,
+        attachment: &ToolAttachment,
+    ) -> std::io::Result<Bytes> {
+        match self.read_store(session)? {
+            Some(store) => store.read_verified_attachment(attachment),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "artifact missing",
+            )),
+        }
+    }
+
+    /// Copies every artifact `digests` names — and every artifact those name in
+    /// turn, such as a named-stream manifest's streams — from `source`'s tree
+    /// into `target`'s, so a fork never depends on the tree it came from
+    /// (tree-local D2). Content already present is kept; content the source no
+    /// longer holds is skipped, exactly as a read of it would fail there.
+    pub(crate) fn copy_into_tree(
+        &self,
+        source: SessionId,
+        target: SessionId,
+        digests: HashSet<String>,
+    ) -> std::io::Result<()> {
+        if self.flat.is_some()
+            || self.tree_for(source) == self.tree_for(target)
+            || digests.is_empty()
+        {
+            return Ok(());
+        }
+        let Some(from) = self.read_store(source)? else {
+            return Ok(());
+        };
+        let read = |digest: &str| -> std::io::Result<Option<Vec<u8>>> {
+            use std::io::Read as _;
+            let Some(mut file) = from.open_existing(digest)? else {
+                return Ok(None);
+            };
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        };
+        let mut all = digests;
+        expand_transitive_artifact_references(&mut all, |digest| {
+            let Some(file) = from.open_existing(digest)? else {
+                return Ok(None);
+            };
+            if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
+                return Ok(None);
+            }
+            read(digest)
+        })?;
+        let into = self.write_store(target)?;
+        for digest in all {
+            if into.open_existing(&digest)?.is_some() {
+                continue;
+            }
+            if let Some(bytes) = read(&digest)? {
+                into.retain(&bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Collects each loaded tree against that tree's own logs (tree-local D4).
+    ///
+    /// Fail-closed per tree: a tree whose live set cannot be established
+    /// completely — an unreadable log or `subagents/`, or a resident child whose
+    /// newest records may still be buffered — is left untouched, and the other
+    /// trees are still collected. Unloaded trees are never collected, because
+    /// their children are unknown. A flat router (test contexts only) has no
+    /// logs behind it, so nothing in it counts as referenced.
+    pub(crate) fn collect_garbage(
+        &self,
+        grace: std::time::Duration,
+    ) -> std::io::Result<ArtifactGcReport> {
+        let _publication = match self.publication.try_write() {
+            Ok(guard) => guard,
+            // A capture is publishing; the next sweep will see its bytes.
+            Err(_) => return Ok(ArtifactGcReport::default()),
+        };
+        if let Some(flat) = &self.flat {
+            return flat.collect_garbage_with(&HashSet::new(), grace);
+        }
+        let mut report = ArtifactGcReport::default();
+        let loaded = self
+            .loaded_trees
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for tree in loaded {
+            let Some(store) = self.cached_tree_store(tree) else {
+                continue;
+            };
+            let live = match self.tree_live_set(tree, &store) {
+                Ok(Some(live)) => live,
+                Ok(None) => continue,
+                Err(error) => {
+                    eprintln!("artifact collection skipped tree {tree}: {error}");
+                    continue;
+                }
+            };
+            let tree_report = store.collect_garbage_with(&live, grace)?;
+            report.deleted += tree_report.deleted;
+            report.retained += tree_report.retained;
+        }
+        Ok(report)
+    }
+
+    /// Digests one tree's logs reference, expanded transitively through that
+    /// tree's own artifacts, or `None` when the set cannot be proven complete.
+    fn tree_live_set(
+        &self,
+        tree: SessionId,
+        store: &ArtifactStore,
+    ) -> std::io::Result<Option<HashSet<String>>> {
+        let Some(mut live) = self.scan_tree_references(&self.tree_dir(tree), tree)? else {
+            return Ok(None);
+        };
+        expand_transitive_artifact_references(&mut live, |digest| {
+            let Some(mut file) = store.open_existing(digest)? else {
+                return Ok(None);
+            };
+            if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
+                return Ok(None);
+            }
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        })?;
+        Ok(Some(live))
+    }
+
+    /// The root log plus every child log of a loaded tree, or `None` when a
+    /// child's references cannot be established at all.
+    ///
+    /// Fail-closed: an unreadable `subagents/` hides live child references, so
+    /// only a missing directory counts as "no children" and every other error
+    /// is returned. A tree whose harvested set may be stale is never guessed at
+    /// (§5.2, review F4).
+    fn scan_tree_references(
+        &self,
+        directory: &Path,
+        tree: SessionId,
+    ) -> std::io::Result<Option<HashSet<String>>> {
+        let mut live =
+            scan_artifact_references_in_log(&directory.join(crate::session::EVENTS_FILE))?;
+        // The one bulk fold already read every child log of a loaded tree; while
+        // the store still agrees with that fold, its harvested set *is* the child
+        // live set and the sweep opens none of them again (§3.3, §5.2).
+        match self.harvested_tree_refs(directory, tree)? {
+            HarvestedRefs::Current(installed) => {
+                live.extend(installed);
+                return Ok(Some(live));
+            }
+            HarvestedRefs::Unprovable => return Ok(None),
+            HarvestedRefs::Reharvest => {}
+        }
+        let children = match std::fs::read_dir(directory.join(crate::session::SUBAGENTS_DIR)) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(live)),
+            Err(error) => return Err(error),
+        };
+        for child in children {
+            let path = child?.path();
+            if !entry_is_directory(&path)? {
+                continue;
+            }
+            live.extend(scan_artifact_references_in_log(
+                &path.join(crate::session::EVENTS_FILE),
+            )?);
+        }
+        Ok(Some(live))
+    }
+
+    /// Teach the router which root tree a session belongs to; a session the
+    /// resolver does not place (`None`) is treated as its own tree.
     pub(crate) fn install_tree_resolver(&self, resolver: TreeResolver) {
         *self
             .tree_resolver
@@ -1918,30 +2166,9 @@ impl ArtifactRouter {
             .and_then(|resolve| resolve(session))
     }
 
-    /// Store a write targets, plus the tree it belongs to (for the digest index).
-    fn write_store(
-        &self,
-        session: SessionId,
-    ) -> std::io::Result<(Arc<ArtifactStore>, Option<SessionId>)> {
-        match self.tree_of(session) {
-            Some(tree) => Ok((self.tree_store(tree)?, Some(tree))),
-            None => Ok((Arc::clone(&self.shared), None)),
-        }
-    }
-
     /// Gate for artifact garbage collection across every store this router owns.
     pub(crate) fn publication(&self) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(&self.publication)
-    }
-
-    /// Where a session's blob with this digest is stored (placement visibility
-    /// for tests and diagnostics).
-    #[cfg(test)]
-    pub(crate) fn blob_path(&self, session: SessionId, digest: &str) -> PathBuf {
-        match self.tree_of(session) {
-            Some(tree) => self.tree_dir(tree).join(ARTIFACTS_DIR).join(digest),
-            None => self.shared_directory.join(digest),
-        }
     }
 
     #[cfg(test)]
@@ -1984,89 +2211,6 @@ impl ArtifactRouter {
             .map(Arc::clone)
     }
 
-    pub(crate) fn retain(
-        &self,
-        session: SessionId,
-        content: &[u8],
-    ) -> std::io::Result<(ArtifactReference, String)> {
-        let (store, tree) = self.write_store(session)?;
-        let (reference, digest) = store.retain(content)?;
-        self.index(tree, &digest);
-        Ok((reference, digest))
-    }
-
-    pub(crate) fn create_capture_file(
-        &self,
-        session: SessionId,
-        name: &str,
-    ) -> std::io::Result<File> {
-        let (store, _) = self.write_store(session)?;
-        store.create_capture_file(name)
-    }
-
-    pub(crate) fn commit_capture(
-        &self,
-        session: SessionId,
-        name: &str,
-        capture: &Mutex<File>,
-    ) -> std::io::Result<(CapturedArtifact, u64)> {
-        let (store, tree) = self.write_store(session)?;
-        let (artifact, newlines) = store.commit_capture(name, capture)?;
-        self.index(tree, &artifact.sha256);
-        Ok((artifact, newlines))
-    }
-
-    pub(crate) fn discard_capture(&self, session: SessionId, name: &str) {
-        let store = match self.tree_of(session) {
-            Some(tree) => match self.cached_tree_store(tree) {
-                Some(store) => store,
-                None => return,
-            },
-            None => Arc::clone(&self.shared),
-        };
-        store.discard_capture(name);
-    }
-
-    pub(crate) fn open_existing(&self, digest: &str) -> std::io::Result<Option<std::fs::File>> {
-        match self.locate(digest)? {
-            Some(location) => self.store_for(location)?.open_existing(digest),
-            None => Ok(None),
-        }
-    }
-
-    pub(crate) fn read_paged(
-        &self,
-        digest: &str,
-        offset_lines: u64,
-        limit_lines: u64,
-    ) -> std::io::Result<ArtifactPage> {
-        match self.locate(digest)? {
-            Some(location) => {
-                self.store_for(location)?
-                    .read_paged(digest, offset_lines, limit_lines)
-            }
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "artifact missing",
-            )),
-        }
-    }
-
-    pub(crate) fn read_verified_attachment(
-        &self,
-        attachment: &ToolAttachment,
-    ) -> std::io::Result<Bytes> {
-        match self.locate(attachment.sha256.as_str())? {
-            Some(location) => self
-                .store_for(location)?
-                .read_verified_attachment(attachment),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "artifact missing",
-            )),
-        }
-    }
-
     /// Mark a tree as loaded so its own artifact directory becomes collectable
     /// and its child references join the live set (§5.2).
     pub(crate) fn note_tree_loaded(&self, tree: SessionId) {
@@ -2074,13 +2218,6 @@ impl ArtifactRouter {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(tree);
-    }
-
-    pub(crate) fn is_tree_loaded(&self, tree: SessionId) -> bool {
-        self.loaded_trees
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .contains(&tree)
     }
 
     /// Installs the child-reference set one bulk tree load harvested, together
@@ -2203,412 +2340,27 @@ impl ArtifactRouter {
         }
         Ok(fingerprints)
     }
+}
 
-    /// Collect expired blobs from the shared store and from every tree whose
-    /// load completed in this process (§5.2). Trees that were never loaded
-    /// contribute their durable references but keep their blobs in place.
-    ///
-    /// Fail-closed: if the live set cannot be established completely, the
-    /// `Err` returns before any store is swept, so nothing is deleted. Proving a
-    /// blob unreferenced requires having seen every log that could reference it,
-    /// which includes a loaded tree whose child references this process can no
-    /// longer prove are durable — that tree holds the whole sweep, not just its
-    /// own directory (§5.2, review F4).
-    pub(crate) fn collect_garbage(
+/// An [`ArtifactRouter`] bound to the session whose artifacts are read, so a
+/// history walk resolves attachments in that session's tree only.
+#[derive(Clone, Copy)]
+pub(crate) struct SessionArtifacts<'a> {
+    router: &'a ArtifactRouter,
+    session: Option<SessionId>,
+}
+
+impl SessionArtifacts<'_> {
+    pub(crate) fn read_verified_attachment(
         &self,
-        grace: std::time::Duration,
-    ) -> std::io::Result<ArtifactGcReport> {
-        let _publication = match self.publication.try_write() {
-            Ok(guard) => guard,
-            // A capture is publishing; the next sweep will see its bytes.
-            Err(_) => return Ok(ArtifactGcReport::default()),
-        };
-        let (live, unprovable) = self.live_references_and_unprovable()?;
-        if !unprovable.is_empty() {
-            // Fail closed the way an unreadable log already does: one tree whose
-            // child references cannot be established makes the live set
-            // incomplete for every store this sweep consults, so nothing is
-            // deleted anywhere and the next sweep — once that log's records are
-            // durable, or the child has been evicted — tries again (§5.2).
-            return Ok(ArtifactGcReport::default());
-        }
-        let mut report = self.shared.collect_garbage_with(&live, grace)?;
-        let loaded = self
-            .loaded_trees
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        for tree in loaded {
-            let Some(store) = self.cached_tree_store(tree) else {
-                continue;
-            };
-            let tree_report = store.collect_garbage_with(&live, grace)?;
-            report.deleted += tree_report.deleted;
-            report.retained += tree_report.retained;
-        }
-        Ok(report)
-    }
-
-    /// Digests referenced by session logs and by the cross-tree ledger, expanded
-    /// transitively through artifact contents (§5.2). Every session directory is
-    /// scanned; a tree's `subagents/` logs join the set only once that tree has
-    /// been loaded, because until then its children are unknown.
-    ///
-    /// An `Err` means the live set is *incomplete*, which the caller must never
-    /// treat as an empty one: every enumeration failure aborts the sweep before
-    /// a single blob is unlinked.
-    /// [`Self::live_references`], plus the loaded trees whose child references
-    /// this pass could not establish. The set is shared by every store a sweep
-    /// consults, so an incomplete one is not safe for any of them (§5.2).
-    fn live_references_and_unprovable(
-        &self,
-    ) -> std::io::Result<(HashSet<String>, HashSet<SessionId>)> {
-        // A previous append may have failed, so repair the ledger before reading
-        // it back into the live set (B2).
-        self.rebuild_cross_ref_ledger_if_dirty();
-        let mut live = HashSet::new();
-        let mut unprovable = HashSet::new();
-        for directory in self.session_directories()? {
-            let tree = directory
-                .file_name()
-                .and_then(|name| name.to_string_lossy().parse::<SessionId>().ok());
-            let referenced = self.scan_tree_references(&directory, tree, &mut unprovable)?;
-            if let Some(tree) = tree {
-                self.note_foreign_references(tree, &referenced);
-            }
-            live.extend(referenced);
-        }
-        live.extend(self.cross_reference_digests()?);
-        expand_transitive_artifact_references(&mut live, |digest| {
-            let Some(mut file) = self.open_existing(digest)? else {
-                return Ok(None);
-            };
-            if file.metadata()?.len() > MAX_TRANSITIVE_ARTIFACT_BYTES {
-                return Ok(None);
-            }
-            use std::io::Read as _;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            Ok(Some(bytes))
-        })?;
-        Ok((live, unprovable))
-    }
-
-    /// Every root session directory under the sessions root.
-    ///
-    /// Fail-closed: only a genuinely absent sessions root means "no sessions".
-    /// Any other read or per-entry failure is returned, because a partial list
-    /// would make unreachable-looking blobs look dead (§5.2).
-    fn session_directories(&self) -> std::io::Result<Vec<PathBuf>> {
-        let mut directories = Vec::new();
-        let entries = match std::fs::read_dir(&self.sessions_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directories),
-            Err(error) => return Err(error),
-        };
-        for entry in entries {
-            let path = entry?.path();
-            if entry_is_directory(&path)? {
-                directories.push(path);
-            }
-        }
-        directories.sort();
-        Ok(directories)
-    }
-
-    /// Session log plus, for a loaded tree, every child log in its `subagents/`.
-    ///
-    /// Fail-closed for a loaded tree: an unreadable `subagents/` hides live
-    /// child references, so only a missing directory counts as "no children" and
-    /// every other error aborts the sweep. A tree whose child references cannot
-    /// be established at all is reported in `unprovable` instead of being
-    /// guessed at: its harvested set is never reused when it may be stale
-    /// (§5.2, review F4).
-    fn scan_tree_references(
-        &self,
-        directory: &Path,
-        tree: Option<SessionId>,
-        unprovable: &mut HashSet<SessionId>,
-    ) -> std::io::Result<HashSet<String>> {
-        let mut live =
-            scan_artifact_references_in_log(&directory.join(crate::session::EVENTS_FILE))?;
-        let Some(tree) = tree.filter(|tree| self.is_tree_loaded(*tree)) else {
-            return Ok(live);
-        };
-        // The one bulk fold already read every child log of a loaded tree; while
-        // the store still agrees with that fold, its harvested set *is* the child
-        // live set and the sweep opens none of them again (§3.3, §5.2).
-        match self.harvested_tree_refs(directory, tree)? {
-            HarvestedRefs::Current(installed) => {
-                live.extend(installed);
-                return Ok(live);
-            }
-            HarvestedRefs::Unprovable => {
-                unprovable.insert(tree);
-                return Ok(live);
-            }
-            HarvestedRefs::Reharvest => {}
-        }
-        let children = match std::fs::read_dir(directory.join(crate::session::SUBAGENTS_DIR)) {
-            Ok(children) => children,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(live),
-            Err(error) => return Err(error),
-        };
-        for child in children {
-            let path = child?.path();
-            if !entry_is_directory(&path)? {
-                continue;
-            }
-            live.extend(scan_artifact_references_in_log(
-                &path.join(crate::session::EVENTS_FILE),
-            )?);
-        }
-        Ok(live)
-    }
-
-    /// A tree referencing content another tree stored is recorded so that
-    /// owner's collection can only ever retain it (§5.3).
-    fn note_foreign_references(&self, tree: SessionId, referenced: &HashSet<String>) {
-        let foreign = {
-            let index = self
-                .digest_index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            referenced
-                .iter()
-                .filter_map(|digest| match index.get(digest) {
-                    Some(ArtifactLocation::Root(owner)) if *owner != tree => Some(digest.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        if foreign.is_empty() {
-            return;
-        }
-        let mut cross_refs = self
-            .cross_refs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut lines = String::new();
-        for digest in foreign {
-            if cross_refs.insert((digest.clone(), tree)) {
-                let entry = StoredCrossReference {
-                    digest,
-                    tree: tree.to_string(),
-                };
-                let Ok(line) = serde_json::to_string(&entry) else {
-                    continue;
-                };
-                lines.push_str(&line);
-                lines.push('\n');
-            }
-        }
-        drop(cross_refs);
-        if lines.is_empty() {
-            return;
-        }
-        use std::io::Write as _;
-        let path = self.cross_refs_path.clone();
-        let mut file = match std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-        {
-            Ok(file) => file,
-            // The ledger is rebuildable from scans, so a failed append costs a
-            // later scan, not data.
-            Err(error) => {
-                eprintln!("cross-reference ledger append failed: {error}");
-                self.cross_refs_dirty.store(true, Ordering::Relaxed);
-                return;
-            }
-        };
-        #[cfg(test)]
-        if self
-            .ledger_append_test_failure
-            .swap(false, Ordering::Relaxed)
-        {
-            drop(file);
-            eprintln!("cross-reference ledger append failed: injected test failure");
-            self.cross_refs_dirty.store(true, Ordering::Relaxed);
-            return;
-        }
-        // Deliberately unsynced: the file is a hint, never the source of truth.
-        // A short or failed write can leave a torn tail, so the whole file is
-        // rewritten from the in-memory set before the next sweep reads it.
-        if let Err(error) = file.write_all(lines.as_bytes()).and_then(|()| file.flush()) {
-            eprintln!("cross-reference ledger append failed: {error}");
-            self.cross_refs_dirty.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// Rewrite `cross-refs.jsonl` from everything this process has proven, after
-    /// an append was lost. Retain-only, so a rebuilt ledger can never free a blob
-    /// the old one kept alive (B2, §5.3).
-    fn rebuild_cross_ref_ledger_if_dirty(&self) {
-        if !self
-            .cross_refs_dirty
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
-            return;
-        }
-        let entries = self
-            .cross_refs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if let Err(error) = write_cross_ref_ledger(&self.cross_refs_path, &entries) {
-            eprintln!("cross-reference ledger rebuild failed: {error}");
-            // Keep the flag set: the next sweep retries until the file is whole.
-            self.cross_refs_dirty.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// The durable ledger, as this process last wrote it.
-    #[cfg(test)]
-    pub(crate) fn cross_ref_ledger(&self) -> BTreeSet<(String, SessionId)> {
-        self.cross_refs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .cloned()
-            .collect()
-    }
-
-    /// Test seam: the next ledger append is lost, exactly as a short write or a
-    /// full disk would lose it (B2).
-    #[cfg(test)]
-    pub(crate) fn fail_next_ledger_append(&self) {
-        self.ledger_append_test_failure
-            .store(true, Ordering::Relaxed);
-    }
-
-    /// Read the whole ledger. A missing file is an empty ledger; a file that is
-    /// there but unreadable is not, so only `NotFound` is absorbed.
-    fn read_cross_refs(path: &Path) -> std::io::Result<HashSet<(String, SessionId)>> {
-        use std::io::BufRead as _;
-
-        let mut refs = HashSet::new();
-        let file = match std::fs::File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(refs),
-            Err(error) => return Err(error),
-        };
-        for line in std::io::BufReader::new(file).lines() {
-            let Ok(line) = line else { continue };
-            let Ok(entry) = serde_json::from_str::<StoredCrossReference>(&line) else {
-                continue;
-            };
-            if let Ok(tree) = entry.tree.parse::<SessionId>() {
-                refs.insert((entry.digest, tree));
-            }
-        }
-        Ok(refs)
-    }
-
-    /// Every digest the ledger holds plus every one this process proved since it
-    /// was last read. The file is re-read per sweep because another process may
-    /// have appended, and because an unreadable ledger must abort the sweep
-    /// rather than silently drop the cross-tree references it protects (§5.3).
-    fn cross_reference_digests(&self) -> std::io::Result<HashSet<String>> {
-        let mut digests = Self::read_cross_refs(&self.cross_refs_path)?
-            .into_iter()
-            .map(|(digest, _)| digest)
-            .collect::<HashSet<_>>();
-        digests.extend(
-            self.cross_refs
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter()
-                .map(|(digest, _)| digest.clone()),
-        );
-        Ok(digests)
-    }
-
-    fn index(&self, tree: Option<SessionId>, digest: &str) {
-        self.digest_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(digest.to_owned(), location_of(tree));
-    }
-
-    /// Which store holds a digest: the write index first, then a directory-name
-    /// scan of the shared store and every known tree (§5.3). Hits are cached, so
-    /// an external write into a tree directory is still found without a restart.
-    fn locate(&self, digest: &str) -> std::io::Result<Option<ArtifactLocation>> {
-        if !is_digest_name_common(digest) {
-            return Ok(None);
-        }
-        if let Some(location) = self
-            .digest_index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(digest)
-            .copied()
-        {
-            return Ok(Some(location));
-        }
-        let mut candidates = vec![ArtifactLocation::Shared];
-        candidates.extend(
-            self.roots
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .keys()
-                .copied()
-                .map(ArtifactLocation::Root),
-        );
-        candidates.extend(
-            self.session_directories()?
-                .into_iter()
-                .filter_map(|directory| {
-                    directory
-                        .file_name()
-                        .and_then(|name| name.to_string_lossy().parse::<SessionId>().ok())
-                })
-                .map(ArtifactLocation::Root),
-        );
-        for location in candidates {
-            if !self.blob_present(location, digest)? {
-                continue;
-            }
-            self.digest_index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert(digest.to_owned(), location);
-            return Ok(Some(location));
-        }
-        Ok(None)
-    }
-
-    /// Existence by name only; content is verified when the blob is read.
-    fn blob_present(&self, location: ArtifactLocation, digest: &str) -> std::io::Result<bool> {
-        match location {
-            ArtifactLocation::Shared => self.shared.open_existing(digest),
-            ArtifactLocation::Root(tree) => match self.cached_tree_store(tree) {
-                Some(store) => {
-                    return store.open_existing(digest).map(|file| file.is_some());
-                }
-                None => {
-                    let path = self.tree_dir(tree).join(ARTIFACTS_DIR).join(digest);
-                    return Ok(match std::fs::metadata(path) {
-                        Ok(metadata) => metadata.is_file(),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                        Err(error) => return Err(error),
-                    });
-                }
-            },
-        }
-        .map(|file| file.is_some())
-    }
-
-    fn store_for(&self, location: ArtifactLocation) -> std::io::Result<Arc<ArtifactStore>> {
-        match location {
-            ArtifactLocation::Shared => Ok(Arc::clone(&self.shared)),
-            ArtifactLocation::Root(tree) => self.tree_store(tree),
+        attachment: &ToolAttachment,
+    ) -> std::io::Result<Bytes> {
+        match self.session {
+            Some(session) => self.router.read_verified_attachment(session, attachment),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "artifact missing",
+            )),
         }
     }
 }
@@ -2662,69 +2414,6 @@ pub(crate) fn collect_artifact_references_in_events(
         collect_artifact_references(&value, live);
     }
     Ok(())
-}
-
-/// Rewrite the cross-reference ledger wholesale when an append was lost;
-/// steady-state collection appends to the file.
-pub(crate) fn write_cross_ref_ledger(
-    path: &Path,
-    entries: &BTreeSet<(String, SessionId)>,
-) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    // Unique per call: a fixed name left behind by a crash between the sync and
-    // the rename would fail `create_new` for every later write.
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| CROSS_REFS_FILE.to_owned());
-    let temporary = match parent {
-        Some(parent) => parent.join(format!(".{name}.{}.tmp", uuid::Uuid::now_v7())),
-        None => PathBuf::from(format!(".{name}.{}.tmp", uuid::Uuid::now_v7())),
-    };
-    let written: std::io::Result<()> = (|| {
-        let mut file = std::io::BufWriter::new(
-            std::fs::File::options()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?,
-        );
-        for (digest, tree) in entries {
-            serde_json::to_writer(
-                &mut file,
-                &StoredCrossReference {
-                    digest: digest.clone(),
-                    tree: tree.to_string(),
-                },
-            )
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-            file.write_all(b"\n")?;
-        }
-        file.flush()?;
-        file.get_ref().sync_all()
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-        return written;
-    }
-    // A rebuilt ledger overwrites one that already exists. Rust's `fs::rename`
-    // already replaces on Windows (`MOVEFILE_REPLACE_EXISTING`); the Windows
-    // path adds `MOVEFILE_WRITE_THROUGH` and a bounded retry for transient
-    // access-denied/sharing violations against a concurrently scanned file.
-    #[cfg(unix)]
-    let replaced = std::fs::rename(&temporary, path);
-    #[cfg(windows)]
-    let replaced = crate::session::replace_windows_path_with_retry(&temporary, path);
-    match replaced {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = std::fs::remove_file(&temporary);
-            Err(error)
-        }
-    }
 }
 
 #[cfg(test)]

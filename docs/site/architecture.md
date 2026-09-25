@@ -277,8 +277,6 @@ working directory:
     layout.json                    # {"version":2}
     cwd                            # canonical work-dir path
     runtime-revisions-v8.jsonl     # runtime revision index
-    artifacts.shared/              # cross-tree and orphaned tool output
-    cross-refs.jsonl               # cross-tree artifact reference ledger
     <root-session-id>/             # root sessions live directly inside
       metadata                     # derived session cache
       events.jsonl                 # append-only root log
@@ -335,16 +333,19 @@ write path and later evicts like any other session.
 
 ### Artifacts
 
-Tool output is content-addressed under a digest-named file. A v2 store
-partitions artifacts by tree: output written by a root or one of its descendants
-lands in that root's `artifacts/`, while cross-tree references, orphans, and
-unplaced writes land in the work-dir's `artifacts.shared/`. Collection is
-therefore per tree, and a digest is retained while any live session references
-it — the root log, the log of any child in a loaded tree, or the
-`cross-refs.jsonl` ledger that records references made from another tree.
-Unloaded trees are never collected, which keeps an unread child log from
-looking unreferenced. Expired, unreferenced digests are unlinked after a grace
-period that protects newly published files.
+Tool output is content-addressed under a digest-named file, and every artifact
+belongs to exactly one tree: output written by a root or one of its descendants
+lands in that root's `artifacts/`. A session reads only its own tree's
+artifacts, so a URI naming content another tree stored does not resolve there.
+A fork of a root copies every artifact its history references — and the
+streams a named-stream manifest lists — into the new tree before the fork
+returns, so it never depends on its source. Collection is therefore per tree
+and needs nothing from any other tree: a digest is retained while the tree's
+root log or the log of one of its children references it. Unloaded trees are
+never collected, which keeps an unread child log from looking unreferenced, and
+a loaded tree whose references cannot be proven is skipped on its own while
+other trees are still collected. Expired, unreferenced digests are unlinked
+after a grace period that protects newly published files.
 
 ### Delegation and ownership
 

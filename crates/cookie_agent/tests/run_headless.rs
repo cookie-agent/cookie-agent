@@ -461,6 +461,32 @@ async fn wait_for_session_terminal(engine: &Engine, session_id: SessionId) -> Re
     }
 }
 
+/// Like [`wait_for_session_terminal`], but for one run of a session whose log
+/// already holds earlier, finished runs.
+async fn wait_for_run_terminal(
+    engine: &Engine,
+    session_id: SessionId,
+    run: cookie_agent_protocol::RunId,
+) -> Result<(), String> {
+    let (replay, mut receiver) = engine
+        .subscribe(session_id, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut cursor = None;
+    let ours = |event: &StoredEvent, cursor: &mut Option<u64>| {
+        event.run_id == Some(run) && observe_terminal(event, cursor)
+    };
+    if replay.events.iter().any(|event| ours(event, &mut cursor)) {
+        return Ok(());
+    }
+    while let Some(EventSubscriptionMessage::Event { event }) = receiver.recv().await {
+        if ours(&event, &mut cursor) {
+            return Ok(());
+        }
+    }
+    Err("subscription closed before the run finished".into())
+}
+
 fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
     *cursor = Some(event.seq);
     matches!(
@@ -479,7 +505,7 @@ fn observe_terminal(event: &StoredEvent, cursor: &mut Option<u64>) -> bool {
 /// this test cares about.
 fn artifact_blobs(data_root: &Path) -> Vec<String> {
     fn is_artifact_store(name: &str) -> bool {
-        name == "artifacts" || name == "artifacts.shared"
+        name == "artifacts"
     }
 
     fn walk(directory: &Path, found: &mut Vec<String>) {
@@ -554,8 +580,9 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         .await
         .expect("plugin ready");
 
-        // Seed an artifact through the real Bash/runtime pipeline, then read from a
-        // different session. The read itself must not publish another artifact.
+        // Seed an artifact through the real Bash/runtime pipeline, then read it in
+        // a later run of the same session: artifacts resolve only in their own
+        // session tree. The read itself must not publish another artifact.
         fixture.server.enqueue(MockResponse::Sse(tool_response(
             "bash",
             r#"{"command":"printf 'zero\\none\\ntwo\\n'"}"#,
@@ -608,7 +635,10 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             "read",
             &serde_json::json!({"filePath":path,"offset":1,"limit":1}).to_string(),
         )));
-        let session = fixture.engine.create_session(selection.clone()).unwrap();
+        let session = fixture
+            .engine
+            .get_session(seed_events[0].session_id)
+            .unwrap();
         fixture
             .engine
             .set_permission_mode(
@@ -657,7 +687,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         fs::write(&release, b"release").unwrap();
         tokio::time::timeout(
             Duration::from_secs(10),
-            wait_for_session_terminal(&fixture.engine, session.session_id),
+            wait_for_run_terminal(&fixture.engine, session.session_id, run),
         )
         .await
         .unwrap()
@@ -667,8 +697,16 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .subscribe(session.session_id, None)
             .await
             .unwrap();
-        let terminals = events
+        // The seed's own tool call is in the same log; only this run's count.
+        let read_started = events
             .events
+            .iter()
+            .position(|event| {
+                event.run_id == Some(run)
+                    && matches!(event.payload, EventPayload::RunStarted { .. })
+            })
+            .expect("read run started");
+        let terminals = events.events[read_started..]
             .iter()
             .filter_map(|event| match &event.payload {
                 EventPayload::ToolCallTerminated { termination } => Some(termination),
@@ -710,10 +748,12 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
                 .unwrap(),
         )
         .unwrap();
+        // The read is the session's latest tool turn; the seed's comes first.
         let tool = history
             .as_array()
             .unwrap()
             .iter()
+            .rev()
             .find(|turn| turn["type"] == "tool")
             .unwrap();
         let model_result = &tool["value"]["results"][0];

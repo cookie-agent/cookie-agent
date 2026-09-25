@@ -238,14 +238,14 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             .engine
             .inner
             .artifacts
-            .retain(crate::test_session_id(), full_output.as_bytes())
+            .retain(session.session_id, full_output.as_bytes())
             .expect("retain full output behind truncated preview");
         let image_bytes = vec![7_u8; 1024 * 1024];
         let (image_reference, image_digest) = fixture
             .engine
             .inner
             .artifacts
-            .retain(crate::test_session_id(), &image_bytes)
+            .retain(session.session_id, &image_bytes)
             .expect("retain compaction image");
         let image_attachment = cookie_agent_protocol::ToolAttachment {
             mime_type: cookie_agent_protocol::MimeType::new("image/png").unwrap(),
@@ -470,7 +470,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                 assert!(text.contains(&format!("retained at {artifact_path};")));
                 let page = fixture
                     .engine
-                    .read_artifact(artifact_path, 0, 10)
+                    .read_artifact(session.session_id, artifact_path, 0, 10)
                     .expect("public readback using only the marker hint");
                 assert_eq!(page.source, "artifact");
                 assert!(text.contains("serialized tool content (JSON)"));
@@ -491,7 +491,10 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
                             .as_str()
                             .unwrap();
                     assert!(cookie_agent_protocol::ArtifactReadPath::parse(original_path).is_ok());
-                    let full_page = fixture.engine.read_artifact(original_path, 0, 10).unwrap();
+                    let full_page = fixture
+                        .engine
+                        .read_artifact(session.session_id, original_path, 0, 10)
+                        .unwrap();
                     assert_eq!(full_page.content, full_output);
                     assert_ne!(original_path, artifact_path);
                 }

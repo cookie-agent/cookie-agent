@@ -120,9 +120,10 @@ pass. Nothing else counts as use.
 - **D1.** Artifact reads resolve only inside the reading session's own tree.
   The process-wide digest index, the directory-scan fallback into other trees,
   and the `cross-refs.jsonl` ledger are removed.
-- **D2.** A fork copies every artifact its copied history references into the
-  new tree's `artifacts/` (hard-linking where the filesystem allows) before the
-  fork is published, so a forked tree never depends on its source.
+- **D2.** A fork into a new tree copies every artifact its copied history
+  references — and the streams a named-stream manifest lists — into the new
+  tree's `artifacts/` before the fork returns, so a forked tree never depends
+  on its source. A fork of a child stays in its root's tree and copies nothing.
 - **D3.** Every artifact write is attributed to a tree; the `artifacts.shared/`
   store is removed. Production writes are already routed through the tree
   resolver installed by `Engine::open`, which always yields a root.

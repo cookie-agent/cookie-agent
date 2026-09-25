@@ -68,9 +68,13 @@ fn replay_source_wire_id_round_trips_without_becoming_a_local_selection_key() {
         persisted.native_replay.as_ref().unwrap().scope().model_id,
         binding.selection.model.model_id()
     );
-    let (restored, _) =
-        super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
-            .unwrap();
+    let (restored, _) = super::restore_turn_with_store(
+        &persisted,
+        &wire_model(&binding),
+        store.for_session(Some(crate::test_session_id())),
+        &binding,
+    )
+    .unwrap();
     assert_eq!(
         restored
             .finish
@@ -84,9 +88,13 @@ fn replay_source_wire_id_round_trips_without_becoming_a_local_selection_key() {
     persisted
         .provider_metadata
         .remove("cookie_agent.replay_source_wire_model_id");
-    let (legacy, _) =
-        super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
-            .unwrap();
+    let (legacy, _) = super::restore_turn_with_store(
+        &persisted,
+        &wire_model(&binding),
+        store.for_session(Some(crate::test_session_id())),
+        &binding,
+    )
+    .unwrap();
     assert!(
         legacy
             .finish
@@ -116,9 +124,13 @@ fn required_vertex_call_witness_survives_persistence_without_native_artifact() {
     let encoded = serde_json::to_string(&persisted).unwrap();
     assert!(!encoded.contains("opaque-required-state"));
     let persisted = serde_json::from_str(&encoded).unwrap();
-    let (restored, _) =
-        super::restore_turn_with_store(&persisted, &wire_model(&binding), &store, &binding)
-            .unwrap();
+    let (restored, _) = super::restore_turn_with_store(
+        &persisted,
+        &wire_model(&binding),
+        store.for_session(Some(crate::test_session_id())),
+        &binding,
+    )
+    .unwrap();
     assert!(restored.finish.native_replay.is_none());
     assert!(oven_sdk::replay::has_required_vertex_signature(
         &restored.message.content
@@ -312,7 +324,8 @@ fn tool_result_materializes_output_and_metadata_as_separate_values() {
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     };
-    let part = tool_result_part(&result, &store).unwrap();
+    let part =
+        tool_result_part(&result, store.for_session(Some(crate::test_session_id()))).unwrap();
     let oven_sdk::ToolContent::Mixed(values) = part.content else {
         panic!("expected mixed tool content");
     };
@@ -347,7 +360,10 @@ fn truncated_tool_result_names_the_readback_tool() {
         attachments: Vec::new(),
         additional_messages: Vec::new(),
     };
-    let oven_sdk::ToolContent::Mixed(values) = tool_result_part(&result, &store).unwrap().content
+    let oven_sdk::ToolContent::Mixed(values) =
+        tool_result_part(&result, store.for_session(Some(crate::test_session_id())))
+            .unwrap()
+            .content
     else {
         panic!("expected mixed tool content");
     };

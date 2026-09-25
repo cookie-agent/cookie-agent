@@ -519,7 +519,12 @@ async fn cancelling_interactive_stream_drains_chunks_before_tool_termination() {
                 assert!(retained.incomplete);
                 let page = fixture
                     .engine
-                    .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+                    .read_artifact(
+                        session.session_id,
+                        &format!("artifact://{}", retained.streams[0].sha256),
+                        0,
+                        10,
+                    )
                     .unwrap();
                 assert_eq!(page.content, "authoritative start\nauthoritative cleanup\n");
                 assert!(!result.output.contains("before cancellation"));
@@ -694,7 +699,12 @@ async fn cancellation_deadline_discards_wedged_progress_without_hanging() {
     assert_eq!(
         fixture
             .engine
-            .read_artifact(&format!("artifact://{}", retained.streams[0].sha256), 0, 10)
+            .read_artifact(
+                session_id,
+                &format!("artifact://{}", retained.streams[0].sha256),
+                0,
+                10
+            )
             .unwrap()
             .content,
         "authoritative start\nauthoritative cleanup\n"
