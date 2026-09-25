@@ -302,18 +302,21 @@ cwd rename is harmless. An empty suffix leaves the bare hash as the whole key.
 
 Directories and files are created private (`0o700` / `0o600` on Unix).
 
-### Root-only startup and lazy children
+### Metadata-only listing and lazy trees
 
-Opening a store reads root `metadata` files and at most one
-`subagents/index.json` per root; it never opens a child `events.jsonl`. That
-cache carries each child's `SessionSummary` and its terminal run statuses, so
-listing, usage rollups, and the session tree stay correct at startup. It is a
-cache only: a missing, corrupt, or stale entry simply means the children are
-unknown until the tree is loaded, and `metadata` remains authoritative per
-session.
+Opening a store reads nothing under the work dir. Listing root sessions parses
+each root's `metadata` once, or answers from memory for a root this process
+holds; it never opens an `events.jsonl` and keeps no cache of its own, so the
+next listing sees roots other processes created or changed. Everything else
+about a tree — its children, usage, delegations, and grants — is read when the
+tree is first used (see [Tree-local sessions](specs/tree-local-sessions.md)).
+`subagents/index.json` carries each child's `SessionSummary` and terminal run
+statuses for that tree only. It is a cache: a missing, corrupt, or stale entry
+simply means the children are unknown until the tree is loaded, and `metadata`
+remains authoritative per session.
 
-A root directory whose `metadata` is absent is skipped silently and left
-uncached, so the next discovery pass retries it. That shape is transient rather
+A root directory whose `metadata` is absent is skipped silently, so the next
+listing retries it. That shape is transient rather
 than faulty: `<root>/subagents/` exists on its own whenever a child publishes
 before its root, and the same shape appears while a prepared directory is
 merged into it. Every other failure to read a root `metadata` — a corrupt cache,

@@ -819,9 +819,9 @@ fn bare_root_scaffolds_are_skipped_until_their_metadata_exists() {
 
     let scaffolded = SessionStore::open(&data, &cwd).expect("store opens over bare scaffolds");
     let listed = scaffolded
-        .all_summaries()
+        .list_roots()
         .into_iter()
-        .map(|summary| summary.meta.session_id)
+        .map(|meta| meta.session_id)
         .collect::<Vec<_>>();
     assert!(
         !listed.contains(&session_id) && !listed.contains(&orphan_id),
@@ -837,15 +837,15 @@ fn bare_root_scaffolds_are_skipped_until_their_metadata_exists() {
     let restored = SessionStore::open(&data, &cwd).expect("store reopens");
     assert!(
         restored
-            .all_summaries()
+            .list_roots()
             .into_iter()
-            .any(|summary| summary.meta.session_id == session_id),
+            .any(|meta| meta.session_id == session_id),
         "a root is discovered once its metadata cache exists"
     );
 }
 
 #[test]
-fn discovery_does_not_reread_known_evicted_metadata() {
+fn listing_reflects_metadata_another_process_changed() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -869,12 +869,19 @@ fn discovery_does_not_reread_known_evicted_metadata() {
     )
     .expect("replace metadata cache");
 
-    let rediscovered = observer
-        .all_summaries()
+    // Listing keeps no cache of its own: it re-parses `metadata`, so a title
+    // another process wrote shows up on the next listing (tree-local B4).
+    let listed = observer
+        .list_roots()
         .into_iter()
-        .find(|summary| summary.meta.session_id == session_id)
-        .expect("rediscovered summary");
-    assert_eq!(rediscovered.meta.title, cached.meta.title);
+        .find(|meta| meta.session_id == session_id)
+        .expect("listed root");
+    assert_eq!(listed.title, replacement.title);
+    assert_eq!(
+        observer.log_open_count(session_id),
+        1,
+        "only the summary read"
+    );
 }
 
 /// Builds a delegated origin filed under `root`, nested below `parent`.
@@ -901,9 +908,9 @@ fn test_user_input_seq(store: &SessionStore, id: SessionId) -> u64 {
         .seq
 }
 
-/// §8.2 #4: startup discovery is root-only. With every child event log made
-/// unreadable, a reopened store still lists the whole tree because it reads
-/// root `metadata` caches plus each root's `subagents/index.json`.
+/// Tree-local sessions B1/B2: opening a store and listing its roots read no
+/// event log at all, root or child. With every child event log made
+/// unreadable, a reopened store still lists the root from its `metadata`.
 #[cfg(unix)]
 #[test]
 fn startup_discovery_never_reads_child_logs() {
@@ -930,8 +937,7 @@ fn startup_discovery_never_reads_child_logs() {
         grandchild_dir,
         root_dir.join(SUBAGENTS_DIR).join(grandchild.to_string())
     );
-    let expected = store.all_summaries();
-    assert_eq!(expected.len(), 3);
+    assert_eq!(store.tree_summaries(root).expect("tree").len(), 3);
     drop(store);
 
     for directory in [&child_dir, &grandchild_dir] {
@@ -943,33 +949,21 @@ fn startup_discovery_never_reads_child_logs() {
     }
 
     let observer = SessionStore::open(&data, &cwd).expect("cold observer store");
-    // (a) Opening the store, and every startup bookkeeping pass it runs, reads
-    // no child event log at all: the counts are of `events.jsonl` opens, not
-    // of load attempts, so nothing can hide behind a cached flag.
-    for child in [child, grandchild] {
-        assert_eq!(observer.log_open_count(child), 0, "startup read {child}");
-    }
-    assert_eq!(observer.root_snapshots().len(), 1, "only the root log");
-    assert_eq!(observer.all_summaries().len(), 3, "summaries from caches");
-    for child in [child, grandchild] {
+    // (a) Opening the store and listing read no event log at all: the counts
+    // are of `events.jsonl` opens, not of load attempts, so nothing can hide
+    // behind a cached flag.
+    let listed = observer
+        .list_roots()
+        .into_iter()
+        .map(|meta| meta.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(listed, [root], "listing names roots only");
+    for session in [root, child, grandchild] {
         assert_eq!(
-            observer.log_open_count(child),
+            observer.log_open_count(session),
             0,
-            "startup passes read no child log"
+            "listing read {session}"
         );
-    }
-    let discovered = observer.all_summaries();
-    assert_eq!(
-        discovered.len(),
-        3,
-        "index.json pre-populates child summaries"
-    );
-    for summary in &expected {
-        let found = discovered
-            .iter()
-            .find(|found| found.meta.session_id == summary.meta.session_id)
-            .expect("discovered summary");
-        assert_eq!(found.meta, summary.meta);
     }
     assert!(!observer.is_resident(child));
     // Listing *is* a tree use, so it triggers the load and reports the
@@ -984,12 +978,6 @@ fn startup_discovery_never_reads_child_logs() {
         observer.log_open_count(child) > 0,
         "a listing that cannot complete the tree attempts the child log"
     );
-    assert_eq!(
-        observer.root_snapshots().len(),
-        1,
-        "the root log is read by the startup pass only"
-    );
-
     // A child log is only needed where the tree is actually assembled, and
     // there an unreadable child fails closed (§3.2.2).
     assert!(observer.tree(root).is_err());
@@ -2044,7 +2032,7 @@ fn publishing_merges_onto_a_bare_subagents_scaffold() {
 /// D8 / review L12: seeding from `subagents/index.json` drops the derived
 /// per-session `usage` while keeping the durable rollups.
 #[test]
-fn seeded_child_summaries_drop_derived_usage() {
+fn forged_index_usage_is_never_served() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");
     create_private_test_dir_all(&cwd);
@@ -2076,15 +2064,15 @@ fn seeded_child_summaries_drop_derived_usage() {
     )
     .expect("forge the index");
 
+    // Nothing reads `index.json` when a store opens, and a summary of a cold
+    // child completes its tree first, so the answer comes from the child's own
+    // log rather than from a cache someone could have forged (tree-local B1).
     let store = SessionStore::open(&data, &cwd).expect("cold store");
-    let seeded = store.summary(child).expect("seeded summary");
-    assert!(
-        seeded.usage.is_none(),
-        "a cold child must not serve derived usage"
-    );
+    let seeded = store.summary(child).expect("child summary");
+    assert!(seeded.usage.is_none(), "the child log reported no usage");
     assert_eq!(
-        seeded.usage_rollup.input_tokens, 99,
-        "the durable rollup is still served"
+        seeded.usage_rollup.input_tokens, 0,
+        "the forged rollup is not served"
     );
     assert_eq!(
         store

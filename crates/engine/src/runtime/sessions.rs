@@ -112,9 +112,8 @@ impl Engine {
     pub fn list_sessions(&self) -> Vec<SessionMeta> {
         self.inner
             .store
-            .all_summaries()
+            .list_roots()
             .into_iter()
-            .map(|session| session.meta)
             .filter(|meta| matches!(meta.origin, SessionOrigin::Root))
             .collect()
     }
@@ -179,7 +178,7 @@ impl Engine {
         // its summaries, otherwise a missing or stale index can produce a
         // plausible but incomplete rollup.
         self.inner.store.ensure_tree_for(id)?;
-        let summaries = self.inner.store.all_summaries();
+        let summaries = self.inner.store.tree_summaries(id)?;
         let mut children: HashMap<SessionId, Vec<(SessionId, InvocationId)>> = HashMap::new();
         let mut rollups = HashMap::new();
         for summary in summaries {
@@ -269,7 +268,7 @@ impl Engine {
         Ok(self
             .inner
             .store
-            .all_summaries()
+            .tree_summaries(id)?
             .into_iter()
             .filter_map(|child| match child.meta.origin {
                 SessionOrigin::Delegated {

@@ -516,7 +516,8 @@ async fn list_sessions_returns_only_root_sessions() {
             .engine
             .inner
             .store
-            .all_summaries()
+            .tree_summaries(parent.session_id)
+            .expect("parent tree")
             .iter()
             .any(|summary| summary.meta.session_id == child)
     );

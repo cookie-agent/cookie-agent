@@ -436,7 +436,9 @@ impl SessionStore {
             #[cfg(test)]
             tree_load_read_hook: TreeLoadReadHook::default(),
         });
-        store.refresh_discovered();
+        // Opening reads nothing under the work dir beyond the directory itself:
+        // roots are listed from their `metadata` on demand and every tree
+        // loads on first use (tree-local sessions, B1).
         Ok(store)
     }
 
@@ -1879,25 +1881,63 @@ impl SessionStore {
             .map(|summary| summary.meta.origin.clone())
     }
 
+    /// Every root session in the work dir, for listing (tree-local sessions,
+    /// B2). A root this process holds in memory answers from its projection;
+    /// any other root costs one parse of its `metadata` and never a log read.
+    /// A root without `metadata` is a transient publication state and is
+    /// skipped silently; any other unreadable cache reports a diagnostic and is
+    /// skipped (B3). Nothing is cached, so the next listing sees what other
+    /// processes created or changed since (B4).
     #[must_use]
-    pub fn all_summaries(&self) -> Vec<SessionSummary> {
-        self.refresh_discovered();
-        let residency = self
+    pub fn list_roots(&self) -> Vec<SessionMeta> {
+        // Roots created here can be in memory before their directory is
+        // published, so the resident ones are listed first, from memory.
+        let mut roots = self
             .residency
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut summaries = residency.evicted.clone();
-        summaries.extend(residency.resident.iter().map(|(session_id, session)| {
-            (
-                *session_id,
-                SessionSummary {
-                    meta: session.meta.clone(),
-                    usage: session.usage.clone(),
-                    usage_rollup: session.usage_rollup.clone(),
-                },
-            )
-        }));
-        summaries.into_values().collect()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .values()
+            .filter(|session| matches!(session.meta.origin, SessionOrigin::Root))
+            .map(|session| session.meta.clone())
+            .collect::<Vec<_>>();
+        let listed = roots
+            .iter()
+            .map(|meta| meta.session_id)
+            .collect::<HashSet<_>>();
+        for root in self.root_dir_ids() {
+            if listed.contains(&root) {
+                continue;
+            }
+            let dir = self.workdir_dir.join(root.to_string());
+            match read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) {
+                Ok(meta) if meta.session_id == root => {
+                    self.record_location(root, SessionLocation::Root);
+                    roots.push(meta);
+                }
+                Ok(_) => eprintln!("session {root} metadata ID does not match its directory"),
+                Err(SessionError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => eprintln!("session {root} metadata skipped: {error}"),
+            }
+        }
+        roots
+    }
+
+    /// Summaries of every session in the tree that holds `id`: its root and
+    /// each descendant. The caller completes the tree first; nothing outside
+    /// that tree is consulted (tree-local sessions, T1).
+    pub fn tree_summaries(&self, id: SessionId) -> Result<Vec<SessionSummary>, SessionError> {
+        let root = self.root_of(id)?;
+        let mut summaries = vec![self.summary(root)?];
+        for member in self.tree_members(root) {
+            if let Some(session) = self.get_resident(member) {
+                summaries.push(summary_from_projection(&session));
+            } else if let Some(summary) = self.cached_summary(member) {
+                summaries.push(summary);
+            }
+        }
+        Ok(summaries)
     }
 
     /// One session's summary: a resident projection, a cached summary the store
@@ -2457,11 +2497,10 @@ impl SessionStore {
     /// and location cache first, then a scan of the tree directory that adopts
     /// filed children no cache mentions from their `metadata` alone.
     fn child_ids(&self, parent: SessionId) -> Result<Vec<SessionId>, SessionError> {
-        self.refresh_discovered();
-        let root = match self.cached_location(parent) {
-            Some(SessionLocation::Child { root }) => root,
-            _ => parent,
-        };
+        let root = self.root_of(parent)?;
+        // Only this tree's own cache: listing children never reads another
+        // tree's index (tree-local sessions, T1).
+        self.seed_tree_from_index(root);
         let mut children = self.direct_children(root, parent);
         for id in self.child_dir_ids(root) {
             if children.contains(&id) {
