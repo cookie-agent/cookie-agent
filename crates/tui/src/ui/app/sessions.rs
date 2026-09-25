@@ -258,6 +258,10 @@ impl App {
     }
 
     pub(in crate::ui) fn set_selected_session(&mut self, session_id: SessionId) {
+        // Viewing an existing session ends a pending new-session draft (the
+        // one `cookie` starts on, or `/new`): the next prompt belongs to the
+        // conversation on screen, not to a root created behind it.
+        self.new_session_draft = None;
         let changed = self.selected != Some(session_id);
         if changed {
             self.goal_focus = None;

@@ -942,6 +942,49 @@ async fn session_picker_selection_always_runs_per_session_classification() {
 }
 
 #[tokio::test]
+async fn opening_a_session_over_a_new_session_draft_sends_the_prompt_to_it() {
+    let (_directory, server) = crate::tests::in_process_server();
+    let client = Client::connect_in_process(server);
+    client.handshake().await.expect("handshake");
+    let mut app = App::new(client.clone()).await.expect("app");
+    let _deliveries = app.take_deliveries();
+    // A pending new-session draft, as plain `cookie` starts on or `/new`
+    // leaves once its agent is chosen.
+    app.run_command(SlashCommand::New).await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    let selection = app.new_session_draft.clone().expect("new-session draft");
+    let existing = client
+        .create_session(cookie_agent_protocol::SessionCreateParams { selection })
+        .await
+        .expect("existing session")
+        .session
+        .session_id;
+    app.refresh_lists().await;
+    assert_eq!(app.sessions.len(), 1);
+
+    // Loading it from the picker shows its conversation and ends the draft…
+    app.modal = Modal::Sessions;
+    app.choose_picker_entry(0).await;
+    assert_eq!(app.selected, Some(existing));
+    assert!(app.new_session_draft.is_none());
+
+    // …so the next prompt goes to it rather than to a new root.
+    type_input(&mut app, "follow up").await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.selected, Some(existing));
+    app.refresh_lists().await;
+    assert_eq!(
+        app.sessions
+            .iter()
+            .map(|session| session.session_id)
+            .collect::<Vec<_>>(),
+        [existing]
+    );
+}
+
+#[tokio::test]
 async fn successful_new_after_delivery_handoff_uses_event_loop_receiver() {
     let (_directory, server) = crate::tests::in_process_server();
     let client = Client::connect_in_process(server);
