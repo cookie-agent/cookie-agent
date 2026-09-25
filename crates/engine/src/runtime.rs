@@ -450,7 +450,10 @@ enum PendingTool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredRuntimeRevisionMapping {
-    protocol_version: cookie_agent_protocol::ProtocolVersion,
+    /// Protocol the mapping was written under. A record of history, not the
+    /// current wire format, so a protocol bump never makes an existing index
+    /// unreadable.
+    protocol_version: u32,
     runtime_revision: cookie_agent_protocol::RuntimeRevision,
     model_runtime_revision: cookie_agent_protocol::RuntimeRevision,
 }
@@ -494,7 +497,7 @@ impl RuntimeRevisionIndex {
         events::append_jsonl(
             &self.path,
             &StoredRuntimeRevisionMapping {
-                protocol_version: cookie_agent_protocol::ProtocolVersion::current(),
+                protocol_version: cookie_agent_protocol::PROTOCOL_VERSION,
                 runtime_revision: runtime_revision.clone(),
                 model_runtime_revision: model_runtime_revision.clone(),
             },

@@ -588,3 +588,28 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
     }
     reopened_again.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_runtime_revision_index_from_an_older_protocol_still_opens() {
+    let fixture = fixture();
+    let index = fixture
+        .engine
+        .inner
+        .store
+        .workdir_dir_path()
+        .join("runtime-revisions-v8.jsonl");
+    fixture.engine.shutdown().await;
+    let older = fs::read_to_string(&index)
+        .expect("runtime revision index")
+        .lines()
+        .map(|line| {
+            let mut record: serde_json::Value = serde_json::from_str(line).expect("record");
+            record["protocol_version"] =
+                serde_json::json!(cookie_agent_protocol::PROTOCOL_VERSION - 1);
+            serde_json::to_string(&record).expect("record JSON") + "\n"
+        })
+        .collect::<String>();
+    fs::write(&index, older).expect("rewrite index as an older protocol wrote it");
+    let reopened = reopen_engine(&fixture);
+    reopened.shutdown().await;
+}
