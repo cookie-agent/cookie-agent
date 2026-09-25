@@ -302,6 +302,10 @@ pub(super) struct TreeFold {
     pub(super) tree_grants: Vec<cookie_agent_protocol::TreeApprovalGrant>,
     pub(super) edges: HashMap<SessionId, Vec<SessionId>>,
     pub(super) terminal_runs: HashMap<SessionId, BTreeMap<String, SessionStatus>>,
+    /// The root's own summary, folded by the same pass so asking for it
+    /// afterwards never reads the root log again (tree-local C6). Kept apart
+    /// from `products.summaries`, which describe the children only.
+    pub(super) root_summary: Option<SessionSummary>,
 }
 
 impl TreeFold {
@@ -313,7 +317,57 @@ impl TreeFold {
             tree_grants: Vec::new(),
             edges: HashMap::new(),
             terminal_runs: HashMap::new(),
+            root_summary: None,
         }
+    }
+
+    /// Records one folded log contributes to the engine, whoever holds it in the
+    /// tree: grants, delegation records (each lives in its parent's log), and
+    /// goal-producer state.
+    fn harvest_records(
+        &mut self,
+        projection: &SessionProjection,
+        events: &[cookie_agent_protocol::StoredEvent],
+    ) {
+        for envelope in events {
+            match &envelope.payload {
+                EventPayload::TreeApprovalGrantCommitted { grant } => {
+                    // The visible-grant rebuild needs every grant; only
+                    // the approval store filters to restart-stable ones.
+                    if restart_stable_grant(grant) {
+                        self.products.grants.push(grant.clone());
+                    }
+                    self.tree_grants.push(grant.clone());
+                }
+                payload => {
+                    if !projection.log.delegation_event_tainted(envelope)
+                        && crate::delegation_events::is_delegation_payload(payload)
+                    {
+                        self.products.delegations.push((
+                            projection.meta.session_id,
+                            envelope.run_id,
+                            payload.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        if crate::runtime::producers::producer_state_pending(events) {
+            self.products
+                .producer_sessions
+                .push(projection.meta.session_id);
+            self.products.producer_projections.push((
+                projection.meta.session_id,
+                crate::goal_projection::GoalProducerProjection::from_events(events),
+            ));
+        }
+        // The registry needs these facts about the session *as a parent*;
+        // carrying them here is what keeps a rebuild from folding the same log
+        // a second time (§4.1.3).
+        self.products.parent_facts.insert(
+            projection.meta.session_id,
+            ParentRunFacts::from_projection(projection),
+        );
     }
 }
 
@@ -685,6 +739,24 @@ impl SessionStore {
         // Ownership is the tree's: the root's lock is the only one this build
         // keeps, so the load pass is where an older build's per-child locks go.
         self.remove_legacy_child_locks(root);
+        // The root log belongs to the tree's one pass too: its delegation
+        // records, grants, producer state, and facts as a parent arrive with
+        // the tree rather than from a work-dir-wide scan (tree-local C1).
+        // The fingerprint is taken even when there is nothing to fold yet, so a
+        // root that publishes mid-pass invalidates this read.
+        fold.fingerprints.insert(root, self.log_fingerprint(root));
+        let root_log = self.path_for(SessionLocation::Root, root).join(EVENTS_FILE);
+        let root_projection = match self.get_resident(root) {
+            Some(session) => Some(session),
+            // A child can publish before its root, so a root that never got a
+            // durable log has no records of its own to harvest.
+            None if fs::metadata(&root_log).map_or(true, |log| log.len() == 0) => None,
+            None => Some(self.open_snapshot(root, false)?),
+        };
+        if let Some(projection) = root_projection {
+            fold.harvest_records(&projection, &projection.log.event_snapshot());
+            fold.root_summary = Some(summary_from_projection(&projection));
+        }
         fold.children = self.child_dir_ids(root);
         for child in fold.children.clone() {
             // Captured before the read: an equal fingerprint afterwards proves
@@ -715,44 +787,7 @@ impl SessionStore {
                     .join(EVENTS_FILE),
                 source,
             })?;
-            for envelope in events.iter() {
-                match &envelope.payload {
-                    EventPayload::TreeApprovalGrantCommitted { grant } => {
-                        // The visible-grant rebuild needs every grant; only
-                        // the approval store filters to restart-stable ones.
-                        if restart_stable_grant(grant) {
-                            fold.products.grants.push(grant.clone());
-                        }
-                        fold.tree_grants.push(grant.clone());
-                    }
-                    payload => {
-                        if !projection.log.delegation_event_tainted(envelope)
-                            && crate::delegation_events::is_delegation_payload(payload)
-                        {
-                            fold.products.delegations.push((
-                                projection.meta.session_id,
-                                envelope.run_id,
-                                payload.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-            if crate::runtime::producers::producer_state_pending(&events) {
-                fold.products
-                    .producer_sessions
-                    .push(projection.meta.session_id);
-                fold.products.producer_projections.push((
-                    projection.meta.session_id,
-                    crate::goal_projection::GoalProducerProjection::from_events(&events),
-                ));
-            }
-            // The registry needs these facts about the child *as a parent*;
-            // carrying them here is what keeps a nested rebuild from folding the
-            // same log a second time (§4.1.3).
-            fold.products
-                .parent_facts
-                .insert(child, ParentRunFacts::from_projection(&projection));
+            fold.harvest_records(&projection, &events);
             let parent = match projection.meta.origin {
                 SessionOrigin::Delegated {
                     parent_session_id, ..
@@ -820,7 +855,7 @@ impl SessionStore {
                 .residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for summary in &fold.products.summaries {
+            for summary in fold.products.summaries.iter().chain(&fold.root_summary) {
                 let id = summary.meta.session_id;
                 if residency.resident.contains_key(&id) {
                     continue;
@@ -1078,17 +1113,18 @@ impl SessionStore {
             .collect()
     }
 
-    /// Root sessions whose logs can carry goal-producer state. Loaded children
-    /// are reconciled from the projections harvested by their tree load.
-    pub(crate) fn producer_scan_sessions(&self) -> Vec<SessionId> {
-        self.refresh_discovered();
+    /// Sessions of loaded trees, root included, whose log carried goal-producer
+    /// state when the tree loaded. A tree that was never loaded contributes
+    /// nothing: its producer state is reconciled by its own load (tree-local
+    /// C7).
+    pub(crate) fn loaded_producer_sessions(&self) -> Vec<SessionId> {
         let mut ids = self
-            .residency
+            .trees
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .known_ids()
-            .into_iter()
-            .filter(|id| self.is_root_id(*id))
+            .values()
+            .filter(|state| state.loaded)
+            .flat_map(|state| state.producer_sessions.clone())
             .collect::<Vec<_>>();
         ids.sort_by_key(|id| id.to_string());
         ids.dedup();

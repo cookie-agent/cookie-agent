@@ -104,30 +104,15 @@ pub struct DelegationEventStore {
 }
 
 impl DelegationEventStore {
-    /// Folds delegation records from **root logs only**. Depth-1 records live in
-    /// the parent's log, so roots are complete at startup; nested records arrive
-    /// later through [`Self::extend_from_payloads`] when their tree is loaded.
-    pub fn open(sessions: Arc<SessionStore>) -> Result<Arc<Self>, DelegationEventError> {
-        let mut state = DelegationState::default();
-        let mut parents = sessions.root_snapshots();
-        parents.sort_by_key(|session| session.meta.session_id);
-        for parent in parents {
-            for envelope in parent.log.event_snapshot().iter() {
-                if parent.log.delegation_event_tainted(envelope) {
-                    continue;
-                }
-                apply_event(
-                    &mut state,
-                    parent.meta.session_id,
-                    envelope.run_id,
-                    envelope.payload.clone(),
-                )?;
-            }
-        }
-        Ok(Arc::new(Self {
+    /// An empty store. Records never come from a work-dir-wide scan: each
+    /// tree's arrive through [`Self::extend_from_payloads`] when that tree is
+    /// loaded, from its root log and every descendant log (tree-local C1).
+    #[must_use]
+    pub fn new(sessions: Arc<SessionStore>) -> Arc<Self> {
+        Arc::new(Self {
             sessions,
-            state: Mutex::new(state),
-        }))
+            state: Mutex::new(DelegationState::default()),
+        })
     }
 
     /// Folds delegation records harvested from child logs (§4.1.2), returning the

@@ -263,9 +263,10 @@ impl Engine {
             .keys()
             .copied()
             .collect();
-        // Roots only, plus children whose tree was already loaded: scanning every
-        // child log here is the startup cost this pass exists to avoid (§4.4).
-        for session in self.inner.store.producer_scan_sessions() {
+        // Only trees already loaded: a tree reconciles its own producer state
+        // when it loads, so no log outside a loaded tree is ever read here
+        // (tree-local C7).
+        for session in self.inner.store.loaded_producer_sessions() {
             if self
                 .inner
                 .store

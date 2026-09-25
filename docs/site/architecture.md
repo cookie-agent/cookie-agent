@@ -276,13 +276,13 @@ working directory:
   sessions/<workdirkey>/           # one store per canonical cwd
     layout.json                    # {"version":2}
     cwd                            # canonical work-dir path
-    grant-invalidations.jsonl      # tree-grant invalidation journal
     runtime-revisions-v8.jsonl     # runtime revision index
     artifacts.shared/              # cross-tree and orphaned tool output
     cross-refs.jsonl               # cross-tree artifact reference ledger
     <root-session-id>/             # root sessions live directly inside
       metadata                     # derived session cache
       events.jsonl                 # append-only root log
+      grant-invalidations.jsonl    # this tree's grant invalidation journal
       owner.lock                   # Unix in-directory lock for the whole tree
       artifacts/                   # artifacts owned by this root's tree
       <root-session-id>.owner.lock # Windows sidecar, also for the whole tree
@@ -324,10 +324,11 @@ an ID that disagrees with its directory name — still reports a diagnostic and
 leaves the root uncached for the next pass.
 
 When a root first comes into use — resume, open for mutation, fork source, tree
-or child access — every descendant of that root is read and folded exactly once
-in a single bulk pass. That pass assembles the tree, harvests the artifact
-digests the tree references, and produces the delegation-registry and
-approval-grant records the engine needs. The children then leave the pass
+or child access — the root and every descendant are read and folded exactly
+once in a single bulk pass. That pass assembles the tree, harvests the artifact
+digests the tree references, and produces the tree's delegation-registry,
+approval-grant, and goal-producer records; nothing produces them for a tree
+that was never used. The children then leave the pass
 without ever entering residency, so residency caps and janitor pressure are
 unaffected; a child that actually runs becomes resident through the ordinary
 write path and later evicts like any other session.
@@ -348,9 +349,9 @@ period that protects newly published files.
 ### Delegation and ownership
 
 Delegation reservations, child publication, run start/attachment, and terminal
-state use the parent session's `events.jsonl`. On open, the engine projects
-these records from root logs while it recovers nonterminal delegations, and
-completes the projection for a tree during that tree's single load pass.
+state use the parent session's `events.jsonl`. The engine projects a tree's
+records during that tree's single load pass, root log included, and rebuilds
+only that tree's registry entries; opening the engine projects nothing.
 The reservation fingerprint is recomputed from the replayed request, child
 agent snapshot, selected model suffix, and staged-skill provenance; a mismatch
 rejects recovery. A background delegation the durable facts leave nonterminal is

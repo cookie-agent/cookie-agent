@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     delegation_events::{DelegationEventError, DelegationEventStore},
     events::{self, EventLogError},
-    grant_journal::{GrantInvalidationJournal, GrantJournalError},
+    grant_journal::{GrantJournalError, GrantJournals},
     model_history,
     model_snapshots::prepare_runtime_manifest,
     permissions::PermissionPipeline,
@@ -726,7 +726,7 @@ pub(crate) struct Inner {
     mutation_locks: Mutex<HashMap<PreparedSerializationKey, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) store: Arc<SessionStore>,
     pub(crate) delegation_events: Arc<DelegationEventStore>,
-    pub(crate) grant_journal: Arc<GrantInvalidationJournal>,
+    pub(crate) grant_journals: GrantJournals,
     pub(crate) model_manager: Arc<ModelManager>,
     published_runtime: ArcSwap<PublishedRuntime>,
     runtime_mutation: Mutex<()>,
@@ -814,10 +814,8 @@ impl Engine {
         let mut tools = options.tools;
         tools.push(mcp.clone());
         tools.push(plugins.clone());
-        let delegation_events = DelegationEventStore::open(Arc::clone(&store))?;
-        let grant_journal = GrantInvalidationJournal::open(
-            store.workdir_dir_path().join("grant-invalidations.jsonl"),
-        )?;
+        let delegation_events = DelegationEventStore::new(Arc::clone(&store));
+        let grant_journals = GrantJournals::new(store.workdir_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
         let (engine_events, _) = broadcast::channel(256);
         let plugin_diagnostics =
@@ -837,7 +835,7 @@ impl Engine {
                 mutation_locks: Mutex::new(HashMap::new()),
                 store,
                 delegation_events,
-                grant_journal,
+                grant_journals,
                 model_manager: options.model_manager,
                 published_runtime: ArcSwap::from(published_runtime),
                 runtime_mutation: Mutex::new(()),
@@ -896,9 +894,9 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
         }
+        // No session state is read here: delegation records, grants, and
+        // producer state arrive with each tree's load (tree-local B1, C1).
         engine.install_tree_load_observer()?;
-        engine.rebuild_approvals();
-        engine.rebuild_delegation_registry(&engine.inner.delegation_events.entries(), false)?;
         engine.install_producer_runtime();
         if let Some(runtime) = &engine.inner.runtime {
             engine.inner.mcp.start_eager(runtime);
@@ -1226,12 +1224,15 @@ impl Engine {
             .delegation_events
             .extend_from_payloads(&products.delegations)?;
         if !extended.is_empty() {
-            // The registry is a fold over the whole event store, and its rebuild
-            // retains only what it is handed; rebuilding from all entries is now
-            // cheap because no child log is read to do it (§4.1).
-            self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), false)?;
+            // Only this tree's records are rebuilt; no log is read to do it
+            // (tree-local C3).
+            self.rebuild_delegation_registry(products.root, false)?;
         }
-        let invalidated = self.inner.grant_journal.invalidated_ids();
+        let invalidated = self
+            .inner
+            .grant_journals
+            .for_root(products.root)?
+            .invalidated_ids();
         for grant in &products.grants {
             if !invalidated.contains(&grant.grant_id) {
                 self.inner.approvals.store.grant(grant.clone());

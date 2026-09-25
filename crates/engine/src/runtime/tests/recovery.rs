@@ -336,6 +336,20 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
     fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);
+    // Opening the engine and listing sessions read no session log, even with a
+    // delegation record waiting in the root log (tree-local B1, B2).
+    assert!(
+        reopened
+            .list_sessions()
+            .iter()
+            .any(|listed| listed.session_id == session.session_id)
+    );
+    assert_eq!(reopened.inner.store.log_open_count(session.session_id), 0);
+    // Delegation records load with their tree, which reads the root log once.
+    reopened
+        .ensure_tree_loaded(session.session_id)
+        .expect("load the reopened tree");
+    assert_eq!(reopened.inner.store.log_open_count(session.session_id), 1);
     assert_eq!(
         reopened
             .inner
@@ -361,19 +375,26 @@ async fn delegation_reservation_reopens_from_parent_events_and_rejects_tampering
         .join("\n")
         + "\n";
     fs::write(event_path, tampered).expect("tamper parent event");
-    let rejected = Engine::open(EngineOptions {
+    // Opening reads no log, so the tampered record surfaces when its tree
+    // loads, which is the first time anything needs it.
+    let tampered = Engine::open(EngineOptions {
         data_dir: fixture._directory.path().join("data"),
         cwd: fixture._directory.path().to_owned(),
         config: fixture.config,
         model_manager: Arc::clone(&fixture.manager),
         tools: Vec::new(),
-    });
-    assert!(matches!(
-        rejected,
-        Err(EngineError::DelegationEvents(
-            crate::delegation_events::DelegationEventError::Corrupt(id)
-        )) if id == invocation_id
-    ));
+    })
+    .expect("opening reads no session log");
+    let rejected = tampered.ensure_tree_loaded(session.session_id);
+    assert!(
+        matches!(
+            &rejected,
+            Err(EngineError::DelegationEvents(
+                crate::delegation_events::DelegationEventError::Corrupt(id)
+            )) if *id == invocation_id
+        ),
+        "{rejected:?}"
+    );
 }
 
 #[tokio::test]
@@ -575,6 +596,9 @@ async fn corrupt_delegation_event_is_skipped_without_blocking_other_recovery() {
 
     let reopened_again =
         reopen_engine_parts(&fixture._directory, &fixture.config, &fixture.manager);
+    reopened_again
+        .ensure_tree_loaded(session.session_id)
+        .expect("load the parent's tree");
     for invocation_id in [first_id, second_id, intact_id] {
         assert_eq!(
             reopened_again

@@ -687,6 +687,9 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
     fixture.engine.shutdown().await;
 
     let reopened = reopen_engine(&fixture);
+    reopened
+        .ensure_tree_loaded(resumed_session_id)
+        .expect("load the resumed child's tree");
     assert!(
         !reopened
             .delegation_queue_contains(resumed_session_id)

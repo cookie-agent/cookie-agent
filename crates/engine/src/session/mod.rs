@@ -198,18 +198,6 @@ struct SessionResidency {
     evicted: HashMap<SessionId, SessionSummary>,
 }
 
-impl SessionResidency {
-    fn known_ids(&self) -> Vec<SessionId> {
-        self.resident
-            .keys()
-            .chain(self.evicted.keys())
-            .copied()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect()
-    }
-}
-
 /// Ownership of one root session tree. Exactly one lock and one
 /// [`WriteAuthority`] exist per tree; every log in the tree writes under that
 /// authority, so dropping the tree's entry invalidates all of them at once.
@@ -1801,51 +1789,6 @@ impl SessionStore {
             .collect()
     }
 
-    /// Snapshots of the sessions that are roots of their own tree. This is the
-    /// startup pass shape: never touches delegated child logs and never triggers
-    /// a lazy tree load (§3.2, §4).
-    pub fn root_snapshots(&self) -> Vec<SessionProjection> {
-        self.refresh_discovered();
-        let ids = self
-            .residency
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .known_ids()
-            .into_iter()
-            .filter(|id| self.is_root_id(*id))
-            .collect::<Vec<_>>();
-
-        self.startup_snapshots_for(ids)
-    }
-
-    /// Startup bookkeeping reads only: root summaries, the delegation registry,
-    /// the approval rebuild and the producer install (§4). A child read here
-    /// would land outside the coalesced bulk pass, which is why the use-path
-    /// APIs go through [`Self::ensure_tree_for`] instead.
-    fn startup_snapshots_for(&self, ids: Vec<SessionId>) -> Vec<SessionProjection> {
-        ids.into_iter()
-            .filter_map(|id| match self.startup_snapshot(id) {
-                Ok(session) => Some(session),
-                Err(error) => {
-                    eprintln!("session {id} snapshot skipped: {error}");
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Reads one session *without* completing its tree.
-    ///
-    /// Legal for startup bookkeeping and for direct-address access the caller
-    /// has already proven; anything else wants [`Self::get`], which refuses to
-    /// serve a session whose tree is still incomplete.
-    fn startup_snapshot(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
-        if let Some(session) = self.get_resident(id) {
-            return Ok(session);
-        }
-        self.open_snapshot(id, false)
-    }
-
     /// Whether a session is filed inside another session's tree.
     fn is_filed_child(&self, id: SessionId) -> bool {
         matches!(
@@ -1858,13 +1801,6 @@ impl SessionStore {
     /// unknown ids, a directory probe.
     pub(crate) fn session_exists(&self, id: SessionId) -> bool {
         self.resolve_dir(id).is_ok()
-    }
-
-    fn is_root_id(&self, id: SessionId) -> bool {
-        !matches!(
-            self.cached_location(id),
-            Some(SessionLocation::Child { .. })
-        )
     }
 
     fn cached_origin(&self, id: SessionId) -> Option<SessionOrigin> {
@@ -1992,11 +1928,6 @@ impl SessionStore {
         }
     }
 
-    /// Root discovery refresh. Metadata caches only — never an event log.
-    fn refresh_discovered(&self) {
-        self.refresh_discovered_roots();
-    }
-
     /// Whether `id` already has a residency entry (resident or evicted).
     fn is_known(&self, id: SessionId) -> bool {
         let residency = self
@@ -2017,57 +1948,6 @@ impl SessionStore {
             return;
         }
         residency.evicted.entry(id).or_insert(summary);
-    }
-
-    /// v2 root-only discovery (§2.3): root `metadata` caches plus each root's
-    /// tiny `subagents/index.json`. Directory placement encodes root-ness, so
-    /// no `origin` check (and no child event log) is needed.
-    fn refresh_discovered_roots(&self) {
-        let roots = self.root_dir_ids();
-        for root in roots.iter().copied() {
-            let dir = self.workdir_dir.join(root.to_string());
-            if !self.is_known(root) {
-                // Invalid entries stay uncached so later discovery retries them
-                // and repeats the diagnostic (today's semantics).
-                match read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)) {
-                    Ok(meta) if meta.session_id == root => {
-                        // Root logs are part of startup discovery. Folding them
-                        // here initializes usage while retaining the root-only
-                        // invariant: child logs are never opened at startup.
-                        match self.startup_snapshot(root) {
-                            Ok(snapshot) => {
-                                self.cache_summary(root, summary_from_projection(&snapshot))
-                            }
-                            Err(error) => eprintln!("session {root} usage skipped: {error}"),
-                        }
-                    }
-                    Ok(_) => eprintln!("session {root} metadata ID does not match its directory"),
-                    // A root directory without a `metadata` cache is a transient
-                    // discovery state, not a fault. It is what discovery sees
-                    // while a bare `<root>/subagents/` scaffold waits for its
-                    // root to publish, while `publish_prepared_dir` merges a
-                    // prepared directory into that scaffold, and, on filesystems
-                    // without an atomic superseding replace, while the cache
-                    // itself is rewritten. Skipping silently leaves the root
-                    // uncached, so the next discovery retries it.
-                    Err(SessionError::Io { source, .. })
-                        if source.kind() == std::io::ErrorKind::NotFound =>
-                    {
-                        continue;
-                    }
-                    Err(error) => {
-                        eprintln!("session {root} metadata skipped: {error}");
-                        continue;
-                    }
-                }
-            }
-            self.record_location(root, SessionLocation::Root);
-        }
-        // Only once every root's placement is known: an `index.json` naming
-        // another root must be rejected as the foreign entry it is (review L9).
-        for root in roots {
-            self.seed_tree_from_index(root);
-        }
     }
 
     /// Where the descendants of a *root* `id` live (one flat level, whatever the

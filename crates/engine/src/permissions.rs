@@ -785,9 +785,11 @@ impl crate::Engine {
             .filter(|resource| resource.capability == action)
             .map(|resource| resource.binding_digest.digest().clone())
             .collect();
-        self.inner
-            .grant_journal
-            .invalidate(root, ids.iter().copied().collect(), digests)?;
+        self.inner.grant_journals.for_root(root)?.invalidate(
+            root,
+            ids.iter().copied().collect(),
+            digests,
+        )?;
         self.inner.approvals.store.invalidate_grants(&ids);
         Ok(())
     }

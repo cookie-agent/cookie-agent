@@ -184,7 +184,9 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
         fixture
             .engine
             .inner
-            .grant_journal
+            .grant_journals
+            .for_root(session.session_id)
+            .expect("tree grant journal")
             .invalidated_ids()
             .contains(&grant_id)
     );
@@ -193,7 +195,9 @@ async fn tightening_overlay_invalidates_tree_grants_durably() {
     assert!(
         reopened
             .inner
-            .grant_journal
+            .grant_journals
+            .for_root(session.session_id)
+            .expect("tree grant journal")
             .invalidated_ids()
             .contains(&grant_id)
     );
@@ -277,7 +281,9 @@ async fn clearing_allow_overlay_to_default_deny_invalidates_tree_grants() {
         fixture
             .engine
             .inner
-            .grant_journal
+            .grant_journals
+            .for_root(session.session_id)
+            .expect("tree grant journal")
             .invalidated_ids()
             .contains(&grant_id)
     );

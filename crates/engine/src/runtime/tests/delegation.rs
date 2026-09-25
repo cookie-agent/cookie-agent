@@ -347,7 +347,7 @@ async fn rebuilding_registry_strips_foreground_delegation_producer() {
 
     fixture
         .engine
-        .rebuild_delegation_registry_for_test()
+        .rebuild_delegation_registry_for_test(parent.session_id)
         .expect("registry rebuild");
     tokio::time::timeout(
         test_timeout(10),

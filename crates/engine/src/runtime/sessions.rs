@@ -27,27 +27,17 @@ impl Engine {
                 .unwrap_or(projection.meta.creation_selection),
         )
     }
-    /// Rebuilds the visible grant set from root logs plus the grant sets cached
-    /// by loaded trees, so it stays O(cached data) instead of O(all logs) (§4.3).
+    /// Rebuilds the visible grant set from the grant sets cached by loaded
+    /// trees (root logs included), so it never reads a log (tree-local C4).
     pub(super) fn rebuild_visible_tree_grants(&self) {
-        let invalidated = self.inner.grant_journal.invalidated_ids();
-        let mut grants = Vec::new();
-        for session in self.inner.store.root_snapshots() {
-            for event in session.log.event_snapshot().iter() {
-                if let Event::TreeApprovalGrantCommitted { grant } = &event.payload
-                    && !invalidated.contains(&grant.grant_id)
-                {
-                    grants.push(grant.clone());
-                }
-            }
-        }
-        grants.extend(
-            self.inner
-                .store
-                .loaded_tree_grants()
-                .into_iter()
-                .filter(|grant| !invalidated.contains(&grant.grant_id)),
-        );
+        let invalidated = self.inner.grant_journals.invalidated_ids();
+        let grants = self
+            .inner
+            .store
+            .loaded_tree_grants()
+            .into_iter()
+            .filter(|grant| !invalidated.contains(&grant.grant_id))
+            .collect::<Vec<_>>();
         self.inner.approvals.store.replace(grants);
     }
 
@@ -297,8 +287,9 @@ impl Engine {
     }
 
     pub fn tree(&self, id: SessionId) -> Result<cookie_agent_protocol::SessionTree, EngineError> {
+        // The load folded every log in the tree, so the summaries below never
+        // read one again, and a missing session fails there (tree-local C6).
         self.ensure_tree_loaded(id)?;
-        self.inner.store.get(id)?;
         self.tree_summary(id)
     }
 

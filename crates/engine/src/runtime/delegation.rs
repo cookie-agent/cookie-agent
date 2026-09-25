@@ -2780,8 +2780,11 @@ impl Engine {
     }
 
     #[cfg(test)]
-    pub(crate) fn rebuild_delegation_registry_for_test(&self) -> Result<(), EngineError> {
-        self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), true)
+    pub(crate) fn rebuild_delegation_registry_for_test(
+        &self,
+        root: SessionId,
+    ) -> Result<(), EngineError> {
+        self.rebuild_delegation_registry(root, true)
     }
 
     #[cfg(test)]
@@ -2799,13 +2802,17 @@ impl Engine {
             .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))
     }
 
+    /// Rebuilds the registry records of one root's tree from that tree's loaded
+    /// delegation entries. Records of every other tree are left exactly as they
+    /// are (tree-local C3, C9).
     pub(super) fn rebuild_delegation_registry(
         &self,
-        entries: &[delegation_events::DelegationEntry],
+        root: SessionId,
         recover: bool,
     ) -> Result<(), EngineError> {
+        let entries = self.inner.delegation_events.entries();
         let mut latest = std::collections::HashMap::new();
-        for entry in entries {
+        for entry in &entries {
             latest.insert(entry.reservation.child_session_id, entry);
         }
         let mut stale_producers = {
@@ -2818,9 +2825,10 @@ impl Engine {
             let stale = records
                 .iter()
                 .filter(|(child_session_id, record)| {
-                    latest
-                        .get(child_session_id)
-                        .is_none_or(|entry| entry.reservation.invocation_id != record.invocation_id)
+                    record.root_session_id == root
+                        && latest.get(child_session_id).is_none_or(|entry| {
+                            entry.reservation.invocation_id != record.invocation_id
+                        })
                 })
                 .filter_map(|(_, record)| {
                     record.producer_id.map(|producer_id| {
@@ -2829,9 +2837,10 @@ impl Engine {
                 })
                 .collect::<Vec<_>>();
             records.retain(|child_session_id, record| {
-                latest
-                    .get(child_session_id)
-                    .is_some_and(|entry| entry.reservation.invocation_id == record.invocation_id)
+                record.root_session_id != root
+                    || latest.get(child_session_id).is_some_and(|entry| {
+                        entry.reservation.invocation_id == record.invocation_id
+                    })
             });
             stale
         };
@@ -2870,6 +2879,9 @@ impl Engine {
                 continue;
             };
             let root_session_id = facts.root_session_id;
+            if root_session_id != root {
+                continue;
+            }
             let queued_event = facts.queued.iter().any(|(run_id, session)| {
                 *run_id == entry.reservation.parent_run_id && *session == child_id
             });

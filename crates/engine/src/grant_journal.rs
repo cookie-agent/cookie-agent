@@ -1,8 +1,8 @@
 //! Durable exact tree-grant invalidations committed before mutations execute.
 
 use std::{
-    collections::HashSet,
-    path::PathBuf,
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 #[cfg(test)]
@@ -33,6 +33,59 @@ pub enum GrantJournalError {
     Corrupt { path: PathBuf, message: String },
     #[error("grant invalidation journal at {path} is poisoned and must be reopened")]
     Poisoned { path: PathBuf },
+}
+
+/// File holding one tree's invalidations, inside that root's directory.
+pub const GRANT_JOURNAL_FILE: &str = "grant-invalidations.jsonl";
+
+/// The grant invalidation journals of the trees this process has opened. Each
+/// tree keeps its own journal in its root directory and it is read only when
+/// that tree loads or invalidates a grant, never for any other tree
+/// (tree-local C8).
+#[derive(Debug)]
+pub struct GrantJournals {
+    workdir: PathBuf,
+    journals: Mutex<HashMap<SessionId, Arc<GrantInvalidationJournal>>>,
+}
+
+impl GrantJournals {
+    #[must_use]
+    pub fn new(workdir: &Path) -> Self {
+        Self {
+            workdir: workdir.to_owned(),
+            journals: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The journal of the tree rooted at `root`, opened on first use.
+    pub fn for_root(
+        &self,
+        root: SessionId,
+    ) -> Result<Arc<GrantInvalidationJournal>, GrantJournalError> {
+        let mut journals = self
+            .journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(journal) = journals.get(&root) {
+            return Ok(Arc::clone(journal));
+        }
+        let journal = GrantInvalidationJournal::open(
+            self.workdir.join(root.to_string()).join(GRANT_JOURNAL_FILE),
+        )?;
+        journals.insert(root, Arc::clone(&journal));
+        Ok(journal)
+    }
+
+    /// Invalidated grant IDs of every tree whose journal is open.
+    #[must_use]
+    pub fn invalidated_ids(&self) -> HashSet<TreeApprovalGrantId> {
+        self.journals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .flat_map(|journal| journal.invalidated_ids())
+            .collect()
+    }
 }
 
 #[derive(Debug)]

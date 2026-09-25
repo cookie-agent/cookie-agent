@@ -897,9 +897,8 @@ impl Engine {
             if let Err(error) = self.recover_missing_delegation_children(session) {
                 eprintln!("session {session} missing-child recovery deferred: {error}");
             }
-            if let Err(error) =
-                self.rebuild_delegation_registry(&self.inner.delegation_events.entries(), true)
-            {
+            let root = self.inner.store.root_of(session).unwrap_or(session);
+            if let Err(error) = self.rebuild_delegation_registry(root, true) {
                 eprintln!("session {session} delegation recovery deferred: {error}");
             }
         }

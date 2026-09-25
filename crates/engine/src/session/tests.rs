@@ -884,6 +884,38 @@ fn listing_reflects_metadata_another_process_changed() {
     );
 }
 
+/// Tree-local C6: one tree load reads every log in the tree exactly once, the
+/// root's included, and later tree reads are answered from what it folded.
+#[test]
+fn a_tree_load_reads_each_log_in_the_tree_once() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let root = persist_test_session(&owner);
+    let child = persist_test_session_with_origin(&owner, delegated_origin(root, root, 1));
+    let grandchild = persist_test_session_with_origin(&owner, delegated_origin(root, child, 2));
+    let other_root = persist_test_session(&owner);
+    drop(owner);
+
+    let store = SessionStore::open(&data, &cwd).expect("cold store");
+    store.ensure_tree_for(child).expect("load through a child");
+    for session in [root, child, grandchild] {
+        assert_eq!(store.log_open_count(session), 1, "{session}");
+    }
+    assert_eq!(
+        store.log_open_count(other_root),
+        0,
+        "another tree is never read"
+    );
+    assert_eq!(store.tree_summaries(root).expect("tree").len(), 3);
+    store.summary(root).expect("root summary");
+    for session in [root, child, grandchild] {
+        assert_eq!(store.log_open_count(session), 1, "{session} read again");
+    }
+}
+
 /// Builds a delegated origin filed under `root`, nested below `parent`.
 fn delegated_origin(root: SessionId, parent: SessionId, depth: u32) -> SessionOrigin {
     SessionOrigin::Delegated {
