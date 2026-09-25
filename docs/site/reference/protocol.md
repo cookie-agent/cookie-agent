@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 20 is current-only. A client must call `handshake` with
-`{ "protocol_version": 20 }` before any other method.
+Protocol 21 is current-only. A client must call `handshake` with
+`{ "protocol_version": 21 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 20.
+members of protocol 21.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 20 alongside independent display and output references. The
+preserved in protocol 21 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -102,8 +102,6 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.goal.lifecycle` | Session ID, goal ID, expected revision, pause/resume/cancel action, optional `selection` for resume only | Updated `goal: GoalState` |
 | `session.producers` | Session ID | Runtime `producers` and `plugin_recovery` inspection |
 | `session.usage` | Session ID | Token/request rollup, cache hit rate, optional estimated cost, and per-model breakdown |
-| `agent.usage` | Agent ID | Rollup across turns attributed to that agent |
-| `usage.global` | Empty object | Rollup across all project sessions |
 | `session.children` | Session ID | Direct child summaries |
 | `session.tree` | Session ID | Recursive session tree |
 | `session.resume` | Session ID | Resumed session metadata with skipped-event diagnostics |

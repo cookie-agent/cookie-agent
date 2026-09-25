@@ -512,6 +512,20 @@ async fn empty_runtime_snapshot_is_coherent_and_legacy_lists_are_absent() {
 }
 
 #[tokio::test]
+async fn cross_session_usage_rollups_are_not_served() {
+    let harness = harness();
+    let mut client = connect(Arc::clone(&harness.server)).await;
+    // Usage is only ever read for one session or one session tree.
+    for (method, params) in [
+        ("agent.usage", json!({"agent_id": "default"})),
+        ("usage.global", json!({})),
+    ] {
+        let (response, _) = request(&mut client, 3, method, params).await;
+        assert_eq!(response["error"]["code"], -32601, "{method}");
+    }
+}
+
+#[tokio::test]
 async fn empty_session_create_returns_secret_free_no_runnable_failure() {
     let harness = harness();
     let mut client = connect(Arc::clone(&harness.server)).await;

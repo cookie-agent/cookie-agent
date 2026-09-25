@@ -53,7 +53,6 @@ pub(super) fn assert_projection_equivalent(
     assert_eq!(actual.status, expected.status, "status");
     assert_eq!(actual.usage, expected.usage, "usage");
     assert_eq!(actual.usage_rollup, expected.usage_rollup, "usage_rollup");
-    assert_eq!(actual.agent_usage, expected.agent_usage, "agent_usage");
     assert_eq!(actual.runs, expected.runs, "runs");
     assert_eq!(
         actual.rename_records, expected.rename_records,
@@ -157,7 +156,6 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
     let mut status = SessionStatus::Idle;
     let mut usage = None;
     let mut usage_rollup = UsageRollup::default();
-    let mut agent_usage = BTreeMap::<AgentId, UsageRollup>::new();
     let mut rename_records = HashMap::new();
     let mut permission_overlay = SessionPermissionOverlay::default();
     let mut automatic_title = None;
@@ -318,38 +316,15 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
                     && !crate::usage::has_observed_tokens(reported);
                 if !recorded_usage_turns.contains(model_turn_seq) && !interrupted_without_usage {
                     crate::usage::record_stamped(&mut usage_rollup, resolved_model, reported, None);
-                    if let Some(agent) = runs.get(&run_id).map(|run| run.agent.agent.clone()) {
-                        crate::usage::record_stamped(
-                            agent_usage.entry(agent).or_default(),
-                            resolved_model,
-                            reported,
-                            None,
-                        );
-                    }
                 }
             }
             EventPayload::ModelUsageRecorded {
-                agent_id,
                 resolved_model,
                 usage: reported,
                 estimated_cost_pico_usd,
                 ..
-            } => {
-                crate::usage::record_stamped(
-                    &mut usage_rollup,
-                    resolved_model,
-                    reported,
-                    *estimated_cost_pico_usd,
-                );
-                crate::usage::record_stamped(
-                    agent_usage.entry(agent_id.clone()).or_default(),
-                    resolved_model,
-                    reported,
-                    *estimated_cost_pico_usd,
-                );
             }
-            EventPayload::InternalAgentUsageRecorded {
-                agent_id,
+            | EventPayload::InternalAgentUsageRecorded {
                 resolved_model,
                 usage: reported,
                 estimated_cost_pico_usd,
@@ -357,12 +332,6 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
             } => {
                 crate::usage::record_stamped(
                     &mut usage_rollup,
-                    resolved_model,
-                    reported,
-                    *estimated_cost_pico_usd,
-                );
-                crate::usage::record_stamped(
-                    agent_usage.entry(agent_id.clone()).or_default(),
                     resolved_model,
                     reported,
                     *estimated_cost_pico_usd,
@@ -378,7 +347,6 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
         status,
         usage,
         usage_rollup,
-        agent_usage,
         runs,
         rename_records,
         permission_overlay,
@@ -427,7 +395,6 @@ pub(super) fn summary_from_projection(session: &SessionProjection) -> SessionSum
         meta: session.meta.clone(),
         usage: session.usage.clone(),
         usage_rollup: session.usage_rollup.clone(),
-        agent_usage: session.agent_usage.clone(),
     }
 }
 

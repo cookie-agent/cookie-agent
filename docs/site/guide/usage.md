@@ -10,14 +10,14 @@ adapter. Cohere `cached_tokens` similarly records server-side automatic cache
 reads. Providers that omit a field leave it unknown rather than estimating it.
 
 The event log is the source of truth. Session rollups and their per-model rows
-are rebuilt on restart and obey revert/fork visibility. Agent rollups use the
-agent that owned each model turn. Session-tree rollups combine the selected
-session with all of its delegated descendants, including descendants that have
-been evicted from memory.
+are rebuilt from the session's log when it is loaded and obey revert/fork
+visibility. Session-tree rollups combine the selected session with all of its
+delegated descendants, including descendants that have been evicted from memory.
+There are no rollups across sessions: usage is always read for one session or
+one session tree.
 
 Open `/usage` in the TUI to compare the selected session with its session-tree
-totals. Programmatic clients can call `session.usage`, `session.tree_usage`,
-`agent.usage`, and `usage.global`. Cache hit rate is cache-read tokens divided
+totals. Programmatic clients can call `session.usage` and `session.tree_usage`. Cache hit rate is cache-read tokens divided
 by inclusive input tokens. It is unavailable unless every included request
 reports both fields; an explicitly reported zero remains a 0% hit rate.
 

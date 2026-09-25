@@ -424,7 +424,6 @@ async fn usage_panel_loads_session_and_tree_without_refreshing_bottom_bar_cost()
 
     let session_request = wait_for_recorded_request(&recorded, "session.usage", 1).await;
     let tree_request = wait_for_recorded_request(&recorded, "session.tree_usage", 1).await;
-    assert_eq!(recorded_method_count(&recorded, "usage.global"), 0);
     incoming
         .send(MessageFrame::Value(serde_json::json!({
             "jsonrpc": "2.0",

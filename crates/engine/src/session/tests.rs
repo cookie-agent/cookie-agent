@@ -1813,7 +1813,6 @@ fn subagent_index_entries_are_validated_before_they_are_trusted() {
                 },
                 usage: None,
                 usage_rollup: Default::default(),
-                agent_usage: BTreeMap::new(),
             }),
             entry(other_summary),
         ],
@@ -2729,7 +2728,6 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
     assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
     assert_eq!(rebuilt.usage_rollup.cache_read_tokens, 40);
     assert_eq!(rebuilt.usage_rollup.cache_write_tokens, 10);
-    assert_eq!(rebuilt.agent_usage[&agent.agent].request_count, 1);
     let changed_pricing = PricingConfig {
         models: BTreeMap::from([(
             model_key.clone(),
@@ -3043,16 +3041,6 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
     let rebuilt = projection(reopened).unwrap();
     assert_eq!(rebuilt.usage_rollup.request_count, 5);
     assert_eq!(rebuilt.usage_rollup.input_tokens, 503);
-    for (kind, agent_name) in kinds {
-        assert_eq!(
-            rebuilt.agent_usage[&AgentId::new(agent_name).unwrap()].request_count,
-            if kind == InternalAgentKind::Approval {
-                3
-            } else {
-                1
-            }
-        );
-    }
     let rate = PicoUsdPerMillion::from_decimal_str("1").unwrap();
     let pricing = PricingConfig {
         models: BTreeMap::from([
@@ -3563,7 +3551,7 @@ fn run_projection_fuzz(seed: u64, steps: usize) {
 /// `finish_reason` and is then abandoned.
 fn usage_rollup_after_a_usage_less_commit(
     finish_reason: ModelFinishReason,
-) -> (super::SessionProjection, cookie_agent_protocol::AgentId) {
+) -> super::SessionProjection {
     let temp = private_tempdir();
     let path = temp.path().join("events.jsonl");
     let session_id = SessionId::new_v7();
@@ -3729,19 +3717,18 @@ fn usage_rollup_after_a_usage_less_commit(
     drop(log);
 
     let reopened = crate::events::EventLog::open(path, session_id).unwrap();
-    (projection(reopened).unwrap(), agent.agent)
+    projection(reopened).unwrap()
 }
 
 #[test]
 fn aborted_commit_without_usage_does_not_poison_the_usage_rollup() {
-    let (rebuilt, agent) = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Aborted);
+    let rebuilt = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Aborted);
     assert_eq!(
         rebuilt.usage_rollup.request_count, 1,
         "the aborted commit records no request"
     );
     assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
     assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
-    assert_eq!(rebuilt.agent_usage[&agent].request_count, 1);
     let priced = crate::usage::with_pricing(
         rebuilt.usage_rollup,
         &PricingConfig::default(),
@@ -3758,9 +3745,8 @@ fn aborted_commit_without_usage_does_not_poison_the_usage_rollup() {
 fn completed_commit_without_usage_still_counts_as_an_unpriced_request() {
     // Only an interrupt is exempt: a provider that finished a turn without
     // reporting usage leaves the session cost unknown rather than understated.
-    let (rebuilt, agent) = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Stop);
+    let rebuilt = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Stop);
     assert_eq!(rebuilt.usage_rollup.request_count, 2);
-    assert_eq!(rebuilt.agent_usage[&agent].request_count, 2);
     let priced = crate::usage::with_pricing(
         rebuilt.usage_rollup,
         &PricingConfig::default(),

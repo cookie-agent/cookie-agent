@@ -1212,7 +1212,6 @@ impl SessionStore {
                             meta: authoritative,
                             usage: None,
                             usage_rollup: child.summary.usage_rollup.clone(),
-                            agent_usage: child.summary.agent_usage.clone(),
                         },
                     );
                 }

@@ -45,7 +45,7 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload,
+    AgentSnapshot, ChildSummary, ClientRenameId, ClientRunId, EventPayload,
     EventSubscriptionMessage, EventsSubscribeResult, RunId, RunSelection, SessionId, SessionMeta,
     SessionOrigin, SessionPermissionOverlay, SessionRenameRecord, SessionStatus, SessionTitle,
     SessionTitleChange, SessionTree, StoredEvent, ToolCallId, Usage, UsageRollup,
@@ -156,7 +156,6 @@ pub struct SessionProjection {
     pub status: SessionStatus,
     pub usage: Option<Usage>,
     pub usage_rollup: UsageRollup,
-    pub agent_usage: BTreeMap<AgentId, UsageRollup>,
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
@@ -168,7 +167,6 @@ pub struct SessionSummary {
     pub meta: SessionMeta,
     pub usage: Option<Usage>,
     pub usage_rollup: UsageRollup,
-    pub agent_usage: BTreeMap<AgentId, UsageRollup>,
 }
 
 /// One entry of a root's `subagents/index.json` child-summary cache (§3.4).
@@ -1247,7 +1245,6 @@ impl SessionStore {
             meta: session.meta.clone(),
             usage: session.usage.clone(),
             usage_rollup: session.usage_rollup.clone(),
-            agent_usage: session.agent_usage.clone(),
         };
         residency.evicted.insert(id, summary);
         #[cfg(test)]
@@ -1897,7 +1894,6 @@ impl SessionStore {
                     meta: session.meta.clone(),
                     usage: session.usage.clone(),
                     usage_rollup: session.usage_rollup.clone(),
-                    agent_usage: session.agent_usage.clone(),
                 },
             )
         }));
@@ -2551,7 +2547,6 @@ impl SessionStore {
                 meta,
                 usage: None,
                 usage_rollup: UsageRollup::default(),
-                agent_usage: BTreeMap::new(),
             },
         );
         self.record_child_edge(root, parent, id);

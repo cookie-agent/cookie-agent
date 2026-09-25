@@ -194,11 +194,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 20);
+    assert_eq!(PROTOCOL_VERSION, 21);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(20)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
@@ -324,18 +325,8 @@ fn usage_rpc_shapes_are_additive_and_nullable_when_unpriced() {
         serde_json::to_value(SessionUsageParams { session_id }).unwrap(),
         json!({"session_id": session_id})
     );
-    assert_eq!(
-        serde_json::to_value(AgentUsageParams {
-            agent_id: AgentId::new("default").unwrap(),
-        })
-        .unwrap(),
-        json!({"agent_id": "default"})
-    );
-    assert_eq!(
-        serde_json::to_value(GlobalUsageParams {}).unwrap(),
-        json!({})
-    );
-    let result = GlobalUsageResult {
+    let result = SessionUsageResult {
+        session_id,
         usage: UsageRollup {
             input_tokens: 10,
             output_tokens: 2,

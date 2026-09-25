@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use cookie_agent_engine::{EngineError, session::SessionError};
 use cookie_agent_protocol::{
-    AgentUsageParams, AgentUsageResult, ApprovalListParams, ApprovalListResult,
-    ApprovalRespondErrorCode, ApprovalRespondParams, ApprovalRespondResult, EventsSubscribeParams,
-    EventsSubscribeResult, GlobalUsageParams, GlobalUsageResult, McpAuthBeginParams,
+    ApprovalListParams, ApprovalListResult, ApprovalRespondErrorCode, ApprovalRespondParams,
+    ApprovalRespondResult, EventsSubscribeParams, EventsSubscribeResult, McpAuthBeginParams,
     McpAuthBeginResult, McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams,
     McpServerEditParams, McpServerListParams, McpServerListResult, McpServerMutationResult,
     McpServerNameParams, McpServerPersistParams, McpServerSetEnabledParams, ProviderConnectParams,
@@ -117,14 +116,6 @@ impl ServerProtocol for Server {
         self.engine
             .session_tree_usage(params.session_id)
             .map_err(|error| RpcFault::session_tree_usage(error).into())
-    }
-
-    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult> {
-        Ok(self.engine.agent_usage(params.agent_id))
-    }
-
-    async fn global_usage(&self, _: GlobalUsageParams) -> Result<GlobalUsageResult> {
-        Ok(self.engine.global_usage())
     }
 
     async fn session_children(

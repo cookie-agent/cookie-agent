@@ -13,10 +13,9 @@ use std::{
 };
 
 use crate::{
-    AgentUsageParams, AgentUsageResult, ApprovalListParams, ApprovalListResult,
-    ApprovalRespondParams, ApprovalRespondResult, ClientHello, EventPayload,
-    EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult, GlobalUsageParams,
-    GlobalUsageResult, JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult,
+    ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
+    ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
+    EventsSubscribeResult, JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult,
     McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
     McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
     McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, OutputDelta,
@@ -149,8 +148,6 @@ pub trait ClientProtocol: Send + Sync {
         &self,
         params: SessionUsageParams,
     ) -> Result<SessionTreeUsageResult, ClientError>;
-    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError>;
-    async fn global_usage(&self) -> Result<GlobalUsageResult, ClientError>;
     async fn session_children(
         &self,
         params: SessionChildrenParams,
@@ -636,17 +633,6 @@ impl Client {
         self.call("session.tree_usage", &params).await
     }
 
-    pub async fn agent_usage(
-        &self,
-        params: AgentUsageParams,
-    ) -> Result<AgentUsageResult, ClientError> {
-        self.call("agent.usage", &params).await
-    }
-
-    pub async fn global_usage(&self) -> Result<GlobalUsageResult, ClientError> {
-        self.call("usage.global", &GlobalUsageParams {}).await
-    }
-
     pub async fn session_children(
         &self,
         params: SessionChildrenParams,
@@ -991,12 +977,6 @@ impl ClientProtocol for Client {
     ) -> Result<SessionTreeUsageResult, ClientError> {
         Client::session_tree_usage(self, params).await
     }
-    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError> {
-        Client::agent_usage(self, params).await
-    }
-    async fn global_usage(&self) -> Result<GlobalUsageResult, ClientError> {
-        Client::global_usage(self).await
-    }
     async fn session_children(
         &self,
         params: SessionChildrenParams,
@@ -1243,12 +1223,6 @@ where
         params: SessionUsageParams,
     ) -> Result<SessionTreeUsageResult, ClientError> {
         self.deref().session_tree_usage(params).await
-    }
-    async fn agent_usage(&self, params: AgentUsageParams) -> Result<AgentUsageResult, ClientError> {
-        self.deref().agent_usage(params).await
-    }
-    async fn global_usage(&self) -> Result<GlobalUsageResult, ClientError> {
-        self.deref().global_usage().await
     }
     async fn session_children(
         &self,

@@ -4,10 +4,10 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AgentId, AgentUsageResult, ChildSummary, EventOrigin, GlobalUsageResult, InvocationId,
-    PermissionMode, RunSelection, SessionForkResult, SessionId, SessionMeta, SessionOrigin,
-    SessionRenameChange, SessionRenameParams, SessionRenameResult, SessionRevertResult,
-    SessionTreeUsageResult, SessionUsageResult, UsageRollup,
+    AgentId, ChildSummary, EventOrigin, InvocationId, PermissionMode, RunSelection,
+    SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionTreeUsageResult,
+    SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -173,35 +173,6 @@ impl Engine {
             .inner
             .store
             .session_usage(id, &self.inner.config.runtime.pricing, &catalog)?)
-    }
-    pub fn agent_usage(&self, agent_id: AgentId) -> AgentUsageResult {
-        let mut usage = UsageRollup::default();
-        for session in self.inner.store.all_summaries() {
-            if let Some(agent) = session.agent_usage.get(&agent_id) {
-                crate::usage::merge(&mut usage, agent);
-            }
-        }
-        AgentUsageResult {
-            agent_id,
-            usage: crate::usage::with_pricing(
-                usage,
-                &self.inner.config.runtime.pricing,
-                &self.catalog_pricing(),
-            ),
-        }
-    }
-    pub fn global_usage(&self) -> GlobalUsageResult {
-        let mut usage = UsageRollup::default();
-        for session in self.inner.store.all_summaries() {
-            crate::usage::merge(&mut usage, &session.usage_rollup);
-        }
-        GlobalUsageResult {
-            usage: crate::usage::with_pricing(
-                usage,
-                &self.inner.config.runtime.pricing,
-                &self.catalog_pricing(),
-            ),
-        }
     }
     pub fn session_tree_usage(&self, id: SessionId) -> Result<SessionTreeUsageResult, EngineError> {
         // A cold root's index is only a cache. Complete the tree before using

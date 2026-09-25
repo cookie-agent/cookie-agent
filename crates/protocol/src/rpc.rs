@@ -343,29 +343,6 @@ pub struct SessionTreeUsageResult {
     pub session_count: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentUsageParams {
-    pub agent_id: AgentId,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentUsageResult {
-    pub agent_id: AgentId,
-    pub usage: UsageRollup,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GlobalUsageParams {}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GlobalUsageResult {
-    pub usage: UsageRollup,
-}
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildSummary {
