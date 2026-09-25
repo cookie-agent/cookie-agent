@@ -1,6 +1,6 @@
 # Tree-Local Sessions
 
-Status: approved 2026-09-25; implementation in progress. This document amends
+Status: implemented on 2026-09-25. This document amends
 the startup, listing, delegation, approval, producer, and artifact rules in
 [Architecture](../architecture.md), removes two usage methods from the
 [Protocol](../reference/protocol.md), and extends the
