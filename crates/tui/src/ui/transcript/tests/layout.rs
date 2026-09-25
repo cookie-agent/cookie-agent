@@ -779,6 +779,65 @@ fn child_layout_cache_recomputes_only_the_changed_assistant_segment() {
 }
 
 #[test]
+fn toggling_a_tool_while_text_streams_in_the_same_item_relayouts_the_tool() {
+    let session = SessionId::new_v7();
+    let run = run_id();
+    let first = AttemptId::new_v7();
+    let second = AttemptId::new_v7();
+    let call_id = ToolCallId::new_v7();
+    let mut store = StateStore::default();
+    for event in [
+        user_input(session, 1, run, "run it"),
+        attempt_started(session, 2, run, first, None),
+        turn_committed(
+            session,
+            3,
+            run,
+            first,
+            3,
+            vec![tool_part("call-1")],
+            Vec::new(),
+            None,
+        ),
+        tool_started(session, 4, run, call_id, 3, "call-1"),
+        attempt_started(session, 5, run, second, None),
+        text_delta(session, 6, run, second, "streaming"),
+    ] {
+        assert!(store.apply_event(event));
+    }
+    let theme = Theme::default();
+    let highlighter = crate::markdown::SyntectHighlighter::default();
+    let layout = |cache: &mut LayoutCache, store: &StateStore, expanded: &HashSet<BlockId>| {
+        ensure_cached_transcript_layout(
+            cache,
+            session,
+            &store.sessions[&session],
+            None,
+            Some(expanded),
+            60,
+            &theme,
+            &highlighter,
+            crate::state::EventLevel::Debug,
+            0,
+        );
+    };
+    let mut cache = LayoutCache::default();
+    layout(&mut cache, &store, &HashSet::new());
+
+    // The click and the next streamed delta land in the same frame.
+    let expanded = HashSet::from([BlockId::Tool(call_id)]);
+    assert!(store.apply_event(text_delta(session, 7, run, second, " tail")));
+    layout(&mut cache, &store, &expanded);
+
+    let mut fresh = LayoutCache::default();
+    layout(&mut fresh, &store, &expanded);
+    assert_eq!(
+        snapshot_lines(&cache.layout.lines),
+        snapshot_lines(&fresh.layout.lines)
+    );
+}
+
+#[test]
 fn streaming_delta_reassembles_only_the_tail_item() {
     let session = SessionId::new_v7();
     let run = run_id();

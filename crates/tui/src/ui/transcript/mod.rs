@@ -631,8 +631,12 @@ pub(super) fn ensure_cached_transcript_layout(
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,
             };
+            // Splicing re-renders only the streaming text/thinking part, so an
+            // expand/collapse elsewhere in the item (e.g. a tool row toggled
+            // while text streams after it) needs the full item layout.
             let spliced = cache.items.get_mut(index).is_some_and(|cached| {
-                splice_active_assistant_part(cached, state, item, &mut context)
+                cached.key.interaction == item_key.interaction
+                    && splice_active_assistant_part(cached, state, item, &mut context)
             });
             let layout = if spliced {
                 let cached = &mut cache.items[index];
