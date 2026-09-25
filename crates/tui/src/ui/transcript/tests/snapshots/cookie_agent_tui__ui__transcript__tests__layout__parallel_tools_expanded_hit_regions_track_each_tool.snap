@@ -5,12 +5,19 @@ expression: rendered
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │
-│ 💻 ▾ bash sleep 2 …
-│ model call: call-a
+│  💻 ▾ bash sleep 2 …
 │
-│ 💭 ▾ thought
-│ ┆ waiting on both
-│ 📖 ▾ read src/lib.rs
-│ ran true
-│ done
+│  model call: call-a
+│
+│
+│  💭 ▾ thought
+│
+│  waiting on both
+│
+│
+│  📖 ▾ read src/lib.rs
+│
+│  ran true
+│  done
+│
 │

@@ -75,11 +75,11 @@ fn read_line_number_gutter_aligns_single_and_four_digit_numbers() {
     );
     let lines = expanded_read_layout(&state, &Theme::default());
     let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
-    assert!(rendered.iter().any(|line| line.contains("│    1 │ one")));
+    assert!(rendered.iter().any(|line| line.contains("│     1 │ one")));
     assert!(
         rendered
             .iter()
-            .any(|line| line.contains("│ 1000 │ thousand"))
+            .any(|line| line.contains("│  1000 │ thousand"))
     );
 }
 

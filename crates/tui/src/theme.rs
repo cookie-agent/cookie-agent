@@ -81,10 +81,13 @@ struct Palette {
     /// Expanded tool title block: one grey step deeper than the `terminal`
     /// output band, so title and output read as one panel.
     pan: Swatch,
+    /// Pale row tints behind added and removed diff lines on the output band.
+    added_tint: Swatch,
+    removed_tint: Swatch,
 }
 
 impl Palette {
-    fn swatches(&self) -> [Swatch; 28] {
+    fn swatches(&self) -> [Swatch; 30] {
         [
             self.cream,
             self.terminal,
@@ -114,6 +117,8 @@ impl Palette {
             self.neutral_tint,
             self.ink,
             self.pan,
+            self.added_tint,
+            self.removed_tint,
         ]
     }
 
@@ -161,6 +166,8 @@ const LIGHT: Palette = Palette {
     neutral_tint: swatch((0xE6, 0xDC, 0xC6), 187, Color::Gray),
     ink: swatch((0x62, 0x52, 0x40), 239, Color::DarkGray),
     pan: swatch((0xE7, 0xE4, 0xDF), 254, Color::Gray),
+    added_tint: swatch((0xDC, 0xEB, 0xCF), 194, Color::LightGreen),
+    removed_tint: swatch((0xF6, 0xD9, 0xD2), 224, Color::LightRed),
 };
 
 const DARK: Palette = Palette {
@@ -192,6 +199,8 @@ const DARK: Palette = Palette {
     neutral_tint: swatch((0x96, 0x8A, 0x71), 173, Color::Gray),
     ink: swatch((0xC9, 0xB5, 0x9C), 180, Color::Gray),
     pan: swatch((0x36, 0x34, 0x31), 237, Color::DarkGray),
+    added_tint: swatch((0x22, 0x36, 0x25), 22, Color::Green),
+    removed_tint: swatch((0x40, 0x25, 0x22), 52, Color::Red),
 };
 
 #[derive(Clone, Debug)]
@@ -430,13 +439,31 @@ impl Theme {
         self.background_color(self.palette().parchment, None)
     }
 
-    /// Muted grey band for shell output: neutral beside the warm code
-    /// tint, so command output never reads as highlighted source.
+    /// Muted grey band behind expanded tool output: neutral beside the warm
+    /// code tint, so tool output never reads as highlighted source.
     pub fn terminal_background(&self) -> Option<Color> {
         if !self.is_bakery_palette() {
             return None;
         }
         self.background_color(self.palette().terminal, None)
+    }
+
+    /// Pale green row tint behind an added diff line. Like the title block,
+    /// sixteen-colour terminals have no pale step and keep the plain band.
+    pub fn diff_added_background(&self) -> Option<Color> {
+        self.diff_row_background(self.palette().added_tint)
+    }
+
+    /// Pale red row tint behind a removed diff line.
+    pub fn diff_removed_background(&self) -> Option<Color> {
+        self.diff_row_background(self.palette().removed_tint)
+    }
+
+    fn diff_row_background(&self, swatch: Swatch) -> Option<Color> {
+        if !self.is_bakery_palette() || self.key.colors == ColorLevel::Ansi16 {
+            return None;
+        }
+        self.background_color(swatch, None)
     }
 
     /// Background of an expanded tool's title block (header plus the rest of

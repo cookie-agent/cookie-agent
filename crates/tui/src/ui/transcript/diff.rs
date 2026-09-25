@@ -340,10 +340,18 @@ pub(super) fn render_diff_output(
             DiffRowKind::Added(number)
             | DiffRowKind::Removed(number)
             | DiffRowKind::Context(number) => {
-                let (marker, marker_style) = match row.kind {
-                    DiffRowKind::Added(_) => ("+", context.theme.diff_added()),
-                    DiffRowKind::Removed(_) => ("-", context.theme.diff_removed()),
-                    DiffRowKind::Context(_) => (" ", context.theme.code_gutter()),
+                let (marker, marker_style, tint) = match row.kind {
+                    DiffRowKind::Added(_) => (
+                        "+",
+                        context.theme.diff_added(),
+                        context.theme.diff_added_background(),
+                    ),
+                    DiffRowKind::Removed(_) => (
+                        "-",
+                        context.theme.diff_removed(),
+                        context.theme.diff_removed_background(),
+                    ),
+                    DiffRowKind::Context(_) => (" ", context.theme.code_gutter(), None),
                     DiffRowKind::Hunk | DiffRowKind::NoNewline | DiffRowKind::Metadata => {
                         unreachable!()
                     }
@@ -354,20 +362,23 @@ pub(super) fn render_diff_output(
                     .cloned()
                     .unwrap_or_else(|| Line::from(row.text));
                 highlight_index += 1;
-                output.push(ToolBodyLine::guttered_code(
-                    line,
-                    vec![
-                        Span::styled(
-                            format!("{number:>number_width$}"),
-                            context.theme.code_gutter(),
-                        ),
-                        Span::styled(format!(" {marker} │ "), marker_style),
-                    ],
-                    vec![
-                        Span::styled(" ".repeat(number_width), context.theme.code_gutter()),
-                        Span::styled("   │ ", marker_style),
-                    ],
-                ));
+                output.push(
+                    ToolBodyLine::guttered_code(
+                        line,
+                        vec![
+                            Span::styled(
+                                format!("{number:>number_width$}"),
+                                context.theme.code_gutter(),
+                            ),
+                            Span::styled(format!(" {marker} │ "), marker_style),
+                        ],
+                        vec![
+                            Span::styled(" ".repeat(number_width), context.theme.code_gutter()),
+                            Span::styled("   │ ", marker_style),
+                        ],
+                    )
+                    .with_tint(tint),
+                );
             }
         }
     }

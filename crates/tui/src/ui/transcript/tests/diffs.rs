@@ -3,6 +3,7 @@ use crate::ui::transcript::*;
 use cookie_agent_protocol::ToolCallId;
 
 use crate::state::{AssistantChild, ToolCallState};
+use crate::theme::{ColorLevel, ThemeKind};
 
 use super::support::*;
 
@@ -258,4 +259,84 @@ fn tool_code_views_snapshot() {
     insta::assert_snapshot!(snapshot_lines(
         &transcript_layout(&state, Some(&expanded), 60).lines
     ));
+}
+
+#[test]
+fn changed_diff_rows_are_tinted_inside_the_band_padding() {
+    let edit_id = ToolCallId::new_v7();
+    let mut state = assistant_state(vec![AssistantChild::Tool { call_id: edit_id }]);
+    state.tools.insert(
+        edit_id,
+        ToolCallState {
+            id: edit_id,
+            owner: owner(1, "call-edit"),
+            presentation: presentation("edit", Some("src/main.rs")),
+            arguments: serde_json::json!({
+                "filePath": "src/main.rs",
+                "oldString": "let old = 1;\n",
+                "newString": "let new = 2;\n"
+            })
+            .to_string(),
+            status: ToolStatus::Completed,
+            detail: "Edit applied atomically".into(),
+            has_output_chunks: false,
+        },
+    );
+    let theme = Theme::default();
+    let band = theme.terminal_background().unwrap();
+    let expanded = HashSet::from([BlockId::Tool(edit_id)]);
+    let layout = transcript_layout_with(
+        &state,
+        Some(&expanded),
+        60,
+        &theme,
+        &crate::markdown::PlainHighlighter,
+    );
+    let row = |text: &str| {
+        layout
+            .lines
+            .iter()
+            .find(|line| line.to_string().contains(text))
+            .unwrap_or_else(|| panic!("row {text}"))
+    };
+    for (text, tint) in [
+        ("let old", theme.diff_removed_background().unwrap()),
+        ("let new", theme.diff_added_background().unwrap()),
+    ] {
+        let line = row(text);
+        let spans = &line.spans;
+        // `│ ` gutter unbanded, then one grey padding column…
+        assert_eq!(spans[0].style.bg, None, "{line:?}");
+        assert_eq!(spans[1].content, " ", "{line:?}");
+        assert_eq!(spans[1].style.bg, Some(band), "{line:?}");
+        // …the line number, marker and code tinted out to the last column…
+        for span in &spans[2..spans.len() - 1] {
+            assert_eq!(span.style.bg, Some(tint), "{line:?}");
+        }
+        // …which stays grey.
+        let last = spans.last().unwrap();
+        assert_eq!(last.content, " ", "{line:?}");
+        assert_eq!(last.style.bg, Some(band), "{line:?}");
+        assert_eq!(line.width(), 60, "{line:?}");
+    }
+    // Hunk headers and metadata keep the plain band.
+    for text in ["@@ -1 +1 @@", "Edit applied atomically"] {
+        assert!(
+            row(text)
+                .spans
+                .iter()
+                .skip(1)
+                .all(|span| span.style.bg == Some(band)),
+            "{text}"
+        );
+    }
+    // Without a pale step (sixteen colours, mono) rows keep the plain band.
+    assert_eq!(
+        Theme::new(ThemeKind::Default, ColorLevel::Ansi16).diff_added_background(),
+        None
+    );
+    assert_eq!(
+        Theme::new(ThemeKind::Mono, ColorLevel::None).diff_removed_background(),
+        None
+    );
 }

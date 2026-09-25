@@ -1,6 +1,7 @@
 //! Tool call header rows, argument display, and tool block layout.
 
 use super::*;
+use ratatui::style::Color;
 
 pub(super) fn tool_icon(title: &str) -> &'static str {
     match title {
@@ -311,7 +312,13 @@ pub(super) fn tool_child_layout(
     let mut budget = RenderBudget::new(limits);
     let mut remaining_sections = section_count;
     let chevron = if is_expanded { '▾' } else { '▸' };
-    let (header, title) = tool_header_row(tool, chevron, &suffix, context.width);
+    // A title keeps a margin column on each side where the theme has them.
+    let header_width = if panel_margin(context.width) {
+        context.width - 2
+    } else {
+        context.width
+    };
+    let (header, title) = tool_header_row(tool, chevron, &suffix, header_width);
     let mut body = Vec::new();
     if is_expanded {
         body.extend(expanded_title_lines(
@@ -325,6 +332,9 @@ pub(super) fn tool_child_layout(
             },
             context.width,
         ));
+        // The output band keeps a blank row above and below its text so
+        // nothing touches the band's edge.
+        let padded = panel_margin(context.width);
         // Everything under the title: full arguments (diagnostic detail,
         // shown only at the `info` filter and below), then the response.
         let mut panel = Vec::new();
@@ -333,6 +343,7 @@ pub(super) fn tool_child_layout(
                 tool,
                 arguments.as_ref(),
                 context.theme,
+                !padded,
                 !tool.detail.is_empty(),
             ));
         }
@@ -348,15 +359,17 @@ pub(super) fn tool_child_layout(
                 remaining_sections,
             ));
         }
-        // Only shell output gets the backgrounds: a grey title block over a
-        // lighter grey output panel.
-        if tool.presentation.title.as_str() == "bash" {
-            for line in &mut body {
-                line.band = Some(ToolBand::Title);
-            }
-            for line in &mut panel {
-                line.band = Some(ToolBand::Terminal);
-            }
+        // Every expanded tool is one panel: a grey title block over a lighter
+        // grey output band.
+        for line in &mut body {
+            line.band = Some(ToolBand::Title);
+        }
+        if padded && !panel.is_empty() {
+            panel.insert(0, ToolBodyLine::wrapped(Line::default()));
+            panel.push(ToolBodyLine::wrapped(Line::default()));
+        }
+        for line in &mut panel {
+            line.band = Some(ToolBand::Terminal);
         }
         body.extend(panel);
         // One clear row between the panel and whatever follows it.
@@ -469,13 +482,16 @@ fn argument_section_lines(
     tool: &crate::state::ToolCallState,
     arguments: Option<&ParsedToolArguments<'_>>,
     theme: &Theme,
+    leading_blank: bool,
     output_follows: bool,
 ) -> Vec<ToolBodyLine> {
     let muted = theme.muted();
-    let mut lines = vec![
-        ToolBodyLine::wrapped(Line::default()),
-        ToolBodyLine::wrapped(Line::styled("arguments", muted)),
-    ];
+    let mut lines = Vec::new();
+    // A padded panel already opens on a blank row.
+    if leading_blank {
+        lines.push(ToolBodyLine::wrapped(Line::default()));
+    }
+    lines.push(ToolBodyLine::wrapped(Line::styled("arguments", muted)));
     lines.extend(
         bounded_safe_display_text(
             &display_tool_arguments(tool, arguments),
@@ -600,12 +616,68 @@ pub(super) enum ToolBodyLineKind {
     },
 }
 
+/// Paint one banded row out to the block's full `width`, not its widest row,
+/// so short output still reads as one solid panel. Spans behind the row's
+/// first `gutter_spans` take `tint` or else the band; spans that already carry
+/// a background (the left margin) keep it, and a `padded` row ends on one
+/// plain band column, so a tinted row sits inset in the band. A theme without
+/// band colours gets the same layout, uncoloured.
+pub(super) fn paint_band(
+    line: &mut Line<'static>,
+    gutter_spans: usize,
+    width: u16,
+    background: Option<Color>,
+    tint: Option<Color>,
+    padded: bool,
+) {
+    let fill = usize::from(width).saturating_sub(line.width());
+    let right = usize::from(padded).min(fill);
+    let start = gutter_spans.min(line.spans.len());
+    if fill > right {
+        line.spans.push(Span::raw(" ".repeat(fill - right)));
+    }
+    if let Some(row) = tint.or(background) {
+        for span in &mut line.spans[start..] {
+            if span.style.bg.is_none() {
+                span.style = span.style.bg(row);
+            }
+        }
+    }
+    if right > 0 {
+        let mut margin = Span::raw(" ".repeat(right));
+        if let Some(background) = background {
+            margin.style = margin.style.bg(background);
+        }
+        line.spans.push(margin);
+    }
+}
+
+/// The one-column left margin behind a panel row's `│ ` gutter. It wears the
+/// gutter's own style, which is how copying recognises it as chrome in every
+/// theme, plus the band's background when the row sits on one.
+pub(super) fn margin_span(theme: &Theme, background: Option<Color>) -> Span<'static> {
+    let mut style = theme.assistant();
+    if let Some(background) = background {
+        style = style.bg(background);
+    }
+    Span::styled(" ", style)
+}
+
+/// Whether panel titles and bands keep a one-column margin on each side:
+/// only on blocks wide enough to spare it.
+pub(super) fn panel_margin(width: u16) -> bool {
+    width >= MIN_PADDED_BAND_WIDTH
+}
+
+/// Narrowest block that pads its bands; below it every column carries text.
+pub(super) const MIN_PADDED_BAND_WIDTH: u16 = 20;
+
 /// A full-width background behind a tool body row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ToolBand {
     /// The expanded title block.
     Title,
-    /// Shell output.
+    /// Tool output.
     Terminal,
 }
 
@@ -616,6 +688,9 @@ pub(super) struct ToolBodyLine {
     pub(super) band: Option<ToolBand>,
     /// Part of the block's clickable header (an expanded title block row).
     pub(super) header: bool,
+    /// Row tint over the band inside its padding (a diff's added or removed
+    /// line); `None` keeps the plain band.
+    pub(super) tint: Option<Color>,
 }
 
 impl ToolBodyLine {
@@ -626,6 +701,7 @@ impl ToolBodyLine {
             output_toggle: None,
             band: None,
             header: false,
+            tint: None,
         }
     }
 
@@ -637,6 +713,7 @@ impl ToolBodyLine {
             output_toggle: None,
             band: None,
             header: true,
+            tint: None,
         }
     }
 
@@ -658,7 +735,13 @@ impl ToolBodyLine {
             output_toggle: None,
             band: None,
             header: false,
+            tint: None,
         }
+    }
+
+    pub(super) fn with_tint(mut self, tint: Option<Color>) -> Self {
+        self.tint = tint;
+        self
     }
 
     pub(super) fn toggle(line: Line<'static>, section: ToolOutputSection) -> Self {
@@ -668,6 +751,7 @@ impl ToolBodyLine {
             output_toggle: Some(section),
             band: None,
             header: false,
+            tint: None,
         }
     }
 }
@@ -874,6 +958,7 @@ pub(super) fn tool_block_lines_with(
     let mut header_lines = 0;
     for (index, body_line) in body.into_iter().enumerate() {
         let band = body_line.band;
+        let tint = body_line.tint;
         let header = body_line.header;
         let output_toggle = body_line.output_toggle;
         let line_style = body_line.line.style;
@@ -888,6 +973,24 @@ pub(super) fn tool_block_lines_with(
             .collect::<Vec<_>>();
         let line = Line::from(spans).style(line_style);
         let start = lines.len();
+        let background = match band {
+            Some(ToolBand::Title) => theme.tool_title_background(),
+            Some(ToolBand::Terminal) => theme.terminal_background(),
+            None => None,
+        };
+        // Banded rows and title rows keep one margin column on each side of
+        // their text, so a title sits in the same column collapsed or
+        // expanded. The left one rides in the gutter (chrome, so hover and
+        // copy skip it); the right one is reserved from the wrap width.
+        let margin = panel_margin(width) && (band.is_some() || index == 0 || header);
+        let wrap_width = if margin { width - 1 } else { width };
+        let gutter = || {
+            let mut gutter = vec![Span::styled("│ ", theme.assistant())];
+            if margin {
+                gutter.push(margin_span(theme, background));
+            }
+            gutter
+        };
         match body_line.kind {
             ToolBodyLineKind::Wrapped | ToolBodyLineKind::Hanging { .. } if width < 8 => {
                 // The label and its aligned indent share one budget, so every
@@ -905,30 +1008,37 @@ pub(super) fn tool_block_lines_with(
                 gutters.resize(lines.len(), 1);
             }
             ToolBodyLineKind::Wrapped => {
-                let gutter = vec![Span::styled("│ ", theme.assistant())];
-                let chrome = usize::from(gutter_fits(&gutter, &line, width));
-                lines.extend(repeated_prefixed_wrapped_line(gutter, line, width));
+                let gutter = gutter();
+                let chrome = if gutter_fits(&gutter, &line, wrap_width) {
+                    gutter.len()
+                } else {
+                    0
+                };
+                lines.extend(repeated_prefixed_wrapped_line(gutter, line, wrap_width));
                 gutters.resize(lines.len(), chrome);
             }
             ToolBodyLineKind::Hanging { indent } => {
-                let gutter = vec![Span::styled("│ ", theme.assistant())];
-                let chrome = usize::from(gutter_fits(&gutter, &line, width));
-                lines.extend(repeated_prefixed_hanging_line(gutter, line, width, indent));
+                let gutter = gutter();
+                let chrome = if gutter_fits(&gutter, &line, wrap_width) {
+                    gutter.len()
+                } else {
+                    0
+                };
+                lines.extend(repeated_prefixed_hanging_line(
+                    gutter, line, wrap_width, indent,
+                ));
                 gutters.resize(lines.len(), chrome);
             }
             ToolBodyLineKind::Code {
                 mut first_gutter,
                 mut continuation_gutter,
             } => {
-                let prefix = (width >= 3)
-                    .then(|| Span::styled("│ ", theme.assistant()))
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                let prefix = if width >= 3 { gutter() } else { Vec::new() };
                 let prefix_width = prefix
                     .iter()
                     .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
                     .sum::<usize>();
-                let available = usize::from(width.max(1)).saturating_sub(prefix_width);
+                let available = usize::from(wrap_width.max(1)).saturating_sub(prefix_width);
                 let mut first_gutter_width = first_gutter
                     .iter()
                     .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
@@ -978,35 +1088,26 @@ pub(super) fn tool_block_lines_with(
         if let Some(section) = output_toggle {
             output_toggles.push((section, start, lines.len()));
         }
-        let background = match band {
-            Some(ToolBand::Title) => theme.tool_title_background(),
-            Some(ToolBand::Terminal) => theme.terminal_background(),
-            None => None,
-        };
-        if let Some(background) = background {
-            banded_rows.extend((start..lines.len()).map(|row| (row, gutters[row], background)));
+        if band.is_some() {
+            banded_rows.extend(
+                (start..lines.len()).map(|row| (row, gutters[row], background, tint, margin)),
+            );
         }
     }
-    {
-        // The band spans the block's full width, not its widest row, so short
-        // output still reads as one solid panel.
-        let band_width = usize::from(width);
-        for (index, chrome, background) in banded_rows {
-            let line = &mut lines[index];
-            // The band stops at the block's own gutter: those spans keep their
-            // background and the content beside them takes the terminal band.
-            // Counted, never guessed — `│ ` arriving as command output is a
-            // tree row that must be banded, and a gutter welded to its text by
-            // `append_span` is chrome that must not be.
-            let content_start = chrome.min(line.spans.len());
-            let padding = band_width.saturating_sub(line.width());
-            line.spans.push(Span::raw(" ".repeat(padding)));
-            for span in &mut line.spans[content_start..] {
-                if span.style.bg.is_none() {
-                    span.style = span.style.bg(background);
-                }
-            }
-        }
+    for (index, chrome, background, tint, padded) in banded_rows {
+        // The band stops at the block's own `│ ` gutter, its first chrome
+        // span; line numbers and diff markers behind it are band too.
+        // Counted, never guessed — `│ ` arriving as command output is a tree
+        // row that must be banded, and a gutter welded to its text by
+        // `append_span` is chrome that must not be.
+        paint_band(
+            &mut lines[index],
+            chrome.min(1),
+            width,
+            background,
+            tint,
+            padded,
+        );
     }
     for line in &mut lines {
         line.style = line

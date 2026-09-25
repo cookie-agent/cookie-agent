@@ -576,6 +576,18 @@ pub(super) fn extract_line(
         span_index += 1;
         spans.next();
     }
+    // A panel row's margin: one space behind the gutter in the gutter's own
+    // style (see `margin_span`), whatever background the row's band gives it.
+    let gutter_style = theme.assistant();
+    if span_index > 0
+        && let Some(span) = spans.peek()
+        && span.content == " "
+        && span.style.fg == gutter_style.fg
+        && span.style.add_modifier == gutter_style.add_modifier
+    {
+        gutter_width = gutter_width.saturating_add(1);
+        spans.next();
+    }
     // A code block's left marker (a band's space and the line-number cell,
     // blank on a wrapped continuation) is chrome only in the border style:
     // indentation inside the code arrives as content with the code's own

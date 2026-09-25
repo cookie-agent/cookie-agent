@@ -298,14 +298,18 @@ fn tool_header_surrenders_suffix_argument_and_label_by_turn_on_narrow_rows() {
         assert_eq!(region.header_lines, Some(1), "width {width}");
         layout.lines[region.start_line].to_string()
     };
-    // 20 columns: gutter (2) + markers (5) + `" interrupted"` (12) leaves one
-    // column of title, so the argument gives way and the status stays.
-    assert_eq!(header(20), "│ 💻 ▸ … interrupted");
+    // 22 columns: gutter (2) + margins (2) + markers (5) + `" interrupted"`
+    // (12) leaves one column of title, so the argument gives way and the
+    // status stays.
+    assert_eq!(header(22), "│  💻 ▸ … interrupted");
     // One column narrower no title column survives, and the markers close up
     // instead of leaving a gap in front of the suffix.
-    assert_eq!(header(19), "│ 💻 ▸ interrupted");
+    assert_eq!(header(21), "│  💻 ▸ interrupted");
     // Below the suffix's own width it drops out entirely: the row's failure
     // colour already says the call did not finish, and the argument returns.
+    assert_eq!(header(20), "│  💻 ▸ bash print…");
+    // Too narrow to spare the margins, the title takes their columns back.
+    assert_eq!(header(19), "│ 💻 ▸ interrupted");
     assert_eq!(header(18), "│ 💻 ▸ bash print…");
     // Under 8 columns the gutter swaps for the role label, which leaves room
     // for the chevron alone.
@@ -411,7 +415,8 @@ fn bash_expanded_command_keeps_its_line_breaks() {
         .iter()
         .map(|line| line.to_string().trim_end().to_owned())
         .collect();
-    assert_eq!(rows[0], "│ 💻 ▾ bash python3 - <<'PY'", "{rows:?}");
+    // The title band keeps one padding column inside its left edge.
+    assert_eq!(rows[0], "│  💻 ▾ bash python3 - <<'PY'", "{rows:?}");
     // Each further command line hangs under where the command starts.
     let column = |row: &str, text: &str| {
         UnicodeWidthStr::width(&row[..row.find(text).expect("text on row")])
@@ -427,9 +432,11 @@ fn bash_expanded_command_keeps_its_line_breaks() {
         assert!(rows[row].ends_with(text), "{rows:?}");
         assert_eq!(column(&rows[row], text), start, "{rows:?}");
     }
-    // The whole command is the clickable title block; output follows it.
+    // The whole command is the clickable title block; output follows it
+    // behind a blank padding row.
     assert_eq!(region.header_lines, Some(5));
-    assert_eq!(rows[5], "│ ok", "{rows:?}");
+    assert_eq!(rows[5], "│", "{rows:?}");
+    assert_eq!(rows[6], "│  ok", "{rows:?}");
     let rendered = snapshot_lines(&layout.lines[region.start_line..region.end_line]);
     assert!(!rendered.contains("<<'PY'\u{fffd}"), "{rendered}");
 
@@ -525,15 +532,18 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
                 theme.terminal_background()
             };
             // Counted chrome columns, not span text: `"│ "` in the middle of
-            // a row is output and belongs on the band.
+            // a row is output and belongs on the band. Every panel row but
+            // the spacer keeps a margin column behind the gutter: on the
+            // band, in the gutter's own style.
             let chrome = usize::from(leading_gutter_columns(row));
+            let margin = chrome + usize::from(index != spacer);
             let mut column = 0;
             let toggle = row.to_string().contains("more lines");
             for span in &row.spans {
                 let background = if column < chrome { None } else { expected };
                 assert_eq!(span.style.bg, background, "{index}: {row}");
                 // Expanded text is ordinary text, not the status colour.
-                if column >= chrome && !toggle {
+                if column >= margin && !toggle {
                     assert_eq!(span.style.fg, None, "{index}: {row}");
                 }
                 column += UnicodeWidthStr::width(span.content.as_ref());
@@ -550,12 +560,20 @@ fn expanded_tool_rows_form_a_title_and_output_panel() {
             .iter()
             .map(|line| line.to_string().trim_end().to_owned())
             .collect();
-        let label = rows.iter().position(|row| row == "│ arguments").unwrap();
+        // Every theme keeps the text one margin column in from the gutter.
+        let gutter = "│  ";
+        let label = rows
+            .iter()
+            .position(|row| *row == format!("{gutter}arguments"))
+            .unwrap();
         let header_lines = region.header_lines.unwrap();
         assert_eq!(label, header_lines + 1, "{rows:?}");
         assert_eq!(rows[header_lines], "│", "{rows:?}");
         assert!(rows[label + 1].ends_with('{'), "{rows:?}");
-        let closing = rows.iter().position(|row| row == "│ }").unwrap();
+        let closing = rows
+            .iter()
+            .position(|row| *row == format!("{gutter}}}"))
+            .unwrap();
         assert_eq!(rows[closing + 1], "│", "{rows:?}");
         assert!(rows[closing + 2].contains("output 0"), "{rows:?}");
     }
@@ -1132,7 +1150,7 @@ fn tabbed_bash_output_expands_to_tab_stops_and_fills_the_band() {
 }
 
 #[test]
-fn only_bash_paints_expanded_backgrounds() {
+fn every_expanded_tool_paints_a_padded_panel() {
     let path = "src/very/deeply/nested/module/with/a/long/path/transcript.rs";
     let mut state = read_tool_state(path, ToolStatus::Completed, "result");
     let id = read_tool_id(&state);
@@ -1155,16 +1173,39 @@ fn only_bash_paints_expanded_backgrounds() {
     // The path still finishes on a clickable multi-row title block…
     let header_lines = region.header_lines.unwrap();
     assert!(header_lines > 1, "{}", snapshot_lines(rows));
-    // …but without the bash title tint or output band, in ordinary text,
-    // and with a clear row after it.
-    assert!(
-        rows.iter()
-            .flat_map(|row| &row.spans)
-            .all(|span| span.style.bg.is_none()),
-        "{}",
-        snapshot_lines(rows)
+    // …on the title band, over an output band that opens and closes on a
+    // blank padding row, then a clear row after it.
+    let theme = Theme::default();
+    let text = rows
+        .iter()
+        .map(|row| row.to_string().trim_end().to_owned())
+        .collect::<Vec<_>>();
+    let spacer = rows.len() - 1;
+    assert_eq!(text[spacer], "│");
+    assert_eq!(text[header_lines], "│", "{text:?}");
+    assert_eq!(text[header_lines + 1], "│  result", "{text:?}");
+    assert_eq!(text[spacer - 1], "│", "{text:?}");
+    for (index, row) in rows.iter().enumerate() {
+        let expected = if index < header_lines {
+            theme.tool_title_background()
+        } else if index == spacer {
+            None
+        } else {
+            theme.terminal_background()
+        };
+        // Everything behind the `│ ` gutter, padding included, is band.
+        for span in row.spans.iter().skip(1) {
+            assert_eq!(span.style.bg, expected, "{index}: {row}");
+        }
+        if expected.is_some() {
+            assert_eq!(row.width(), 40, "{index}: {row}");
+        }
+    }
+    // Copying skips the padding column along with the gutter.
+    assert_eq!(
+        super::super::wrap::extract_line(&rows[header_lines + 1], 0, u16::MAX, &theme).as_deref(),
+        Some("result")
     );
-    assert_eq!(rows.last().unwrap().to_string().trim_end(), "│");
 }
 
 #[test]

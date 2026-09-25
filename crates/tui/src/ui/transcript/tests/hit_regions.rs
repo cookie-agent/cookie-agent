@@ -177,8 +177,9 @@ fn hover_clamps_to_the_builder_gutter_not_to_lookalike_output() {
         40,
         &Theme::default(),
     );
-    assert_eq!(rendered.chrome[0], 6);
-    assert_eq!(header_gutter_columns(&rendered), 6);
+    // Gutter (2), title margin (1), line-number column (4).
+    assert_eq!(rendered.chrome[0], 7);
+    assert_eq!(header_gutter_columns(&rendered), 7);
     assert_eq!(
         leading_gutter_columns(&rendered.lines[0]),
         2,

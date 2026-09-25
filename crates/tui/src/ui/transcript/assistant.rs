@@ -339,8 +339,8 @@ pub(super) fn assistant_child_layout(
         },
         AssistantChild::Thinking { id, text, .. } => {
             let block_id = BlockId::Thinking(*id);
-            let body = thinking_body_lines(text, width, theme);
-            let hidden_lines = body.len().max(1);
+            let (body, text_rows) = thinking_body_lines(text, width, theme);
+            let hidden_lines = text_rows.max(1);
             // While thinking streams the header animates an ellipsis; once
             // sealed it reads "thought", with the durable elapsed time when
             // the projection recorded one. Exactly one chevron per thinking
@@ -359,12 +359,24 @@ pub(super) fn assistant_child_layout(
                 format!("💭 ▸ {status} ({hidden_lines} {noun} hidden)")
             };
             // Thinking is secondary to the reply: its row reads as muted body
-            // text whether collapsed or expanded.
-            let mut lines = assistant_body_line(
-                Line::from(Span::styled(label, theme.muted_text())),
-                width,
-                theme,
-            );
+            // text whether collapsed or expanded. Expanded, it heads a panel
+            // like an expanded tool's, on the title band.
+            // Collapsed, the title keeps the same margin, so it does not
+            // shift a column when it expands.
+            let label = Line::from(Span::styled(label, theme.muted_text()));
+            let (mut lines, header_gutter) = if panel_margin(width) {
+                let title_band = theme.tool_title_background().filter(|_| key.expanded);
+                let (mut rows, gutter) = margin_rows(label, width, theme, title_band);
+                if key.expanded {
+                    for row in &mut rows {
+                        paint_band(row, gutter.min(1), width, title_band, None, true);
+                    }
+                }
+                // Hover starts behind the margin, as on a tool title.
+                (rows, (gutter > 0).then_some(3))
+            } else {
+                (assistant_body_line(label, width, theme), None)
+            };
             let header_lines = lines.len();
             if key.expanded {
                 lines.extend(body);
@@ -375,7 +387,7 @@ pub(super) fn assistant_child_layout(
                     start_line: 0,
                     end_line: lines.len(),
                     header_lines: Some(header_lines),
-                    header_gutter: None,
+                    header_gutter,
                 }],
                 lines,
                 user_seq: None,
@@ -538,24 +550,91 @@ pub(super) fn assistant_markdown_body_line(
     }
 }
 
-/// Expanded thinking: muted body text in italics behind a `┆` marker.
-pub(super) fn thinking_body_lines(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+/// Expanded thinking, with the number of rows its text wraps to: muted
+/// italic text on the output band, padded like a tool panel's and followed
+/// by a clear row. Blocks too narrow to pad mark each row with a muted `│`
+/// instead; a dashed `┆` renders as slanted strokes in some fonts (macOS
+/// Terminal).
+pub(super) fn thinking_body_lines(
+    text: &str,
+    width: u16,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, usize) {
     let style = theme
         .muted_text()
         .add_modifier(ratatui::style::Modifier::ITALIC);
-    text.split('\n')
+    let text_line = |text: &str| Line::styled(text.to_owned(), style);
+    if panel_margin(width) {
+        let background = theme.terminal_background();
+        let blank = || padded_band_rows(Line::default(), width, theme, background);
+        let text_rows = text
+            .split('\n')
+            .flat_map(|text| padded_band_rows(text_line(text), width, theme, background))
+            .collect::<Vec<_>>();
+        let rows = text_rows.len();
+        let mut lines = blank();
+        lines.extend(text_rows);
+        lines.extend(blank());
+        lines.extend(assistant_body_line(Line::default(), width, theme));
+        return (lines, rows);
+    }
+    let lines = text
+        .split('\n')
         .flat_map(|text| {
             let prefix = if width >= 5 {
                 vec![
                     Span::styled("│ ", theme.assistant()),
-                    Span::styled("┆ ", style),
+                    Span::styled("│ ", style),
                 ]
             } else if width >= 3 {
-                vec![Span::styled("┆ ", style)]
+                vec![Span::styled("│ ", style)]
             } else {
                 Vec::new()
             };
-            repeated_prefixed_wrapped_line(prefix, Line::styled(text.to_owned(), style), width)
+            repeated_prefixed_wrapped_line(prefix, text_line(text), width)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let rows = lines.len();
+    (lines, rows)
+}
+
+/// One line behind the assistant `│ ` gutter on a padded band: a band column
+/// on each side of the text, which wraps between them.
+fn padded_band_rows(
+    line: Line<'static>,
+    width: u16,
+    theme: &Theme,
+    background: Option<ratatui::style::Color>,
+) -> Vec<Line<'static>> {
+    let (mut rows, gutter) = margin_rows(line, width, theme, background);
+    for row in &mut rows {
+        paint_band(row, gutter.min(1), width, background, None, true);
+    }
+    rows
+}
+
+/// One line behind the assistant `│ ` gutter and its one-column margin
+/// (on `background` when the row sits on a band), wrapped one column short
+/// of `width` so the right side keeps its margin too, with the number of
+/// chrome spans each row starts with (none when the gutter did not fit).
+fn margin_rows(
+    line: Line<'static>,
+    width: u16,
+    theme: &Theme,
+    background: Option<ratatui::style::Color>,
+) -> (Vec<Line<'static>>, usize) {
+    let prefix = vec![
+        Span::styled("│ ", theme.assistant()),
+        margin_span(theme, background),
+    ];
+    let wrap_width = width - 1;
+    let gutter = if gutter_fits(&prefix, &line, wrap_width) {
+        prefix.len()
+    } else {
+        0
+    };
+    (
+        repeated_prefixed_wrapped_line(prefix, line, wrap_width),
+        gutter,
+    )
 }

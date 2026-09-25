@@ -166,7 +166,7 @@ fn unstarted_committed_tool_placeholder_renders_pending_row_not_error() {
     }]);
     let layout = transcript_layout(&state, None, 60);
     let text = snapshot_lines(&layout.lines);
-    assert!(text.contains("│ 💻 ▸ bash · pending"), "{text}");
+    assert!(text.contains("│  💻 ▸ bash · pending"), "{text}");
     assert!(!text.contains("TOOL RUNNING"), "{text}");
     assert!(!text.contains("unavailable payload"), "{text}");
 }
@@ -267,7 +267,7 @@ fn tool_children_render_compact_titles_with_status_semantics() {
         rendered
             .lines()
             .any(|line| line.trim_end() == "💻 ▸ bash touch README.md"
-                || line.trim_end() == "│ 💻 ▸ bash touch README.md")
+                || line.trim_end() == "│  💻 ▸ bash touch README.md")
     );
     assert!(!rendered.contains('…'));
     assert!(!rendered.contains("failed"));

@@ -8,28 +8,28 @@ expression: "snapshots.join(\"\\n\")"
 │ l[base]
 │ launching both
 │
-│ 💻 ▸ bash sleep 2 …
-│ 💭 ▸ thought (1 line
-│ hidden)
-│ 📖 ▸ read src/lib.rs
+│  💻 ▸ bash sleep 2 …
+│  💭 ▸ thought (1 line
+│  hidden)
+│  📖 ▸ read src/lib.rs
 == width 48 ==
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │
-│ 💻 ▸ bash sleep 2 …
-│ 💭 ▸ thought (1 line hidden)
-│ 📖 ▸ read src/lib.rs
+│  💻 ▸ bash sleep 2 …
+│  💭 ▸ thought (1 line hidden)
+│  📖 ▸ read src/lib.rs
 == width 96 ==
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │
-│ 💻 ▸ bash sleep 2 …
-│ 💭 ▸ thought (1 line hidden)
-│ 📖 ▸ read src/lib.rs
+│  💻 ▸ bash sleep 2 …
+│  💭 ▸ thought (1 line hidden)
+│  📖 ▸ read src/lib.rs
 == mono 48 ==
 ╭─ primary • gateway/arbitrary-model[base]
 │ launching both
 │
-│ 💻 ▸ bash sleep 2 …
-│ 💭 ▸ thought (1 line hidden)
-│ 📖 ▸ read src/lib.rs
+│  💻 ▸ bash sleep 2 …
+│  💭 ▸ thought (1 line hidden)
+│  📖 ▸ read src/lib.rs

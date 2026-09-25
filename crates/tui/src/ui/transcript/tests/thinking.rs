@@ -5,6 +5,7 @@ use crate::ui::transcript::*;
 use cookie_agent_protocol::{AttemptId, SessionId};
 
 use crate::state::{AssistantChild, StateStore};
+use crate::theme::{ColorLevel, ThemeKind};
 
 use super::support::*;
 
@@ -168,19 +169,66 @@ fn thinking_reads_as_muted_text_collapsed_and_expanded() {
     assert_eq!(header_style(None).fg, theme.muted_text().fg);
     let expanded = HashSet::from([BlockId::Thinking(10)]);
     assert_eq!(header_style(Some(&expanded)).fg, theme.muted_text().fg);
-    // The expanded text and its marker are muted too, in italics.
+    // Expanded, the text is muted italics inset on the grey output band
+    // under a title-band header, with no dashed `┆` marker anywhere.
     let layout = transcript_layout(&state, Some(&expanded), 60);
-    for span in layout
+    let rows = layout
         .lines
         .iter()
-        .flat_map(|line| &line.spans)
-        .filter(|span| span.content.contains("a thought") || span.content == "┆ ")
-    {
-        assert_eq!(span.style.fg, theme.muted_text().fg, "{span:?}");
-        assert!(
-            span.style
-                .add_modifier
-                .contains(ratatui::style::Modifier::ITALIC)
-        );
-    }
+        .map(|line| line.to_string().trim_end().to_owned())
+        .collect::<Vec<_>>();
+    assert!(rows.iter().all(|row| !row.contains('┆')), "{rows:?}");
+    let header = rows.iter().position(|row| row.contains("💭")).unwrap();
+    assert_eq!(rows[header + 1], "│", "{rows:?}");
+    assert_eq!(rows[header + 2], "│  a thought", "{rows:?}");
+    assert_eq!(rows[header + 3], "│", "{rows:?}");
+    assert_eq!(rows[header + 4], "│", "{rows:?}");
+    let text = &layout.lines[header + 2];
+    let span = text
+        .spans
+        .iter()
+        .find(|span| span.content.contains("a thought"))
+        .unwrap();
+    assert_eq!(span.style.fg, theme.muted_text().fg, "{span:?}");
+    assert!(
+        span.style
+            .add_modifier
+            .contains(ratatui::style::Modifier::ITALIC)
+    );
+    assert_eq!(span.style.bg, theme.terminal_background());
+    assert!(
+        layout.lines[header]
+            .spans
+            .iter()
+            .skip(1)
+            .all(|span| span.style.bg == theme.tool_title_background()),
+        "{:?}",
+        layout.lines[header]
+    );
+    // The padding column is not copied with the text.
+    assert_eq!(
+        super::super::wrap::extract_line(text, 0, u16::MAX, &theme).as_deref(),
+        Some("a thought")
+    );
+    // A theme only changes colours: mono keeps the same panel layout, and
+    // copying still skips the uncoloured margin.
+    let mono = Theme::new(ThemeKind::Mono, ColorLevel::None);
+    let mono_layout = transcript_layout_with(
+        &state,
+        Some(&expanded),
+        60,
+        &mono,
+        &crate::markdown::PlainHighlighter,
+    );
+    let mono_rows = mono_layout
+        .lines
+        .iter()
+        .map(|line| line.to_string().trim_end().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(mono_rows, rows);
+    assert_eq!(
+        super::super::wrap::extract_line(&mono_layout.lines[header + 2], 0, u16::MAX, &mono)
+            .as_deref(),
+        Some("a thought")
+    );
 }
