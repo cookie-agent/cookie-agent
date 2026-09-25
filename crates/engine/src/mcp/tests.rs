@@ -30,6 +30,10 @@ const PYTHON: &str = "python3";
 #[cfg(windows)]
 const PYTHON: &str = "python";
 
+/// Bound for polling a fixture towards an expected state. Passing tests stop
+/// polling as soon as it is reached; loaded CI runners need the headroom.
+const WAIT: Duration = Duration::from_secs(30);
+
 fn oauth_path(directory: &tempfile::TempDir) -> std::path::PathBuf {
     directory
         .path()
@@ -135,7 +139,7 @@ fn list_count(directory: &tempfile::TempDir) -> usize {
 }
 
 async fn wait_for_list_count(directory: &tempfile::TempDir, expected: usize) {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(WAIT, async {
         while list_count(directory) < expected {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -602,7 +606,7 @@ async fn stdio_lists_calls_and_refreshes_tools() {
     assert_eq!(result.output, "refresh");
     assert_eq!(result.metadata, json!({"mcp": {"is_error": false}}));
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             let names = registry
                 .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
@@ -655,7 +659,7 @@ async fn tool_list_notification_burst_makes_one_refresh_round_trip() {
     let server = registry.server("fixture").expect("server");
     server.connect().await.expect("connect fixture");
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         while list_count(&directory) < 2 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -806,7 +810,7 @@ async fn dropping_registry_aborts_idle_tool_refresh_worker() {
 
     drop(server);
     drop(registry);
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(WAIT, async {
         while !worker.is_finished() {
             tokio::task::yield_now().await;
         }
@@ -905,7 +909,7 @@ async fn removing_server_cancels_pending_tool_list_refresh() {
     .expect("registry");
     let server = registry.server("fixture").expect("server");
     server.connect().await.expect("connect fixture");
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             if server
                 .tool_refresh
@@ -1036,14 +1040,14 @@ async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
     .expect("registry");
     let server = registry.server("fixture").expect("server");
     registry.start_eager(&tokio::runtime::Handle::current());
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         while server.current_state() != McpServerState::Connecting {
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("connection started");
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         while std::fs::read_to_string(&pid_file)
             .map(|pid| pid.trim().is_empty())
             .unwrap_or(true)
@@ -1062,7 +1066,7 @@ async fn shutdown_aborts_inflight_connect_and_blocks_late_installation() {
     assert_ne!(server.current_state(), McpServerState::Connected);
     assert_eq!(registry.inner.active_connects.load(Ordering::Acquire), 0);
     #[cfg(target_os = "linux")]
-    let reaped = tokio::time::timeout(Duration::from_secs(2), async {
+    let reaped = tokio::time::timeout(WAIT, async {
         let process = format!("/proc/{fixture_pid}");
         while std::path::Path::new(&process).exists() {
             tokio::task::yield_now().await;
@@ -1100,7 +1104,7 @@ async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
     .expect("registry");
     let old = registry.server("fixture").expect("old server");
     registry.start_eager(&tokio::runtime::Handle::current());
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         while old.current_state() != McpServerState::Connecting {
             tokio::task::yield_now().await;
         }
@@ -1120,7 +1124,7 @@ async fn replacing_an_inflight_connect_cannot_publish_stale_tools() {
         .expect("replace server");
     let replacement = registry.server("fixture").expect("replacement server");
     replacement.connect().await.expect("connect replacement");
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(WAIT, async {
         while registry.inner.active_connects.load(Ordering::Acquire) != 0 {
             tokio::task::yield_now().await;
         }

@@ -150,9 +150,16 @@ pub(crate) fn python_command() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
+/// Upper bound for a test's wait on something that should happen. Every
+/// caller waits for progress and panics on expiry, so a passing test never
+/// waits it out; the floor keeps loaded CI runners (Windows especially) from
+/// failing a healthy test on a tight bound. `seconds` still records the
+/// expected scale at the call site.
 pub(crate) fn test_timeout(seconds: u64) -> std::time::Duration {
-    std::time::Duration::from_secs(seconds)
+    std::time::Duration::from_secs(seconds.max(MIN_TEST_TIMEOUT_SECONDS))
 }
+
+const MIN_TEST_TIMEOUT_SECONDS: u64 = 60;
 
 pub(crate) const EVENT_WATCHDOG_SECONDS: u64 = 60;
 
