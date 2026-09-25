@@ -904,6 +904,23 @@ async fn delegate_idle_child(
 ) -> cookie_agent_protocol::SessionId {
     let parent_input = format!("create child {label}");
     let child_prompt = format!("child task {label}");
+    // A finished child's notice runs the parent once more; wait for that
+    // delivery to settle so the next run is not refused as already running.
+    await_projection(
+        &fixture.engine,
+        parent,
+        "parent producer deliveries settled before the next run",
+        |parent| {
+            parent.status != SessionStatus::Running
+                && crate::goal_projection::GoalProducerProjection::from_events(
+                    &parent.log.event_snapshot(),
+                )
+                .messages
+                .iter()
+                .all(|message| message.consumed || message.discarded)
+        },
+    )
+    .await;
     for response in [
         MatchedScriptedResponse::last_message_contains(
             &parent_input,
