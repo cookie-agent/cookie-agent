@@ -31,5 +31,5 @@ presentation-and-resolution layer, not a storage identity. See the
 |---|---|---|---|
 | `max_depth` | integer | `3` | Maximum delegation depth below a root session. Must be greater than zero. |
 | `max_concurrency` | integer | `4` | Maximum concurrently running root-level background delegations. Excess calls queue FIFO, up to `4 × max_concurrency`; a full queue rejects admission. Foreground and nested delegations bypass this queue. A value of `0` is rejected. |
-| `max_resident_subagents` | integer | `20` | Soft trigger for resident delegated sessions. Above this count, the janitor evicts eligible idle children oldest-first until the count reaches the trigger or no eligible child remains. Recently active children may keep residency above the trigger. |
+| `max_resident_subagents` | integer | `20` | Soft trigger for resident delegated sessions, counted per root session tree. When one tree's count is above it, the janitor evicts that tree's eligible idle children oldest-first until the tree's count reaches the trigger or no eligible child remains; other trees are unaffected. Recently active children may keep residency above the trigger. |
 | `idle_eviction_after` | duration string | `"1h"` | Minimum time since a delegated session's last run ended before it can be evicted. Compact `ms`, `s`, `m`, `h`, and `d` suffixes are accepted. |

@@ -332,7 +332,10 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         children.push(child_id);
     }
 
-    assert_eq!(fixture.engine.inner.store.resident_subagent_count(), 3);
+    assert_eq!(
+        fixture.engine.inner.store.resident_subagent_counts()[&parent.session_id],
+        3
+    );
     assert!(
         fixture
             .engine
@@ -887,4 +890,157 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
         12
     );
     fixture.engine.shutdown().await;
+}
+
+/// Delegates one background child from `parent`, lets it and the parent run
+/// to completion, and returns the child once its finish notice is recorded.
+async fn delegate_idle_child(
+    fixture: &Fixture,
+    selection: &cookie_agent_protocol::RunSelection,
+    responses: &tokio::sync::mpsc::UnboundedSender<MatchedScriptedResponse>,
+    parent: cookie_agent_protocol::SessionId,
+    label: &str,
+    known: &[cookie_agent_protocol::SessionId],
+) -> cookie_agent_protocol::SessionId {
+    let parent_input = format!("create child {label}");
+    let child_prompt = format!("child task {label}");
+    for response in [
+        MatchedScriptedResponse::last_message_contains(
+            &parent_input,
+            scripted_tool_body(
+                &format!("delegate-{label}"),
+                "delegate_subagent",
+                serde_json::json!({
+                    "agent_type":"worker",
+                    "description":format!("Child {label}"),
+                    "prompt":child_prompt,
+                    "background":true
+                }),
+            ),
+        ),
+        MatchedScriptedResponse::last_message_contains(
+            &child_prompt,
+            scripted_text_body(&format!("child result {label}")),
+        ),
+        MatchedScriptedResponse::last_message_role(
+            "tool",
+            scripted_text_body(&format!("parent after child {label}")),
+        ),
+    ] {
+        responses.send(response).expect("scripted response");
+    }
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: parent,
+                client_run_id: ClientRunId::new(format!("parent-{label}")).expect("run ID"),
+                selection: selection.clone(),
+                input: parent_input,
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("parent run");
+    await_session_change(
+        &fixture.engine,
+        parent,
+        "child completion and notice",
+        || {
+            let child = fixture
+                .engine
+                .children(parent)
+                .expect("children")
+                .into_iter()
+                .find(|child| {
+                    child.status == SessionStatus::Completed && !known.contains(&child.session_id)
+                })?;
+            let parent_done = fixture
+                .engine
+                .get_session(parent)
+                .is_ok_and(|parent| parent.status == SessionStatus::Completed);
+            let notified = fixture
+                .engine
+                .inner
+                .store
+                .get(parent)
+                .expect("parent projection")
+                .log
+                .events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event.payload,
+                        EventPayload::DelegateFinishedV2 { session_id, .. }
+                            if session_id == child.session_id
+                    )
+                });
+            (parent_done && notified).then_some(child.session_id)
+        },
+    )
+    .await
+}
+
+/// Tree-local sessions C10: the resident-subagent cap applies to each tree on
+/// its own. Tree A over the cap pages out its own oldest idle child; tree B,
+/// at the cap, keeps its child resident even though the process holds more
+/// resident children than the cap in total.
+#[tokio::test]
+async fn the_residency_cap_is_enforced_per_tree() {
+    let (endpoint, responses, _server) = scripted_channel_server(9).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestDelegateProvider {
+            engine: fixture.engine.clone(),
+        }));
+    let tree_a = fixture.engine.create_session(selection.clone()).unwrap();
+    let tree_b = fixture.engine.create_session(selection.clone()).unwrap();
+    let first = delegate_idle_child(
+        &fixture,
+        &selection,
+        &responses,
+        tree_a.session_id,
+        "a-0",
+        &[],
+    )
+    .await;
+    let second = delegate_idle_child(
+        &fixture,
+        &selection,
+        &responses,
+        tree_a.session_id,
+        "a-1",
+        &[first],
+    )
+    .await;
+    let other = delegate_idle_child(
+        &fixture,
+        &selection,
+        &responses,
+        tree_b.session_id,
+        "b-0",
+        &[],
+    )
+    .await;
+    let counts = fixture.engine.inner.store.resident_subagent_counts();
+    assert_eq!(counts[&tree_a.session_id], 2);
+    assert_eq!(counts[&tree_b.session_id], 1);
+
+    let evicted = fixture
+        .engine
+        .evict_idle_subagents_for_test(1, std::time::Duration::ZERO)
+        .await
+        .expect("janitor pass");
+    assert_eq!(
+        evicted,
+        [first],
+        "only tree A's oldest idle child pages out"
+    );
+    assert!(fixture.engine.inner.store.is_resident(second));
+    assert!(
+        fixture.engine.inner.store.is_resident(other),
+        "a tree at the cap keeps its children"
+    );
 }

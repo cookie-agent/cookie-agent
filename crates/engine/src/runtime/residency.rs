@@ -167,8 +167,17 @@ impl Engine {
         idle_after: Duration,
     ) -> Result<Vec<SessionId>, EngineError> {
         let _delegation_admission = self.inner.delegation.admission.lock().await;
-        let resident_count = self.inner.store.resident_subagent_count();
-        if resident_count <= cap {
+        // The cap applies to each tree on its own: one tree's activity never
+        // pages out another tree's children (tree-local C10).
+        let over_cap = self
+            .inner
+            .store
+            .resident_subagent_counts()
+            .into_iter()
+            .filter(|(_, count)| *count > cap)
+            .map(|(root, _)| root)
+            .collect::<std::collections::HashSet<_>>();
+        if over_cap.is_empty() {
             return Ok(Vec::new());
         }
         let now = Timestamp::now();
@@ -178,16 +187,31 @@ impl Engine {
             .all()
             .into_iter()
             .filter_map(|session| {
+                let SessionOrigin::Delegated {
+                    root_session_id, ..
+                } = session.meta.origin
+                else {
+                    return None;
+                };
+                if !over_cap.contains(&root_session_id) {
+                    return None;
+                }
                 let ended_at = self.subagent_eviction_ended_at(&session, now, idle_after)?;
-                Some((ended_at, session.meta.session_id))
+                Some((ended_at, root_session_id, session.meta.session_id))
             })
             .collect::<Vec<_>>();
-        candidates.sort_by_key(|(ended_at, session_id)| (*ended_at, *session_id));
+        candidates.sort_by_key(|(ended_at, _, session_id)| (*ended_at, *session_id));
 
         let mut evicted = Vec::new();
-        for (_, session_id) in candidates {
-            if self.inner.store.resident_subagent_count() <= cap {
-                break;
+        for (_, root, session_id) in candidates {
+            if self
+                .inner
+                .store
+                .resident_subagent_counts()
+                .get(&root)
+                .is_none_or(|count| *count <= cap)
+            {
+                continue;
             }
             let _residency = self.inner.sessions.residency_mutation.lock().await;
             let Some(session) = self.inner.store.get_resident(session_id) else {

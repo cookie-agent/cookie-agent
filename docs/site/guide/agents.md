@@ -212,9 +212,11 @@ same-tree peers with `send_message`, which is governed by the dedicated
 sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
 the [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
-Terminal delegated sessions are paged out of memory when resident child count
-exceeds `delegation.max_resident_subagents` and their last run has been idle for
-longer than `delegation.idle_eviction_after`. This is a soft trigger: running,
+Terminal delegated sessions are paged out of memory when their session tree's
+resident child count exceeds `delegation.max_resident_subagents` and their last
+run has been idle for longer than `delegation.idle_eviction_after`. Each tree
+is capped on its own, so one tree's activity never pages out another tree's
+children. This is a soft trigger: running,
 queued, recently active, pending-input, pending-approval, and not-yet-notified
 children remain resident even above the configured count. Root sessions are
 never evicted. Eligible children are selected oldest-idle first.

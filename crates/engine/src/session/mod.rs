@@ -2309,19 +2309,30 @@ impl SessionStore {
             .contains_key(&id)
     }
 
+    /// Resident delegated sessions per root tree, for the per-tree residency
+    /// cap (tree-local C10).
     #[must_use]
-    pub fn resident_subagent_count(&self) -> usize {
-        self.residency
+    pub fn resident_subagent_counts(&self) -> HashMap<SessionId, usize> {
+        let mut counts = HashMap::new();
+        for session in self
+            .residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .resident
             .values()
-            .filter(|session| matches!(session.meta.origin, SessionOrigin::Delegated { .. }))
-            .count()
+        {
+            if let SessionOrigin::Delegated {
+                root_session_id, ..
+            } = session.meta.origin
+            {
+                *counts.entry(root_session_id).or_insert(0) += 1;
+            }
+        }
+        counts
     }
 
-    /// Directory holding the work-dir files (artifacts, the grant journal,
-    /// runtime revisions, `cwd` and `layout.json`).
+    /// The work dir: root session directories plus the work-dir files (runtime
+    /// revisions, `cwd` and `layout.json`).
     #[must_use]
     pub fn workdir_dir_path(&self) -> &Path {
         &self.workdir_dir
