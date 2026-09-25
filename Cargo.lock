@@ -2562,7 +2562,7 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 [[package]]
 name = "oven-sdk"
 version = "0.6.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.1",
@@ -2581,7 +2581,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-anthropic"
 version = "0.7.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2602,7 +2602,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-azure"
 version = "0.5.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2620,7 +2620,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-bedrock"
 version = "0.5.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2642,7 +2642,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-cohere"
 version = "0.4.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2660,7 +2660,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-google"
 version = "0.6.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2679,7 +2679,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-google-vertex"
 version = "0.6.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2696,7 +2696,7 @@ dependencies = [
 [[package]]
 name = "oven-sdk-openai"
 version = "0.6.0"
-source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=2639bb5d7a0f1ceea5784138a6bb316231187356#2639bb5d7a0f1ceea5784138a6bb316231187356"
+source = "git+https://github.com/cookie-agent/oven-sdk.git?rev=7d4e68607e7643c4aa8fb46bf26f58a02832efa8#7d4e68607e7643c4aa8fb46bf26f58a02832efa8"
 dependencies = [
  "base64 0.22.1",
  "bytes",

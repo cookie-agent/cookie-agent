@@ -130,14 +130,14 @@ fn owned_source_files() -> Vec<PathBuf> {
 fn oven_dependencies_use_one_pinned_git_revision_with_exact_publish_versions() {
     let manifest = fs::read_to_string(workspace().join("Cargo.toml")).unwrap();
     for pin in [
-        "oven-sdk = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-anthropic = { version = \"=0.7.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-openai = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-google = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-google-vertex = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-bedrock = { version = \"=0.5.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-azure = { version = \"=0.5.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
-        "oven-sdk-cohere = { version = \"=0.4.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"2639bb5d7a0f1ceea5784138a6bb316231187356\" }",
+        "oven-sdk = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-anthropic = { version = \"=0.7.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-openai = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-google = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-google-vertex = { version = \"=0.6.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-bedrock = { version = \"=0.5.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-azure = { version = \"=0.5.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
+        "oven-sdk-cohere = { version = \"=0.4.0\", git = \"https://github.com/cookie-agent/oven-sdk.git\", rev = \"7d4e68607e7643c4aa8fb46bf26f58a02832efa8\" }",
     ] {
         assert!(manifest.contains(pin), "missing exact pin: {pin}");
     }
