@@ -55,7 +55,10 @@ fn fixture_config(lazy: bool) -> McpServerConfig {
         oauth: Default::default(),
         enabled: true,
         lazy,
-        timeout_ms: Some(5_000),
+        // Generous: under a loaded parallel test run (Windows CI especially)
+        // starting Python and completing the handshake can take seconds. No
+        // test relies on this timeout firing; slow-list tests cancel instead.
+        timeout_ms: Some(30_000),
     }
 }
 
