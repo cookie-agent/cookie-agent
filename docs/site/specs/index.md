@@ -9,6 +9,7 @@ configuration reference.
 | [Agent messaging](agent-messaging.md) | Implemented; governing contract for `send_message` agent-to-agent messaging |
 | [Subagent handles](subagent-handles.md) | Draft proposal; short tree-unique handles for model-facing session references |
 | [Tree-scoped session ownership lock](tree-ownership-lock.md) | Implemented; one `owner.lock` per root session tree, no lock files for delegated children |
+| [Tree-local sessions](tree-local-sessions.md) | Approved; implementation in progress. Tree isolation for all session state, metadata-only listing, no cross-session usage rollups |
 | [Store lock retention](store-lock-retention.md) | Implemented; bounded acquisition, commit-time CAS, lock-free OAuth reads, and per-run daemon token for `~/.cookie-agent` secure stores |
 | [Tool output streams and artifact reads](tool-output-streams.md) | Implemented; correctness and performance/code-quality reviews passed |
 | [Model configuration](model-configuration.md) | Current root draft preserved; implemented in the current source tree and independently reviewed |

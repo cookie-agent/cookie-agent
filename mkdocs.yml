@@ -107,6 +107,7 @@ nav:
       - Agent messaging: specs/agent-messaging.md
       - Model configuration: specs/model-configuration.md
       - Tree-scoped session ownership lock: specs/tree-ownership-lock.md
+      - Tree-local sessions: specs/tree-local-sessions.md
       - Documentation overhaul: specs/documentation-overhaul.md
       - Refactor phase 1 (test layout): specs/refactor-phase-1-test-layout.md
       - Refactor phase 2 (dependencies, CI): specs/refactor-phase-2-dependencies-ci.md
