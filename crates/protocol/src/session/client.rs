@@ -45,7 +45,14 @@ use zeroize::{Zeroize, Zeroizing};
 
 const COMMAND_QUEUE_CAPACITY: usize = 128;
 const RECOVERY_ATTEMPTS: usize = 6;
+/// How long the daemon may take to answer one replay page once its request
+/// has been written. It bounds the daemon's work, not this client's queue.
 const REPLAY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one replay page may wait in this client's own queue to be written.
+const REPLAY_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Events per replay page. Pages keep each response small enough to answer
+/// well inside [`REPLAY_RESPONSE_TIMEOUT`] however long the session is.
+const REPLAY_PAGE_EVENTS: std::num::NonZeroU32 = std::num::NonZeroU32::new(2_000).unwrap();
 
 /// The sole ordered delivery stream consumed by the UI.
 ///
@@ -293,6 +300,7 @@ pub enum ClientError {
     ReplayTimedOut,
 }
 
+#[derive(Clone, Copy)]
 struct ReplayRequest {
     session_id: SessionId,
     generation: u64,
@@ -305,6 +313,8 @@ struct Command {
     method: String,
     params: SerializedParams,
     replay: Option<ReplayRequest>,
+    /// Signalled once the request frame is on the transport.
+    written: Option<oneshot::Sender<()>>,
     response: oneshot::Sender<Result<Value, ClientError>>,
 }
 
@@ -413,6 +423,20 @@ struct Subscription {
     snapshot_deadline: Option<Instant>,
     buffered: Vec<ClientDelivery>,
     recovery_requested: Option<bool>,
+    /// Earlier pages of the replay attempt `replay_pages_attempt`, held until
+    /// its final page arrives and the whole replay is delivered at once.
+    replay_pages: Vec<StoredEvent>,
+    replay_pages_attempt: u64,
+}
+
+impl Subscription {
+    fn abort_replay(&mut self) {
+        self.cursor = self.rollback_cursor;
+        self.fetching = false;
+        self.awaiting_snapshots.clear();
+        self.replay_tools.clear();
+        self.replay_pages = Vec::new();
+    }
 }
 
 struct RecoveryQueue {
@@ -835,12 +859,22 @@ impl Client {
         let request = self
             .prepare_subscription(session_id, cursor, false, cursor == 0)
             .await?;
-        if let Err(error) = request_replay(&self.commands, request, cursor).await {
-            self.abort_replay(session_id).await;
-            Self::schedule_recovery_queue(&self.recovery, cursor == 0, Some(session_id));
-            return Err(error);
-        }
-        Ok(())
+        // The replay runs to completion in its own task. A caller that stops
+        // waiting must not strand it half-fetched: the session would stay
+        // marked as fetching and refuse every later replay.
+        let commands = self.commands.clone();
+        let subscriptions = self.subscriptions.clone();
+        let recovery = self.recovery.clone();
+        tokio::spawn(async move {
+            let result = request_replay(&commands, request, cursor).await;
+            if result.is_err() {
+                abort_replay(&subscriptions, session_id).await;
+                Self::schedule_recovery_queue(&recovery, cursor == 0, Some(session_id));
+            }
+            result
+        })
+        .await
+        .map_err(|_| ClientError::Closed)?
     }
 
     /// Recover one session. `full_replay` is used when its local projection is
@@ -878,16 +912,6 @@ impl Client {
         rebuild: bool,
     ) -> Result<ReplayRequest, ClientError> {
         prepare_subscription(&self.subscriptions, session_id, cursor, recovering, rebuild).await
-    }
-
-    async fn abort_replay(&self, session_id: SessionId) {
-        let mut subscriptions = self.subscriptions.lock().await;
-        if let Some(subscription) = subscriptions.get_mut(&session_id) {
-            subscription.cursor = subscription.rollback_cursor;
-            subscription.fetching = false;
-            subscription.awaiting_snapshots.clear();
-            subscription.replay_tools.clear();
-        }
     }
 
     pub async fn call<P, R>(&self, method: &str, params: &P) -> Result<R, ClientError>
@@ -1443,6 +1467,15 @@ async fn prepare_subscription(
     })
 }
 
+async fn abort_replay(
+    subscriptions: &Mutex<HashMap<SessionId, Subscription>>,
+    session_id: SessionId,
+) {
+    if let Some(subscription) = subscriptions.lock().await.get_mut(&session_id) {
+        subscription.abort_replay();
+    }
+}
+
 async fn request_replay(
     commands: &mpsc::Sender<Command>,
     replay: ReplayRequest,
@@ -1451,23 +1484,54 @@ async fn request_replay(
     request_replay_with_timeout(commands, replay, cursor, REPLAY_RESPONSE_TIMEOUT).await
 }
 
+/// Fetch a replay page by page. The connection task holds the pages and
+/// delivers the whole replay once the final page arrives; each page's
+/// response names the cursor of the next one, or is `null` after the last.
 async fn request_replay_with_timeout(
     commands: &mpsc::Sender<Command>,
     replay: ReplayRequest,
-    cursor: u64,
+    mut cursor: u64,
     timeout: Duration,
 ) -> Result<(), ClientError> {
-    let params = EventsSubscribeParams {
-        session_id: replay.session_id,
-        cursor: Some(cursor),
-    };
-    let _ = tokio::time::timeout(
-        timeout,
-        send_command(commands, "events.subscribe", &params, Some(replay), false),
-    )
-    .await
-    .map_err(|_| ClientError::ReplayTimedOut)??;
-    Ok(())
+    loop {
+        let params = EventsSubscribeParams {
+            session_id: replay.session_id,
+            cursor: Some(cursor),
+            limit: Some(REPLAY_PAGE_EVENTS),
+        };
+        let (response, receiver) = oneshot::channel();
+        let (written, written_receiver) = oneshot::channel();
+        let command = Command {
+            id: NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            method: "events.subscribe".to_owned(),
+            params: SerializedParams {
+                value: serde_json::to_value(params)?,
+                sensitive: false,
+            },
+            replay: Some(replay),
+            written: Some(written),
+            response,
+        };
+        tokio::time::timeout(REPLAY_QUEUE_TIMEOUT, async {
+            commands
+                .send(command)
+                .await
+                .map_err(|_| ClientError::Closed)?;
+            // A command dropped unwritten still resolves through `receiver`.
+            let _ = written_receiver.await;
+            Ok::<_, ClientError>(())
+        })
+        .await
+        .map_err(|_| ClientError::ReplayTimedOut)??;
+        let next = tokio::time::timeout(timeout, receiver)
+            .await
+            .map_err(|_| ClientError::ReplayTimedOut)?
+            .map_err(|_| ClientError::Closed)??;
+        match next.as_u64() {
+            Some(next) => cursor = next,
+            None => return Ok(()),
+        }
+    }
 }
 
 async fn send_command<P>(
@@ -1492,6 +1556,7 @@ where
             method: method.to_owned(),
             params,
             replay,
+            written: None,
             response,
         })
         .await
@@ -1516,6 +1581,7 @@ pub(in crate::session::client) async fn send_sensitive_command(
             method: method.to_owned(),
             params,
             replay: None,
+            written: None,
             response,
         })
         .await
@@ -1644,10 +1710,7 @@ async fn recover_all(
         {
             let mut subscriptions = subscriptions.lock().await;
             if let Some(subscription) = subscriptions.get_mut(&session_id) {
-                subscription.cursor = subscription.rollback_cursor;
-                subscription.fetching = false;
-                subscription.awaiting_snapshots.clear();
-                subscription.replay_tools.clear();
+                subscription.abort_replay();
             }
             return Err(error);
         }
@@ -1689,7 +1752,12 @@ where
                     };
                     match serialize_outbound_frame(request, command.params.sensitive) {
                         Ok(frame) => match send_outbound_frame(&mut stream, frame).await {
-                            Ok(()) => { pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response }); }
+                            Ok(()) => {
+                                if let Some(written) = command.written {
+                                    let _ = written.send(());
+                                }
+                                pending.insert(command.id, PendingCommand { replay: command.replay, response: command.response });
+                            }
                             Err(error) => {
                                 let message = format!("sending {}: {}", command.method, crate::diagnostics::error_chain(&error));
                                 let _ = command.response.send(Err(ClientError::Transport(message.clone())));
@@ -1869,13 +1937,26 @@ async fn handle_frame(
                 (Some(replay), Ok(value)) => {
                     match serde_json::from_value::<EventsSubscribeResult>(value) {
                         Ok(result) => {
+                            let page = if result.has_more {
+                                match hold_replay_page(replay, result.events, subscriptions).await {
+                                    Ok(next) => {
+                                        let _ = command.response.send(Ok(Value::from(next)));
+                                        return Ok(());
+                                    }
+                                    Err(page) => page,
+                                }
+                            } else {
+                                result.events
+                            };
+                            let mut events = take_replay_pages(replay, subscriptions).await;
+                            events.extend(page);
                             // The application can now start draining the sole
                             // mpsc consumer while this task injects a large
                             // replay under natural channel backpressure.
                             let _ = command.response.send(Ok(Value::Null));
                             begin_replay(
                                 replay,
-                                result.events,
+                                events,
                                 subscriptions,
                                 deliveries,
                                 recovery,
@@ -1950,6 +2031,52 @@ async fn handle_frame(
     Ok(())
 }
 
+/// Whether `replay` is still the attempt its session is fetching.
+fn replay_is_current(subscription: &Subscription, replay: &ReplayRequest) -> bool {
+    subscription.fetching
+        && subscription.generation == replay.generation
+        && subscription.active_attempt == replay.attempt
+}
+
+/// Hold one non-final page of the current attempt and return the cursor the
+/// next page starts from. A superseded attempt (or an empty page) gets its
+/// events back, and the caller ends it as if this were the final page.
+async fn hold_replay_page(
+    replay: ReplayRequest,
+    events: Vec<StoredEvent>,
+    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
+) -> Result<u64, Vec<StoredEvent>> {
+    let Some(next) = events.last().map(|event| event.seq) else {
+        return Err(events);
+    };
+    let mut subscriptions = subscriptions.lock().await;
+    let Some(subscription) = subscriptions
+        .get_mut(&replay.session_id)
+        .filter(|subscription| replay_is_current(subscription, &replay))
+    else {
+        return Err(events);
+    };
+    if subscription.replay_pages_attempt != replay.attempt {
+        subscription.replay_pages = Vec::new();
+        subscription.replay_pages_attempt = replay.attempt;
+    }
+    subscription.replay_pages.extend(events);
+    Ok(next)
+}
+
+async fn take_replay_pages(
+    replay: ReplayRequest,
+    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
+) -> Vec<StoredEvent> {
+    let mut subscriptions = subscriptions.lock().await;
+    match subscriptions.get_mut(&replay.session_id) {
+        Some(subscription) if subscription.replay_pages_attempt == replay.attempt => {
+            std::mem::take(&mut subscription.replay_pages)
+        }
+        _ => Vec::new(),
+    }
+}
+
 async fn begin_replay(
     replay: ReplayRequest,
     events: Vec<StoredEvent>,
@@ -1964,10 +2091,7 @@ async fn begin_replay(
         let Some(subscription) = subscriptions.get_mut(&replay.session_id) else {
             return;
         };
-        if !subscription.fetching
-            || subscription.generation != replay.generation
-            || subscription.active_attempt != replay.attempt
-        {
+        if !replay_is_current(subscription, &replay) {
             return;
         }
         let final_seq = events

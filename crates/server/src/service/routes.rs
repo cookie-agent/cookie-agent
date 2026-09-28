@@ -281,25 +281,41 @@ impl ServerProtocol for Server {
     ) -> Result<EventsSubscribeResult> {
         let (result, receiver) = match self
             .engine
-            .subscribe(params.session_id, params.cursor)
+            .subscribe_page(params.session_id, params.cursor, params.limit)
             .await
         {
             Ok(subscription) => subscription,
             Err(EngineError::SessionOwnedByAnotherProcess(_)) => {
-                // Protocol 17 has no separate snapshot RPC. Return only the replay
+                // The protocol has no separate snapshot RPC. Return only the replay
                 // half of this response and deliberately register no live tail.
                 return self
                     .engine
-                    .snapshot_events(params.session_id, params.cursor)
+                    .snapshot_events(params.session_id, params.cursor, params.limit)
                     .map_err(protocol_fault);
             }
             Err(error) => return Err(protocol_fault(error)),
         };
+        // A non-final page is only history; the final page goes live.
+        let Some(receiver) = receiver else {
+            return Ok(result);
+        };
         context.register_session_subscription(params.session_id);
         self.start_event_tail(receiver, context.clone());
-        for event in &result.events {
-            if let cookie_agent_protocol::EventPayload::ToolCallStarted { start } = &event.payload {
-                self.start_output_tail(start.tool_call_id, context.clone());
+        // Tail every call this page starts, and every call still running
+        // whose start an earlier page of this replay carried.
+        let mut tailed = std::collections::HashSet::new();
+        let started = result
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                cookie_agent_protocol::EventPayload::ToolCallStarted { start } => {
+                    Some(start.tool_call_id)
+                }
+                _ => None,
+            });
+        for tool_call_id in started.chain(self.engine.open_tool_calls(params.session_id)) {
+            if tailed.insert(tool_call_id) {
+                self.start_output_tail(tool_call_id, context.clone());
             }
         }
         Ok(result)

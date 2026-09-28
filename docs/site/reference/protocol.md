@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 21 is current-only. A client must call `handshake` with
-`{ "protocol_version": 21 }` before any other method.
+Protocol 22 is current-only. A client must call `handshake` with
+`{ "protocol_version": 22 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 21.
+members of protocol 22.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 21 alongside independent display and output references. The
+preserved in protocol 22 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -68,11 +68,17 @@ and the CLI share one implementation of the protocol mechanics.
   drives one complete session over a transport: it rejects every method before
   the exact-version handshake with error code `-32001`, correlates requests by
   id, dispatches to the implementation, and delivers notifications through a
-  `ServerContext`.
+  `ServerContext`. After the handshake, requests on one connection run
+  concurrently (at most 64 in flight) and each response is written when it is
+  ready, so responses can arrive out of request order. Notifications from work
+  a request started, such as the live tail of `events.subscribe`, are written
+  only after that request's response.
 - **ClientProtocol.** The client contract is implemented by the shared
   `protocol::Client`. Its connection task correlates requests by id, demuxes
   notifications into an ordered `ClientDelivery` stream, injects cursor replays
-  and gap recovery before buffered live notifications, wipes secret-bearing
+  and gap recovery before buffered live notifications, fetches replays in pages
+  of 2,000 events and delivers each replay whole once its final page arrives,
+  wipes secret-bearing
   serialized frames, and fails outstanding calls on shutdown.
 - **TUI and CLI.** The TUI client is a thin adapter re-exporting the server's
   `Client` wrapper; the CLI uses the same client through the `ClientProtocol`
@@ -117,7 +123,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.recall_steer` | Run ID | Required nullable recalled text |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_stdin` | Run ID, tool call ID, optional data, EOF flag | `accepted` boolean |
-| `events.subscribe` | Session ID, optional cursor | Initial stored events; starts notifications |
+| `events.subscribe` | Session ID, optional cursor, optional `limit` | Stored events after the cursor; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
 | `approval.list` | Root session ID, optional status | Approval records and tree grants |
 | `approval.respond` | Approval identity/revision/fingerprint, client ID, decision, optional rejection feedback | Updated approval record |
 

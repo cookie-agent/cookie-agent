@@ -802,6 +802,51 @@ impl EventLog {
             .to_vec()
     }
 
+    /// Physical events after `cursor`, at most `limit` of them. Only the
+    /// returned events are cloned, so paging through a long log costs one
+    /// page per call rather than the whole log.
+    #[must_use]
+    pub fn events_after(
+        &self,
+        cursor: Option<u64>,
+        limit: Option<std::num::NonZeroU32>,
+    ) -> cookie_agent_protocol::EventsSubscribeResult {
+        let events = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let limit = limit.map_or(usize::MAX, |limit| limit.get() as usize);
+        let mut after = events
+            .all
+            .iter()
+            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor));
+        let page = after.by_ref().take(limit).cloned().collect();
+        cookie_agent_protocol::EventsSubscribeResult {
+            events: page,
+            has_more: after.next().is_some(),
+        }
+    }
+
+    /// Tool calls the log shows as started and not yet terminated.
+    #[must_use]
+    pub fn open_tool_calls(&self) -> Vec<cookie_agent_protocol::ToolCallId> {
+        let events = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut open = Vec::new();
+        for event in &events.all {
+            match &event.payload {
+                EventPayload::ToolCallStarted { start } => open.push(start.tool_call_id),
+                EventPayload::ToolCallTerminated { termination } => {
+                    open.retain(|call| *call != termination.tool_call_id);
+                }
+                _ => {}
+            }
+        }
+        open
+    }
+
     #[must_use]
     pub fn last_event(&self) -> Option<StoredEvent> {
         self.events

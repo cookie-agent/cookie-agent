@@ -37,12 +37,13 @@ async fn direct_store_appends_share_the_subscription_handoff() {
     let subscriber = tokio::task::spawn_blocking(move || {
         gate.wait();
         store
-            .subscribe_events(session_id, Some(cursor))
+            .subscribe_events(session_id, Some(cursor), None)
             .expect("subscribe")
     });
-    let (snapshot, mut live) = with_watchdog("subscription handoff", subscriber)
+    let (snapshot, live) = with_watchdog("subscription handoff", subscriber)
         .await
         .unwrap();
+    let mut live = live.expect("an unlimited subscription is live");
     with_watchdog("direct writer", writer).await.unwrap();
     let mut events = snapshot.events;
     with_watchdog("direct append delivery", async {
@@ -1002,4 +1003,125 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         "independent fork"
     );
     reopened.shutdown().await;
+}
+
+fn append_inputs(
+    engine: &crate::Engine,
+    session_id: cookie_agent_protocol::SessionId,
+    count: usize,
+) {
+    for index in 0..count {
+        engine
+            .inner
+            .store
+            .append(
+                session_id,
+                None,
+                cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
+                EventPayload::UserInputAdmitted {
+                    input: format!("input {index}"),
+                },
+            )
+            .expect("direct append");
+    }
+}
+
+fn seqs(events: &[cookie_agent_protocol::StoredEvent]) -> Vec<u64> {
+    events.iter().map(|event| event.seq).collect()
+}
+
+#[tokio::test]
+async fn a_paged_subscription_goes_live_only_on_its_final_page() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    append_inputs(&fixture.engine, session_id, 10);
+    let (full, _) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("full replay");
+
+    let limit = std::num::NonZeroU32::new(4).unwrap();
+    let mut cursor = None;
+    let mut paged = Vec::new();
+    let mut live = loop {
+        let (page, receiver) = fixture
+            .engine
+            .subscribe_page(session_id, cursor, Some(limit))
+            .await
+            .expect("page");
+        assert!(page.events.len() <= 4);
+        cursor = page.events.last().map(|event| event.seq).or(cursor);
+        paged.extend(page.events);
+        if !page.has_more {
+            break receiver.expect("the final page is live");
+        }
+        assert!(receiver.is_none(), "a non-final page registers no tail");
+    };
+    assert_eq!(seqs(&paged), seqs(&full.events));
+
+    append_inputs(&fixture.engine, session_id, 1);
+    assert!(matches!(
+        with_watchdog("live after final page", live.recv()).await,
+        Some(EventSubscriptionMessage::Event { event })
+            if Some(event.seq) == cursor.map(|cursor| cursor + 1)
+    ));
+}
+
+#[tokio::test]
+async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
+    let (fixture, selection) = custom_fixture();
+    let session = fixture.engine.create_session(selection).expect("session");
+    let session_id = session.session_id;
+    append_inputs(&fixture.engine, session_id, 10);
+    fixture
+        .engine
+        .inner
+        .store
+        .persist_buffered_session(session_id)
+        .expect("persist session");
+    let (full, _) = fixture
+        .engine
+        .subscribe(session_id, None)
+        .await
+        .expect("full replay");
+
+    let foreign = reopen_engine(&fixture);
+    assert!(matches!(
+        foreign.subscribe_page(session_id, None, None).await,
+        Err(EngineError::SessionOwnedByAnotherProcess(id)) if id == session_id
+    ));
+    let limit = std::num::NonZeroU32::new(4).unwrap();
+    let first = foreign
+        .snapshot_events(session_id, None, Some(limit))
+        .expect("first page");
+    assert!(first.has_more);
+    let opens = foreign.inner.store.log_open_count(session_id);
+    let mut cursor = first.events.last().map(|event| event.seq);
+    let mut paged = first.events;
+    loop {
+        let page = foreign
+            .snapshot_events(session_id, cursor, Some(limit))
+            .expect("page");
+        cursor = page.events.last().map(|event| event.seq).or(cursor);
+        paged.extend(page.events);
+        if !page.has_more {
+            break;
+        }
+    }
+    assert_eq!(seqs(&paged), seqs(&full.events));
+    assert_eq!(
+        foreign.inner.store.log_open_count(session_id),
+        opens,
+        "later pages reuse the parsed log"
+    );
+
+    // An append by the owner changes the file, so the next page reads it again.
+    append_inputs(&fixture.engine, session_id, 1);
+    let tail = foreign
+        .snapshot_events(session_id, cursor, Some(limit))
+        .expect("tail page");
+    assert_eq!(seqs(&tail.events), vec![cursor.unwrap() + 1]);
+    assert_eq!(foreign.inner.store.log_open_count(session_id), opens + 1);
 }

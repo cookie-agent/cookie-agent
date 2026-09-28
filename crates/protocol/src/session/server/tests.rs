@@ -63,6 +63,7 @@ impl ServerProtocol for StubServer {
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(crate::EventsSubscribeResult {
             events: Vec::new(),
+            has_more: false,
         })
     }
     async fn create_session(

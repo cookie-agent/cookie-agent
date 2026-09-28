@@ -194,11 +194,12 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 21);
+    assert_eq!(PROTOCOL_VERSION, 22);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(21)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(20)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
     assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
@@ -206,6 +207,52 @@ fn wire_versions_accept_only_documented_history() {
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(4)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
+}
+
+#[test]
+fn event_subscription_paging_fields_are_optional_on_the_wire() {
+    let session_id = SessionId::new_v7();
+    assert_eq!(
+        serde_json::to_value(EventsSubscribeParams {
+            session_id,
+            cursor: Some(4),
+            limit: None,
+        })
+        .unwrap(),
+        json!({"session_id": session_id, "cursor": 4})
+    );
+    let paged: EventsSubscribeParams =
+        serde_json::from_value(json!({"session_id": session_id, "cursor": 4, "limit": 2000}))
+            .unwrap();
+    assert_eq!(paged.limit.map(std::num::NonZeroU32::get), Some(2000));
+    assert!(
+        serde_json::from_value::<EventsSubscribeParams>(
+            json!({"session_id": session_id, "limit": 0})
+        )
+        .is_err(),
+        "a page holds at least one event"
+    );
+
+    let last_page = EventsSubscribeResult {
+        events: Vec::new(),
+        has_more: false,
+    };
+    assert_eq!(
+        serde_json::to_value(&last_page).unwrap(),
+        json!({"events": []})
+    );
+    assert_eq!(
+        serde_json::from_value::<EventsSubscribeResult>(json!({"events": []})).unwrap(),
+        last_page
+    );
+    assert_eq!(
+        serde_json::to_value(EventsSubscribeResult {
+            events: Vec::new(),
+            has_more: true,
+        })
+        .unwrap(),
+        json!({"events": [], "has_more": true})
+    );
 }
 
 #[test]
