@@ -723,13 +723,16 @@ pub(super) fn reduce_event(
         EventPayload::ModelReplayEvaluated {
             resolved_model,
             ordered_decisions,
+            base_attempt_id,
             ..
         } => {
             close_open_assistant(state, timestamp);
             // Incompatible replay/cache discards are one WARNING per logical
             // run transition. Reconstruction is the expected consequence and
-            // remains DEBUG, as do routine replay details.
-            if ordered_decisions.is_empty() {
+            // remains DEBUG, as do routine replay details. An evaluation
+            // written against a base lists only what it adds, and the base's
+            // decisions were rendered with it.
+            if ordered_decisions.is_empty() && base_attempt_id.is_none() {
                 push_event(
                     state,
                     EventLevel::Info,

@@ -1087,6 +1087,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         // Sticky chain position belongs to this run, not one agent-loop pass.
         let mut fallback_entry = 0_usize;
+        let mut replay_base = ReplayEvaluationBase::default();
         loop {
             if active.cancellation.is_cancelled() {
                 self.append_run_cancelled_once(&active, run_id, None)?;
@@ -1128,6 +1129,7 @@ impl Engine {
                     &active.cancellation,
                     policy,
                     &mut fallback_entry,
+                    &mut replay_base,
                     prompt_events,
                     published_tools.definitions.clone(),
                 )
@@ -1675,6 +1677,7 @@ impl Engine {
         cancellation: &CancellationToken,
         policy: &FrozenRunPolicy,
         sticky_entry: &mut usize,
+        replay_base: &mut ReplayEvaluationBase,
         prompt_events: super::producer_claims::ClaimedPrompt,
         tools: Vec<ToolDefinition>,
     ) -> Result<AttemptTurn, EngineError> {
@@ -1977,21 +1980,27 @@ impl Engine {
                                 }
                             }
                         }
+                        let resolved_model = wire_model(binding);
+                        let decisions = replay_decisions_with_preflight(
+                            &request.replay.decisions,
+                            binding,
+                            &replay_preflight,
+                        );
+                        let (ordered_decisions, base_attempt_id) =
+                            replay_base.encode(&resolved_model, &decisions);
                         self.append(
                             session,
                             Some(run),
                             event_origin("engine:model-loop"),
                             Event::ModelReplayEvaluated {
                                 attempt_id,
-                                resolved_model: wire_model(binding),
-                                ordered_decisions: replay_decisions_with_preflight(
-                                    &request.replay.decisions,
-                                    binding,
-                                    &replay_preflight,
-                                ),
+                                resolved_model: resolved_model.clone(),
+                                ordered_decisions,
+                                base_attempt_id,
                             },
                         )
                         .await?;
+                        replay_base.record(attempt_id, resolved_model, decisions);
                         let mut accumulator = TurnAccumulator::default();
                         let mut failure = None;
                         let mut meaningful_output = false;
@@ -2530,6 +2539,54 @@ impl Drop for ToolOutputPublication {
     }
 }
 
+/// The last replay evaluation a run wrote. Every attempt re-evaluates the
+/// whole request history, so writing the full list each time grows a long
+/// run's log quadratically. While an attempt's list extends the previous one
+/// for the same model, only the extension is written, against that base.
+/// A run's first evaluation, a model change, and any change to an earlier
+/// decision (compaction, a pinned turn, a late tool result) write in full.
+#[derive(Default)]
+pub(super) struct ReplayEvaluationBase(
+    Option<(
+        cookie_agent_protocol::AttemptId,
+        cookie_agent_protocol::ResolvedModelRef,
+        Vec<cookie_agent_protocol::ReplayDecision>,
+    )>,
+);
+
+impl ReplayEvaluationBase {
+    /// The decisions to write for an attempt, and the attempt they extend.
+    fn encode(
+        &self,
+        resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+        decisions: &[cookie_agent_protocol::ReplayDecision],
+    ) -> (
+        Vec<cookie_agent_protocol::ReplayDecision>,
+        Option<cookie_agent_protocol::AttemptId>,
+    ) {
+        match &self.0 {
+            Some((base, model, previous))
+                if !previous.is_empty()
+                    && model == resolved_model
+                    && decisions.starts_with(previous) =>
+            {
+                (decisions[previous.len()..].to_vec(), Some(*base))
+            }
+            _ => (decisions.to_vec(), None),
+        }
+    }
+
+    /// Remember a written evaluation by its full list.
+    fn record(
+        &mut self,
+        attempt_id: cookie_agent_protocol::AttemptId,
+        resolved_model: cookie_agent_protocol::ResolvedModelRef,
+        decisions: Vec<cookie_agent_protocol::ReplayDecision>,
+    ) {
+        self.0 = Some((attempt_id, resolved_model, decisions));
+    }
+}
+
 fn is_overload_retry(error: &ModelError) -> bool {
     error.kind == oven_sdk::ModelErrorKind::Overload
         || (error.retryable && matches!(error.diagnostics.http_status, Some(429 | 503)))
@@ -2664,7 +2721,74 @@ mod tests {
 
     use oven_sdk::{ModelError, ModelErrorKind};
 
-    use super::{is_overload_retry, model_retry_delay, retry_budget_allows};
+    use cookie_agent_protocol::{AttemptId, ReplayDecision, ReplayDisposition, ResolvedModelRef};
+
+    use super::{ReplayEvaluationBase, is_overload_retry, model_retry_delay, retry_budget_allows};
+
+    fn model(name: &str) -> ResolvedModelRef {
+        crate::model_history::wire_model(&crate::test_support::model_binding_named(name))
+    }
+
+    fn decisions(dispositions: &[ReplayDisposition]) -> Vec<ReplayDecision> {
+        dispositions
+            .iter()
+            .enumerate()
+            .map(|(index, disposition)| ReplayDecision {
+                history_index: index as u64,
+                disposition: disposition.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replay_evaluations_write_only_what_extends_the_previous_list() {
+        let model_a = model("fallback-zero");
+        let mut base = ReplayEvaluationBase::default();
+        let first = decisions(&[ReplayDisposition::Replayed, ReplayDisposition::NoArtifact]);
+        assert_eq!(
+            base.encode(&model_a, &first),
+            (first.clone(), None),
+            "a run's first evaluation is written in full"
+        );
+        let first_attempt = AttemptId::new_v7();
+        base.record(first_attempt, model_a.clone(), first.clone());
+
+        let extended = decisions(&[
+            ReplayDisposition::Replayed,
+            ReplayDisposition::NoArtifact,
+            ReplayDisposition::Replayed,
+        ]);
+        assert_eq!(
+            base.encode(&model_a, &extended),
+            (extended[2..].to_vec(), Some(first_attempt))
+        );
+        assert_eq!(
+            base.encode(&model_a, &first),
+            (Vec::new(), Some(first_attempt)),
+            "an unchanged list writes nothing new"
+        );
+
+        let changed = decisions(&[ReplayDisposition::NoArtifact, ReplayDisposition::NoArtifact]);
+        assert_eq!(
+            base.encode(&model_a, &changed),
+            (changed.clone(), None),
+            "a changed earlier decision is written in full"
+        );
+        assert_eq!(
+            base.encode(&model("fallback-one"), &extended),
+            (extended.clone(), None),
+            "a model change is written in full"
+        );
+    }
+
+    #[test]
+    fn an_empty_previous_list_is_never_a_base() {
+        let model_a = model("fallback-zero");
+        let mut base = ReplayEvaluationBase::default();
+        base.record(AttemptId::new_v7(), model_a.clone(), Vec::new());
+        let next = decisions(&[ReplayDisposition::Replayed]);
+        assert_eq!(base.encode(&model_a, &next), (next.clone(), None));
+    }
 
     #[test]
     fn retry_budget_counts_retries_after_the_first_attempt() {
