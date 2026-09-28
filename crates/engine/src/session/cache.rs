@@ -22,8 +22,22 @@ impl Drop for MutationGuard<'_> {
     }
 }
 
+/// Whether an atomic cache replacement is also made crash-durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CacheSync {
+    /// fsync the staged file before the rename and the parent directory after
+    /// it. Used where the file's existence publishes something (a new session
+    /// directory's `metadata`) and for `subagents/index.json`.
+    Durable,
+    /// Atomic rename only: readers never observe a torn file, but a power loss
+    /// may leave the previous version behind. Used for the append-path
+    /// `metadata` refresh, a rebuildable cache of the event log whose on-disk
+    /// tip may lag the log anyway.
+    Atomic,
+}
+
 /// Atomically rewrites a small JSON cache (temp file + rename + parent fsync),
-/// mirroring [`write_cache`]'s durability discipline.
+/// creating its parent directory first.
 pub(super) fn write_index_json<T: serde::Serialize>(
     path: &Path,
     value: &T,
@@ -32,71 +46,73 @@ pub(super) fn write_index_json<T: serde::Serialize>(
         path: path.to_owned(),
         source,
     })?;
-    let parent = path.parent().ok_or_else(|| SessionError::Io {
+    let parent = cache_parent(path)?;
+    #[cfg(unix)]
+    create_unix_session_directory_all(parent)?;
+    #[cfg(windows)]
+    create_windows_session_directory(parent)?;
+    replace_cache_file(path, &bytes, CacheSync::Durable)
+}
+
+fn cache_parent(path: &Path) -> Result<&Path, SessionError> {
+    path.parent().ok_or_else(|| SessionError::Io {
         path: path.to_owned(),
         source: std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "session cache has no parent",
         ),
-    })?;
-    #[cfg(unix)]
-    create_unix_session_directory_all(parent)?;
-    #[cfg(windows)]
-    create_windows_session_directory(parent)?;
+    })
+}
+
+/// Stages `bytes` in a private temporary beside `path` and renames it over
+/// `path`, so a reader sees either the old or the new file, never a partial one.
+fn replace_cache_file(path: &Path, bytes: &[u8], sync: CacheSync) -> Result<(), SessionError> {
+    let parent = cache_parent(path)?;
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "index".to_owned());
+        .unwrap_or_else(|| "cache".to_owned());
     let temporary = parent.join(format!(".{name}.{}.tmp", Uuid::now_v7()));
+    let durable = sync == CacheSync::Durable;
     let result = (|| -> Result<(), SessionError> {
         #[cfg(unix)]
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+        #[cfg(windows)]
+        let mut file = cookie_agent_models::secure_store::create_windows_private_file(&temporary)
+            .map_err(|source| SessionError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        file.write_all(bytes)
+            .and_then(|()| if durable { file.sync_all() } else { Ok(()) })
+            .map_err(|source| SessionError::Io {
+                path: temporary.clone(),
+                source,
+            })?;
+        drop(file);
+        #[cfg(unix)]
         {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)
-                .map_err(|source| SessionError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|source| SessionError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
-            drop(file);
             fs::rename(&temporary, path).map_err(|source| SessionError::Io {
                 path: path.to_owned(),
                 source,
             })?;
-            fsync_directory(parent)?;
+            if durable {
+                fsync_directory(parent)?;
+            }
         }
         #[cfg(windows)]
-        {
-            let mut file =
-                cookie_agent_models::secure_store::create_windows_private_file(&temporary)
-                    .map_err(|source| SessionError::Io {
-                        path: temporary.clone(),
-                        source,
-                    })?;
-            file.write_all(&bytes).map_err(|source| SessionError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
-            file.sync_all().map_err(|source| SessionError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
-            drop(file);
-            replace_windows_path_with_retry(&temporary, path).map_err(|source| {
-                SessionError::Io {
-                    path: path.to_owned(),
-                    source,
-                }
-            })?;
-        }
+        replace_windows_path_with_retry(&temporary, path).map_err(|source| SessionError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(())
     })();
     if result.is_err() {
@@ -110,72 +126,19 @@ pub(crate) fn meta_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_META_FILE)
 }
 
-pub(super) fn write_cache(path: &Path, cache: &SessionMeta) -> Result<(), SessionError> {
-    let persisted = serde_json::to_value(cache).map_err(|source| SessionError::Json {
-        path: path.to_owned(),
-        source,
-    })?;
-    let bytes = serde_json::to_vec_pretty(&persisted).map_err(|source| SessionError::Json {
-        path: path.to_owned(),
-        source,
-    })?;
-    let parent = path.parent().expect("session cache has a parent");
-    let temporary = parent.join(format!(".metadata.{}.tmp", Uuid::now_v7()));
-    let result = (|| -> Result<(), SessionError> {
-        #[cfg(unix)]
-        {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)
-                .map_err(|source| SessionError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|source| SessionError::Io {
-                    path: temporary.clone(),
-                    source,
-                })?;
-            drop(file);
-            fs::rename(&temporary, path).map_err(|source| SessionError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-            fsync_directory(parent)?;
-        }
-        #[cfg(windows)]
-        {
-            let mut file =
-                cookie_agent_models::secure_store::create_windows_private_file(&temporary)
-                    .map_err(|source| SessionError::Io {
-                        path: temporary.clone(),
-                        source,
-                    })?;
-            file.write_all(&bytes).map_err(|source| SessionError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
-            file.sync_all().map_err(|source| SessionError::Io {
-                path: temporary.clone(),
-                source,
-            })?;
-            drop(file);
-            replace_windows_path_with_retry(&temporary, path).map_err(|source| {
-                SessionError::Io {
-                    path: path.to_owned(),
-                    source,
-                }
-            })?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+/// Replaces a session's `metadata` cache; `sync` picks crash durability.
+pub(super) fn write_cache(
+    path: &Path,
+    cache: &SessionMeta,
+    sync: CacheSync,
+) -> Result<(), SessionError> {
+    let bytes = serde_json::to_value(cache)
+        .and_then(|persisted| serde_json::to_vec_pretty(&persisted))
+        .map_err(|source| SessionError::Json {
+            path: path.to_owned(),
+            source,
+        })?;
+    replace_cache_file(path, &bytes, sync)
 }
 
 /// Retries a replacement that lost a race for the staged source or the target.

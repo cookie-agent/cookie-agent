@@ -198,6 +198,13 @@ impl SessionProjection {
 struct SessionResidency {
     resident: HashMap<SessionId, SessionProjection>,
     evicted: HashMap<SessionId, SessionSummary>,
+    /// Persisted residents whose on-disk `metadata` cache trails the resident
+    /// meta: only the tip (`last_event_seq`/`last_activity`) differs, because an
+    /// append inside a running run that the fold ignores (the per-token and
+    /// per-chunk stream records) does not rewrite the cache. The run's terminal
+    /// event is fold-consumed and rewrites it; eviction and store release
+    /// flush whatever is still pending here.
+    stale_meta_caches: HashSet<SessionId>,
 }
 
 /// Ownership of one root session tree. Exactly one lock and one
@@ -1182,6 +1189,12 @@ impl SessionStore {
     }
 
     pub(crate) fn rollback_adoption(&self, id: SessionId) {
+        {
+            let _mutation = self.lock_mutation();
+            // Best effort: whatever recovery appended is in the log, and a stale
+            // `metadata` tip is repaired by the next owner's first write.
+            let _ = self.flush_stale_meta_cache(id);
+        }
         let projection = self
             .residency
             .lock()
@@ -1258,6 +1271,9 @@ impl SessionStore {
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
         let _mutation = self.lock_mutation();
+        // The evicted summary is served from memory, but other processes and
+        // the next tree load read `metadata`: bring a deferred tip up to date.
+        self.flush_stale_meta_cache(id)?;
         // Persisted child caches are refreshed after the residency guard drops.
         let parent_root = self.parent_root_of(id);
         let evicted = self.evict_locked(id)?;
@@ -1323,7 +1339,53 @@ impl SessionStore {
                 .recv();
         }
         residency.resident.remove(&id);
+        residency.stale_meta_caches.remove(&id);
         Ok(true)
+    }
+
+    /// Rewrites `id`'s `metadata` cache from `meta` (atomic rename, no fsync:
+    /// the file is a rebuildable cache of the log) and clears any deferred tip.
+    /// The caller holds `mutation`, so no append can interleave.
+    fn refresh_meta_cache(&self, id: SessionId, meta: &SessionMeta) -> Result<(), SessionError> {
+        write_cache(&self.meta_cache_path(id)?, meta, CacheSync::Atomic)?;
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stale_meta_caches
+            .remove(&id);
+        Ok(())
+    }
+
+    /// Writes the resident meta of `id` if an in-run append deferred its cache
+    /// tip. The caller holds `mutation`.
+    fn flush_stale_meta_cache(&self, id: SessionId) -> Result<(), SessionError> {
+        let meta = {
+            let mut residency = self
+                .residency
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !residency.stale_meta_caches.contains(&id) {
+                return Ok(());
+            }
+            match residency.resident.get(&id) {
+                Some(session) if session.log.is_persisted() => session.meta.clone(),
+                _ => {
+                    residency.stale_meta_caches.remove(&id);
+                    return Ok(());
+                }
+            }
+        };
+        self.refresh_meta_cache(id, &meta)
+    }
+
+    /// Test-only: whether an in-run append left `id`'s `metadata` tip pending.
+    #[cfg(test)]
+    pub(crate) fn meta_cache_is_deferred(&self, id: SessionId) -> bool {
+        self.residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stale_meta_caches
+            .contains(&id)
     }
 
     pub fn append(
@@ -1378,11 +1440,17 @@ impl SessionStore {
         // Fold-ignored payloads (the per-token TextDelta/ReasoningDelta and
         // per-chunk ToolCallProgress hot path) only advance the metadata tip;
         // update the resident projection in place instead of re-folding the
-        // whole log. The resident is updated before write_cache — on a cache
-        // write failure the resident stays consistent with the log while the
-        // on-disk discovery cache lags, which is strictly better than the
-        // previous resident-behind-log window.
-        let incremental_meta = if fold_consumed(&envelope.payload) {
+        // whole log. The resident is updated before the cache write — on a
+        // cache write failure the resident stays consistent with the log while
+        // the on-disk discovery cache lags.
+        //
+        // Inside a running run such an append does not rewrite the `metadata`
+        // cache either: all it changes there is the tip, the run's terminal
+        // event is fold-consumed and rewrites the cache, and eviction and store
+        // release flush a tip that is still pending. Outside a run (goal and
+        // producer bookkeeping on an idle session) nothing is guaranteed to
+        // follow, so the tip is written through.
+        let incremental = if fold_consumed(&envelope.payload) {
             None
         } else {
             let mut residency = self
@@ -1394,24 +1462,31 @@ impl SessionStore {
                 let resident = residency.resident.get_mut(&id).expect("checked above");
                 resident.meta.last_event_seq = envelope.seq;
                 resident.meta.last_activity = envelope.timestamp;
-                Some(resident.meta.clone())
+                if first_user_message || !log.is_persisted() {
+                    Some(None)
+                } else if resident.meta.status == SessionStatus::Running {
+                    residency.stale_meta_caches.insert(id);
+                    Some(None)
+                } else {
+                    Some(Some(resident.meta.clone()))
+                }
             } else {
                 None
             }
         };
-        if let Some(meta) = incremental_meta {
+        if let Some(refresh) = incremental {
             if first_user_message {
                 let projection = self.get(id)?;
                 self.persist_buffered(id, &projection)?;
-            } else if log.is_persisted() {
-                write_cache(&self.meta_cache_path(id)?, &meta)?;
+            } else if let Some(meta) = refresh {
+                self.refresh_meta_cache(id, &meta)?;
             }
         } else {
             let rebuilt = projection(log.clone())?;
             if first_user_message {
                 self.persist_buffered(id, &rebuilt)?;
             } else if log.is_persisted() {
-                write_cache(&self.meta_cache_path(id)?, &rebuilt.meta)?;
+                self.refresh_meta_cache(id, &rebuilt.meta)?;
             }
             {
                 let mut residency = self
@@ -1682,7 +1757,11 @@ impl SessionStore {
             )?;
             log.suspend_writer()?;
             let fork_projection = projection(log)?;
-            write_cache(&temporary.join(SESSION_META_FILE), &fork_projection.meta)?;
+            write_cache(
+                &temporary.join(SESSION_META_FILE),
+                &fork_projection.meta,
+                CacheSync::Durable,
+            )?;
             // Only a root opens a tree, and only a root takes a lock: on unix
             // inside the temporary directory that is about to become the root,
             // on Windows from the sidecar path derived from the final one. A
@@ -1790,7 +1869,11 @@ impl SessionStore {
             for event in projection.log.all_events() {
                 crate::events::append_jsonl(&log_path, &event)?;
             }
-            write_cache(&temporary.join(SESSION_META_FILE), &projection.meta)?;
+            write_cache(
+                &temporary.join(SESSION_META_FILE),
+                &projection.meta,
+                CacheSync::Durable,
+            )?;
             #[cfg(unix)]
             let lock_root_dir = &temporary;
             #[cfg(windows)]
@@ -2677,6 +2760,19 @@ impl SessionStore {
     pub(crate) fn release_ownership(&self) {
         self.closed.store(true, Ordering::Release);
         let _mutation = self.lock_mutation();
+        // Best effort, like the writer suspension below: a tip an in-run append
+        // deferred is written before the tree is released to other processes.
+        let stale = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stale_meta_caches
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in stale {
+            let _ = self.flush_stale_meta_cache(id);
+        }
         let residency = self
             .residency
             .lock()
