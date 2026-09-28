@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::Arc,
 };
 
 use cookie_agent_identity::{CanonicalModelId, CatalogRevision, ProviderId, ProviderModelId};
@@ -37,7 +36,7 @@ pub(crate) struct ParsedCatalog {
     pub providers: BTreeMap<ProviderId, CatalogProviderEntry>,
     pub canonical_models: BTreeMap<CanonicalModelId, CanonicalModelRecord>,
     pub quarantine: Vec<CatalogQuarantineEntry>,
-    pub body: Arc<[u8]>,
+    pub byte_length: u64,
 }
 
 pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<ParsedCatalog, CatalogError> {
@@ -93,7 +92,7 @@ pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<ParsedCatalog, CatalogError>
         providers,
         canonical_models,
         quarantine,
-        body: Arc::from(bytes),
+        byte_length: bytes.len() as u64,
     })
 }
 

@@ -32,5 +32,4 @@ pub use transport::{
 pub const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/catalog.json";
 pub const CATALOG_MAX_BYTES: usize = 16 * 1024 * 1024;
 
-pub(crate) use bootstrap::validated_bootstrap;
 pub(crate) use parser::{ParsedCatalog, parse_cache_meta, parse_catalog};
