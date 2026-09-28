@@ -124,7 +124,11 @@ handles:
 - **Replay and gap recovery.** `events.subscribe` runs a cursor replay that is
   injected into the delivery stream before buffered live notifications; a
   recovery worker re-subscribes with backoff and emits `RecoveryFailed` when it
-  exhausts its attempts.
+  exhausts its attempts. Replays are fetched in pages, and the connection task
+  holds the pages until the final one so the UI still sees one replay. Each
+  page must be answered within 5 seconds of its request being written; time
+  spent in the client's own queue does not count. A replay runs to completion
+  even if the caller stops waiting for it.
 - **Sensitive-frame wiping.** `provider.connect` and other secret-bearing calls
   serialize into a zeroizing buffer that is wiped on dispatch or cancellation.
 - **Shutdown** via a cancellation token that fails outstanding calls with
@@ -414,7 +418,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 21 use an ordinary fault
+wins. Ownership failures in protocol 22 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -452,7 +456,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 21 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 22 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`,
 plugin bus events through `events.plugin`, and tool output through separate

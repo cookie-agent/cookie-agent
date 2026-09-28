@@ -533,6 +533,13 @@ pub(super) fn event_origin(value: &'static str) -> cookie_agent_protocol::EventO
     cookie_agent_protocol::EventOrigin::new(value).expect("static event origin is valid")
 }
 
+/// One page of a session's events, and its live tail when it is the final
+/// page.
+pub(crate) type EventPage = (
+    EventsSubscribeResult,
+    Option<mpsc::Receiver<EventSubscriptionMessage>>,
+);
+
 enum SessionCommand {
     Producer(producers::ProducerCommand),
     Append {
@@ -606,15 +613,8 @@ enum SessionCommand {
     },
     Subscribe {
         cursor: Option<u64>,
-        reply: oneshot::Sender<
-            Result<
-                (
-                    EventsSubscribeResult,
-                    mpsc::Receiver<EventSubscriptionMessage>,
-                ),
-                EngineError,
-            >,
-        >,
+        limit: Option<std::num::NonZeroU32>,
+        reply: oneshot::Sender<Result<EventPage, EngineError>>,
     },
     Resume {
         reply: oneshot::Sender<Result<SessionMeta, EngineError>>,

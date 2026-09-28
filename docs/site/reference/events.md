@@ -361,8 +361,17 @@ its persisted contents do not require a new filesystem read.
 
 ## Subscriptions
 
-`events.subscribe` returns all retained events after the optional cursor and
-starts `events.subscription` notifications. A notification is tagged as either:
+`events.subscribe` returns retained events after the optional cursor and
+starts `events.subscription` notifications. With `limit`, it returns at most
+that many events; when more remain it sets `has_more: true` and starts no
+notifications, and the client asks again with the last returned `seq` as the
+cursor. Only the final page (no `has_more`) subscribes, atomically with its
+snapshot, so events appended between pages arrive in a later page and none are
+missed. Without `limit` the first response is the final page. Paging a session
+this process does not own parses its log once and serves later pages from
+memory while the file is unchanged.
+
+A notification is tagged as either:
 
 ```json
 { "type": "event", "event": { "engine_version": "0.1.0", "seq": 43 } }

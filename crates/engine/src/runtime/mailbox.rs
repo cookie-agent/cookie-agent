@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    num::NonZeroU32,
     sync::{Arc, Mutex, atomic::Ordering},
 };
 
@@ -100,6 +101,7 @@ impl Engine {
         }
     }
 
+    /// Replays every event after `cursor` and registers a live tail.
     pub async fn subscribe(
         &self,
         session: SessionId,
@@ -111,29 +113,63 @@ impl Engine {
         ),
         EngineError,
     > {
-        self.inner.store.get(session)?;
+        let (result, receiver) = self.subscribe_page(session, cursor, None).await?;
+        Ok((
+            result,
+            receiver.expect("an unlimited subscription is always its final page"),
+        ))
+    }
+
+    /// One page of at most `limit` events after `cursor`. Only the final page
+    /// (no `has_more`) registers the live tail and returns its receiver.
+    pub async fn subscribe_page(
+        &self,
+        session: SessionId,
+        cursor: Option<u64>,
+        limit: Option<NonZeroU32>,
+    ) -> Result<
+        (
+            EventsSubscribeResult,
+            Option<mpsc::Receiver<EventSubscriptionMessage>>,
+        ),
+        EngineError,
+    > {
+        // Complete the tree only: a full `get` here would parse and fold a
+        // log this process does not own just to learn that, and the snapshot
+        // fallback reads it again.
+        self.inner.store.ensure_tree_for(session)?;
         if !self.inner.store.is_owned(session) {
             return Err(EngineError::SessionOwnedByAnotherProcess(session));
         }
-        self.request(session, |reply| SessionCommand::Subscribe { cursor, reply })
-            .await
+        self.request(session, |reply| SessionCommand::Subscribe {
+            cursor,
+            limit,
+            reply,
+        })
+        .await
     }
 
+    /// One page of events for a session this process does not own. It never
+    /// registers a live tail.
     pub fn snapshot_events(
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        limit: Option<NonZeroU32>,
     ) -> Result<EventsSubscribeResult, EngineError> {
-        let events = self
-            .inner
+        Ok(self.inner.store.snapshot_events(session, cursor, limit)?)
+    }
+
+    /// Tool calls `session`'s resident log shows as still running. A paged
+    /// replay needs these on its final page: their starts may have been on
+    /// earlier pages.
+    #[must_use]
+    pub fn open_tool_calls(&self, session: SessionId) -> Vec<ToolCallId> {
+        self.inner
             .store
-            .get(session)?
-            .log
-            .all_events()
-            .into_iter()
-            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
-            .collect();
-        Ok(EventsSubscribeResult { events })
+            .get_resident(session)
+            .map(|session| session.log.open_tool_calls())
+            .unwrap_or_default()
     }
 
     /// Subscribes to a currently running call's retained output and live tail.
@@ -1599,8 +1635,12 @@ impl Engine {
                 })();
                 let _ = reply.send(result);
             }
-            SessionCommand::Subscribe { cursor, reply } => {
-                let result = self.inner.store.subscribe_events(session, cursor);
+            SessionCommand::Subscribe {
+                cursor,
+                limit,
+                reply,
+            } => {
+                let result = self.inner.store.subscribe_events(session, cursor, limit);
                 let _ = reply.send(result.map_err(EngineError::from));
             }
             SessionCommand::Resume { reply } => {

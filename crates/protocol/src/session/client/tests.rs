@@ -1153,7 +1153,14 @@ async fn recovery_timeout_retries_then_gives_up() {
     Client::schedule_recovery_queue(&recovery, true, Some(session_id));
     let mut held_commands = Vec::new();
     for _ in 0..RECOVERY_ATTEMPTS {
-        held_commands.push(command_receiver.recv().await.expect("recovery request"));
+        let mut command = command_receiver.recv().await.expect("recovery request");
+        // Written but never answered: only the response deadline runs.
+        let _ = command
+            .written
+            .take()
+            .expect("replay requests track writes")
+            .send(());
+        held_commands.push(command);
     }
     assert!(matches!(
         control_receiver.recv().await,
@@ -1182,4 +1189,131 @@ async fn queued_recovery_dies_with_a_disconnected_connection() {
     })
     .await
     .expect("recovery worker released after disconnect");
+}
+
+async fn next_request(sent: &mut mpsc::UnboundedReceiver<MessageFrame>) -> Value {
+    let MessageFrame::Value(request) = tokio::time::timeout(Duration::from_secs(1), sent.recv())
+        .await
+        .expect("request sent")
+        .expect("connection open")
+    else {
+        panic!("expected value request");
+    };
+    request
+}
+
+fn replay_page(
+    request: &Value,
+    session_id: SessionId,
+    seqs: impl IntoIterator<Item = u64>,
+    has_more: bool,
+) -> MessageFrame {
+    MessageFrame::Value(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "result": {
+            "events": seqs.into_iter().map(|seq| event(session_id, seq)).collect::<Vec<_>>(),
+            "has_more": has_more,
+        },
+    }))
+}
+
+#[tokio::test]
+async fn replay_is_fetched_in_pages_and_delivered_whole() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let subscribe = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+
+    let first = next_request(&mut sent_rx).await;
+    assert_eq!(first["method"], "events.subscribe");
+    assert_eq!(first["params"]["cursor"], 0);
+    assert_eq!(first["params"]["limit"], REPLAY_PAGE_EVENTS.get());
+    incoming
+        .send(replay_page(&first, session_id, 1..=3, true))
+        .expect("first page");
+    let second = next_request(&mut sent_rx).await;
+    assert_eq!(
+        second["params"]["cursor"], 3,
+        "the next page starts after the last event"
+    );
+    // Nothing reaches the UI until the final page: it sees one replay.
+    assert!(deliveries.try_recv().is_err());
+    incoming
+        .send(replay_page(&second, session_id, 4..=5, false))
+        .expect("final page");
+    subscribe
+        .await
+        .expect("subscribe task")
+        .expect("subscribe result");
+
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayStart { final_seq: 5, .. })
+    ));
+    for seq in 1..=5 {
+        assert!(matches!(
+            deliveries.recv().await,
+            Some(ClientDelivery::ReplayEvent { event, final_seq: 5, .. }) if event.seq == seq
+        ));
+    }
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayEnd { final_seq: 5, .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_replay_outlives_a_caller_that_stops_waiting() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let mut deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let caller = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, None).await }
+    });
+    let request = next_request(&mut sent_rx).await;
+    caller.abort();
+    let _ = caller.await;
+
+    incoming
+        .send(replay_page(&request, session_id, 1..=1, false))
+        .expect("final page");
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), deliveries.recv()).await,
+        Ok(Some(ClientDelivery::ReplayStart { .. }))
+    ));
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayEvent { .. })
+    ));
+    assert!(matches!(
+        deliveries.recv().await,
+        Some(ClientDelivery::ReplayEnd { .. })
+    ));
+
+    // The session is not left marked as fetching: a later replay is accepted.
+    let again = tokio::spawn({
+        let client = client.clone();
+        async move { client.subscribe_events(session_id, Some(1)).await }
+    });
+    let request = next_request(&mut sent_rx).await;
+    assert_eq!(request["params"]["cursor"], 1);
+    incoming
+        .send(replay_page(&request, session_id, [], false))
+        .expect("empty final page");
+    again.await.expect("second caller").expect("second replay");
 }

@@ -744,11 +744,19 @@ pub struct EventsSubscribeParams {
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<u64>,
+    /// Most events to return. When more remain after them, the result sets
+    /// `has_more` and registers no live tail; the client asks again from the
+    /// last returned sequence. Only the final page subscribes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<std::num::NonZeroU32>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsSubscribeResult {
     pub events: Vec<StoredEvent>,
+    /// This is one page of a limited request and more events follow it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]

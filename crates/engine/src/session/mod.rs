@@ -24,15 +24,17 @@ pub(crate) use workdir::create_windows_session_directory;
 use workdir::*;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
     io::Write,
+    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::SystemTime,
 };
 
 #[cfg(unix)]
@@ -333,6 +335,8 @@ pub struct SessionStore {
     publish_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     mutation: Mutex<()>,
     subscribers: Mutex<HashMap<SessionId, Vec<mpsc::Sender<EventSubscriptionMessage>>>>,
+    /// Logs parsed for readers that do not own them, see [`Self::snapshot_events`].
+    read_only_logs: Mutex<ReadOnlyLogs>,
     closed: AtomicBool,
     #[cfg(test)]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
@@ -346,6 +350,65 @@ pub struct SessionStore {
     /// verified and installed, so a test can race a write into that window (L1).
     #[cfg(test)]
     tree_load_read_hook: TreeLoadReadHook,
+}
+
+/// How many parsed read-only logs [`SessionStore::snapshot_events`] keeps.
+/// A replay pages through one log at a time, so a few cover a client that
+/// replays several sessions at once.
+const READ_ONLY_LOG_CACHE_ENTRIES: usize = 4;
+
+/// Identity of an `events.jsonl` as last parsed. Logs only grow by appends
+/// and shrink by torn-tail repair, so an unchanged length and modification
+/// time mean the parsed copy is current.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct ReadOnlyLogFingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl ReadOnlyLogFingerprint {
+    fn of(path: &Path) -> Result<Self, SessionError> {
+        let metadata = fs::metadata(path).map_err(|source| SessionError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// Most recently used first.
+#[derive(Default)]
+struct ReadOnlyLogs(VecDeque<(SessionId, ReadOnlyLogFingerprint, Arc<EventLog>)>);
+
+impl std::fmt::Debug for ReadOnlyLogs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.0.iter().map(|(id, _, _)| id))
+            .finish()
+    }
+}
+
+impl ReadOnlyLogs {
+    fn get(&mut self, id: SessionId, fingerprint: ReadOnlyLogFingerprint) -> Option<Arc<EventLog>> {
+        let index = self.0.iter().position(|(cached, _, _)| *cached == id)?;
+        let entry = self.0.remove(index)?;
+        if entry.1 != fingerprint {
+            return None;
+        }
+        let log = entry.2.clone();
+        self.0.push_front(entry);
+        Some(log)
+    }
+
+    fn insert(&mut self, id: SessionId, fingerprint: ReadOnlyLogFingerprint, log: Arc<EventLog>) {
+        self.0.retain(|(cached, _, _)| *cached != id);
+        self.0.push_front((id, fingerprint, log));
+        self.0.truncate(READ_ONLY_LOG_CACHE_ENTRIES);
+    }
 }
 
 impl SessionStore {
@@ -414,6 +477,7 @@ impl SessionStore {
             publish_locks: Mutex::new(HashMap::new()),
             mutation: Mutex::new(()),
             subscribers: Mutex::new(HashMap::new()),
+            read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             closed: AtomicBool::new(false),
             #[cfg(test)]
             eviction_transition_hook: Mutex::new(None),
@@ -1377,14 +1441,18 @@ impl SessionStore {
         Ok(envelope)
     }
 
+    /// One page of `session`'s events after `cursor`. The final page (no
+    /// `has_more`) also registers a live tail, which is the only case that
+    /// returns a receiver.
     pub(crate) fn subscribe_events(
         &self,
         session: SessionId,
         cursor: Option<u64>,
+        limit: Option<NonZeroU32>,
     ) -> Result<
         (
             EventsSubscribeResult,
-            mpsc::Receiver<EventSubscriptionMessage>,
+            Option<mpsc::Receiver<EventSubscriptionMessage>>,
         ),
         SessionError,
     > {
@@ -1392,13 +1460,10 @@ impl SessionStore {
         // Snapshot and registration share the append lock with actor writes and
         // direct journal writes, closing the snapshot-to-live handoff gap.
         let _mutation = self.lock_mutation();
-        let events = self
-            .get(session)?
-            .log
-            .all_events()
-            .into_iter()
-            .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor))
-            .collect();
+        let result = self.get(session)?.log.events_after(cursor, limit);
+        if result.has_more {
+            return Ok((result, None));
+        }
         let (sender, receiver) = mpsc::channel(PERSISTED_SUBSCRIBER_QUEUE_CAPACITY);
         self.subscribers
             .lock()
@@ -1406,7 +1471,50 @@ impl SessionStore {
             .entry(session)
             .or_default()
             .push(sender);
-        Ok((EventsSubscribeResult { events }, receiver))
+        Ok((result, Some(receiver)))
+    }
+
+    /// One page of a session's events for a reader that does not own it.
+    ///
+    /// A resident session is paged from memory. Otherwise the log is parsed
+    /// from disk without folding a projection, and the parsed log is kept
+    /// while the file is unchanged, so paging through a large log reads it
+    /// once rather than once per page.
+    pub(crate) fn snapshot_events(
+        &self,
+        session: SessionId,
+        cursor: Option<u64>,
+        limit: Option<NonZeroU32>,
+    ) -> Result<EventsSubscribeResult, SessionError> {
+        self.ensure_tree_for(session)?;
+        if let Some(resident) = self.get_resident(session) {
+            return Ok(resident.log.events_after(cursor, limit));
+        }
+        let session_dir = self.resolve_dir(session)?;
+        if !session_dir.is_dir() {
+            return Err(SessionError::Missing(session));
+        }
+        let path = session_dir.join(EVENTS_FILE);
+        let fingerprint = ReadOnlyLogFingerprint::of(&path)?;
+        let cached = self
+            .read_only_logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(session, fingerprint);
+        let log = match cached {
+            Some(log) => log,
+            None => {
+                // Parse outside the cache lock: a large log takes seconds.
+                self.note_log_open(session);
+                let log = EventLog::open_read_only(path, session)?;
+                self.read_only_logs
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(session, fingerprint, log.clone());
+                log
+            }
+        };
+        Ok(log.events_after(cursor, limit))
     }
 
     fn publish_stored_event(&self, envelope: &StoredEvent) {
