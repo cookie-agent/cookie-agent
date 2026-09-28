@@ -192,6 +192,7 @@ fn invalid_payload_replay_warnings_dedupe_per_run_and_reason() {
             Some(run),
             seq,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved_model(),
                 ordered_decisions,
@@ -255,6 +256,40 @@ fn invalid_payload_replay_warnings_dedupe_per_run_and_reason() {
         1
     );
     assert_eq!(warnings.len(), 2);
+}
+
+#[test]
+fn an_empty_replay_delta_is_not_an_empty_history() {
+    let session = SessionId::new_v7();
+    let run = RunId::new_v7();
+    let evaluated = |seq: u64, base_attempt_id: Option<AttemptId>| {
+        stored_event(
+            session,
+            Some(run),
+            seq,
+            EventPayload::ModelReplayEvaluated {
+                base_attempt_id,
+                attempt_id: AttemptId::new_v7(),
+                resolved_model: resolved_model(),
+                ordered_decisions: Vec::new(),
+            },
+        )
+    };
+    let empty_history_rows = |events: &[StoredEvent]| {
+        reduce_session_events(session, 0, events)
+            .transcript
+            .iter()
+            .filter(|item| {
+                matches!(item, TranscriptItem::Event { text, .. } if text.contains("no history entries"))
+            })
+            .count()
+    };
+    assert_eq!(empty_history_rows(&[evaluated(1, None)]), 1);
+    // Nothing new since the base: the base's rows already stand for it.
+    assert_eq!(
+        empty_history_rows(&[evaluated(1, Some(AttemptId::new_v7()))]),
+        0
+    );
 }
 
 #[test]

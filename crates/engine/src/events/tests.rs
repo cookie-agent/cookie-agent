@@ -786,15 +786,19 @@ fn reference_validate_records(
             EventPayload::ModelReplayEvaluated {
                 attempt_id,
                 resolved_model,
+                base_attempt_id,
                 ..
             } => {
-                validate_attempt_model(
+                let run = validate_attempt_model(
                     path,
                     &attempts,
                     *attempt_id,
                     record.run_id,
                     resolved_model,
                 )?;
+                if let Some(base) = base_attempt_id {
+                    validate_replay_base(path, &attempts, *attempt_id, *base, run, resolved_model)?;
+                }
             }
             EventPayload::ModelTurnCommitted {
                 attempt_id,
@@ -3339,4 +3343,40 @@ async fn finalize_drains_queued_delta_before_closing() {
     hub.finalize();
     assert!(matches!(live.recv().await, Some(OutputMessage::Delta(_))));
     assert!(live.recv().await.is_none());
+}
+
+#[test]
+fn a_replay_evaluation_base_must_be_an_earlier_attempt_of_its_run_and_model() {
+    let path = Path::new("events.jsonl");
+    let model = crate::model_history::wire_model(&fallback_binding("fallback-zero"));
+    let other_model = crate::model_history::wire_model(&fallback_binding("fallback-one"));
+    let run = RunId::new_v7();
+    let attempt =
+        |run_id, resolved_model: &cookie_agent_protocol::ResolvedModelRef| AttemptAttribution {
+            run_id,
+            resolved_model: resolved_model.clone(),
+            finished: true,
+            committed: false,
+            abandoned: true,
+        };
+    let (current, base, other_run, other_model_attempt, unknown) = (
+        AttemptId::new_v7(),
+        AttemptId::new_v7(),
+        AttemptId::new_v7(),
+        AttemptId::new_v7(),
+        AttemptId::new_v7(),
+    );
+    let attempts = HashMap::from([
+        (current, attempt(run, &model)),
+        (base, attempt(run, &model)),
+        (other_run, attempt(RunId::new_v7(), &model)),
+        (other_model_attempt, attempt(run, &other_model)),
+    ]);
+    assert!(validate_replay_base(path, &attempts, current, base, run, &model).is_ok());
+    for rejected in [current, other_run, other_model_attempt, unknown] {
+        assert!(
+            validate_replay_base(path, &attempts, current, rejected, run, &model).is_err(),
+            "{rejected} must not be accepted as a base"
+        );
+    }
 }

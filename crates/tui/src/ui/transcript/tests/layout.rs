@@ -105,6 +105,7 @@ fn replay_evaluations_render_variant_scoped_discards() {
         1,
         run,
         EventPayload::ModelReplayEvaluated {
+            base_attempt_id: None,
             attempt_id: AttemptId::new_v7(),
             resolved_model: resolved_model(Some("high")),
             ordered_decisions: vec![
@@ -177,6 +178,7 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
             1,
             first_run,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved.clone(),
                 ordered_decisions: adapter_evidence.clone(),
@@ -187,6 +189,7 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
             2,
             first_run,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved.clone(),
                 ordered_decisions: adapter_evidence,
@@ -197,6 +200,7 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
             3,
             first_run,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved.clone(),
                 ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {
@@ -214,6 +218,7 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
             4,
             first_run,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved.clone(),
                 ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {
@@ -233,6 +238,7 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
             5,
             second_run,
             EventPayload::ModelReplayEvaluated {
+                base_attempt_id: None,
                 attempt_id: AttemptId::new_v7(),
                 resolved_model: resolved,
                 ordered_decisions: vec![cookie_agent_protocol::ReplayDecision {

@@ -2046,8 +2046,16 @@ pub enum EventPayload {
     ModelReplayEvaluated {
         attempt_id: AttemptId,
         resolved_model: ResolvedModelRef,
+        /// The attempt's replay decisions. With `base_attempt_id`, only the
+        /// decisions appended after that attempt's list, which is an exact
+        /// prefix of this one.
         #[schemars(length(max = 4096))]
         ordered_decisions: Vec<ReplayDecision>,
+        /// An earlier attempt of the same run, with the same resolved model,
+        /// whose full decision list this attempt's list extends. Absent means
+        /// `ordered_decisions` is the full list.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_attempt_id: Option<AttemptId>,
     },
     ModelTurnCommitted {
         attempt_id: AttemptId,

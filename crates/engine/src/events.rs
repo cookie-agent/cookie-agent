@@ -2287,9 +2287,14 @@ fn validate_record_incremental(
         EventPayload::ModelReplayEvaluated {
             attempt_id,
             resolved_model,
+            base_attempt_id,
             ..
         } => {
-            validate_attempt_model(path, attempts, *attempt_id, record.run_id, resolved_model)?;
+            let run =
+                validate_attempt_model(path, attempts, *attempt_id, record.run_id, resolved_model)?;
+            if let Some(base) = base_attempt_id {
+                validate_replay_base(path, attempts, *attempt_id, *base, run, resolved_model)?;
+            }
         }
         EventPayload::ModelTurnCommitted {
             attempt_id,
@@ -3019,6 +3024,29 @@ fn validate_attempt_model(
         return corrupt_value(path, "attempt resolved model changed within its lifecycle");
     }
     Ok(owner)
+}
+
+/// A delta replay evaluation must extend an earlier attempt of its own run
+/// that used the same model.
+fn validate_replay_base(
+    path: &Path,
+    attempts: &HashMap<AttemptId, AttemptAttribution>,
+    attempt_id: AttemptId,
+    base: AttemptId,
+    run_id: RunId,
+    resolved_model: &cookie_agent_protocol::ResolvedModelRef,
+) -> Result<(), EventLogError> {
+    if base == attempt_id
+        || attempts
+            .get(&base)
+            .is_none_or(|base| base.run_id != run_id || &base.resolved_model != resolved_model)
+    {
+        return corrupt_value(
+            path,
+            "replay evaluation base is not an earlier attempt of its run and model",
+        );
+    }
+    Ok(())
 }
 
 fn finish_attempt(

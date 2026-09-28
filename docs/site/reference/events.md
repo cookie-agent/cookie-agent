@@ -186,6 +186,19 @@ Failed/disabled recovery notices use the additive `PluginDiagnosticKind` values
 
 ### Existing event behavior
 
+`model_replay_evaluated` records, for one model attempt, the replay decision
+for each history entry of its request. Every attempt re-evaluates the whole
+history, so a long run would otherwise write a list that grows with every
+turn. When `base_attempt_id` is present, the event names an earlier attempt of
+the same run, with the same `resolved_model`, whose full list is an exact prefix
+of this attempt's list; `ordered_decisions` then holds only the decisions after
+that prefix. The full list is the base's full list followed by
+`ordered_decisions`. Without `base_attempt_id`, `ordered_decisions` is the full
+list, which is what a run's first evaluation writes, as does any attempt whose
+model changed or whose earlier decisions changed (compaction, a pinned turn,
+a late tool result). Readers that ignore the field see only new decisions for
+such an attempt.
+
 `agent_md_loaded` is a run-scoped root-session event stamped
 `engine:agent-md`. It contains one or two discovered `AGENTS.md` entries,
 each with a bounded display source, retained content, truncation flag, and
