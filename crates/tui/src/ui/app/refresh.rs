@@ -201,20 +201,14 @@ impl App {
                     .clone()
             };
             let _guard = lane.lock().await;
-            let outcome = match tokio::time::timeout(
-                TREE_SUBSCRIPTION_TIMEOUT,
-                client.subscribe_events(session_id, cursor),
-            )
-            .await
-            {
-                Ok(Err(crate::client::ClientError::ReplayInProgress)) => {
+            // No outer deadline: the client bounds every replay page itself,
+            // and a long history can take several pages.
+            let outcome = match client.subscribe_events(session_id, cursor).await {
+                Err(crate::client::ClientError::ReplayInProgress) => {
                     SessionLiveSubscriptionOutcome::ReplayInProgress
                 }
-                Ok(Ok(())) => SessionLiveSubscriptionOutcome::Established,
-                Ok(Err(error)) => SessionLiveSubscriptionOutcome::Failed(error.to_string()),
-                Err(_) => {
-                    SessionLiveSubscriptionOutcome::Failed("session subscription timed out".into())
-                }
+                Ok(()) => SessionLiveSubscriptionOutcome::Established,
+                Err(error) => SessionLiveSubscriptionOutcome::Failed(error.to_string()),
             };
             let _ = updates.send(RpcUpdate::SessionLiveSubscriptionFinished {
                 session_id,
@@ -694,10 +688,16 @@ impl App {
         }
     }
 
+    /// Subscribe the tree's live nodes (running or idle) up front, so their
+    /// status, titles and warnings stay current. A finished node's history
+    /// is replayed only when it is opened ([`Self::watch_session`]): a
+    /// resumed tree can hold many long finished logs, and replaying them all
+    /// on attach is what floods the daemon. A finished node that is woken
+    /// again reports `Running` on the next tree refresh and is picked up then.
     pub(super) fn subscribe_tree_sessions(&mut self, tree: &SessionTree) {
-        let mut session_ids = Vec::new();
-        collect_tree_session_ids(tree, &mut session_ids);
-        for session_id in session_ids {
+        let mut sessions = Vec::new();
+        collect_live_tree_sessions(tree, &mut sessions);
+        for session_id in sessions {
             if !self.tree_subscription_sessions.insert(session_id) {
                 continue;
             }
@@ -798,6 +798,18 @@ impl App {
                     | EventPayload::DelegateFinished { .. }
                     | EventPayload::DelegateFinishedV2 { .. }
                     | EventPayload::DelegateChildTerminated { .. }
+            )
+        });
+        // A parent's delegation lifecycle is how an unsubscribed child's
+        // status change reaches the tree: re-read it so a woken child is
+        // shown running and gets subscribed.
+        let delegation_changed = event.is_some_and(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::DelegationStarted { .. }
+                    | EventPayload::DelegationRunStarted { .. }
+                    | EventPayload::DelegationRunAttached { .. }
+                    | EventPayload::DelegationFinished { .. }
             )
         });
         let title_change = event.and_then(title_change_from_event);
@@ -945,7 +957,7 @@ impl App {
             }
         }
         self.reconcile_pending_approval();
-        if linked || terminalized || replay_finished {
+        if linked || terminalized || delegation_changed || replay_finished {
             self.refresh_tree_background();
         }
     }

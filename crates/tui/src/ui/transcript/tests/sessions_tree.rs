@@ -1264,3 +1264,125 @@ async fn clicking_child_then_root_preserves_multilevel_tree_depth_and_hit_region
         assert_eq!(text_column(&root_selected_again[2], "p"), 11);
     }
 }
+
+fn meta_with_status(
+    session_id: SessionId,
+    status: SessionStatus,
+) -> cookie_agent_protocol::SessionMeta {
+    cookie_agent_protocol::SessionMeta {
+        status,
+        ..session_meta(session_id)
+    }
+}
+
+async fn subscribed_sessions(
+    recorded: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    expected: usize,
+) -> std::collections::BTreeSet<String> {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while recorded_method_count(recorded, "events.subscribe") < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("subscriptions sent");
+    recorded
+        .lock()
+        .expect("recorded")
+        .iter()
+        .filter(|value| value["method"] == "events.subscribe")
+        .map(|value| {
+            value["params"]["session_id"]
+                .as_str()
+                .expect("id")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn attaching_a_tree_replays_only_its_live_nodes() {
+    let mut app = test_app().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    let root = SessionId::new_v7();
+    let running = SessionId::new_v7();
+    let finished = SessionId::new_v7();
+    let woken_grandchild = SessionId::new_v7();
+    app.tree_root = Some(root);
+    app.selected = Some(root);
+    app.selection_generation = 7;
+    app.tree_refresh_in_flight = Some((7, 11));
+    app.handle_rpc_update(RpcUpdate::Tree {
+        session_id: root,
+        generation: 7,
+        request_id: 11,
+        tree: Box::new(SessionTree {
+            session: meta_with_status(root, SessionStatus::Idle),
+            children: vec![
+                SessionTree {
+                    session: meta_with_status(running, SessionStatus::Running),
+                    children: Vec::new(),
+                },
+                SessionTree {
+                    session: meta_with_status(finished, SessionStatus::Completed),
+                    children: vec![SessionTree {
+                        session: meta_with_status(woken_grandchild, SessionStatus::Running),
+                        children: Vec::new(),
+                    }],
+                },
+            ],
+        }),
+    });
+
+    let expected = [root, running, woken_grandchild]
+        .map(|id| id.to_string())
+        .into_iter()
+        .collect();
+    assert_eq!(subscribed_sessions(&recorded, 3).await, expected);
+    assert!(!app.tree_subscription_sessions.contains(&finished));
+
+    // Opening the finished child is what replays it.
+    app.watch_session(finished);
+    assert!(
+        subscribed_sessions(&recorded, 4)
+            .await
+            .contains(&finished.to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_parent_delegation_lifecycle_event_refreshes_the_tree() {
+    let mut app = test_app().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    let root = SessionId::new_v7();
+    app.tree_root = Some(root);
+    app.selected = Some(root);
+    let before = recorded_method_count(&recorded, "session.tree");
+    app.handle_delivery(ClientDelivery::Live {
+        message: Box::new(cookie_agent_protocol::EventSubscriptionMessage::Event {
+            event: Box::new(cookie_agent_protocol::StoredEvent {
+                engine_version: None,
+                origin: None,
+                session_id: root,
+                run_id: None,
+                seq: 3,
+                timestamp: jiff::Timestamp::now(),
+                payload: EventPayload::DelegationRunStarted {
+                    invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+                    child_run_id: cookie_agent_protocol::RunId::new_v7(),
+                },
+            }),
+        }),
+        generation: 0,
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while recorded_method_count(&recorded, "session.tree") == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a woken child's parent event re-reads the tree");
+}

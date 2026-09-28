@@ -227,6 +227,11 @@ lightweight metadata for paged children. Opening one in the TUI, reading its
 result, sending it a message, or using `resume_session_id` transparently
 reopens its event log and rebuilds the in-memory projection and actor.
 
+On attach, the TUI replays the selected session and the tree's live children
+(running or idle). A finished child's history loads when you open it in the
+Agents panel, so resuming a tree with many long finished children stays fast.
+A finished child that is woken again is picked up on the next tree refresh.
+
 ## Layering and replacement
 
 User-layer and workspace-layer agent directories merge into one registry by

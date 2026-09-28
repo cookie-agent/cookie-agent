@@ -15,9 +15,9 @@ use keys::{edit_credential_input, is_newline_key, is_printable_key};
 use pickers::{agent_picker_row, draft_title, model_picker_row};
 pub(super) use sessions::status_change_from_event;
 use sessions::{
-    collect_known_statuses, collect_known_titles, collect_subtree_sessions,
-    collect_tree_session_ids, find_node, find_node_mut, find_session, patch_tree_node_statuses,
-    patch_tree_node_titles, title_change_from_event,
+    collect_known_statuses, collect_known_titles, collect_live_tree_sessions,
+    collect_subtree_sessions, collect_tree_session_ids, find_node, find_node_mut, find_session,
+    patch_tree_node_statuses, patch_tree_node_titles, title_change_from_event,
 };
 
 mod goal;
@@ -900,7 +900,9 @@ pub(super) enum ProviderMutationOutcome {
 
 const MAX_TRANSIENT_NOTICES: usize = 4;
 const TREE_REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
-const TREE_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(6);
+/// How long selecting a session waits inline for its replay before letting
+/// the UI run again. The replay itself is not cancelled.
+const SELECT_SUBSCRIPTION_WAIT: Duration = Duration::from_secs(6);
 const STDIN_RPC_TIMEOUT: Duration = Duration::from_secs(1);
 const SESSION_COST_DEBOUNCE: Duration = Duration::from_millis(250);
 impl App {
