@@ -672,6 +672,10 @@ pub(super) fn ensure_cached_transcript_layout(
     false
 }
 
+/// Transcript lines with descendant warnings spliced in, plus each splice
+/// point's original-line position and inserted line count.
+type SplicedLines = (Vec<Line<'static>>, Vec<(usize, usize)>);
+
 impl App {
     /// The transient notice rows rendered after the transcript (transient
     /// notices and goal notices), exactly as [`Self::render_conversation`]
@@ -715,29 +719,27 @@ impl App {
     /// rendered block takes the next item's separator slot, so pre-warning
     /// content finishes above the break and later content resumes below it.
     /// Warnings older than every timed item land just after the system
-    /// prompt (before the first item). Returns the untouched layout when
-    /// there is nothing to splice.
+    /// prompt (before the first item). Returns `None` when there is nothing
+    /// to splice, so callers keep borrowing the untouched layout instead of
+    /// copying every line each frame.
     fn spliced_conversation_lines(
         &self,
         width: u16,
         layout_lines: &[Line<'static>],
         warnings: &[(jiff::Timestamp, String)],
-    ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
-        let Some(state) = self
+    ) -> Option<SplicedLines> {
+        let state = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
-            .filter(|_| !warnings.is_empty())
-        else {
-            return (layout_lines.to_vec(), Vec::new());
-        };
-        Self::splice_descendant_warnings(
-            layout_lines.to_vec(),
+            .filter(|_| !warnings.is_empty())?;
+        Some(Self::splice_descendant_warnings(
+            layout_lines,
             &self.layout_cache.item_offsets,
             state,
             warnings,
             width,
             &self.theme,
-        )
+        ))
     }
 
     /// Shift a block region's line coordinates by the splice insertions at or
@@ -795,15 +797,15 @@ impl App {
     /// position and the number of lines inserted there, so callers can shift
     /// scroll anchors and hit regions that address the unspliced layout.
     fn splice_descendant_warnings(
-        lines: Vec<Line<'static>>,
+        lines: &[Line<'static>],
         item_offsets: &[ItemAssemblyOffset],
         state: &crate::state::SessionState,
         warnings: &[(jiff::Timestamp, String)],
         width: u16,
         theme: &Theme,
-    ) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    ) -> SplicedLines {
         if warnings.is_empty() {
-            return (lines, Vec::new());
+            return (lines.to_vec(), Vec::new());
         }
         let timed_anchor = |time: jiff::Timestamp| -> Option<usize> {
             (0..state.transcript.len()).rev().find(|&index| {
@@ -883,17 +885,18 @@ impl App {
         {
             return Cow::Borrowed(&self.layout_cache.layout.lines);
         }
-        let mut lines = if session_present && !transcript_empty {
-            self.spliced_conversation_lines(
-                width,
-                &self.layout_cache.layout.lines,
-                &descendant_warnings,
-            )
-            .0
+        let base = if session_present && !transcript_empty {
+            Cow::Borrowed(self.layout_cache.layout.lines.as_slice())
         } else {
-            let empty = empty_conversation_lines(session_present, width, &self.theme);
-            self.spliced_conversation_lines(width, &empty, &descendant_warnings)
-                .0
+            Cow::Owned(empty_conversation_lines(
+                session_present,
+                width,
+                &self.theme,
+            ))
+        };
+        let mut lines = match self.spliced_conversation_lines(width, &base, &descendant_warnings) {
+            Some((spliced, _)) => spliced,
+            None => base.into_owned(),
         };
         if !lines.is_empty() && !notices.is_empty() {
             notices.insert(0, Line::default());
@@ -998,8 +1001,11 @@ impl App {
         if !layout.lines.is_empty() && !notice_lines.is_empty() {
             notice_lines.insert(0, Line::default());
         }
-        let (spliced_lines, splice_shifts) =
-            self.spliced_conversation_lines(width, &layout.lines, &descendant_warnings);
+        // Nothing to splice (the common case) borrows the cached layout; only
+        // frames with descendant warnings pay for a spliced copy.
+        let (spliced_lines, splice_shifts) = self
+            .spliced_conversation_lines(width, &layout.lines, &descendant_warnings)
+            .unwrap_or_default();
         let layout_lines: &[Line<'static>] = if splice_shifts.is_empty() {
             &layout.lines
         } else {
