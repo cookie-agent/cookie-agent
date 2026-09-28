@@ -25,7 +25,4 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-insta.workspace = true
-oven-sdk.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
