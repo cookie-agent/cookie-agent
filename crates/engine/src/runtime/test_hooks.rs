@@ -151,4 +151,6 @@ pub(crate) struct TestHooks {
     pub(crate) run_setup_append_failures: AtomicU64,
     pub(crate) resume_monitor_failures: AtomicU64,
     pub(crate) adoption_reconcile_failures: AtomicU64,
+    /// Counts `reconcile_producers_direct` passes.
+    pub(crate) producer_reconciles: AtomicU64,
 }
