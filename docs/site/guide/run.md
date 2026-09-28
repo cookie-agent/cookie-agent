@@ -255,6 +255,12 @@ returned one: validation, connection, or cancellation errors may have no HTTP
 response body. Missing detail is not reconstructed or fetched with another API
 request.
 
+Internal tracing logs are off by default. Setting `RUST_LOG` (for example
+`RUST_LOG=debug`, using `tracing-subscriber` filter syntax) writes them to
+stderr, never stdout, so they cannot mix into `cookie run` output or the daemon
+ready line. The TUI draws on the same terminal, so redirect stderr to a file
+when logging a TUI session: `RUST_LOG=debug cookie 2>cookie.log`.
+
 ## Live tool output
 
 Expanded bash rows show sanitized stdout and stderr while the command runs.

@@ -236,8 +236,22 @@ async fn main() {
     }
 }
 
+/// Installs a tracing subscriber only when `RUST_LOG` is set, writing to
+/// stderr: stdout carries `cookie run` output and the daemon ready line, and
+/// the TUI owns the terminal.
+fn init_logging() {
+    if env::var_os(tracing_subscriber::EnvFilter::DEFAULT_ENV).is_none() {
+        return;
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(io::stderr)
+        .with_ansi(io::stderr().is_terminal())
+        .init();
+}
+
 async fn main_result() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    init_logging();
     let Cli { command } = Cli::parse();
     if let Some(Command::Run { args }) = &command
         && let Err(message) = args.validate_cli()
