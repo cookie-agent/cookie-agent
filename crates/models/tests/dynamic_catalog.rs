@@ -636,3 +636,69 @@ async fn startup_serves_cache_or_bootstrap_without_fetching_and_304_rewrites_onl
         first.revision
     );
 }
+
+#[tokio::test]
+async fn not_modified_reuses_the_parsed_catalog_until_another_process_installs_a_new_body() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut first_response = CatalogTransportResponse::from_bytes(200, candidate());
+    first_response.etag = Some("\"revision-one\"".to_owned());
+    let transport = ScriptedTransport::with([
+        first_response,
+        CatalogTransportResponse::not_modified(),
+        CatalogTransportResponse::not_modified(),
+    ]);
+    let requests = Arc::clone(&transport.requests);
+    let manager = manager(transport, &temporary);
+    let later: Timestamp = "2026-08-06T00:00:00Z".parse().unwrap();
+
+    let first = manager.refresh_at(now()).await.unwrap();
+    // Corrupt the installed body behind the manager's back, keeping its
+    // metadata. A 304 refresh that re-read the body would reject it, send no
+    // ETag, and fall back; one that reuses the parsed catalog never notices.
+    let cache_root = temporary.path().join("catalog");
+    fs::write(cache_root.join(CATALOG_BODY_FILE), b"not a catalog").unwrap();
+    let reused = manager.refresh_at(later).await.unwrap();
+    assert_eq!(reused.source, CatalogSource::Network);
+    assert_eq!(reused.state.availability, CatalogAvailability::Ready);
+    assert_eq!(reused.state.last_error, None);
+    assert_eq!(reused.revision, first.revision);
+    assert_eq!(reused.validated_at, later);
+    assert_eq!(reused.providers.len(), first.providers.len());
+    assert_eq!(
+        requests.lock().unwrap()[1].if_none_match.as_deref(),
+        Some("\"revision-one\"")
+    );
+
+    // Another process installs a different body with its own ETag. The
+    // on-disk metadata no longer names the remembered revision, so the next
+    // refresh loads the new body and asks about its ETag instead.
+    let mut renamed: serde_json::Value = serde_json::from_slice(&candidate()).unwrap();
+    renamed["providers"]["test"]["models"]["group/model"]["name"] = "Renamed Model".into();
+    renamed["models"]["group/model"]["name"] = "Renamed Model".into();
+    let mut second_response =
+        CatalogTransportResponse::from_bytes(200, serde_json::to_vec(&renamed).unwrap());
+    second_response.etag = Some("\"revision-two\"".to_owned());
+    let other = self::manager(ScriptedTransport::with([second_response]), &temporary);
+    let installed = other.refresh_at(later).await.unwrap();
+    assert_ne!(installed.revision, first.revision);
+
+    let switched = manager.refresh_at(later).await.unwrap();
+    assert_eq!(switched.source, CatalogSource::Network);
+    assert_eq!(switched.revision, installed.revision);
+    let provider = ProviderId::new("test").unwrap();
+    let model = ProviderModelId::new("group/model").unwrap();
+    assert_eq!(
+        switched
+            .model(&provider, &model)
+            .unwrap()
+            .record
+            .as_ref()
+            .unwrap()
+            .name,
+        "Renamed Model"
+    );
+    assert_eq!(
+        requests.lock().unwrap()[2].if_none_match.as_deref(),
+        Some("\"revision-two\"")
+    );
+}

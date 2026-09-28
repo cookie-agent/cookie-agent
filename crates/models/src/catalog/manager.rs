@@ -1,4 +1,7 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use cookie_agent_identity::CatalogRevision;
 use futures_util::StreamExt as _;
@@ -15,8 +18,8 @@ use super::{
     CATALOG_BODY_FILE, CATALOG_CACHE_SCHEMA_VERSION, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES,
     CATALOG_META_FILE, CatalogAgeState, CatalogAvailability, CatalogCacheMeta, CatalogRequest,
     CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource, CatalogTransport,
-    CatalogTransportError, CatalogTransportResponse, MODELS_DEV_CATALOG_URL, parse_cache_meta,
-    parse_catalog, validated_bootstrap,
+    CatalogTransportError, CatalogTransportResponse, MODELS_DEV_BOOTSTRAP, MODELS_DEV_CATALOG_URL,
+    ParsedCatalog, parse_cache_meta, parse_catalog,
 };
 
 const MAX_META_BYTES: u64 = 128 * 1024;
@@ -34,6 +37,10 @@ const META_BACKUP_FILE: &str = ".models-dev-v2.meta.json.backup";
 pub struct CatalogManager<T> {
     transport: Arc<T>,
     cache: Result<SecureDirectory, CatalogError>,
+    /// The catalog this manager parsed most recently. A body is identified by
+    /// its SHA-256 revision, so while the cache metadata still names this
+    /// revision the multi-megabyte body need not be read or parsed again.
+    loaded: Mutex<Option<Arc<ParsedCatalog>>>,
     #[cfg(all(test, unix))]
     commit_failure: std::sync::Mutex<Option<CacheCommitPhase>>,
 }
@@ -44,6 +51,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: SecureDirectory::user_data("catalog").map_err(CatalogError::from_store),
+            loaded: Mutex::default(),
             #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
@@ -55,6 +63,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: Ok(cache),
+            loaded: Mutex::default(),
             #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
@@ -69,6 +78,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
         Self {
             transport: Arc::new(transport),
             cache: SecureDirectory::open_in(anchor, relative).map_err(CatalogError::from_store),
+            loaded: Mutex::default(),
             #[cfg(all(test, unix))]
             commit_failure: std::sync::Mutex::new(None),
         }
@@ -91,7 +101,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                     CatalogAvailability::Ready
                 };
                 Ok(snapshot_from_parsed(
-                    cached.parsed,
+                    &cached.catalog,
                     CatalogSource::Cache,
                     cached.meta.validated_at,
                     cached.meta.last_checked_at,
@@ -101,9 +111,9 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 ))
             }
             Err(_) => {
-                let parsed = parse_catalog(validated_bootstrap()?)?;
+                let parsed = self.remember(parse_catalog(MODELS_DEV_BOOTSTRAP)?);
                 Ok(snapshot_from_parsed(
-                    parsed,
+                    &parsed,
                     CatalogSource::Bootstrap,
                     now,
                     now,
@@ -159,7 +169,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 meta.last_error = None;
                 let write_error = self.commit_meta(&meta).err();
                 Ok(snapshot_from_parsed(
-                    cached.parsed,
+                    &cached.catalog,
                     CatalogSource::Network,
                     meta.validated_at,
                     now,
@@ -170,7 +180,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
             }
             Ok(NetworkResult::Body { bytes, etag }) => {
                 let parsed = match parse_catalog(&bytes) {
-                    Ok(parsed) => parsed,
+                    Ok(parsed) => self.remember(parsed),
                     Err(error) => return self.select_fallback(cache, error, now),
                 };
                 let mut meta = metadata_for(
@@ -187,7 +197,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                     meta.last_error = Some(error.safe_meta(now));
                 }
                 Ok(snapshot_from_parsed(
-                    parsed,
+                    &parsed,
                     CatalogSource::Network,
                     now,
                     now,
@@ -214,7 +224,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
             Ok(cached) => {
                 let safe_error = network_error.safe_meta(now);
                 let mut meta = metadata_for(
-                    &cached.parsed,
+                    &cached.catalog,
                     CatalogSource::Cache,
                     true,
                     cached.meta.validated_at,
@@ -227,7 +237,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                     meta.last_error = Some(error.safe_meta(now));
                 }
                 Ok(snapshot_from_parsed(
-                    cached.parsed,
+                    &cached.catalog,
                     CatalogSource::Cache,
                     meta.validated_at,
                     now,
@@ -237,8 +247,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 ))
             }
             Err(cache_error) => {
-                let bootstrap = validated_bootstrap()?;
-                let parsed = parse_catalog(bootstrap)?;
+                let parsed = self.remember(parse_catalog(MODELS_DEV_BOOTSTRAP)?);
                 let fallback = CatalogError::new(
                     "catalog_bootstrap_fallback",
                     format!(
@@ -256,12 +265,12 @@ impl<T: CatalogTransport> CatalogManager<T> {
                     None,
                     Some(fallback.safe_meta(now)),
                 );
-                let write_error = self.commit_cache(bootstrap, &meta).err();
+                let write_error = self.commit_cache(MODELS_DEV_BOOTSTRAP, &meta).err();
                 if let Some(error) = write_error {
                     meta.last_error = Some(error.safe_meta(now));
                 }
                 Ok(snapshot_from_parsed(
-                    parsed,
+                    &parsed,
                     CatalogSource::Bootstrap,
                     now,
                     now,
@@ -342,12 +351,6 @@ impl<T: CatalogTransport> CatalogManager<T> {
             .lock_within(CATALOG_LOCK_FILE, DEFAULT_LOCK_BUDGET)
             .map_err(CatalogError::from_store)?;
         recover_cache(&lock)?;
-        let body = lock
-            .read(CATALOG_BODY_FILE, CATALOG_MAX_BYTES as u64)
-            .map_err(CatalogError::from_store)?
-            .ok_or_else(|| {
-                CatalogError::new("catalog_cache_missing", "catalog cache body is missing")
-            })?;
         let meta_bytes = lock
             .read(CATALOG_META_FILE, MAX_META_BYTES)
             .map_err(CatalogError::from_store)?
@@ -355,12 +358,52 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 CatalogError::new("catalog_cache_missing", "catalog cache metadata is missing")
             })?;
         let meta = parse_cache_meta(&meta_bytes)?;
+        // The metadata names its body by SHA-256 revision and length. When
+        // that is the catalog already parsed in memory (a 304 refresh, or any
+        // check after startup loaded the cache), reuse it rather than reading
+        // and re-parsing the multi-megabyte body. Another process that
+        // installed a different body also installed metadata naming it, so a
+        // mismatch falls through to the full load.
+        if let Some(catalog) = self.loaded_revision(&meta) {
+            validate_meta(&meta, catalog.byte_length, &catalog.revision)?;
+            validate_parsed_meta(&meta, &catalog)?;
+            return Ok(ValidatedCache { catalog, meta });
+        }
+        let body = lock
+            .read(CATALOG_BODY_FILE, CATALOG_MAX_BYTES as u64)
+            .map_err(CatalogError::from_store)?
+            .ok_or_else(|| {
+                CatalogError::new("catalog_cache_missing", "catalog cache body is missing")
+            })?;
         // Parsing computes the body's revision, the one hash of it this load
         // needs; the metadata is checked against that.
         let parsed = parse_catalog(&body)?;
-        validate_meta(&meta, body.len(), &parsed.revision)?;
+        validate_meta(&meta, body.len() as u64, &parsed.revision)?;
         validate_parsed_meta(&meta, &parsed)?;
-        Ok(ValidatedCache { parsed, meta })
+        Ok(ValidatedCache {
+            catalog: self.remember(parsed),
+            meta,
+        })
+    }
+
+    /// The remembered catalog, if it is the body `meta` names.
+    fn loaded_revision(&self, meta: &CatalogCacheMeta) -> Option<Arc<ParsedCatalog>> {
+        self.loaded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|catalog| {
+                catalog.revision.as_str() == meta.body_revision
+                    && catalog.byte_length == meta.byte_length
+            })
+            .cloned()
+    }
+
+    /// Remembers a freshly parsed catalog for later loads of the same body.
+    fn remember(&self, parsed: ParsedCatalog) -> Arc<ParsedCatalog> {
+        let parsed = Arc::new(parsed);
+        *self.loaded.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&parsed));
+        parsed
     }
 
     /// Rewrites only the metadata for a body that is already installed (a 304,
@@ -410,7 +453,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
             )
         })?;
         let body_revision = revision(body);
-        validate_meta(meta, body.len(), &body_revision)?;
+        validate_meta(meta, body.len() as u64, &body_revision)?;
         self.commit_checkpoint(CacheCommitPhase::BeforeNextBody)?;
         lock.atomic_replace(BODY_NEXT_FILE, body)
             .map_err(CatalogError::from_store)?;
@@ -788,7 +831,7 @@ fn fixed_pair_matches(
 fn validate_pair_bytes(body: &[u8], meta_bytes: &[u8]) -> Result<CatalogRevision, CatalogError> {
     let meta = parse_cache_meta(meta_bytes)?;
     let parsed = parse_catalog(body)?;
-    validate_meta(&meta, body.len(), &parsed.revision)?;
+    validate_meta(&meta, body.len() as u64, &parsed.revision)?;
     validate_parsed_meta(&meta, &parsed)?;
     Ok(parsed.revision)
 }
@@ -842,12 +885,12 @@ impl<T: CatalogTransport> CatalogManager<T> {
 }
 
 struct ValidatedCache {
-    parsed: super::ParsedCatalog,
+    catalog: Arc<ParsedCatalog>,
     meta: CatalogCacheMeta,
 }
 
 fn metadata_for(
-    parsed: &super::ParsedCatalog,
+    parsed: &ParsedCatalog,
     source: CatalogSource,
     stale: bool,
     validated_at: Timestamp,
@@ -860,7 +903,7 @@ fn metadata_for(
         url: MODELS_DEV_CATALOG_URL.to_owned(),
         body_revision: parsed.revision.as_str().to_owned(),
         etag,
-        byte_length: parsed.body.len() as u64,
+        byte_length: parsed.byte_length,
         validated_at,
         last_checked_at: checked_at,
         selected_source: source,
@@ -873,12 +916,12 @@ fn metadata_for(
 /// already-computed revision.
 fn validate_meta(
     meta: &CatalogCacheMeta,
-    body_len: usize,
+    body_len: u64,
     body_revision: &CatalogRevision,
 ) -> Result<(), CatalogError> {
     if meta.schema_version != CATALOG_CACHE_SCHEMA_VERSION
         || meta.url != MODELS_DEV_CATALOG_URL
-        || meta.byte_length != body_len as u64
+        || meta.byte_length != body_len
         || meta.body_revision != body_revision.as_str()
         || meta.etag.clone().map(validate_etag).transpose()?.as_deref() != meta.etag.as_deref()
     {
@@ -892,7 +935,7 @@ fn validate_meta(
 
 fn validate_parsed_meta(
     meta: &CatalogCacheMeta,
-    parsed: &super::ParsedCatalog,
+    parsed: &ParsedCatalog,
 ) -> Result<(), CatalogError> {
     let _ = parsed;
     let error_valid = meta.last_error.as_ref().is_none_or(|error| {
@@ -922,7 +965,7 @@ fn revision(body: &[u8]) -> CatalogRevision {
 }
 
 fn snapshot_from_parsed(
-    parsed: super::ParsedCatalog,
+    parsed: &ParsedCatalog,
     source: CatalogSource,
     validated_at: Timestamp,
     checked_at: Timestamp,
@@ -931,7 +974,7 @@ fn snapshot_from_parsed(
     last_error: Option<CatalogSafeErrorMeta>,
 ) -> CatalogSnapshot {
     CatalogSnapshot {
-        revision: parsed.revision,
+        revision: parsed.revision.clone(),
         source,
         state: CatalogRuntimeState {
             availability,
@@ -941,9 +984,9 @@ fn snapshot_from_parsed(
         validated_at,
         last_checked_at: checked_at,
         etag,
-        providers: parsed.providers,
-        canonical_models: parsed.canonical_models,
-        quarantine: parsed.quarantine,
+        providers: parsed.providers.clone(),
+        canonical_models: parsed.canonical_models.clone(),
+        quarantine: parsed.quarantine.clone(),
     }
 }
 
