@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -39,16 +39,28 @@ use crate::{
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
 const MAX_RAW_RENAME_PARAMS_BYTES: usize = 4 * 1024;
 
+/// Requests one connection may have in flight at once. At the limit the
+/// server stops reading until one finishes, which backpressures the client.
+const MAX_IN_FLIGHT_REQUESTS: usize = 64;
+
 /// Per-connection facilities available to a server implementation.
 #[derive(Clone)]
 pub struct ServerContext {
     notifications: mpsc::Sender<Value>,
     shutdown: CancellationToken,
     subscribed_sessions: Arc<Mutex<HashSet<SessionId>>>,
+    /// Opens once the response of the request this context was handed to has
+    /// been queued. `None` for connection-scoped contexts.
+    response_sent: Option<CancellationToken>,
 }
 
 impl ServerContext {
     /// Emit one JSON-RPC notification in connection order.
+    ///
+    /// A notification from work a request started (for example a live tail
+    /// registered by `events.subscribe`) is held until that request's
+    /// response is queued, so the client never sees the tail before the
+    /// snapshot it continues.
     pub async fn notify<T: Serialize>(
         &self,
         method: &str,
@@ -56,10 +68,27 @@ impl ServerContext {
     ) -> Result<(), TransportError> {
         let params = serde_json::to_value(params)?;
         let notification = serde_json::to_value(Notification::new(method, Some(params)))?;
+        if let Some(response_sent) = &self.response_sent {
+            tokio::select! {
+                () = self.shutdown.cancelled() => return Err(TransportError::Closed),
+                () = response_sent.cancelled() => {}
+            }
+        }
         tokio::select! {
             () = self.shutdown.cancelled() => Err(TransportError::Closed),
             result = self.notifications.send(notification) => result.map_err(|_| TransportError::Closed),
         }
+    }
+
+    fn for_request(&self) -> (Self, CancellationToken) {
+        let response_sent = CancellationToken::new();
+        (
+            Self {
+                response_sent: Some(response_sent.clone()),
+                ..self.clone()
+            },
+            response_sent,
+        )
     }
 
     /// A cancellation token scoped to this protocol connection.
@@ -96,6 +125,7 @@ pub fn test_server_context() -> (ServerContext, mpsc::Receiver<Value>) {
             notifications,
             shutdown: CancellationToken::new(),
             subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
+            response_sent: None,
         },
         receiver,
     )
@@ -318,6 +348,10 @@ impl Drop for ConnectionShutdown {
 }
 
 /// Run one complete server-side protocol session over a transport.
+///
+/// After the handshake, requests run concurrently and each response is
+/// written as soon as it is ready; clients match responses by id. A slow
+/// request, such as a large replay, never holds up the ones behind it.
 pub async fn serve<T, S>(
     server: Arc<S>,
     mut transport: T,
@@ -327,18 +361,24 @@ where
     T: Transport,
     S: ServerProtocol,
 {
-    let (notifications, mut notification_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     let context = ServerContext {
-        notifications,
+        notifications: outbound,
         shutdown,
         subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
+        response_sent: None,
     };
     let _guard = ConnectionShutdown(context.shutdown());
+    let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
+    let mut permit = None;
     let mut handshaken = false;
     loop {
         tokio::select! {
             () = context.shutdown.cancelled() => return Ok(()),
-            incoming = transport.recv() => {
+            acquired = in_flight.clone().acquire_owned(), if permit.is_none() => {
+                permit = Some(acquired.expect("the in-flight semaphore is never closed"));
+            }
+            incoming = transport.recv(), if permit.is_some() => {
                 let Some(frame) = incoming? else { return Ok(()); };
                 let incoming = match parse_incoming(frame).and_then(classify_incoming) {
                     Ok(incoming) => incoming,
@@ -347,57 +387,89 @@ where
                         continue;
                     }
                 };
-                match incoming {
-                    Incoming::Request { id, method, params } => {
-                        let (response, connected) = if !handshaken {
-                            if method != "handshake" {
-                                (error_response(Some(id), handshake_required())?, false)
-                            } else {
-                                match decode_handshake(params) {
-                                    Ok(()) => {
-                                        handshaken = true;
-                                        (success_response(id, &ServerHello { protocol_version: crate::ProtocolVersion::current() })?, true)
-                                    }
-                                    Err(fault) => (error_response(Some(id), fault)?, false),
-                                }
+                if !handshaken {
+                    let Incoming::Request { id, method, params } = incoming else {
+                        continue;
+                    };
+                    let response = if method != "handshake" {
+                        error_response(Some(id), handshake_required())?
+                    } else {
+                        match decode_handshake(params) {
+                            Ok(()) => {
+                                handshaken = true;
+                                success_response(id, server_hello())?
                             }
-                        } else {
-                            let result = if method == "handshake" {
-                                decode_handshake(params).map(|()| {
-                                    serde_json::to_value(ServerHello {
-                                        protocol_version: crate::ProtocolVersion::current(),
-                                    })
-                                    .expect("server hello serializes")
-                                })
-                            } else {
-                                dispatch(server.as_ref(), &method, params, &context, true).await
-                            };
-                            (match result {
-                                Ok(value) => success_response(id, &value)?,
-                                Err(fault) => error_response(Some(id), fault)?,
-                            }, false)
-                        };
-                        transport.send(MessageFrame::Value(response)).await?;
-                        if connected {
-                            server.connected(context.clone()).await;
+                            Err(fault) => error_response(Some(id), fault)?,
                         }
+                    };
+                    transport.send(MessageFrame::Value(response)).await?;
+                    if handshaken {
+                        server.connected(context.clone()).await;
                     }
-                    Incoming::Notification { method, params } => {
-                        if handshaken {
-                            if method == "handshake" {
-                                let _ = decode_handshake(params);
-                            } else {
-                                let _ = dispatch(server.as_ref(), &method, params, &context, false).await;
-                            }
-                        }
-                    }
+                    continue;
                 }
+                let permit = permit.take();
+                let server = server.clone();
+                let (request_context, response_sent) = context.for_request();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    // Opens the notification gate on every exit, a panic included.
+                    let _response_sent = response_sent.drop_guard();
+                    let Some(response) = handle(server.as_ref(), incoming, &request_context).await
+                    else {
+                        return;
+                    };
+                    tokio::select! {
+                        () = request_context.shutdown.cancelled() => {}
+                        _ = request_context.notifications.send(response) => {}
+                    }
+                });
             }
-            Some(notification) = notification_rx.recv() => {
-                transport.send(MessageFrame::Value(notification)).await?;
+            Some(frame) = outbound_rx.recv() => {
+                transport.send(MessageFrame::Value(frame)).await?;
             }
         }
     }
+}
+
+/// Runs one post-handshake message and builds its response, if it has one.
+async fn handle<S: ServerProtocol>(
+    server: &S,
+    incoming: Incoming,
+    context: &ServerContext,
+) -> Option<Value> {
+    match incoming {
+        Incoming::Request { id, method, params } => {
+            let result = if method == "handshake" {
+                decode_handshake(params).map(|()| server_hello())
+            } else {
+                dispatch(server, &method, params, context, true).await
+            };
+            let response = match result {
+                Ok(value) => success_response(id.clone(), value),
+                Err(fault) => error_response(Some(id.clone()), fault),
+            };
+            Some(response.unwrap_or_else(|_| {
+                error_response(Some(id), ServerFault::internal())
+                    .expect("an error response without data serializes")
+            }))
+        }
+        Incoming::Notification { method, params } => {
+            if method == "handshake" {
+                let _ = decode_handshake(params);
+            } else {
+                let _ = dispatch(server, &method, params, context, false).await;
+            }
+            None
+        }
+    }
+}
+
+fn server_hello() -> Value {
+    serde_json::to_value(ServerHello {
+        protocol_version: crate::ProtocolVersion::current(),
+    })
+    .expect("server hello serializes")
 }
 
 async fn dispatch<S: ServerProtocol>(
@@ -628,12 +700,20 @@ fn handshake_required() -> ServerFault {
     ServerFault::new(-32001, "handshake required", None)
 }
 
-fn success_response<T: Serialize>(id: JsonRpcId, result: &T) -> Result<Value, TransportError> {
-    Ok(serde_json::to_value(Response::Success(SuccessResponse {
+/// Wraps an already-built result without re-serializing it: a replay result
+/// can run to tens of megabytes, and a round trip through `to_value` would
+/// deep-copy all of it.
+fn success_response(id: JsonRpcId, result: Value) -> Result<Value, TransportError> {
+    let Value::Object(mut response) = serde_json::to_value(Response::Success(SuccessResponse {
         jsonrpc: JsonRpcVersion::current(),
         id,
-        result: serde_json::to_value(result)?,
-    }))?)
+        result: Value::Null,
+    }))?
+    else {
+        unreachable!("a success response serializes to an object");
+    };
+    response.insert("result".into(), result);
+    Ok(Value::Object(response))
 }
 
 fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<Value, TransportError> {
@@ -654,3 +734,6 @@ fn error_response(id: Option<JsonRpcId>, fault: ServerFault) -> Result<Value, Tr
         })),
     }
 }
+
+#[cfg(test)]
+mod tests;
