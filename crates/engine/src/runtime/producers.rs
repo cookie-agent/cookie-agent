@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Instant};
 
 use cookie_agent_protocol::*;
 use tokio::sync::oneshot;
@@ -482,6 +482,11 @@ impl Engine {
         session: SessionId,
         harvested: Option<GoalProducerProjection>,
     ) -> Result<(), EngineError> {
+        #[cfg(test)]
+        self.inner
+            .test_hooks
+            .producer_reconciles
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.ensure_not_shutting_down().is_err() || !self.inner.store.is_owned(session) {
             return Ok(());
         }
@@ -1051,6 +1056,19 @@ impl Engine {
         Ok(GoalProducerProjection::from_events(
             &self.inner.store.get(session)?.log.event_snapshot(),
         ))
+    }
+
+    /// The projection a caller already harvested, or — only when it has none —
+    /// a fresh fold of the session log.
+    fn harvested_or_folded<'a>(
+        &self,
+        session: SessionId,
+        harvested: Option<&'a GoalProducerProjection>,
+    ) -> Result<Cow<'a, GoalProducerProjection>, EngineError> {
+        Ok(match harvested {
+            Some(projection) => Cow::Borrowed(projection),
+            None => Cow::Owned(self.goal_producer_projection(session)?),
+        })
     }
 
     fn require_root_goal(&self, session: SessionId) -> Result<(), EngineError> {
@@ -1706,10 +1724,8 @@ impl Engine {
         recovery: bool,
         harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
-        let projection = harvested
-            .cloned()
-            .unwrap_or(self.goal_producer_projection(session)?);
-        for message in projection.messages {
+        let projection = self.harvested_or_folded(session, harvested)?;
+        for message in &projection.messages {
             if let Some(run_id) = message
                 .consumed_run
                 .filter(|_| !message.consumption_recorded)
@@ -1750,10 +1766,8 @@ impl Engine {
         ) {
             return Ok(());
         }
-        let projection = harvested
-            .cloned()
-            .unwrap_or(self.goal_producer_projection(session)?);
-        if let Some(goal) = projection.goal.filter(|goal| {
+        let projection = self.harvested_or_folded(session, harvested)?;
+        if let Some(goal) = projection.goal.as_ref().filter(|goal| {
             matches!(goal.status, GoalStatus::Active | GoalStatus::Paused)
                 && !goal.items.is_empty()
                 && goal.items.iter().all(|item| item.finished)
@@ -1790,9 +1804,7 @@ impl Engine {
             self.inner.store.get(session)?.meta.origin,
             SessionOrigin::Root
         );
-        let projection = harvested
-            .cloned()
-            .unwrap_or(self.goal_producer_projection(session)?);
+        let projection = self.harvested_or_folded(session, harvested)?;
         let active = projection.goal.as_ref().filter(|goal| {
             is_root && goal.status == GoalStatus::Active && self.plugin_goals_ready()
         });

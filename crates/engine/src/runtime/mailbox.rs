@@ -1075,6 +1075,17 @@ impl Engine {
                 | super::producers::ProducerCommand::Reconcile { .. }
                 | super::producers::ProducerCommand::CommitStart { .. },
             ) => false,
+            // Commands that touch nothing producer reconciliation reads (the
+            // goal/producer/user-input/run-terminal events it folds, plus the
+            // active-run, delegation and producer registries): a history page
+            // or live-tail registration appends nothing; stdin forwards bytes
+            // to a running tool and appends only `ToolStdinSubmitted`; a rename
+            // appends only `SessionTitleCommitted`.
+            SessionCommand::Subscribe { .. }
+            | SessionCommand::Stdin { .. }
+            | SessionCommand::Rename { .. } => false,
+            // Everything else may move producer or goal state; a new command
+            // reconciles until shown otherwise.
             _ => true,
         };
         match command {

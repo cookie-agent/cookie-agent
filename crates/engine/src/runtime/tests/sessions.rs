@@ -1125,3 +1125,49 @@ async fn paging_a_foreign_log_parses_it_once_until_it_changes() {
     assert_eq!(seqs(&tail.events), vec![cursor.unwrap() + 1]);
     assert_eq!(foreign.inner.store.log_open_count(session_id), opens + 1);
 }
+
+/// History paging and renames touch nothing producer reconciliation reads, so
+/// the actor skips the pass (and its full-log goal fold) after them; any other
+/// command still reconciles.
+#[tokio::test]
+async fn paging_and_renames_skip_producer_reconciliation() {
+    let (fixture, selection) = custom_fixture();
+    let session_id = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    let reconciles = || {
+        fixture
+            .engine
+            .inner
+            .test_hooks
+            .producer_reconciles
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let before = reconciles();
+
+    fixture
+        .engine
+        .subscribe_page(session_id, None, std::num::NonZeroU32::new(1))
+        .await
+        .expect("history page");
+    fixture
+        .engine
+        .rename_session(
+            cookie_agent_protocol::SessionRenameParams {
+                session_id,
+                client_rename_id: ClientRenameId::new("no-reconcile").expect("rename ID"),
+                change: cookie_agent_protocol::SessionRenameChange::Set {
+                    title: SessionTitle::new("renamed").expect("title"),
+                },
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("rename");
+    assert_eq!(reconciles(), before, "paging and renames do not reconcile");
+
+    fixture.engine.resume(session_id).await.expect("resume");
+    assert_eq!(reconciles(), before + 1, "other commands still reconcile");
+}
