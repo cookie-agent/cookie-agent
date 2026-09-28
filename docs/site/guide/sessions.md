@@ -23,7 +23,9 @@ does not require an exact version match. The engine loads known records
 best-effort, reports skipped unsupported or corrupt records in session metadata,
 and tolerates the resulting sequence gaps. The derived `metadata` file is only a
 cache: missing, stale, mismatched, or unreadable cache content is rebuilt from
-the event history.
+the event history. While a run streams, its tip (`last_event_seq`,
+`last_activity`) is not rewritten for every delta; it catches up at the run's
+next projection change or terminal event, on eviction, and on shutdown.
 
 Shutting the daemon down cleanly cancels whatever runs are in flight and waits,
 under a short bound, for them to record `RunCancelled`; a run only comes back as

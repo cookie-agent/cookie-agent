@@ -769,7 +769,8 @@ fn metadata_cache_reads_never_observe_partial_replacements() {
         let meta = meta.clone();
         move || {
             for _ in 0..REPLACEMENTS {
-                super::write_cache(&cache_path, &meta).expect("replace metadata cache");
+                super::write_cache(&cache_path, &meta, super::CacheSync::Atomic)
+                    .expect("replace metadata cache");
             }
         }
     });
@@ -866,6 +867,7 @@ fn listing_reflects_metadata_another_process_changed() {
             .meta_cache_path(session_id)
             .expect("metadata cache path"),
         &replacement,
+        super::CacheSync::Atomic,
     )
     .expect("replace metadata cache");
 
@@ -2224,14 +2226,9 @@ fn subagent_index_corruption_is_rebuilt_not_fatal() {
     );
 }
 
-fn append_pending_test_delta(
-    store: &SessionStore,
-    session_id: SessionId,
-    text: &str,
-) -> (
-    Arc<crate::events::EventLog>,
-    cookie_agent_protocol::StoredEvent,
-) {
+/// Starts a model attempt in the session's first run, returning the run and
+/// attempt a `TextDelta` needs.
+fn start_test_attempt(store: &SessionStore, session_id: SessionId) -> (RunId, AttemptId) {
     let projection = store.get(session_id).expect("session projection");
     let (run_id, resolved_model, prompt_fingerprint) = projection
         .log
@@ -2266,9 +2263,17 @@ fn append_pending_test_delta(
             },
         )
         .expect("start attempt");
-    let log = store.get(session_id).expect("session projection").log;
-    log.pause_background_sync_for_test();
-    let delta = store
+    (run_id, attempt_id)
+}
+
+fn append_test_delta(
+    store: &SessionStore,
+    session_id: SessionId,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    text: &str,
+) -> cookie_agent_protocol::StoredEvent {
+    store
         .append(
             session_id,
             Some(run_id),
@@ -2278,8 +2283,107 @@ fn append_pending_test_delta(
                 text: text.into(),
             },
         )
-        .expect("append buffered delta");
+        .expect("append delta")
+}
+
+fn append_pending_test_delta(
+    store: &SessionStore,
+    session_id: SessionId,
+    text: &str,
+) -> (
+    Arc<crate::events::EventLog>,
+    cookie_agent_protocol::StoredEvent,
+) {
+    let (run_id, attempt_id) = start_test_attempt(store, session_id);
+    let log = store.get(session_id).expect("session projection").log;
+    log.pause_background_sync_for_test();
+    let delta = append_test_delta(store, session_id, run_id, attempt_id, text);
     (log, delta)
+}
+
+fn read_test_meta_cache(store: &SessionStore, id: SessionId) -> cookie_agent_protocol::SessionMeta {
+    let dir = store.session_dir(id);
+    super::read_cache(&meta_path(&dir), &dir.join(EVENTS_FILE)).expect("read metadata cache")
+}
+
+/// In-run stream records leave the `metadata` cache alone (they only move its
+/// tip); the run's fold-consumed terminal event brings it fully up to date, and
+/// outside a run the tip is written through.
+#[test]
+fn in_run_stream_records_defer_the_metadata_cache_until_the_run_ends() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).unwrap();
+    let session_id = persist_test_session(&store);
+    let before = read_test_meta_cache(&store, session_id);
+    assert_eq!(before, store.get(session_id).unwrap().meta);
+
+    // `ModelAttemptStarted` is not fold-consumed either.
+    let (run_id, attempt_id) = start_test_attempt(&store, session_id);
+    let mut last = before.last_event_seq;
+    for text in ["one", "two", "three"] {
+        last = append_test_delta(&store, session_id, run_id, attempt_id, text).seq;
+    }
+    assert_eq!(
+        read_test_meta_cache(&store, session_id),
+        before,
+        "stream records inside a run do not rewrite metadata"
+    );
+    assert!(store.meta_cache_is_deferred(session_id));
+    assert_eq!(store.get(session_id).unwrap().meta.last_event_seq, last);
+
+    store
+        .append(
+            session_id,
+            Some(run_id),
+            test_origin(),
+            EventPayload::RunCompleted { final_text: None },
+        )
+        .unwrap();
+    let completed = store.get(session_id).unwrap().meta;
+    assert_eq!(read_test_meta_cache(&store, session_id), completed);
+    assert!(!store.meta_cache_is_deferred(session_id));
+
+    // No run is in flight any more, so nothing would close a deferral.
+    let idle = append_test_delta(&store, session_id, run_id, attempt_id, "late");
+    let cached = read_test_meta_cache(&store, session_id);
+    assert_eq!(cached.last_event_seq, idle.seq);
+    assert_eq!(cached, store.get(session_id).unwrap().meta);
+}
+
+/// A tip deferred by an in-run append is flushed when the session is evicted
+/// and when the store releases its trees, so the next reader of `metadata` —
+/// another process, or this one after eviction — sees the log's tip.
+#[test]
+fn deferred_metadata_tip_is_flushed_on_eviction_and_release() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let store = SessionStore::open(&data, &cwd).unwrap();
+
+    let evicted = persist_test_session(&store);
+    let (run_id, attempt_id) = start_test_attempt(&store, evicted);
+    append_test_delta(&store, evicted, run_id, attempt_id, "before eviction");
+    let resident = store.get(evicted).unwrap().meta;
+    assert_ne!(read_test_meta_cache(&store, evicted), resident);
+    assert!(store.evict(evicted).expect("evict"));
+    assert_eq!(read_test_meta_cache(&store, evicted), resident);
+    assert!(!store.meta_cache_is_deferred(evicted));
+
+    let released = persist_test_session(&store);
+    let (run_id, attempt_id) = start_test_attempt(&store, released);
+    append_test_delta(&store, released, run_id, attempt_id, "before release");
+    let resident = store.get(released).unwrap().meta;
+    let session_dir = store.session_dir(released);
+    assert_ne!(read_test_meta_cache(&store, released), resident);
+    drop(store);
+    assert_eq!(
+        super::read_cache(&meta_path(&session_dir), &session_dir.join(EVENTS_FILE))
+            .expect("metadata after release"),
+        resident
+    );
 }
 
 #[test]
