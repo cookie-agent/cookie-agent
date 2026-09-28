@@ -249,9 +249,9 @@ async fn malformed_provider_and_model_records_quarantine_locally() {
     let temporary = tempfile::tempdir().unwrap();
     let bytes = br#"{
       "providers": {
-        "broken": {"id":"broken","env":["KEY"],"npm":"x","name":"Broken","doc":"https://example.invalid","models":{},"unknown":true},
+        "broken": {"id":"broken","env":["KEY"],"npm":"x","name":"Broken","doc":42,"models":{}},
         "test": {"id":"test","env":["KEY"],"npm":"x","name":"Test","doc":"https://example.invalid","models":{
-          "bad":{"id":"bad","name":"Bad","description":"bad","attachment":false,"reasoning":false,"tool_call":false,"open_weights":false,"release_date":"2026-01-01","last_updated":"2026-01-01","modalities":{"input":["text"],"output":["text"]},"limit":{"context":1,"output":1},"unknown":true},
+          "bad":{"id":"bad","name":"Bad","description":"bad","attachment":"no","reasoning":false,"tool_call":false,"open_weights":false,"release_date":"2026-01-01","last_updated":"2026-01-01","modalities":{"input":["text"],"output":["text"]},"limit":{"context":1,"output":1}},
           "ok/model":{"id":"ok/model","name":"OK","description":"ok","attachment":false,"reasoning":false,"tool_call":false,"open_weights":false,"release_date":"2026-01-01","last_updated":"2026-01-01","modalities":{"input":["text"],"output":["text"]},"limit":{"context":1,"output":1}}
         }}
       },
@@ -290,7 +290,7 @@ async fn malformed_provider_and_model_records_quarantine_locally() {
 }
 
 #[tokio::test]
-async fn recognized_ignored_fields_are_strictly_typed_and_quarantine_exact_records() {
+async fn used_fields_are_typed_while_unused_metadata_is_ignored() {
     let temporary = tempfile::tempdir().unwrap();
     let mut document: serde_json::Value = serde_json::from_slice(&candidate()).unwrap();
     let provider = &mut document["providers"]["test"];
@@ -301,15 +301,15 @@ async fn recognized_ignored_fields_are_strictly_typed_and_quarantine_exact_recor
             "cost",
             serde_json::json!({"input": "free", "output": 1}),
         ),
-        ("bad-knowledge", "knowledge", serde_json::json!(true)),
+        ("odd-knowledge", "knowledge", serde_json::json!(true)),
         ("bad-interleaved", "interleaved", serde_json::json!(false)),
         (
-            "bad-experimental",
+            "odd-experimental",
             "experimental",
             serde_json::json!({"modes": []}),
         ),
         (
-            "bad-provider-body",
+            "odd-provider-body",
             "provider",
             serde_json::json!({"body": []}),
         ),
@@ -323,11 +323,11 @@ async fn recognized_ignored_fields_are_strictly_typed_and_quarantine_exact_recor
 
     let base_canonical = document["models"]["group/model"].clone();
     let canonical_cases = [
-        ("bad-benchmarks", "benchmarks", serde_json::json!({})),
-        ("bad-weights", "weights", serde_json::json!([{"url": 42}])),
-        ("bad-license", "license", serde_json::json!(false)),
+        ("odd-benchmarks", "benchmarks", serde_json::json!({})),
+        ("odd-weights", "weights", serde_json::json!([{"url": 42}])),
+        ("odd-license", "license", serde_json::json!(false)),
         (
-            "bad-links",
+            "odd-links",
             "links",
             serde_json::json!([{"url": "https://example.invalid", "unknown": true}]),
         ),
@@ -360,18 +360,8 @@ async fn recognized_ignored_fields_are_strictly_typed_and_quarantine_exact_recor
         .record
         .as_ref()
         .unwrap();
-    assert!(
-        provider.models[&ProviderModelId::new("group/model").unwrap()]
-            .record
-            .is_some()
-    );
-    for id in [
-        "bad-cost",
-        "bad-knowledge",
-        "bad-interleaved",
-        "bad-experimental",
-        "bad-provider-body",
-    ] {
+    // Fields cookie reads keep their type checks and quarantine the record.
+    for id in ["bad-cost", "bad-interleaved"] {
         assert!(
             provider.models[&ProviderModelId::new(id).unwrap()]
                 .record
@@ -379,18 +369,32 @@ async fn recognized_ignored_fields_are_strictly_typed_and_quarantine_exact_recor
             "{id}"
         );
     }
+    assert!(
+        snapshot
+            .canonical_models
+            .keys()
+            .all(|model| model.as_str() != "bad-structured-output")
+    );
+    // Metadata cookie never reads is ignored whatever its shape.
     for id in [
-        "bad-benchmarks",
-        "bad-weights",
-        "bad-license",
-        "bad-links",
-        "bad-structured-output",
+        "group/model",
+        "odd-knowledge",
+        "odd-experimental",
+        "odd-provider-body",
     ] {
+        assert!(
+            provider.models[&ProviderModelId::new(id).unwrap()]
+                .record
+                .is_some(),
+            "{id}"
+        );
+    }
+    for id in ["odd-benchmarks", "odd-weights", "odd-license", "odd-links"] {
         assert!(
             snapshot
                 .canonical_models
                 .keys()
-                .all(|model| model.as_str() != id),
+                .any(|model| model.as_str() == id),
             "{id}"
         );
     }

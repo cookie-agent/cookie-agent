@@ -185,7 +185,22 @@ impl PicoUsdPerMillion {
         }
     }
 
+    /// Parses a nonnegative decimal USD-per-million rate exactly. A value with
+    /// digits below one pico-USD is rejected rather than rounded.
     pub fn from_decimal_str(value: &str) -> Option<Self> {
+        Self::parse_decimal(value, false)
+    }
+
+    /// Parses a nonnegative decimal USD-per-million rate, rounding to the
+    /// nearest pico-USD with ties rounding up. models.dev prices are JSON
+    /// floats, so binary-float artifacts such as `0.010399999999999998` carry
+    /// digits far below one pico-USD; rounding recovers the intended rate
+    /// (here `0.0104`). A rate below half a pico-USD rounds to zero.
+    pub fn from_decimal_str_rounded(value: &str) -> Option<Self> {
+        Self::parse_decimal(value, true)
+    }
+
+    fn parse_decimal(value: &str, round: bool) -> Option<Self> {
         let value = value.trim();
         if value.is_empty() || value.starts_with('-') {
             return None;
@@ -216,21 +231,32 @@ impl PicoUsdPerMillion {
             return Some(Self(0));
         }
         let fraction_digits = i32::try_from(fraction.len()).ok()?;
-        let mut shift = Self::SCALE
+        let shift = Self::SCALE
             .checked_add(exponent)?
             .checked_sub(fraction_digits)?;
-        if shift < 0 {
-            let excess = usize::try_from(shift.unsigned_abs()).ok()?;
-            let retained = significant.len().checked_sub(excess)?;
-            if retained == 0 || !significant[retained..].bytes().all(|byte| byte == b'0') {
-                return None;
-            }
-            significant = &significant[..retained];
-            shift = 0;
+        if shift >= 0 {
+            let coefficient = significant.parse::<u128>().ok()?;
+            let scaled =
+                coefficient.checked_mul(checked_power_of_ten(u32::try_from(shift).ok()?)?)?;
+            return Some(Self(scaled));
         }
-        let coefficient = significant.parse::<u128>().ok()?;
-        let scaled = coefficient.checked_mul(checked_power_of_ten(u32::try_from(shift).ok()?)?)?;
-        (scaled > 0).then_some(Self(scaled))
+        // Digits past the pico-USD scale: `excess` of them must be dropped.
+        let excess = usize::try_from(shift.unsigned_abs()).ok()?;
+        let retained = significant.len().saturating_sub(excess);
+        let dropped = &significant[retained..];
+        if !round && !dropped.bytes().all(|byte| byte == b'0') {
+            return None;
+        }
+        // The first dropped digit decides rounding; when more digits are
+        // dropped than exist, it is an implicit leading zero.
+        let round_up = round && excess <= significant.len() && dropped.as_bytes()[0] >= b'5';
+        significant = &significant[..retained];
+        let kept = if significant.is_empty() {
+            0
+        } else {
+            significant.parse::<u128>().ok()?
+        };
+        Some(Self(kept.checked_add(u128::from(round_up))?))
     }
 }
 
@@ -277,10 +303,36 @@ mod pricing_tests {
             1_250_000_000_000
         );
         assert!(PicoUsdPerMillion::from_decimal_str("0.0000000000015").is_none());
+        assert!(PicoUsdPerMillion::from_decimal_str("0.010399999999999998").is_none());
         assert!(
             PicoUsdPerMillion::from_decimal_str("340282366920938463463374607431768211455")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn rounded_decimal_rates_round_to_the_nearest_pico_usd() {
+        let rounded = |value| {
+            PicoUsdPerMillion::from_decimal_str_rounded(value)
+                .unwrap()
+                .value()
+        };
+        // Binary-float artifacts from catalog JSON numbers.
+        assert_eq!(rounded("0.010399999999999998"), 10_400_000_000);
+        assert_eq!(rounded("0.30000000000000004"), 300_000_000_000);
+        // Exact values are unchanged.
+        assert_eq!(rounded("0.125"), 125_000_000_000);
+        assert_eq!(rounded("12"), 12_000_000_000_000);
+        assert_eq!(rounded("0"), 0);
+        // Half a pico-USD rounds up; less rounds down, possibly to zero.
+        assert_eq!(rounded("0.0000000000015"), 2);
+        assert_eq!(rounded("0.0000000000014999"), 1);
+        assert_eq!(rounded("0.0000000000005"), 1);
+        assert_eq!(rounded("0.0000000000004"), 0);
+        assert_eq!(rounded("0.00000000000009"), 0);
+        assert_eq!(rounded("1.5e-12"), 2);
+        assert!(PicoUsdPerMillion::from_decimal_str_rounded("-1").is_none());
+        assert!(PicoUsdPerMillion::from_decimal_str_rounded("free").is_none());
     }
 }
 

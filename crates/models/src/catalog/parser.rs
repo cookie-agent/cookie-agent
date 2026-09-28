@@ -26,10 +26,7 @@ const MAX_STRING_BYTES: usize = 256 * 1024;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_ENV_FIELDS: usize = 64;
 const MAX_REASONING_OPTIONS: usize = 64;
-const MAX_METADATA_ITEMS: usize = 1_024;
 const MAX_COST_TIERS: usize = 64;
-const MAX_EXPERIMENTAL_MODES: usize = 256;
-const MAX_RECORD_FIELDS: usize = 1_024;
 
 pub(crate) struct ParsedCatalog {
     pub revision: CatalogRevision,
@@ -45,19 +42,14 @@ pub(crate) fn parse_catalog(bytes: &[u8]) -> Result<ParsedCatalog, CatalogError>
         .as_object()
         .ok_or_else(|| candidate("catalog root must be an object"))?;
     let root_fields = unique_fields(root).map_err(|_| candidate("catalog root has duplicates"))?;
-    if root_fields.len() != 2
-        || !root_fields.contains_key("providers")
-        || !root_fields.contains_key("models")
-    {
-        return Err(candidate(
-            "catalog root must contain exactly providers and models",
-        ));
-    }
-    let raw_providers = root_fields["providers"]
-        .as_object()
+    // Unknown root keys are ignored so upstream can extend the catalog.
+    let raw_providers = root_fields
+        .get("providers")
+        .and_then(|value| value.as_object())
         .ok_or_else(|| candidate("catalog providers must be an object"))?;
-    let raw_canonical = root_fields["models"]
-        .as_object()
+    let raw_canonical = root_fields
+        .get("models")
+        .and_then(|value| value.as_object())
         .ok_or_else(|| candidate("catalog models must be an object"))?;
     if raw_providers.is_empty()
         || raw_canonical.is_empty()
@@ -211,11 +203,7 @@ fn parse_provider(
         Ok(fields) => fields,
         Err(()) => return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord)),
     };
-    if !exact_fields(
-        &fields,
-        &["id", "env", "npm", "api", "shape", "name", "doc", "models"],
-        &["id", "name", "doc", "models"],
-    ) {
+    if !has_fields(&fields, &["id", "name", "doc", "models"]) {
         return Ok(Err(CatalogQuarantineReason::InvalidCatalogProviderRecord));
     }
     let Some(embedded_id) = fields["id"].as_str() else {
@@ -348,30 +336,6 @@ fn parse_model(
     ensure_unique_recursive(object)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    const ALLOWED: &[&str] = &[
-        "id",
-        "name",
-        "description",
-        "family",
-        "attachment",
-        "reasoning",
-        "tool_call",
-        "structured_output",
-        "temperature",
-        "open_weights",
-        "status",
-        "release_date",
-        "last_updated",
-        "modalities",
-        "limit",
-        "shape",
-        "provider",
-        "reasoning_options",
-        "cost",
-        "knowledge",
-        "interleaved",
-        "experimental",
-    ];
     const REQUIRED: &[&str] = &[
         "id",
         "name",
@@ -384,7 +348,7 @@ fn parse_model(
         "modalities",
         "limit",
     ];
-    if !exact_fields(&fields, ALLOWED, REQUIRED) {
+    if !has_fields(&fields, REQUIRED) {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
     if fields["id"].as_str() != Some(key) {
@@ -435,7 +399,6 @@ fn parse_model(
     if reasoning != fields.contains_key("reasoning_options") {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    validate_model_ignored_fields(&fields)?;
     let canonical_provenance = canonical.map(|(id, digest)| CanonicalModelProvenance {
         id: id.clone(),
         metadata_digest: digest.clone(),
@@ -512,27 +475,6 @@ fn parse_canonical(
     ensure_unique_recursive(object)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-    const ALLOWED: &[&str] = &[
-        "id",
-        "name",
-        "description",
-        "family",
-        "attachment",
-        "reasoning",
-        "tool_call",
-        "structured_output",
-        "temperature",
-        "open_weights",
-        "release_date",
-        "last_updated",
-        "modalities",
-        "limit",
-        "knowledge",
-        "benchmarks",
-        "weights",
-        "license",
-        "links",
-    ];
     const REQUIRED: &[&str] = &[
         "id",
         "name",
@@ -546,7 +488,7 @@ fn parse_canonical(
         "modalities",
         "limit",
     ];
-    if !exact_fields(&fields, ALLOWED, REQUIRED) {
+    if !has_fields(&fields, REQUIRED) {
         return Err(CatalogQuarantineReason::InvalidCanonicalModelRecord);
     }
     if fields["id"].as_str() != Some(key) {
@@ -580,7 +522,6 @@ fn parse_canonical(
         .map_err(|_| CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
     validate_canonical_limits(fields["limit"])
         .map_err(|_| CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-    validate_canonical_ignored_fields(&fields)?;
     let metadata_digest = format!("sha256:{:x}", Sha256::digest(value.canonical_bytes()));
     Ok(CanonicalModelRecord {
         id,
@@ -599,12 +540,12 @@ fn parse_modalities(value: &JsonValue) -> Result<CatalogModalities, CatalogQuara
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["input", "output"], &["input", "output"]) {
+    if !has_fields(&fields, &["input", "output"]) {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
-    let input = string_array(fields["input"], 32, false)
+    let input = string_array(fields["input"], 32)
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    let output = string_array(fields["output"], 32, false)
+    let output = string_array(fields["output"], 32)
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     Ok(CatalogModalities { input, output })
 }
@@ -615,11 +556,7 @@ fn parse_limits(value: &JsonValue) -> Result<CatalogLimits, CatalogQuarantineRea
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(
-        &fields,
-        &["context", "input", "output"],
-        &["context", "output"],
-    ) {
+    if !has_fields(&fields, &["context", "output"]) {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
     let context = fields["context"]
@@ -649,7 +586,7 @@ fn validate_canonical_limits(value: &JsonValue) -> Result<(), CatalogQuarantineR
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["context", "input", "output"], &["context"])
+    if !has_fields(&fields, &["context"])
         || fields["context"].as_u64().is_none()
         || fields
             .get("input")
@@ -672,17 +609,6 @@ fn parse_model_provider_metadata(
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["npm", "api", "shape", "body", "headers"], &[]) {
-        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-    }
-    fields
-        .get("body")
-        .map(|value| validate_json_record(value))
-        .transpose()?;
-    fields
-        .get("headers")
-        .map(|value| validate_string_record(value))
-        .transpose()?;
     let shape = optional_text(&fields, "shape")?;
     if shape
         .as_deref()
@@ -716,11 +642,9 @@ fn parse_reasoning_options(
                 .map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
             match fields.get("type").and_then(|value| value.as_str()) {
                 Some("effort") => {
-                    if !exact_fields(&fields, &["type", "values"], &["type", "values"]) {
-                        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                    }
-                    let raw = fields["values"]
-                        .as_array()
+                    let raw = fields
+                        .get("values")
+                        .and_then(|value| value.as_array())
                         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
                     if raw.len() > 32 {
                         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
@@ -754,16 +678,8 @@ fn parse_reasoning_options(
                     }
                     Ok(CatalogReasoningOption::Effort { values })
                 }
-                Some("toggle") => {
-                    if !exact_fields(&fields, &["type"], &["type"]) {
-                        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                    }
-                    Ok(CatalogReasoningOption::Toggle)
-                }
+                Some("toggle") => Ok(CatalogReasoningOption::Toggle),
                 Some("budget_tokens") => {
-                    if !exact_fields(&fields, &["type", "min", "max"], &["type"]) {
-                        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-                    }
                     let min = fields
                         .get("min")
                         .map(|value| value.as_i64())
@@ -786,72 +702,11 @@ fn parse_reasoning_options(
         .collect()
 }
 
-fn validate_model_ignored_fields(
-    fields: &BTreeMap<&str, &JsonValue>,
-) -> Result<(), CatalogQuarantineReason> {
-    fields
-        .get("knowledge")
-        .map(|value| date_text(value).map(|_| ()))
-        .transpose()?;
-    fields
-        .get("interleaved")
-        .map(|value| validate_interleaved(value))
-        .transpose()?;
-    fields
-        .get("experimental")
-        .map(|value| validate_experimental(value))
-        .transpose()?;
-    Ok(())
-}
-
-fn validate_canonical_ignored_fields(
-    fields: &BTreeMap<&str, &JsonValue>,
-) -> Result<(), CatalogQuarantineReason> {
-    fields
-        .get("knowledge")
-        .map(|value| date_text(value).map(|_| ()))
-        .transpose()?;
-    fields
-        .get("license")
-        .map(|value| {
-            bounded_text(value)
-                .map(|_| ())
-                .ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)
-        })
-        .transpose()?;
-    fields
-        .get("links")
-        .map(|value| validate_links(value))
-        .transpose()?;
-    fields
-        .get("weights")
-        .map(|value| validate_weights(value))
-        .transpose()?;
-    fields
-        .get("benchmarks")
-        .map(|value| validate_benchmarks(value))
-        .transpose()?;
-    Ok(())
-}
-
 fn parse_output_cost(
     value: &JsonValue,
     reasoning: bool,
 ) -> Result<crate::catalog::CatalogModelCost, CatalogQuarantineReason> {
-    let fields = cost_fields(
-        value,
-        &[
-            "input",
-            "output",
-            "reasoning",
-            "cache_read",
-            "cache_write",
-            "input_audio",
-            "output_audio",
-            "context_over_200k",
-            "tiers",
-        ],
-    )?;
+    let fields = cost_fields(value)?;
     validate_base_cost(&fields)?;
     if !reasoning && fields.contains_key("reasoning") {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
@@ -859,7 +714,7 @@ fn parse_output_cost(
     let context_over_200k = fields
         .get("context_over_200k")
         .map(|value| {
-            let fields = cost_fields(value, BASE_COST_FIELDS)?;
+            let fields = cost_fields(value)?;
             validate_base_cost(&fields)?;
             Ok(parsed_cost_rates(&fields))
         })
@@ -872,32 +727,20 @@ fn parse_output_cost(
             .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
         let mut sizes = BTreeSet::new();
         for tier in tiers {
-            let fields = cost_fields(
-                tier,
-                &[
-                    "input",
-                    "output",
-                    "reasoning",
-                    "cache_read",
-                    "cache_write",
-                    "input_audio",
-                    "output_audio",
-                    "tier",
-                ],
-            )?;
+            let fields = cost_fields(tier)?;
             validate_base_cost(&fields)?;
-            let tier = fields["tier"]
-                .as_object()
+            let tier = fields
+                .get("tier")
+                .and_then(|value| value.as_object())
                 .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
             let tier = unique_fields(tier)
                 .map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-            if !exact_fields(&tier, &["type", "size"], &["type", "size"])
-                || tier["type"].as_str() != Some("context")
-            {
+            if tier.get("type").and_then(|value| value.as_str()) != Some("context") {
                 return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
             }
-            let size = tier["size"]
-                .as_u64()
+            let size = tier
+                .get("size")
+                .and_then(|value| value.as_u64())
                 .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
             if !sizes.insert(size) {
                 return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
@@ -942,36 +785,27 @@ fn parsed_cost_rates(fields: &BTreeMap<&str, &JsonValue>) -> crate::catalog::Cat
     }
 }
 
+/// Catalog prices round to the nearest pico-USD: they arrive as JSON floats,
+/// whose binary artifacts (`0.010399999999999998`) are not exact decimals.
 fn parsed_catalog_rate(value: &JsonValue) -> Option<crate::catalog::PicoUsdPerMillion> {
+    use crate::catalog::PicoUsdPerMillion;
     match value {
-        JsonValue::Number(value) => {
-            crate::catalog::PicoUsdPerMillion::from_decimal_str(&value.to_string())
-        }
-        JsonValue::String(value) => crate::catalog::PicoUsdPerMillion::from_decimal_str(value),
+        JsonValue::Number(value) => PicoUsdPerMillion::from_decimal_str_rounded(&value.to_string()),
+        JsonValue::String(value) => PicoUsdPerMillion::from_decimal_str_rounded(value),
         _ => None,
     }
 }
 
-const BASE_COST_FIELDS: &[&str] = &[
-    "input",
-    "output",
-    "reasoning",
-    "cache_read",
-    "cache_write",
-    "input_audio",
-    "output_audio",
-];
+/// The rates cookie reads; other price fields (such as audio rates) are ignored.
+const BASE_COST_FIELDS: &[&str] = &["input", "output", "reasoning", "cache_read", "cache_write"];
 
-fn cost_fields<'a>(
-    value: &'a JsonValue,
-    allowed: &[&str],
-) -> Result<BTreeMap<&'a str, &'a JsonValue>, CatalogQuarantineReason> {
+fn cost_fields(value: &JsonValue) -> Result<BTreeMap<&str, &JsonValue>, CatalogQuarantineReason> {
     let object = value
         .as_object()
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, allowed, &["input", "output"]) {
+    if !has_fields(&fields, &["input", "output"]) {
         return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
     }
     Ok(fields)
@@ -999,217 +833,10 @@ fn parse_interleaved(
         .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
     let fields =
         unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["field"], &["field"]) {
-        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-    }
-    match fields["field"].as_str() {
+    match fields.get("field").and_then(|value| value.as_str()) {
         Some("reasoning_content") => Ok(crate::catalog::CatalogInterleaved::ReasoningContent),
         Some("reasoning_details") => Ok(crate::catalog::CatalogInterleaved::Reasoning),
         _ => Err(CatalogQuarantineReason::InvalidCatalogModelRecord),
-    }
-}
-
-fn validate_interleaved(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    parse_interleaved(value).map(|_| ())
-}
-
-fn validate_experimental(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let object = value
-        .as_object()
-        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    let fields =
-        unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["modes"], &[]) {
-        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-    }
-    let Some(modes) = fields.get("modes") else {
-        return Ok(());
-    };
-    let modes = modes
-        .as_object()
-        .filter(|modes| modes.len() <= MAX_EXPERIMENTAL_MODES)
-        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    for (name, mode) in modes {
-        validate_record_key(name)?;
-        let mode = mode
-            .as_object()
-            .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-        let mode =
-            unique_fields(mode).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-        if !exact_fields(&mode, &["cost", "provider"], &[]) {
-            return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-        }
-        mode.get("cost")
-            .map(|value| validate_base_cost(&cost_fields(value, BASE_COST_FIELDS)?))
-            .transpose()?;
-        mode.get("provider")
-            .map(|value| validate_provider_parameters(value))
-            .transpose()?;
-    }
-    Ok(())
-}
-
-fn validate_provider_parameters(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let object = value
-        .as_object()
-        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    let fields =
-        unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    if !exact_fields(&fields, &["body", "headers"], &[]) {
-        return Err(CatalogQuarantineReason::InvalidCatalogModelRecord);
-    }
-    fields
-        .get("body")
-        .map(|value| validate_json_record(value))
-        .transpose()?;
-    fields
-        .get("headers")
-        .map(|value| validate_string_record(value))
-        .transpose()?;
-    Ok(())
-}
-
-fn validate_json_record(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let fields = value
-        .as_object()
-        .filter(|fields| fields.len() <= MAX_RECORD_FIELDS)
-        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    for (key, _) in fields {
-        validate_record_key(key)?;
-    }
-    Ok(())
-}
-
-fn validate_string_record(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let fields = value
-        .as_object()
-        .filter(|fields| fields.len() <= MAX_RECORD_FIELDS)
-        .ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    for (key, value) in fields {
-        validate_record_key(key)?;
-        bounded_text(value).ok_or(CatalogQuarantineReason::InvalidCatalogModelRecord)?;
-    }
-    Ok(())
-}
-
-fn validate_links(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let values = metadata_array(value)?;
-    for value in values {
-        let fields = metadata_object(value, &["label", "url", "type"], &["url"])?;
-        bounded_text(fields["url"]).ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-        optional_metadata_text(&fields, "label")?;
-        if fields.get("type").is_some_and(|value| {
-            !matches!(
-                value.as_str(),
-                Some(
-                    "announcement"
-                        | "blog"
-                        | "docs"
-                        | "license"
-                        | "model_card"
-                        | "paper"
-                        | "weights"
-                        | "other"
-                )
-            )
-        }) {
-            return Err(CatalogQuarantineReason::InvalidCanonicalModelRecord);
-        }
-    }
-    Ok(())
-}
-
-fn validate_weights(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let values = metadata_array(value)?;
-    for value in values {
-        let fields = metadata_object(value, &["label", "url", "format", "quantization"], &["url"])?;
-        bounded_text(fields["url"]).ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-        for field in ["label", "format", "quantization"] {
-            optional_metadata_text(&fields, field)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_benchmarks(value: &JsonValue) -> Result<(), CatalogQuarantineReason> {
-    let values = metadata_array(value)?;
-    for value in values {
-        let fields = metadata_object(
-            value,
-            &[
-                "name", "score", "metric", "harness", "variant", "dataset", "version", "source",
-                "date",
-            ],
-            &["name", "score"],
-        )?;
-        bounded_text(fields["name"]).ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-        if fields["score"].as_f64().is_none() && bounded_text(fields["score"]).is_none() {
-            return Err(CatalogQuarantineReason::InvalidCanonicalModelRecord);
-        }
-        for field in [
-            "metric", "harness", "variant", "dataset", "version", "source",
-        ] {
-            optional_metadata_text(&fields, field)?;
-        }
-        fields
-            .get("date")
-            .map(|value| {
-                date_text(value)
-                    .map(|_| ())
-                    .map_err(|_| CatalogQuarantineReason::InvalidCanonicalModelRecord)
-            })
-            .transpose()?;
-    }
-    Ok(())
-}
-
-fn metadata_array(value: &JsonValue) -> Result<&[JsonValue], CatalogQuarantineReason> {
-    value
-        .as_array()
-        .filter(|values| values.len() <= MAX_METADATA_ITEMS)
-        .ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)
-}
-
-fn metadata_object<'a>(
-    value: &'a JsonValue,
-    allowed: &[&str],
-    required: &[&str],
-) -> Result<BTreeMap<&'a str, &'a JsonValue>, CatalogQuarantineReason> {
-    let object = value
-        .as_object()
-        .ok_or(CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-    let fields =
-        unique_fields(object).map_err(|()| CatalogQuarantineReason::InvalidCanonicalModelRecord)?;
-    if exact_fields(&fields, allowed, required) {
-        Ok(fields)
-    } else {
-        Err(CatalogQuarantineReason::InvalidCanonicalModelRecord)
-    }
-}
-
-fn optional_metadata_text(
-    fields: &BTreeMap<&str, &JsonValue>,
-    name: &str,
-) -> Result<(), CatalogQuarantineReason> {
-    if fields
-        .get(name)
-        .is_some_and(|value| bounded_text(value).is_none())
-    {
-        Err(CatalogQuarantineReason::InvalidCanonicalModelRecord)
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_record_key(value: &str) -> Result<(), CatalogQuarantineReason> {
-    if value.is_empty()
-        || value.len() > MAX_TEXT_BYTES
-        || value.chars().any(char::is_control)
-        || value.trim() != value
-    {
-        Err(CatalogQuarantineReason::InvalidCatalogModelRecord)
-    } else {
-        Ok(())
     }
 }
 
@@ -1340,33 +967,25 @@ fn date_text(value: &JsonValue) -> Result<String, CatalogQuarantineReason> {
     Ok(value)
 }
 
+/// Nonempty display text. Surrounding whitespace is trimmed rather than
+/// rejected, since upstream records occasionally carry a stray trailing space
+/// or tab; embedded control characters still reject the value.
 fn bounded_text(value: &JsonValue) -> Option<String> {
-    let value = value.as_str()?;
-    if value.is_empty()
-        || value.len() > MAX_TEXT_BYTES
-        || value.chars().any(char::is_control)
-        || value.trim() != value
-    {
+    let value = value.as_str()?.trim();
+    if value.is_empty() || value.len() > MAX_TEXT_BYTES || value.chars().any(char::is_control) {
         None
     } else {
         Some(value.to_owned())
     }
 }
 
-fn string_array(value: &JsonValue, maximum: usize, require_unique: bool) -> Option<Vec<String>> {
+/// A bounded, possibly empty array of text values.
+fn string_array(value: &JsonValue, maximum: usize) -> Option<Vec<String>> {
     let values = value.as_array()?;
-    if values.is_empty() || values.len() > maximum {
+    if values.len() > maximum {
         return None;
     }
-    let parsed = values
-        .iter()
-        .map(bounded_text)
-        .collect::<Option<Vec<_>>>()?;
-    if require_unique && parsed.iter().collect::<BTreeSet<_>>().len() != parsed.len() {
-        None
-    } else {
-        Some(parsed)
-    }
+    values.iter().map(bounded_text).collect()
 }
 
 fn metadata_string_array(value: &JsonValue, maximum: usize) -> Option<Vec<String>> {
@@ -1381,9 +1000,10 @@ fn metadata_string_array(value: &JsonValue, maximum: usize) -> Option<Vec<String
     (parsed.iter().collect::<BTreeSet<_>>().len() == parsed.len()).then_some(parsed)
 }
 
-fn exact_fields(fields: &BTreeMap<&str, &JsonValue>, allowed: &[&str], required: &[&str]) -> bool {
-    fields.keys().all(|key| allowed.contains(key))
-        && required.iter().all(|key| fields.contains_key(key))
+/// Whether every required field is present. Fields cookie does not read are
+/// ignored so upstream models.dev can add metadata without quarantining records.
+fn has_fields(fields: &BTreeMap<&str, &JsonValue>, required: &[&str]) -> bool {
+    required.iter().all(|key| fields.contains_key(key))
 }
 
 fn duplicate_keys(raw: &[(String, JsonValue)]) -> BTreeSet<String> {
@@ -1558,15 +1178,6 @@ impl JsonValue {
         match self {
             Self::Number(JsonNumber::Unsigned(value)) => i64::try_from(*value).ok(),
             Self::Number(JsonNumber::Signed(value)) => Some(*value),
-            _ => None,
-        }
-    }
-
-    fn as_f64(&self) -> Option<f64> {
-        match self {
-            Self::Number(JsonNumber::Unsigned(value)) => Some(*value as f64),
-            Self::Number(JsonNumber::Signed(value)) => Some(*value as f64),
-            Self::Number(JsonNumber::Float(value)) => Some(*value),
             _ => None,
         }
     }
@@ -1768,3 +1379,7 @@ fn parse_json(bytes: &[u8]) -> Result<JsonValue, CatalogError> {
         .map_err(|_| candidate("catalog JSON has trailing data"))?;
     Ok(value)
 }
+
+#[cfg(test)]
+#[path = "parser_tests.rs"]
+mod tests;
