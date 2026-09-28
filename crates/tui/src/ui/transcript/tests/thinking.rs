@@ -131,12 +131,14 @@ async fn thinking_clock_cycles_buckets_only_while_thinking_streams() {
     assert!(app.animation_active());
 
     // Twelve 33ms frames per step ≈ 400ms per ellipsis dot, wrapping
-    // after "thinking..." back to the bare label.
+    // after "thinking..." back to the bare label. Only the step frame
+    // reports a change, so the event loop redraws once per step.
     assert_eq!(app.clock_bucket(), 0);
     for expected in [1, 2, 3, 0] {
-        for _ in 0..12 {
-            app.animation_tick();
+        for _ in 0..11 {
+            assert!(!app.animation_tick());
         }
+        assert!(app.animation_tick());
         assert_eq!(app.clock_bucket(), expected);
     }
 

@@ -623,7 +623,9 @@ impl App {
         }
     }
 
-    pub(in crate::ui) fn reconcile_pending_approval(&mut self) {
+    /// Drop a pending approval submission that is no longer exactly
+    /// pending. Returns whether one was dropped.
+    pub(in crate::ui) fn reconcile_pending_approval(&mut self) -> bool {
         let stale = self
             .pending_approval
             .as_ref()
@@ -639,6 +641,7 @@ impl App {
                 pending.approval.approval_id
             );
         }
+        stale
     }
 
     pub(in crate::ui) fn apply_approval_list(
