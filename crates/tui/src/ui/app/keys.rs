@@ -1094,8 +1094,14 @@ impl App {
         (count > 0).then_some(WorkingState::Queued(count))
     }
 
-    pub(in crate::ui) fn animation_tick(&mut self) {
+    /// Advance the animation one 33ms frame. Returns whether the
+    /// [`Self::clock_bucket`] changed — the only per-frame input to the
+    /// drawn view — so the event loop redraws once per step instead of
+    /// every frame.
+    pub(in crate::ui) fn animation_tick(&mut self) -> bool {
+        let before = self.clock_bucket();
         self.animation_ticks = self.animation_ticks.wrapping_add(1);
+        self.clock_bucket() != before
     }
 
     /// A captured scrollbar thumb drag keeps its grab anchor and resolves

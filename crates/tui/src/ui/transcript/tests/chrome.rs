@@ -270,6 +270,30 @@ async fn animation_active_covers_active_runs_and_pending_producers() {
 }
 
 #[tokio::test]
+async fn idle_replay_watchdog_reports_only_wall_clock_view_changes() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.store
+        .sessions
+        .entry(session)
+        .or_default()
+        .approvals
+        .push(approval(session));
+    // An idle tick changes nothing, so the event loop does not redraw.
+    assert!(!app.recover_timed_out_replays());
+    let drawn = app.wall_clock_view();
+    assert_eq!(app.wall_clock_view(), drawn);
+    // Expiry alone hides the approval on top: the view differs from what
+    // was drawn even though no state changed.
+    app.store.sessions.get_mut(&session).unwrap().approvals[0]
+        .constraints
+        .expires_at = Some(jiff::Timestamp::now() - jiff::SignedDuration::from_secs(1));
+    assert!(!app.recover_timed_out_replays());
+    assert_ne!(app.wall_clock_view(), drawn);
+}
+
+#[tokio::test]
 async fn clicking_bottom_bar_cost_opens_usage_panel() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();

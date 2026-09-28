@@ -327,6 +327,13 @@ pub(super) struct PendingQueueEntry {
     pub(super) preview: String,
 }
 
+/// See [`App::wall_clock_view`].
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui) struct WallClockView {
+    approval: Option<(cookie_agent_protocol::ApprovalId, u64)>,
+    queue_age: Option<String>,
+}
+
 /// Only user rows recall the newest user input; producer rows are read-only.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct QueueEntryHit {
@@ -1545,8 +1552,10 @@ async fn event_loop(
     let mut mcp_poll = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut frame_tick = tokio::time::interval(RenderScheduler::FRAME_INTERVAL);
     let mut render = RenderScheduler::default();
+    let mut drawn_wall_clock_view = app.wall_clock_view();
     loop {
         if render.should_draw(Instant::now()) {
+            drawn_wall_clock_view = app.wall_clock_view();
             if let Err(error) = terminal
                 .draw(|frame| app.draw(frame))
                 .context("draw terminal")
@@ -1608,17 +1617,22 @@ async fn event_loop(
                 render.mark_immediate();
             },
             _ = replay_watchdog.tick() => {
-                app.recover_timed_out_replays();
-                render.mark_stream();
+                // An idle TUI stays idle: redraw only when recovery changed
+                // state or wall-clock time alone changed the drawn view.
+                if app.recover_timed_out_replays()
+                    || app.wall_clock_view() != drawn_wall_clock_view
+                {
+                    render.mark_stream();
+                }
             },
             _ = mcp_poll.tick() => {
                 app.poll_mcp();
             },
             _ = frame_tick.tick() => {
-                // The frame cadence drives only the streaming "thinking…"
-                // ellipsis; everything else redraws on events.
-                if app.animation_active() {
-                    app.animation_tick();
+                // The frame cadence drives only the clock bucket (the
+                // "thinking…" ellipsis and the working spinner), which steps
+                // every ~400ms; everything else redraws on events.
+                if app.animation_active() && app.animation_tick() {
                     render.mark_stream();
                 }
             },

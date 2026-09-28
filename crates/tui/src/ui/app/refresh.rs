@@ -1024,12 +1024,38 @@ impl App {
         }
     }
 
-    pub(in crate::ui) fn recover_timed_out_replays(&mut self) {
-        for session_id in self.store.abandon_timed_out_replays() {
+    /// Retry replays past their deadline and drop a stale pending approval.
+    /// Returns whether any visible state changed.
+    pub(in crate::ui) fn recover_timed_out_replays(&mut self) -> bool {
+        let timed_out = self.store.abandon_timed_out_replays();
+        for &session_id in &timed_out {
             self.status = "replay timed out; retrying recovery".into();
             self.client.recover_session(session_id, true);
         }
-        self.reconcile_pending_approval();
+        let reconciled = self.reconcile_pending_approval();
+        !timed_out.is_empty() || reconciled
+    }
+
+    /// The drawn state that changes with wall-clock time alone: the approval
+    /// on top (hidden once it expires) and the pending strip's coarse age
+    /// label. The replay watchdog redraws only when this differs from what
+    /// was last drawn.
+    pub(in crate::ui) fn wall_clock_view(&self) -> WallClockView {
+        let approval = self
+            .current_approval()
+            .map(|approval| (approval.approval_id, approval.request_revision));
+        let queue_age = self.selected_queue_entries().first().map(|oldest| {
+            queue_age_label(
+                jiff::Timestamp::now()
+                    .duration_since(oldest.accepted_at)
+                    .as_secs()
+                    .max(0),
+            )
+        });
+        WallClockView {
+            approval,
+            queue_age,
+        }
     }
 
     pub(in crate::ui) fn poll_mcp(&mut self) {
