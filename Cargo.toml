@@ -81,6 +81,13 @@ rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "clie
 [profile.dev]
 debug = "line-tables-only"
 
+[profile.release]
+strip = true
+
+# Shipped binaries: fat LTO with one codegen unit trades a much slower final
+# link for the smallest binary. `panic` stays `unwind` because the engine and
+# TUI recover from panics with `catch_unwind`.
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1
