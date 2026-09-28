@@ -151,6 +151,7 @@ fn attribution_marker_renders_without_region_and_is_skipped_by_navigation() {
         version: 0,
         attribution: attribution(None),
         committed_turn_seq: Some(2),
+        child_times: Vec::new(),
         children: vec![
             AssistantChild::Thinking {
                 id: 10,

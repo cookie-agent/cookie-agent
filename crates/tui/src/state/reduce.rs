@@ -429,7 +429,7 @@ pub(super) fn reduce_event(
                     let changed = projection.current_model != resolved_model;
                     if changed {
                         attribution_marker =
-                            append_attribution(state, item_id, resolved_model.clone());
+                            append_attribution(state, item_id, resolved_model.clone(), timestamp);
                     }
                     state
                         .open_run_assistant
@@ -552,7 +552,12 @@ pub(super) fn reduce_event(
                 // Without a tracked block (the attempt started before this
                 // view's replay window) the interruption still shows, as a row.
                 let noted = attempt.as_ref().and_then(|attempt| {
-                    append_assistant_notice(state, attempt.item_id, "model interrupted".into())
+                    append_assistant_notice(
+                        state,
+                        attempt.item_id,
+                        "model interrupted".into(),
+                        timestamp,
+                    )
                 });
                 if noted.is_none() {
                     push_event(
@@ -659,6 +664,7 @@ pub(super) fn reduce_event(
                     sequence,
                     committed_prefix,
                     &turn,
+                    timestamp,
                 );
                 // The committed turn rebuilt canonically in the newest block,
                 // so the attempt's pre-split streamed output in earlier
@@ -807,6 +813,7 @@ pub(super) fn reduce_event(
             )
             .unwrap_or_else(|| "{}".into());
             state.pending_tool_rows.push(PendingToolRow {
+                started_at: timestamp,
                 turn_seq: start.owner.model_turn_seq,
                 content_index: start.owner.content_index,
                 call_id: start.tool_call_id,
@@ -1520,6 +1527,7 @@ pub(super) fn rebind_pending_attempt(
     let TranscriptItem::Assistant {
         attribution,
         children,
+        child_times,
         committed_turn_seq,
         version,
         ..
@@ -1533,6 +1541,9 @@ pub(super) fn rebind_pending_attempt(
     };
     // A fallback marker belongs to this unstreamed retry, not the old block.
     if let Some(marker) = attempt.attribution_marker {
+        if child_times.len() == children.len() {
+            child_times.remove(marker);
+        }
         children.remove(marker);
         *version = version.wrapping_add(1);
     }
@@ -1656,6 +1667,7 @@ pub(super) fn open_assistant_item(
         attribution,
         committed_turn_seq: None,
         children: Vec::new(),
+        child_times: Vec::new(),
     });
     state
         .transcript
@@ -1668,16 +1680,25 @@ pub(super) fn append_attribution(
     state: &mut SessionState,
     item_id: u64,
     resolved_model: ResolvedModelRef,
+    timestamp: jiff::Timestamp,
 ) -> Option<usize> {
     if let Some(TranscriptItem::Assistant {
-        version, children, ..
+        version,
+        children,
+        child_times,
+        ..
     }) = state
         .transcript
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
         let index = children.len();
-        children.push(AssistantChild::Attribution { resolved_model });
+        push_child(
+            children,
+            child_times,
+            AssistantChild::Attribution { resolved_model },
+            timestamp,
+        );
         *version = version.wrapping_add(1);
         return Some(index);
     }
@@ -1688,16 +1709,25 @@ pub(super) fn append_assistant_notice(
     state: &mut SessionState,
     item_id: u64,
     text: String,
+    timestamp: jiff::Timestamp,
 ) -> Option<usize> {
     if let Some(TranscriptItem::Assistant {
-        version, children, ..
+        version,
+        children,
+        child_times,
+        ..
     }) = state
         .transcript
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
         let index = children.len();
-        children.push(AssistantChild::Notice { text });
+        push_child(
+            children,
+            child_times,
+            AssistantChild::Notice { text },
+            timestamp,
+        );
         *version = version.wrapping_add(1);
         return Some(index);
     }
@@ -1710,22 +1740,37 @@ pub(super) fn prune_abandoned_attempt(
     committed_prefix: usize,
 ) {
     if let Some(TranscriptItem::Assistant {
-        version, children, ..
+        version,
+        children,
+        child_times,
+        ..
     }) = state
         .transcript
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
-        let tail = children.split_off(committed_prefix.min(children.len()));
+        let timed = child_times.len() == children.len();
+        let committed_prefix = committed_prefix.min(children.len());
+        let tail = children.split_off(committed_prefix);
+        let tail_times = if timed {
+            child_times.split_off(committed_prefix)
+        } else {
+            Vec::new()
+        };
         for child in &tail {
             if let AssistantChild::Thinking { id, .. } = child {
                 state.thinking_durations.remove(&(item_id, *id));
             }
         }
-        children.extend(
-            tail.into_iter()
-                .filter(|child| matches!(child, AssistantChild::Attribution { .. })),
-        );
+        // Attribution markers survive the prune, with their times.
+        for (index, child) in tail.into_iter().enumerate() {
+            if matches!(child, AssistantChild::Attribution { .. }) {
+                if let Some(time) = tail_times.get(index) {
+                    child_times.push(*time);
+                }
+                children.push(child);
+            }
+        }
         *version = version.wrapping_add(1);
     }
 }
@@ -1793,6 +1838,7 @@ pub(super) fn rebuild_committed_children(
     sequence: u64,
     committed_prefix: usize,
     turn: &PersistedModelTurn,
+    timestamp: jiff::Timestamp,
 ) {
     state.open_assistant = None;
     let mut children = Vec::with_capacity(turn.content.len());
@@ -1853,6 +1899,7 @@ pub(super) fn rebuild_committed_children(
     if let Some(TranscriptItem::Assistant {
         version,
         children: existing,
+        child_times,
         ..
     }) = state
         .transcript
@@ -1892,11 +1939,26 @@ pub(super) fn rebuild_committed_children(
                 state.thinking_durations.insert((item_id, *id), duration);
             }
         }
-        let retained_markers = existing
-            .drain(committed_prefix..)
-            .filter(|child| matches!(child, AssistantChild::Attribution { .. }))
-            .collect::<Vec<_>>();
-        existing.extend(retained_markers);
+        // The committed turn is placed at its commit: that is when its
+        // canonical content entered the block, live and on replay alike.
+        let timed = child_times.len() == existing.len();
+        let superseded = existing.drain(committed_prefix..).collect::<Vec<_>>();
+        let superseded_times = if timed {
+            child_times.split_off(committed_prefix)
+        } else {
+            Vec::new()
+        };
+        for (index, child) in superseded.into_iter().enumerate() {
+            if matches!(child, AssistantChild::Attribution { .. }) {
+                if let Some(time) = superseded_times.get(index) {
+                    child_times.push(*time);
+                }
+                existing.push(child);
+            }
+        }
+        if timed {
+            child_times.extend(std::iter::repeat_n(timestamp, children.len()));
+        }
         existing.extend(children);
         *version = version.wrapping_add(1);
         if let Some(projection) = state
@@ -1920,7 +1982,10 @@ pub(super) fn append_assistant_delta(
     if let Some(open) = state.open_assistant
         && open.item_id == item_id
         && let Some(TranscriptItem::Assistant {
-            version, children, ..
+            version,
+            children,
+            child_times,
+            ..
         }) = state
             .transcript
             .iter_mut()
@@ -1982,7 +2047,12 @@ pub(super) fn append_assistant_delta(
         if let Some(previous) = state.open_assistant.take() {
             seal_open_thinking(&mut state.thinking_durations, previous, timestamp);
         }
-        children.push(new_assistant_part(sequence, text, kind));
+        push_child(
+            children,
+            child_times,
+            new_assistant_part(sequence, text, kind),
+            timestamp,
+        );
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
             item_id,
@@ -1996,13 +2066,21 @@ pub(super) fn append_assistant_delta(
         seal_open_thinking(&mut state.thinking_durations, previous, timestamp);
     }
     if let Some(TranscriptItem::Assistant {
-        version, children, ..
+        version,
+        children,
+        child_times,
+        ..
     }) = state
         .transcript
         .iter_mut()
         .find(|item| item.id() == item_id)
     {
-        children.push(new_assistant_part(sequence, text, kind));
+        push_child(
+            children,
+            child_times,
+            new_assistant_part(sequence, text, kind),
+            timestamp,
+        );
         *version = version.wrapping_add(1);
         state.open_assistant = Some(OpenAssistantProjection {
             item_id,
@@ -2059,9 +2137,7 @@ pub(super) fn place_tool_rows(state: &mut SessionState) {
             .turn_items
             .get(&row.turn_seq)
             .copied()
-            .is_some_and(|item_id| {
-                link_tool_child(state, item_id, row.turn_seq, row.content_index, row.call_id)
-            });
+            .is_some_and(|item_id| link_tool_child(state, item_id, &row));
         if !linked {
             deferred.push(row);
         }
@@ -2075,12 +2151,14 @@ pub(super) fn place_tool_rows(state: &mut SessionState) {
 pub(super) fn link_tool_child(
     state: &mut SessionState,
     item_id: u64,
-    turn_seq: u64,
-    content_index: u32,
-    call_id: ToolCallId,
+    row: &PendingToolRow,
 ) -> bool {
+    let (turn_seq, content_index, call_id) = (row.turn_seq, row.content_index, row.call_id);
     let Some(TranscriptItem::Assistant {
-        version, children, ..
+        version,
+        children,
+        child_times,
+        ..
     }) = state
         .transcript
         .iter_mut()
@@ -2094,7 +2172,8 @@ pub(super) fn link_tool_child(
     if already {
         return true;
     }
-    for child in children.iter_mut() {
+    let timed = child_times.len() == children.len();
+    for (index, child) in children.iter_mut().enumerate() {
         if let AssistantChild::CommittedTool {
             turn_seq: placeholder_turn,
             content_index: placeholder,
@@ -2104,6 +2183,12 @@ pub(super) fn link_tool_child(
             && *placeholder == content_index
         {
             *child = AssistantChild::Tool { call_id };
+            // A started tool row belongs where the call started running, not
+            // where the turn committed it (a queued call can start long
+            // after its siblings).
+            if timed {
+                child_times[index] = child_times[index].max(row.started_at);
+            }
             *version = version.wrapping_add(1);
             return true;
         }
@@ -2155,6 +2240,20 @@ pub(super) fn seal_open_thinking(
     thinking_durations.insert((open.item_id, open.part_id), duration);
 }
 
+/// Append one assistant child with its durable time, keeping the parallel
+/// times in step. Items whose times are already unknown stay unknown.
+fn push_child(
+    children: &mut Vec<AssistantChild>,
+    child_times: &mut Vec<jiff::Timestamp>,
+    child: AssistantChild,
+    timestamp: jiff::Timestamp,
+) {
+    if child_times.len() == children.len() {
+        child_times.push(timestamp);
+    }
+    children.push(child);
+}
+
 pub(super) fn push_item(
     state: &mut SessionState,
     timestamp: jiff::Timestamp,
@@ -2172,13 +2271,14 @@ pub(super) fn push_event(
     text: String,
     timestamp: jiff::Timestamp,
 ) {
-    // A warning-or-worse row injected while an assistant turn is in flight
-    // marks the run's block as split-pending: the part streaming right now
-    // keeps streaming into the existing block above the row, but the next
-    // new segment (part, tool call, or attempt) opens a fresh block below
-    // it. Debug/Info rows (replay decisions, commit notices, lifecycle
-    // chatter) never split, and neither do rows between turns, so one run's
-    // turns keep sharing a block.
+    // A warning-or-worse row injected while the run's block is open marks
+    // it split-pending: the part streaming right now keeps streaming into
+    // the existing block above the row, but the next new segment (part,
+    // tool call, or attempt) opens a fresh block below it. That includes
+    // rows between turns (a failed background delegate, a turn warning), so
+    // later turns never render above them. Debug/Info rows (replay
+    // decisions, commit notices, lifecycle chatter) never split, so a run's
+    // turns otherwise keep sharing a block.
     if level >= EventLevel::Warning {
         state.mark_event_split_pending();
     }

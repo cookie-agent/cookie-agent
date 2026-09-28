@@ -867,37 +867,10 @@ impl App {
             Some(event.session_id) == self.selected
                 && matches!(&event.payload, EventPayload::SessionReverted { .. })
         });
-        let event_session_id = event.map(|event| event.session_id);
-        let event_session_len_before = event_session_id.and_then(|session_id| {
-            self.store
-                .sessions
-                .get(&session_id)
-                .map(|state| state.transcript.len())
-        });
+        // A descendant's warning or error never mutates the viewed session's
+        // projection (a replay could not reproduce that): the transcript
+        // splices it in at render time by its durable time instead.
         let outcome = self.store.apply_delivery(delivery);
-        // A warning-or-worse row appended to a session other than the viewed
-        // one interleaves into the viewed conversation; if the viewed session
-        // is mid-block, its pre-warning content must finish above the break.
-        if matches!(outcome, DeliveryOutcome::Applied)
-            && let Some(event_session_id) = event_session_id
-            && Some(event_session_id) != self.selected
-            && let Some(selected) = self.selected
-            && self
-                .store
-                .sessions
-                .get(&event_session_id)
-                .is_some_and(|state| {
-                    Some(state.transcript.len()) > event_session_len_before
-                        && matches!(
-                            state.transcript.last(),
-                            Some(TranscriptItem::Event { level, .. })
-                                if *level >= crate::state::EventLevel::Warning
-                        )
-                })
-            && let Some(state) = self.store.sessions.get_mut(&selected)
-        {
-            state.mark_event_split_pending();
-        }
         if let Some(session_id) = replay_ended_session
             && self.pending_live_subscriptions.contains(&session_id)
         {

@@ -475,8 +475,8 @@ fn abandonment_after_event_split_prunes_both_blocks() {
     assert_eq!(assistant_texts(assistants[0]), ["final"]);
 }
 
-#[test]
-fn event_between_turns_does_not_split_block() {
+/// Two turns of one run, with the first turn's commit carrying `warnings`.
+fn two_turn_store(warnings: Vec<&str>) -> (StateStore, SessionId) {
     let session = SessionId::new_v7();
     let run = run_id();
     let first = AttemptId::new_v7();
@@ -495,7 +495,7 @@ fn event_between_turns_does_not_split_block() {
                 text: "one".into(),
                 metadata: None,
             }],
-            vec!["context near limit"],
+            warnings,
             None,
         ),
         attempt_started(session, 4, run, second, None),
@@ -516,12 +516,44 @@ fn event_between_turns_does_not_split_block() {
     ] {
         assert!(store.apply_event(event));
     }
+    (store, session)
+}
+
+#[test]
+fn info_between_turns_does_not_split_block() {
+    // Every commit leaves an Info row between the turns.
+    let (store, session) = two_turn_store(Vec::new());
     let state = &store.sessions[&session];
     let assistants = assistant_items(state);
     assert_eq!(
         assistants.len(),
         1,
-        "events between turns keep the run's turns in one block"
+        "info rows between turns keep the run's turns in one block"
     );
     assert_eq!(assistant_texts(assistants[0]), ["one", "two"]);
+}
+
+#[test]
+fn warning_between_turns_splits_block() {
+    let (store, session) = two_turn_store(vec!["context near limit"]);
+    let state = &store.sessions[&session];
+    // The later turn opens a fresh block below the warning, instead of
+    // continuing the block above it and leaving the warning at the bottom.
+    let order = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Assistant { .. } => Some(assistant_texts(item).join(",")),
+            TranscriptItem::Event {
+                level: crate::state::EventLevel::Warning,
+                text,
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order.len(), 3, "{order:?}");
+    assert_eq!(order[0], "one");
+    assert!(order[1].contains("context near limit"), "{order:?}");
+    assert_eq!(order[2], "two");
 }

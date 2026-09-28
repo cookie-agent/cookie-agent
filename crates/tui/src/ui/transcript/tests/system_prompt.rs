@@ -425,6 +425,7 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
                 version: 0,
                 attribution: attribution(None),
                 committed_turn_seq: Some(12),
+                child_times: Vec::new(),
                 children: vec![AssistantChild::MediaFile {
                     turn_seq: 12,
                     content_index: 0,

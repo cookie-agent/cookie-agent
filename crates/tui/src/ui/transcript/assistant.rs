@@ -15,7 +15,8 @@ pub(super) fn assistant_item_layout(
         user_seq: None,
     };
     let mut previous_is_prose = None;
-    for child in children {
+    for (index, child) in children.iter().enumerate() {
+        context.assistant_child_lines.push(layout.lines.len());
         // Prose and the compact tool/thinking rows are separated by one blank
         // gutter row whenever the reply switches between them; runs of rows
         // stay tight. Separators sit between parts, never inside a part's
@@ -69,6 +70,7 @@ pub(super) fn assistant_item_layout(
                         ..region
                     }));
                 context.assistant_part_ranges.push(AssistantPartRange {
+                    child: index,
                     id: child.id(),
                     key,
                     lines: start_line..layout.lines.len(),
@@ -284,6 +286,13 @@ pub(super) fn splice_active_assistant_part(
             .expect("assistant region offset remains valid");
     }
 
+    // Children after the re-rendered part move with its line delta.
+    let dirty_child = cached.assistant_parts[dirty_index].child;
+    for start in cached.child_lines.iter_mut().skip(dirty_child + 1) {
+        *start = start
+            .checked_add_signed(line_delta)
+            .expect("assistant child offset remains valid");
+    }
     let range = &mut cached.assistant_parts[dirty_index];
     range.key = key;
     range.lines.end = range.lines.start + new_line_len;

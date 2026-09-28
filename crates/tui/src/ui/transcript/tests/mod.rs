@@ -8,6 +8,7 @@ mod commands;
 mod diagnostics;
 mod diffs;
 mod drafts;
+mod event_order;
 mod goal;
 mod hit_regions;
 mod hover;

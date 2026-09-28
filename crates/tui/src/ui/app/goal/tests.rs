@@ -482,6 +482,7 @@ async fn activation_and_resume_send_current_draft_without_changing_running_attri
             version: 0,
             attribution,
             committed_turn_seq: Some(1),
+            child_times: Vec::new(),
             children: Vec::new(),
         });
         let title_before = app.message_title_spans();

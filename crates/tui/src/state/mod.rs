@@ -201,6 +201,14 @@ pub enum TranscriptItem {
         attribution: FrozenAssistantAttribution,
         committed_turn_seq: Option<u64>,
         children: Vec<AssistantChild>,
+        /// Durable time each child entered the block, parallel to
+        /// `children`: streamed parts at their first delta, committed turn
+        /// content at its commit, started tools at their start. Cross-session
+        /// rows (aggregated descendant warnings and errors) splice between
+        /// children by these times, so a run block that spans many turns
+        /// does not push them below content that happened later. A length
+        /// mismatch (hand-built items) means unknown.
+        child_times: Vec<jiff::Timestamp>,
     },
     /// A leveled diagnostic row (lifecycle notices, model warnings,
     /// failures). Never user/assistant/tool content; filtering these rows by
@@ -484,6 +492,8 @@ impl AssistantTurnMetrics {
 /// the owning turn's exact content index.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingToolRow {
+    /// Durable time of the tool's start event.
+    started_at: jiff::Timestamp,
     turn_seq: u64,
     content_index: u32,
     call_id: ToolCallId,
@@ -695,13 +705,11 @@ impl SessionState {
     }
 
     /// Mark the open run block split-pending so the next new segment opens a
-    /// fresh block below an interleaved event row. Shared by in-session
-    /// warning rows and aggregated descendant warnings arriving from another
-    /// session while this one streams.
+    /// fresh block below an interleaved event row. This holds while the run
+    /// streams and between its turns alike: output that happens after the
+    /// row must never render above it.
     pub(crate) fn mark_event_split_pending(&mut self) {
-        if (self.open_assistant.is_some() || self.pending_attempt.is_some())
-            && let Some(projection) = self.open_run_assistant.as_mut()
-        {
+        if let Some(projection) = self.open_run_assistant.as_mut() {
             projection.split_pending = true;
         }
     }

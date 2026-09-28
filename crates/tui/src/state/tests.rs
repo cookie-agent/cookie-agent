@@ -2593,6 +2593,7 @@ fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() 
                 .expect("resolved model"),
             },
             committed_turn_seq: None,
+            child_times: Vec::new(),
             children: Vec::new(),
         }],
         ..SessionState::default()
@@ -2619,7 +2620,15 @@ fn thinking_delta_after_committed_child_renumbering_appends_without_duplicate() 
         provider_metadata: BTreeMap::new(),
         native_replay: None,
     };
-    rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
+    rebuild_committed_children(
+        &mut state,
+        item_id,
+        1,
+        20,
+        0,
+        &turn,
+        jiff::Timestamp::UNIX_EPOCH,
+    );
     state.open_assistant = Some(stale_open);
 
     append_assistant_delta(
@@ -2872,7 +2881,15 @@ fn committed_assistant_text_replaces_streamed_delta() {
         native_replay: None,
     };
 
-    rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
+    rebuild_committed_children(
+        &mut state,
+        item_id,
+        1,
+        20,
+        0,
+        &turn,
+        jiff::Timestamp::UNIX_EPOCH,
+    );
 
     let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
         panic!("assistant item")
@@ -3052,6 +3069,7 @@ fn assistant_state_with_item(item_id: u64) -> SessionState {
                 .expect("resolved model"),
             },
             committed_turn_seq: None,
+            child_times: Vec::new(),
             children: Vec::new(),
         }],
         ..SessionState::default()
@@ -3131,7 +3149,15 @@ fn thinking_duration_transfers_to_the_committed_child_on_rebuild() {
         provider_metadata: BTreeMap::new(),
         native_replay: None,
     };
-    rebuild_committed_children(&mut state, item_id, 1, 20, 0, &turn);
+    rebuild_committed_children(
+        &mut state,
+        item_id,
+        1,
+        20,
+        0,
+        &turn,
+        jiff::Timestamp::UNIX_EPOCH,
+    );
     // The streamed part id is gone; the committed child carries the time.
     assert_eq!(state.thinking_duration(item_id, 10), None);
     let TranscriptItem::Assistant { children, .. } = &state.transcript[0] else {
