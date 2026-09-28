@@ -147,6 +147,20 @@ pub(super) fn collect_tree_session_ids(tree: &SessionTree, session_ids: &mut Vec
     }
 }
 
+/// Depth-first collection of the tree's sessions that can still produce
+/// events: running, or idle and able to be woken.
+pub(super) fn collect_live_tree_sessions(tree: &SessionTree, session_ids: &mut Vec<SessionId>) {
+    if matches!(
+        tree.session.status,
+        SessionStatus::Running | SessionStatus::Idle
+    ) {
+        session_ids.push(tree.session.session_id);
+    }
+    for child in &tree.children {
+        collect_live_tree_sessions(child, session_ids);
+    }
+}
+
 /// Depth-first collection of a subtree's session metadata, used to attribute
 /// descendant warnings to their owning session.
 pub(super) fn collect_subtree_sessions(tree: &SessionTree, sessions: &mut Vec<SessionMeta>) {
@@ -190,7 +204,7 @@ impl App {
             .get(&session_id)
             .map(|state| state.last_seq);
         match tokio::time::timeout(
-            TREE_SUBSCRIPTION_TIMEOUT,
+            SELECT_SUBSCRIPTION_WAIT,
             self.client.subscribe_events(session_id, cursor),
         )
         .await
@@ -199,7 +213,9 @@ impl App {
             // date on its own, so a refused second one is not an error.
             Ok(Ok(()) | Err(crate::client::ClientError::ReplayInProgress)) => {}
             Ok(Err(error)) => self.status = error.to_string(),
-            Err(_) => self.status = "session subscription timed out".into(),
+            // The replay keeps going without us and lands through the
+            // delivery stream; only the wait is bounded.
+            Err(_) => self.status = "still loading session history".into(),
         }
     }
 
