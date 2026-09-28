@@ -530,14 +530,8 @@ fn descendant_warnings_splice_at_chronological_position() {
         (Timestamp::new(3, 0).unwrap(), "mid warning".to_owned()),
         (Timestamp::new(9, 0).unwrap(), "late warning".to_owned()),
     ];
-    let (spliced, shifts) = App::splice_descendant_warnings(
-        lines.clone(),
-        &offsets,
-        state,
-        &warnings,
-        80,
-        &Theme::default(),
-    );
+    let (spliced, shifts) =
+        App::splice_descendant_warnings(&lines, &offsets, state, &warnings, 80, &Theme::default());
     let text_of = |line: &Line<'_>| {
         line.spans
             .iter()
@@ -578,7 +572,7 @@ fn descendant_warnings_splice_at_chronological_position() {
     assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
     // Empty warnings leave the layout untouched.
     let (untouched, empty_shifts) =
-        App::splice_descendant_warnings(lines, &offsets, state, &[], 80, &Theme::default());
+        App::splice_descendant_warnings(&lines, &offsets, state, &[], 80, &Theme::default());
     assert_eq!(untouched.len(), 7);
     assert!(empty_shifts.is_empty());
 }
