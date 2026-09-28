@@ -9,6 +9,7 @@ mod pickers;
 mod providers;
 mod refresh;
 mod sessions;
+pub(super) use agents::DescendantEvent;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(super) use approvals::approval_content;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
@@ -81,8 +82,9 @@ use crate::{
     config::TuiConfig,
     markdown::{Highlighter, SyntectHighlighter},
     state::{
-        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, PendingInput, RuntimePhase,
-        RuntimeState, StateStore, ToolStatus, TranscriptItem, approval_state_from_record,
+        ApprovalState, DeliveryOutcome, EMPTY_RUNTIME_GUIDANCE, EventLevel, PendingInput,
+        RuntimePhase, RuntimeState, StateStore, ToolStatus, TranscriptItem,
+        approval_state_from_record,
     },
     theme::Theme,
 };
@@ -575,6 +577,10 @@ pub struct App {
     pub(super) cost_refreshes: HashMap<SessionId, SessionCostRefresh>,
     pub(super) next_cost_refresh_request_id: u64,
     pub(super) conversation_scroll: ConversationScroll,
+    /// Where the last drawn conversation spliced descendant rows into the
+    /// cached layout, as (unspliced line, inserted rows): the scroll
+    /// offset addresses the spliced lines, the scroll anchor the unspliced.
+    pub(super) conversation_splice_shifts: Vec<(usize, usize)>,
     pub(super) scrollbar_geometry: Option<ScrollbarGeometry>,
     pub(super) scrollbar_drag: Option<ScrollbarDrag>,
     pub(super) approval_scroll: u16,
@@ -1079,6 +1085,7 @@ impl App {
             cost_refreshes: HashMap::new(),
             next_cost_refresh_request_id: 0,
             conversation_scroll: ConversationScroll::default(),
+            conversation_splice_shifts: Vec::new(),
             scrollbar_geometry: None,
             scrollbar_drag: None,
             approval_scroll: 0,

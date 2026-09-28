@@ -45,7 +45,7 @@ use crate::{
     theme::{Theme, ThemeKey},
 };
 
-use super::app::{App, TextSelection, UserMessageHit};
+use super::app::{App, DescendantEvent, TextSelection, UserMessageHit};
 
 /// Scrollbar geometry over the total rendered line height.
 ///
@@ -470,10 +470,16 @@ struct CachedItemLayout {
     key: ItemLayoutKey,
     layout: ItemLayout,
     assistant_parts: Vec<AssistantPartRange>,
+    /// For an assistant item, one line per child: where that child's rows
+    /// (with the gutter row separating it from a different kind) begin in
+    /// `layout.lines`. Descendant rows splice between children there.
+    child_lines: Vec<usize>,
 }
 
 #[derive(Clone)]
 struct AssistantPartRange {
+    /// Index of the part among its item's children.
+    child: usize,
     id: u64,
     key: AssistantPartLayoutKey,
     lines: Range<usize>,
@@ -508,6 +514,7 @@ struct TranscriptRenderContext<'a> {
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
     assistant_part_ranges: &'a mut Vec<AssistantPartRange>,
+    assistant_child_lines: &'a mut Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -620,6 +627,7 @@ pub(super) fn ensure_cached_transcript_layout(
         } else {
             let item_key = item_layout_key(state, item, expanded, clock_bucket);
             let mut assistant_part_ranges = Vec::new();
+            let mut assistant_child_lines = Vec::new();
             let mut context = TranscriptRenderContext {
                 expanded,
                 width,
@@ -630,6 +638,7 @@ pub(super) fn ensure_cached_transcript_layout(
                 assistant_part_cache: &mut cache.assistant_parts,
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,
+                assistant_child_lines: &mut assistant_child_lines,
             };
             // Splicing re-renders only the streaming text/thinking part, so an
             // expand/collapse elsewhere in the item (e.g. a tool row toggled
@@ -648,6 +657,7 @@ pub(super) fn ensure_cached_transcript_layout(
                     key: item_key,
                     layout: layout.clone(),
                     assistant_parts: assistant_part_ranges,
+                    child_lines: assistant_child_lines,
                 };
                 if index < cache.items.len() {
                     cache.items[index] = cached;
@@ -672,17 +682,84 @@ pub(super) fn ensure_cached_transcript_layout(
     false
 }
 
-/// Transcript lines with descendant warnings spliced in, plus each splice
+/// Transcript lines with descendant rows spliced in, plus each splice
 /// point's original-line position and inserted line count.
 type SplicedLines = (Vec<Line<'static>>, Vec<(usize, usize)>);
+
+/// One descendant row's splice point in the unspliced layout, and the
+/// assistant block it breaks, as (item index, child index), when the row
+/// lands between two of that block's children.
+type Placement<'a> = (usize, &'a DescendantEvent, Option<(usize, usize)>);
+
+/// Shift one unspliced line coordinate by the rows spliced in before it. A
+/// region start (`inclusive`) moves with rows inserted exactly at it; an
+/// exclusive region end does not, so a region ending where rows are
+/// inserted never grows over them.
+fn splice_shifted(line: usize, splice_shifts: &[(usize, usize)], inclusive: bool) -> usize {
+    splice_shifts
+        .iter()
+        .filter(|(position, _)| *position < line || (inclusive && *position == line))
+        .map(|(_, inserted)| *inserted)
+        .sum::<usize>()
+        .saturating_add(line)
+}
+
+/// Map a spliced line back to the unspliced layout. A line inside spliced-in
+/// rows maps to their splice point, with its depth into them.
+fn unsplice_line(line: usize, splice_shifts: &[(usize, usize)]) -> (usize, Option<usize>) {
+    let mut inserted_before = 0;
+    for (position, inserted) in splice_shifts {
+        let start = position + inserted_before;
+        if line < start {
+            break;
+        }
+        if line < start + inserted {
+            return (*position, Some(line - start));
+        }
+        inserted_before += inserted;
+    }
+    (line - inserted_before, None)
+}
+
+/// The header that resumes an assistant block below descendant rows spliced
+/// in before child `child`: the block's producer with the model in effect at
+/// that point, exactly as a block split by an in-session row would read.
+fn continuation_header(
+    item: &TranscriptItem,
+    child: usize,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let TranscriptItem::Assistant {
+        attribution,
+        children,
+        ..
+    } = item
+    else {
+        return Vec::new();
+    };
+    let resolved_model = children[..child.min(children.len())]
+        .iter()
+        .rev()
+        .find_map(|child| match child {
+            AssistantChild::Attribution { resolved_model } => Some(resolved_model),
+            _ => None,
+        })
+        .unwrap_or(&attribution.resolved_model);
+    let attribution = crate::state::FrozenAssistantAttribution {
+        agent: attribution.agent.clone(),
+        resolved_model: resolved_model.clone(),
+    };
+    assistant_header(attribution.header().as_str(), width, theme)
+}
 
 impl App {
     /// The transient notice rows rendered after the transcript (transient
     /// notices and goal notices), exactly as [`Self::render_conversation`]
-    /// appends them. Descendant warnings are spliced into the transcript
-    /// body instead; see [`Self::spliced_conversation_lines`]. Selection
-    /// extraction consumes the same chain so copied text matches what is
-    /// on screen.
+    /// appends them. Descendant warnings and errors are spliced into the
+    /// transcript body instead; see [`Self::spliced_conversation_lines`].
+    /// Selection extraction consumes the same chain so copied text matches
+    /// what is on screen.
     pub(super) fn notice_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut notice_lines = Vec::new();
         let goal_notices = self
@@ -711,149 +788,211 @@ impl App {
         notice_lines
     }
 
+    /// Descendant warning and error rows for the viewed session, at or
+    /// above the event-level filter.
+    fn viewed_descendant_events(&self) -> Vec<DescendantEvent> {
+        self.selected
+            .map(|selected| self.descendant_events(selected, self.tui_config.minimum_event_level))
+            .unwrap_or_default()
+    }
+
     /// The viewed session's rendered transcript lines with aggregated
-    /// descendant warnings spliced in at their chronological position.
-    ///
-    /// Each warning anchors after the last transcript item whose durable
-    /// insertion time is at or before the warning's time; the warning's
-    /// rendered block takes the next item's separator slot, so pre-warning
-    /// content finishes above the break and later content resumes below it.
-    /// Warnings older than every timed item land just after the system
-    /// prompt (before the first item). Returns `None` when there is nothing
-    /// to splice, so callers keep borrowing the untouched layout instead of
-    /// copying every line each frame.
+    /// descendant warnings and errors spliced in at their chronological
+    /// position; see [`Self::splice_descendant_events`]. Returns `None` when
+    /// there is nothing to splice, so callers keep borrowing the untouched
+    /// layout instead of copying every line each frame.
     fn spliced_conversation_lines(
         &self,
         width: u16,
         layout_lines: &[Line<'static>],
-        warnings: &[(jiff::Timestamp, String)],
+        events: &[DescendantEvent],
     ) -> Option<SplicedLines> {
         let state = self
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
-            .filter(|_| !warnings.is_empty())?;
-        Some(Self::splice_descendant_warnings(
+            .filter(|_| !events.is_empty())?;
+        Some(Self::splice_descendant_events(
             layout_lines,
+            &self.layout_cache.items,
             &self.layout_cache.item_offsets,
             state,
-            warnings,
+            events,
             width,
             &self.theme,
         ))
     }
 
-    /// Shift a block region's line coordinates by the splice insertions at or
-    /// before each coordinate.
+    /// Shift a block region's line coordinates by the splice insertions
+    /// before it.
     fn shift_region_lines(
         mut region: BlockRegion,
         splice_shifts: &[(usize, usize)],
     ) -> BlockRegion {
-        let shift = |line: usize| {
-            splice_shifts
-                .iter()
-                .filter(|(position, _)| *position <= line)
-                .map(|(_, inserted)| *inserted)
-                .sum::<usize>()
-                .saturating_add(line)
-        };
-        region.start_line = shift(region.start_line);
-        region.end_line = shift(region.end_line);
+        let start = splice_shifted(region.start_line, splice_shifts, true);
+        region.end_line = splice_shifted(region.end_line, splice_shifts, false).max(start);
+        region.start_line = start;
         region
     }
 
-    /// Shift a user region's line coordinates by the splice insertions at or
-    /// before each coordinate.
+    /// Shift a user region's line coordinates by the splice insertions
+    /// before it.
     fn shift_user_region_lines(
         mut region: UserRegion,
         splice_shifts: &[(usize, usize)],
     ) -> UserRegion {
-        let shift = |line: usize| {
-            splice_shifts
-                .iter()
-                .filter(|(position, _)| *position <= line)
-                .map(|(_, inserted)| *inserted)
-                .sum::<usize>()
-                .saturating_add(line)
-        };
-        region.start_line = shift(region.start_line);
-        region.end_line = shift(region.end_line);
+        let start = splice_shifted(region.start_line, splice_shifts, true);
+        region.end_line = splice_shifted(region.end_line, splice_shifts, false).max(start);
+        region.start_line = start;
         region
     }
 
-    /// Splice aggregated descendant warning blocks into a rendered transcript at
-    /// their chronological position.
+    /// Splice aggregated descendant warning and error blocks into a rendered
+    /// transcript at their chronological position.
     ///
-    /// `item_offsets` holds one [`ItemAssemblyOffset`] per transcript item: item
-    /// i's separator and rendered lines span `[offsets[i].lines,
-    /// offsets[i+1].lines or lines.len())`, and rows before `offsets[0].lines`
-    /// belong to the system prompt. Each warning anchors after the last item
-    /// whose durable insertion time is at or before the warning time, taking the
-    /// next item's separator slot; warnings older than every timed item land
-    /// after the system prompt, before the first item. When no item is timed at
-    /// all (or the transcript is empty), warnings keep their historical
-    /// bottom-of-transcript position.
+    /// The viewed transcript is a sequence of timed segments in render
+    /// order: each item at its durable insertion time, except that an
+    /// assistant block contributes one segment per child at the child's own
+    /// time (one run's turns and tool calls share a block, so the block's
+    /// start time alone would push a row that happened mid-run below
+    /// everything the run did afterwards). Each row lands just before the
+    /// first segment that happened after it, so nothing rendered above a row
+    /// happened later than the row; rows newer than every segment (or when
+    /// nothing is timed) land at the bottom.
     ///
-    /// Returns the spliced lines plus, for each splice point, the original-line
-    /// position and the number of lines inserted there, so callers can shift
-    /// scroll anchors and hit regions that address the unspliced layout.
-    fn splice_descendant_warnings(
+    /// Before an item, a row takes that item's separator slot. Between two
+    /// children of an assistant block, it breaks the block: the rows render
+    /// below the earlier children and a continuation header resumes the
+    /// block, as an in-session row splitting a block would.
+    ///
+    /// `item_offsets` holds one [`ItemAssemblyOffset`] per transcript item
+    /// and `items` the cached layouts they were assembled from. One pass
+    /// walks the segments against the time-ordered rows.
+    ///
+    /// Returns the spliced lines plus, for each splice point, the
+    /// original-line position and the number of lines inserted there, so
+    /// callers can shift scroll anchors and hit regions that address the
+    /// unspliced layout.
+    fn splice_descendant_events(
         lines: &[Line<'static>],
+        items: &[CachedItemLayout],
         item_offsets: &[ItemAssemblyOffset],
-        state: &crate::state::SessionState,
-        warnings: &[(jiff::Timestamp, String)],
+        state: &SessionState,
+        events: &[DescendantEvent],
         width: u16,
         theme: &Theme,
     ) -> SplicedLines {
-        if warnings.is_empty() {
-            return (lines.to_vec(), Vec::new());
+        let mut placements: Vec<Placement<'_>> = Vec::with_capacity(events.len());
+        let mut next = 0;
+        for (index, item) in state.transcript.iter().enumerate() {
+            if next == events.len() {
+                break;
+            }
+            let Some(offset) = item_offsets.get(index) else {
+                break;
+            };
+            let item_end = item_offsets
+                .get(index + 1)
+                .map_or(lines.len(), |next| next.lines);
+            let child_segments = match (item, items.get(index)) {
+                (
+                    TranscriptItem::Assistant {
+                        children,
+                        child_times,
+                        ..
+                    },
+                    Some(cached),
+                ) if !children.is_empty()
+                    && child_times.len() == children.len()
+                    && cached.child_lines.len() == children.len()
+                    && cached.key.id == item.id()
+                    && cached.key.version == item.version() =>
+                {
+                    Some((
+                        child_times,
+                        &cached.child_lines,
+                        item_end.saturating_sub(cached.layout.lines.len()),
+                    ))
+                }
+                _ => None,
+            };
+            if let Some((child_times, child_lines, body_start)) = child_segments {
+                for (child, time) in child_times.iter().enumerate() {
+                    while next < events.len() && events[next].time < *time {
+                        let placement = if child == 0 {
+                            (offset.lines, &events[next], None)
+                        } else {
+                            (
+                                body_start + child_lines[child],
+                                &events[next],
+                                Some((index, child)),
+                            )
+                        };
+                        placements.push(placement);
+                        next += 1;
+                    }
+                }
+            } else if let Some(time) = state.item_time(item.id()) {
+                while next < events.len() && events[next].time < time {
+                    placements.push((offset.lines, &events[next], None));
+                    next += 1;
+                }
+            }
         }
-        let timed_anchor = |time: jiff::Timestamp| -> Option<usize> {
-            (0..state.transcript.len()).rev().find(|&index| {
-                state
-                    .item_time(state.transcript[index].id())
-                    .is_some_and(|item_time| item_time <= time)
-            })
-        };
-        let mut placements: Vec<(usize, String)> = warnings
-            .iter()
-            .map(|(time, text)| {
-                let position = match timed_anchor(*time) {
-                    Some(index) => item_offsets
-                        .get(index + 1)
-                        .map_or(lines.len(), |offset| offset.lines),
-                    None if !item_offsets.is_empty() => item_offsets[0].lines,
-                    None => lines.len(),
-                };
-                (position, text.clone())
-            })
-            .collect();
-        placements.sort_by_key(|(position, _)| *position);
-        let mut out = Vec::with_capacity(lines.len() + warnings.len() * 3);
+        placements.extend(
+            events[next..]
+                .iter()
+                .map(|event| (lines.len(), event, None)),
+        );
+        // Positions already ascend with segment order; the stable sort only
+        // guards stale cached offsets.
+        placements.sort_by_key(|(position, _, _)| *position);
+
+        let mut out = Vec::with_capacity(lines.len() + placements.len() * 4);
         // Splice points and inserted counts, in original-line coordinates.
         let mut splice_shifts: Vec<(usize, usize)> = Vec::new();
         let mut cursor = 0usize;
-        for (position, text) in placements {
-            while cursor < position.min(lines.len()) {
-                out.push(lines[cursor].clone());
-                cursor += 1;
+        let mut placements = placements.into_iter().peekable();
+        while let Some((position, event, resume)) = placements.next() {
+            let position = position.min(lines.len());
+            out.extend_from_slice(&lines[cursor..position]);
+            cursor = position;
+            let before = out.len();
+            let mut resume = resume;
+            let mut event = Some(event);
+            while let Some(row) = event.take() {
+                let needs_separator = out.last().is_some_and(|line| {
+                    line.spans
+                        .iter()
+                        .any(|span| !span.content.trim().is_empty())
+                });
+                if needs_separator {
+                    out.push(Line::default());
+                }
+                let role = match row.level {
+                    crate::state::EventLevel::Error => Role::Error,
+                    _ => Role::Warning,
+                };
+                let text = row.text.lines().map(|line| Line::from(line.to_owned()));
+                out.extend(role_block(role, text.collect(), width, theme));
+                if let Some((_, row, row_resume)) =
+                    placements.next_if(|(next, _, _)| (*next).min(lines.len()) == position)
+                {
+                    resume = resume.or(row_resume);
+                    event = Some(row);
+                }
             }
-            let needs_separator = out.last().is_some_and(|line| {
-                line.spans
-                    .iter()
-                    .any(|span| !span.content.trim().is_empty())
-            });
-            let mut block = role_block(Role::Warning, vec![Line::from(text)], width, theme);
-            let mut inserted = block.len();
-            if needs_separator {
-                block.insert(0, Line::default());
-                inserted += 1;
+            if let Some((item, child)) = resume
+                && let Some(item) = state.transcript.get(item)
+            {
+                out.push(Line::default());
+                out.extend(continuation_header(item, child, width, theme));
             }
+            let inserted = out.len() - before;
             if inserted > 0 {
                 splice_shifts.push((position, inserted));
             }
-            out.extend(block);
         }
-        out.extend(lines[cursor..].iter().cloned());
+        out.extend_from_slice(&lines[cursor..]);
         (out, splice_shifts)
     }
 
@@ -869,18 +1008,11 @@ impl App {
             .selected
             .and_then(|session_id| self.store.sessions.get(&session_id))
             .is_none_or(|state| state.transcript.is_empty() && state.run_snapshot.is_none());
-        let descendant_warnings =
-            if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
-                self.selected
-                    .map(|selected| self.descendant_warnings(selected))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+        let descendant_events = self.viewed_descendant_events();
         let mut notices = self.notice_lines(width);
         if session_present
             && !transcript_empty
-            && descendant_warnings.is_empty()
+            && descendant_events.is_empty()
             && notices.is_empty()
         {
             return Cow::Borrowed(&self.layout_cache.layout.lines);
@@ -894,7 +1026,7 @@ impl App {
                 &self.theme,
             ))
         };
-        let mut lines = match self.spliced_conversation_lines(width, &base, &descendant_warnings) {
+        let mut lines = match self.spliced_conversation_lines(width, &base, &descendant_events) {
             Some((spliced, _)) => spliced,
             None => base.into_owned(),
         };
@@ -939,14 +1071,7 @@ impl App {
         // because the reservation is constant, the wrap width (a
         // `LayoutCacheKey` input) never flips when content starts or stops
         // overflowing.
-        let descendant_warnings =
-            if self.tui_config.minimum_event_level <= crate::state::EventLevel::Warning {
-                self.selected
-                    .map(|selected| self.descendant_warnings(selected))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+        let descendant_events = self.viewed_descendant_events();
         let width = pane_text_width(area.width);
         let session_present = self
             .selected
@@ -959,11 +1084,14 @@ impl App {
         let clock_bucket = self.clock_bucket();
         let draft_agent = self.draft.as_ref().map(|draft| draft.agent.clone());
         let anchor_key = self.layout_cache.key;
+        // The offset addresses the last drawn (spliced) lines; the anchor
+        // addresses the cached layout, so map the offset back first.
+        let (unspliced_offset, spliced_depth) = unsplice_line(
+            self.conversation_scroll.offset,
+            &self.conversation_splice_shifts,
+        );
         let anchor = (!self.conversation_scroll.following)
-            .then(|| {
-                self.layout_cache
-                    .scroll_anchor(self.conversation_scroll.offset)
-            })
+            .then(|| self.layout_cache.scroll_anchor(unspliced_offset))
             .flatten();
         let mut layout_changed = false;
         let layout = if let Some((session_id, state)) = self.selected.and_then(|session_id| {
@@ -1004,7 +1132,7 @@ impl App {
         // Nothing to splice (the common case) borrows the cached layout; only
         // frames with descendant warnings pay for a spliced copy.
         let (spliced_lines, splice_shifts) = self
-            .spliced_conversation_lines(width, &layout.lines, &descendant_warnings)
+            .spliced_conversation_lines(width, &layout.lines, &descendant_events)
             .unwrap_or_default();
         let layout_lines: &[Line<'static>] = if splice_shifts.is_empty() {
             &layout.lines
@@ -1024,16 +1152,16 @@ impl App {
             && let Some((point, row_offset)) = anchor
             && let Some(line) = self.layout_cache.anchor_line(point)
         {
-            // `line` addresses the unspliced layout; rows inserted by the
-            // warning splice above it shift the anchor down by their count.
-            let splice_shift = splice_shifts
-                .iter()
-                .filter(|(position, _)| *position <= line)
-                .map(|(_, inserted)| *inserted)
-                .sum::<usize>();
-            self.conversation_scroll.offset =
-                line.saturating_add(splice_shift).saturating_add(row_offset);
+            // `line` addresses the unspliced layout; rows spliced in above
+            // the anchored row shift it down by their count. A view resting
+            // inside spliced rows keeps its depth into them.
+            let line = line.saturating_add(row_offset);
+            self.conversation_scroll.offset = match spliced_depth {
+                Some(depth) => splice_shifted(line, &splice_shifts, false).saturating_add(depth),
+                None => splice_shifted(line, &splice_shifts, true),
+            };
         }
+        self.conversation_splice_shifts.clone_from(&splice_shifts);
         self.conversation_scroll
             .clamp(content_height, viewport.height);
         self.hit_map.conversation = Some(viewport);
@@ -1271,6 +1399,7 @@ fn transcript_layout_at_clock(
     }
     for item in &state.transcript {
         let mut assistant_part_ranges = Vec::new();
+        let mut assistant_child_lines = Vec::new();
         let item_layout = transcript_item_layout(
             state,
             item,
@@ -1284,6 +1413,7 @@ fn transcript_layout_at_clock(
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
                 assistant_part_ranges: &mut assistant_part_ranges,
+                assistant_child_lines: &mut assistant_child_lines,
             },
         );
         append_item_layout(&mut layout, item_layout);

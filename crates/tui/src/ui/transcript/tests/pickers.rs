@@ -1115,6 +1115,7 @@ async fn draft_clicks_do_not_mutate_active_or_committed_frozen_attribution() {
         version: 0,
         attribution: attribution(Some("default")),
         committed_turn_seq: Some(1),
+        child_times: Vec::new(),
         children: vec![AssistantChild::Text {
             id: 2,
             version: 0,

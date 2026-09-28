@@ -25,6 +25,7 @@ async fn user_message_click_opens_the_menu_only_on_user_rows() {
             version: 0,
             attribution: attribution(None),
             committed_turn_seq: Some(1),
+            child_times: Vec::new(),
             children: vec![AssistantChild::Thinking {
                 id: 1,
                 version: 0,

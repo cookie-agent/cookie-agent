@@ -1320,6 +1320,7 @@ pub(crate) fn assistant_state(children: Vec<AssistantChild>) -> SessionState {
             version: 0,
             attribution: attribution(None),
             committed_turn_seq: Some(1),
+            child_times: Vec::new(),
             children,
         }],
         ..SessionState::default()

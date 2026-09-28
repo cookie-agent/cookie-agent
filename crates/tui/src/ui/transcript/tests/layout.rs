@@ -13,7 +13,9 @@ use crate::client::ClientDelivery;
 
 use crate::markdown::{MarkdownDocument, PlainHighlighter};
 
-use crate::state::{AssistantChild, StateStore, ToolCallState};
+use crate::state::{AssistantChild, EventLevel, StateStore, ToolCallState};
+
+use crate::ui::app::DescendantEvent;
 
 use crate::ui::events::RenderScheduler;
 
@@ -364,15 +366,21 @@ async fn descendant_warnings_aggregate_with_attribution_without_duplication() {
     app.tree_root = Some(root);
     push_model_warning(&mut app.store, root, "root warning");
     push_model_warning(&mut app.store, child, "child warning");
-    let warnings = app.descendant_warnings(root);
+    let warnings = app.descendant_events(root, EventLevel::Warning);
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].1.contains("child warning"));
-    assert!(warnings[0].1.contains("child session"));
+    assert_eq!(warnings[0].level, EventLevel::Warning);
+    assert!(warnings[0].text.contains("child warning"));
+    assert!(warnings[0].text.contains("child session"));
     assert!(
         warnings[0]
-            .1
+            .text
             .contains(&crate::ui::pickers::short_id(&child_meta))
     );
+    // Debug/Info rows (the child's commit notice) never aggregate, even
+    // when the filter shows them.
+    assert_eq!(app.descendant_events(root, EventLevel::Debug), warnings);
+    // An Error filter hides warnings.
+    assert!(app.descendant_events(root, EventLevel::Error).is_empty());
     // The warning carries the durable time of the child's event row.
     let child_state = app.store.sessions.get(&child).expect("child session");
     let event_time = child_state
@@ -383,7 +391,7 @@ async fn descendant_warnings_aggregate_with_attribution_without_duplication() {
             _ => None,
         })
         .expect("warning row time");
-    assert_eq!(warnings[0].0, event_time);
+    assert_eq!(warnings[0].time, event_time);
 }
 
 #[test]
@@ -525,13 +533,26 @@ fn descendant_warnings_splice_at_chronological_position() {
         lines.push(Line::default());
         lines.push(Line::from(format!("item {index}")));
     }
+    let row = |second: i64, text: &str| DescendantEvent {
+        time: Timestamp::new(second, 0).unwrap(),
+        level: EventLevel::Warning,
+        text: text.to_owned(),
+    };
     let warnings = vec![
-        (Timestamp::new(0, 0).unwrap(), "early warning".to_owned()),
-        (Timestamp::new(3, 0).unwrap(), "mid warning".to_owned()),
-        (Timestamp::new(9, 0).unwrap(), "late warning".to_owned()),
+        row(0, "early warning"),
+        row(3, "mid warning"),
+        row(9, "late warning"),
     ];
-    let (spliced, shifts) =
-        App::splice_descendant_warnings(&lines, &offsets, state, &warnings, 80, &Theme::default());
+    // No cached item layouts: every item is one segment at its own time.
+    let (spliced, shifts) = App::splice_descendant_events(
+        &lines,
+        &[],
+        &offsets,
+        state,
+        &warnings,
+        80,
+        &Theme::default(),
+    );
     let text_of = |line: &Line<'_>| {
         line.spans
             .iter()
@@ -572,13 +593,13 @@ fn descendant_warnings_splice_at_chronological_position() {
     assert!(shifts.iter().all(|(_, inserted)| *inserted > 0));
     // Empty warnings leave the layout untouched.
     let (untouched, empty_shifts) =
-        App::splice_descendant_warnings(&lines, &offsets, state, &[], 80, &Theme::default());
+        App::splice_descendant_events(&lines, &[], &offsets, state, &[], 80, &Theme::default());
     assert_eq!(untouched.len(), 7);
     assert!(empty_shifts.is_empty());
 }
 
 #[tokio::test]
-async fn descendant_warning_mid_stream_splits_viewed_open_block() {
+async fn descendant_warning_never_mutates_the_viewed_projection() {
     let mut app = test_app().await;
     let root = SessionId::new_v7();
     let child = SessionId::new_v7();
@@ -591,16 +612,27 @@ async fn descendant_warning_mid_stream_splits_viewed_open_block() {
     });
     app.tree_root = Some(root);
     app.selected = Some(root);
-    // The viewed session streams an open, uncommitted block.
     let root_run = run_id();
     let first = AttemptId::new_v7();
-    for event in [
+    let root_events = vec![
         attempt_started(root, 1, root_run, first, None),
         text_delta(root, 2, root_run, first, "one"),
-    ] {
-        app.handle_delivery(live_event(event)).await;
+        text_delta(root, 3, root_run, first, " two"),
+        turn_committed(
+            root,
+            4,
+            root_run,
+            first,
+            1,
+            vec![text_part("one two")],
+            Vec::new(),
+            None,
+        ),
+    ];
+    // The viewed session streams; a descendant warning lands mid-block.
+    for event in &root_events[..2] {
+        app.handle_delivery(live_event(event.clone())).await;
     }
-    // A descendant warning lands while the viewed session is mid-block.
     let child_run = run_id();
     let child_attempt = AttemptId::new_v7();
     for event in [
@@ -618,39 +650,23 @@ async fn descendant_warning_mid_stream_splits_viewed_open_block() {
     ] {
         app.handle_delivery(live_event(event)).await;
     }
-    // The viewed session continues; the pre-warning content finishes in
-    // place and the continuation opens a fresh block below the break.
-    let second = AttemptId::new_v7();
-    for event in [
-        attempt_started(root, 3, root_run, second, None),
-        text_delta(root, 4, root_run, second, "two"),
-        turn_committed(
-            root,
-            5,
-            root_run,
-            second,
-            2,
-            vec![text_part("two")],
-            Vec::new(),
-            None,
-        ),
-    ] {
-        app.handle_delivery(live_event(event)).await;
+    for event in &root_events[2..] {
+        app.handle_delivery(live_event(event.clone())).await;
     }
-    let state = app.store.sessions.get(&root).expect("root session");
-    let assistants = assistant_items(state);
-    assert_eq!(
-        assistants.len(),
-        2,
-        "descendant warning splits the viewed session's open block"
-    );
-    assert_eq!(assistant_texts(assistants[0]), ["one"]);
-    assert_eq!(assistant_texts(assistants[1]), ["two"]);
-    // The descendant warning row remains visible to the viewer, spliced
-    // between the two blocks rather than pinned at the bottom.
-    let warnings = app.descendant_warnings(root);
+    // The viewed projection is exactly what its own log reduces to: a replay
+    // (which never interleaves the child) could not reproduce anything else.
+    // The warning is placed at render time instead.
+    let mut replay = StateStore::default();
+    for event in root_events {
+        assert!(replay.apply_event(event));
+    }
+    let live = app.store.sessions.get(&root).expect("root session");
+    let replayed = replay.sessions.get(&root).expect("replayed root");
+    assert_eq!(transcript_shape(live), transcript_shape(replayed));
+    assert_eq!(assistant_items(live).len(), 1);
+    let warnings = app.descendant_events(root, EventLevel::Warning);
     assert_eq!(warnings.len(), 1);
-    assert!(warnings[0].1.contains("child warning"));
+    assert!(warnings[0].text.contains("child warning"));
 }
 
 #[test]

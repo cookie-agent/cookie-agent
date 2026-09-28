@@ -807,25 +807,29 @@ impl App {
         self.set_draft_agent(selectable[next].clone());
     }
 
-    /// Warning rows from strict descendants of the viewed session, attributed
-    /// to their owning session. Ownership stays durable in the child's own
+    /// Warning and error rows from strict descendants of the viewed session
+    /// at or above `minimum_level`, attributed to their owning session and
+    /// paired with the durable time of the row, oldest first, so the
+    /// transcript can splice them at their chronological position in the
+    /// viewed conversation. Ownership stays durable in the child's own
     /// projection; this is a read-only aggregate for the current view.
-    /// Warning rows from descendant sessions paired with the durable time of
-    /// the event so the transcript can splice them at their chronological
-    /// position in the viewed conversation.
-    pub(in crate::ui) fn descendant_warnings(
+    /// Debug and Info rows stay in the child: they are its own lifecycle
+    /// chatter.
+    pub(in crate::ui) fn descendant_events(
         &self,
         viewed: SessionId,
-    ) -> Vec<(jiff::Timestamp, String)> {
+        minimum_level: EventLevel,
+    ) -> Vec<DescendantEvent> {
         let Some(tree) = &self.tree else {
             return Vec::new();
         };
         let Some(node) = find_node(tree, viewed) else {
             return Vec::new();
         };
+        let minimum_level = minimum_level.max(EventLevel::Warning);
         let mut members = Vec::new();
         collect_subtree_sessions(node, &mut members);
-        let mut warnings = Vec::new();
+        let mut events = Vec::new();
         for meta in members.into_iter().filter(|meta| meta.session_id != viewed) {
             let Some(state) = self.store.sessions.get(&meta.session_id) else {
                 continue;
@@ -836,21 +840,33 @@ impl App {
                 .map(SessionTitle::to_string)
                 .unwrap_or_else(|| meta.creation_selection.agent.to_string());
             for item in &state.transcript {
-                if let TranscriptItem::Event {
-                    level: crate::state::EventLevel::Warning,
-                    text,
-                    ..
-                } = item
+                if let TranscriptItem::Event { level, text, .. } = item
+                    && *level >= minimum_level
                 {
                     // Pre-date rows (from before insertion times were tracked)
                     // keep their historical bottom-of-transcript position by
                     // sorting after every anchored item.
-                    let time = state.item_time(item.id()).unwrap_or(jiff::Timestamp::MAX);
-                    warnings.push((time, format!("from {source} ({}): {text}", short_id(&meta))));
+                    events.push(DescendantEvent {
+                        time: state.item_time(item.id()).unwrap_or(jiff::Timestamp::MAX),
+                        level: *level,
+                        text: format!("from {source} ({}): {text}", short_id(&meta)),
+                    });
                 }
             }
         }
-        warnings.sort_by_key(|(time, _)| *time);
-        warnings
+        // Stable, so one session's rows with equal times keep their order.
+        events.sort_by_key(|event| event.time);
+        events
     }
+}
+
+/// One descendant session's warning or error row, aggregated into the view
+/// of an ancestor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct DescendantEvent {
+    /// Durable time of the row in its own session.
+    pub(in crate::ui) time: jiff::Timestamp,
+    pub(in crate::ui) level: EventLevel,
+    /// Row text, prefixed with its source session.
+    pub(in crate::ui) text: String,
 }
