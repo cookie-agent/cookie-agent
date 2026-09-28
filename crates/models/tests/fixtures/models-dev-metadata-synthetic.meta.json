@@ -3,8 +3,8 @@
   "fixture_kind": "invented_metadata_edge_cases",
   "catalog_url": "https://models.dev/catalog.json",
   "created_at": "2026-08-05T00:00:00Z",
-  "byte_length": 2650,
-  "sha256": "b0164bdf2d290200fab0761cb195b69314a007654d8e11648d5dbe74a06d55b6",
+  "byte_length": 2621,
+  "sha256": "ba5a497de8b4fa342c8d730190114c7d01d7278dddf16fe435bbd546bcc9e1c6",
   "runtime_pin": false,
   "contains_secrets": false,
   "approved_live_audit": false
