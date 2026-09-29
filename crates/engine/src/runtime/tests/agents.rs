@@ -86,7 +86,8 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
         .store
         .get(session.session_id)
         .expect("stored session")
-        .creation_agent;
+        .creation_agent
+        .clone();
     assert_eq!(
         frozen.document_source,
         cookie_agent_protocol::AgentDocumentSource::BuiltIn

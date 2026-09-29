@@ -328,7 +328,7 @@ async fn child_log_tree_grants_arrive_with_the_lazy_tree_load() {
                     EventPayload::RunStarted {
                         client_run_id: ClientRunId::new("grant-setup-run").expect("client run ID"),
                         selection: selection.clone(),
-                        agent: Box::new(projection.creation_agent.clone()),
+                        agent: Box::new(projection.creation_agent.as_ref().clone()),
                         runtime_revision: projection.meta.runtime_revision.clone(),
                         catalog_revision: projection.meta.catalog_revision.clone(),
                         provider_state_revision: projection.meta.provider_state_revision.clone(),

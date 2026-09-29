@@ -34,7 +34,7 @@ impl Engine {
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
         let (permission_mode, decision) = mode_decision;
         let approval_id = request.approval_id();
-        let events = self.inner.store.get(session)?.log.event_snapshot();
+        let events = self.inner.store.log(session)?.event_snapshot();
         let Some(record) = approval_records(session, &events).remove(&approval_id) else {
             return Err(EngineError::ApprovalNotPending {
                 session_id: session,
@@ -579,7 +579,7 @@ impl Engine {
         approval_id: ApprovalId,
         terminal: ApprovalTerminal,
     ) -> Result<bool, EngineError> {
-        let events = self.inner.store.get(session)?.log.event_snapshot();
+        let events = self.inner.store.log(session)?.event_snapshot();
         let Some(record) = approval_records(session, &events).remove(&approval_id) else {
             return Ok(false);
         };

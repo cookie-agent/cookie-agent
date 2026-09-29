@@ -140,7 +140,7 @@ impl Engine {
         .await?;
 
         let repetitions = doom_loop_repetitions(
-            &self.inner.store.get(active.session)?.log.event_snapshot(),
+            &self.inner.store.log(active.session)?.event_snapshot(),
             run,
             request.operation_fingerprint(),
         );

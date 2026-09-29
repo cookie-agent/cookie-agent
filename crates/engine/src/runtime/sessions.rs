@@ -24,7 +24,7 @@ impl Engine {
         Ok(
             cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
                 .selection
-                .unwrap_or(projection.meta.creation_selection),
+                .unwrap_or_else(|| projection.meta.creation_selection.clone()),
         )
     }
     /// Rebuilds the visible grant set from the grant sets cached by loaded
@@ -472,7 +472,7 @@ impl Engine {
         // (tree-local D2).
         let mut referenced = std::collections::HashSet::new();
         crate::runtime::artifacts::collect_artifact_references_in_events(
-            &self.inner.store.get(forked)?.log.event_snapshot(),
+            &self.inner.store.log(forked)?.event_snapshot(),
             &mut referenced,
         )?;
         self.inner

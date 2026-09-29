@@ -1580,7 +1580,10 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
             session.session_id,
             Some(dead_run),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            run_started("dead-run", Box::new(projection.creation_agent.clone())),
+            run_started(
+                "dead-run",
+                Box::new(projection.creation_agent.as_ref().clone()),
+            ),
         )
         .expect("start dead run");
     store
@@ -1588,7 +1591,10 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
             session.session_id,
             Some(live_run),
             cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
-            run_started("live-run", Box::new(projection.creation_agent.clone())),
+            run_started(
+                "live-run",
+                Box::new(projection.creation_agent.as_ref().clone()),
+            ),
         )
         .expect("start live run");
     for (run_id, request) in [(dead_run, &dead_approval), (live_run, &live_approval)] {

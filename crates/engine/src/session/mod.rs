@@ -10,6 +10,7 @@ pub(crate) use cache::meta_path;
 pub(crate) use cache::replace_windows_path_with_retry;
 use cache::*;
 pub(crate) use fold::projection;
+use fold::refold;
 pub(crate) use fold::restart_stable_grant;
 use fold::*;
 pub(crate) use tree_load::LogFingerprint;
@@ -145,7 +146,7 @@ pub struct RunProjection {
     pub client_run_id: ClientRunId,
     pub input: String,
     pub selection: RunSelection,
-    pub agent: AgentSnapshot,
+    pub agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,
     pub final_text: Option<String>,
     pub pending_calls: HashMap<ToolCallId, String>,
@@ -154,7 +155,7 @@ pub struct RunProjection {
 #[derive(Clone, Debug)]
 pub struct SessionProjection {
     pub meta: SessionMeta,
-    pub creation_agent: AgentSnapshot,
+    pub creation_agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,
     pub usage: Option<Usage>,
     pub usage_rollup: UsageRollup,
@@ -198,7 +199,7 @@ impl SessionProjection {
 
 #[derive(Debug, Default)]
 struct SessionResidency {
-    resident: HashMap<SessionId, SessionProjection>,
+    resident: HashMap<SessionId, Arc<SessionProjection>>,
     evicted: HashMap<SessionId, SessionSummary>,
     /// Persisted residents whose on-disk `metadata` cache trails the resident
     /// meta: only the tip (`last_event_seq`/`last_activity`) differs, because an
@@ -758,7 +759,7 @@ impl SessionStore {
             .get(&session_id)
             .cloned()
         {
-            return Ok((existing.log, false));
+            return Ok((existing.log.clone(), false));
         }
         let creation_origin = Self::creation_origin(&creation).unwrap_or(SessionOrigin::Root);
         let location = self.placement_for(&creation_origin);
@@ -785,7 +786,7 @@ impl SessionStore {
             creation,
             capability,
         )?;
-        let result = projection(log.clone())?;
+        let result = Arc::new(projection(log.clone())?);
         {
             let mut ownership = self
                 .ownership
@@ -810,7 +811,7 @@ impl SessionStore {
         Ok((log, true))
     }
 
-    pub fn get(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    pub fn get(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
         // Completing the tree comes first, *before* the resident fast path: a
         // session created or adopted in this process is resident from a moment
         // when its root's products did not exist yet, and serving it from the
@@ -829,7 +830,10 @@ impl SessionStore {
     ///
     /// Startup passes need a session's own log for bookkeeping; going through
     /// [`Self::get`] would put child reads back on the startup path (§4.1.1).
-    pub(crate) fn get_log_only(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    pub(crate) fn get_log_only(
+        &self,
+        id: SessionId,
+    ) -> Result<Arc<SessionProjection>, SessionError> {
         if let Some(session) = self.get_resident(id) {
             return Ok(session);
         }
@@ -839,8 +843,30 @@ impl SessionStore {
         self.open_snapshot(id, true)
     }
 
+    /// The event log of `id`, with the same tree and residency semantics as
+    /// [`Self::get`] but without touching the projection.
+    pub fn log(&self, id: SessionId) -> Result<Arc<EventLog>, SessionError> {
+        self.ensure_tree_for(id)?;
+        let resident = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .get(&id)
+            .map(|session| session.log.clone());
+        match resident {
+            Some(log) => Ok(log),
+            None => Ok(self.get(id)?.log.clone()),
+        }
+    }
+
+    /// Where `id` sits in its tree.
+    pub fn origin(&self, id: SessionId) -> Result<SessionOrigin, SessionError> {
+        Ok(self.get(id)?.meta.origin.clone())
+    }
+
     #[must_use]
-    pub fn get_resident(&self, id: SessionId) -> Option<SessionProjection> {
+    pub fn get_resident(&self, id: SessionId) -> Option<Arc<SessionProjection>> {
         self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -879,12 +905,12 @@ impl SessionStore {
             None => {
                 let session = self.get(id)?;
                 let persisted = session.log.is_persisted();
-                Ok((session.log, persisted))
+                Ok((session.log.clone(), persisted))
             }
         }
     }
 
-    fn reopen_owned(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    fn reopen_owned(&self, id: SessionId) -> Result<Arc<SessionProjection>, SessionError> {
         let _mutation = self.lock_mutation();
         if let Some(session) = self
             .residency
@@ -903,7 +929,7 @@ impl SessionStore {
         let capability = self.write_capability(id, false)?;
         self.note_log_open(id);
         let log = EventLog::open_owned(session_dir.join(EVENTS_FILE), id, capability)?;
-        let reopened = projection(log)?;
+        let reopened = Arc::new(projection(log)?);
         let mut residency = self
             .residency
             .lock()
@@ -923,7 +949,7 @@ impl SessionStore {
         &self,
         id: SessionId,
         direct: bool,
-    ) -> Result<SessionProjection, SessionError> {
+    ) -> Result<Arc<SessionProjection>, SessionError> {
         debug_assert!(
             direct || TreeLoadReads::active() || !self.is_filed_child(id),
             "child log {id} opened outside a tree load"
@@ -939,7 +965,7 @@ impl SessionStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .evicted
             .insert(id, summary_from_projection(&snapshot));
-        Ok(snapshot)
+        Ok(Arc::new(snapshot))
     }
 
     /// Takes the store's durable-mutation lock, noting the holder on this
@@ -989,7 +1015,10 @@ impl SessionStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn open_for_write(&self, id: SessionId) -> Result<SessionProjection, SessionError> {
+    pub(crate) fn open_for_write(
+        &self,
+        id: SessionId,
+    ) -> Result<Arc<SessionProjection>, SessionError> {
         let adoption_lock = self.adoption_lock(id);
         let _adoption = adoption_lock
             .lock()
@@ -1101,7 +1130,7 @@ impl SessionStore {
                 .residency
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            residency.resident.insert(id, reopened.clone());
+            residency.resident.insert(id, Arc::new(reopened));
             residency.evicted.remove(&id);
             return Ok(WriteOpen::AlreadyOwned);
         }
@@ -1150,7 +1179,7 @@ impl SessionStore {
             .residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        residency.resident.insert(id, projection.clone());
+        residency.resident.insert(id, Arc::new(projection));
         residency.evicted.remove(&id);
         Ok(WriteOpen::Adopting)
     }
@@ -1461,7 +1490,10 @@ impl SessionStore {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if residency.resident.contains_key(&id) {
                 residency.evicted.remove(&id);
-                let resident = residency.resident.get_mut(&id).expect("checked above");
+                // Copies the projection only while a reader still holds it;
+                // its agent snapshots are shared either way.
+                let resident =
+                    Arc::make_mut(residency.resident.get_mut(&id).expect("checked above"));
                 resident.meta.last_event_seq = envelope.seq;
                 resident.meta.last_activity = envelope.timestamp;
                 if first_user_message || !log.is_persisted() {
@@ -1484,7 +1516,9 @@ impl SessionStore {
                 self.refresh_meta_cache(id, &meta)?;
             }
         } else {
-            let rebuilt = projection(log.clone())?;
+            let previous = self.get_resident(id);
+            let rebuilt = Arc::new(refold(log.clone(), previous.as_deref())?);
+            drop(previous);
             if first_user_message {
                 self.persist_buffered(id, &rebuilt)?;
             } else if log.is_persisted() {
@@ -1831,7 +1865,7 @@ impl SessionStore {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .resident
-                .insert(session_id, fork_projection);
+                .insert(session_id, Arc::new(fork_projection));
             self.note_placed_child(&location, &fork_origin, session_id);
             if let SessionLocation::Child { root } = location {
                 self.persist_subagent_index(root)?;
@@ -1972,7 +2006,7 @@ impl SessionStore {
     }
 
     #[must_use]
-    pub fn all(&self) -> Vec<SessionProjection> {
+    pub fn all(&self) -> Vec<Arc<SessionProjection>> {
         self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2458,7 +2492,7 @@ impl SessionStore {
             // had to be rebuilt, or one that was seeded from discovery alone — is
             // not an answer to "what did this session cost": fold its log, which is
             // the same stamped accounting the transcript footer shows.
-            usage = summary_from_projection(&self.get(id)?).usage_rollup;
+            usage = self.get(id)?.usage_rollup.clone();
         }
         Ok(cookie_agent_protocol::SessionUsageResult {
             session_id: id,
@@ -2554,7 +2588,7 @@ impl SessionStore {
     }
 
     pub fn is_persisted(&self, id: SessionId) -> Result<bool, SessionError> {
-        Ok(self.get(id)?.log.is_persisted())
+        Ok(self.resident_log(id)?.1)
     }
 
     /// Every direct child of `parent`, resolved from *placement* rather than by
@@ -2680,7 +2714,7 @@ impl SessionStore {
     /// Metadata for a tree member without rebuilding its log.
     fn summary_meta(&self, id: SessionId) -> Result<SessionMeta, SessionError> {
         if let Some(session) = self.get_resident(id) {
-            return Ok(session.meta);
+            return Ok(session.meta.clone());
         }
         if let Some(summary) = self.cached_summary(id) {
             return Ok(summary.meta);
@@ -2699,7 +2733,7 @@ impl SessionStore {
                 title: session.meta.title.clone(),
                 title_updated_seq: session.meta.title_updated_seq,
                 status: session.status,
-                usage: session.usage,
+                usage: session.usage.clone(),
             });
         }
         let summary = self.cached_summary(id)?;

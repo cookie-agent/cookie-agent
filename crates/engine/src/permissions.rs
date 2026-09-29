@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use cookie_agent_config::simple_wildcard_match;
@@ -710,7 +710,7 @@ impl crate::Engine {
             .await;
         let session = self.inner.store.get(session_id)?;
         let policy = governing_agent(&session);
-        let mut overlay = session.permission_overlay;
+        let mut overlay = session.permission_overlay.clone();
         let old_effect = rule_effect(
             &policy,
             &overlay,
@@ -797,29 +797,39 @@ impl crate::Engine {
 
 pub(crate) fn governing_agent_for_skills(
     session: &crate::session::SessionProjection,
-) -> AgentSnapshot {
+) -> Arc<AgentSnapshot> {
     governing_agent(session)
 }
 
-fn governing_agent(session: &crate::session::SessionProjection) -> AgentSnapshot {
-    let latest_run =
-        session
-            .log
-            .event_snapshot()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                EventPayload::RunStarted { agent, .. } => Some(agent.as_ref().clone()),
-                _ => None,
-            });
-    select_governing_agent(&session.creation_agent, latest_run.as_ref())
+/// The agent of the latest visible run, else the session's creation agent.
+fn governing_agent(session: &crate::session::SessionProjection) -> Arc<AgentSnapshot> {
+    // The log index names the latest visible run; the projection already
+    // holds its snapshot unless the run started after this projection was
+    // taken, in which case the log itself is read.
+    let latest_run = session.log.last_run_started().map(|(_, run, _)| {
+        session.runs.get(&run).map_or_else(
+            || {
+                session
+                    .log
+                    .event_snapshot()
+                    .iter()
+                    .rev()
+                    .find_map(|event| match &event.payload {
+                        EventPayload::RunStarted { agent, .. } => {
+                            Some(Arc::new(agent.as_ref().clone()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| session.creation_agent.clone())
+            },
+            |projected| projected.agent.clone(),
+        )
+    });
+    select_governing_agent(&session.creation_agent, latest_run.as_ref()).clone()
 }
 
-fn select_governing_agent(
-    creation_agent: &AgentSnapshot,
-    latest_run_agent: Option<&AgentSnapshot>,
-) -> AgentSnapshot {
-    latest_run_agent.unwrap_or(creation_agent).clone()
+fn select_governing_agent<'a, A>(creation_agent: &'a A, latest_run_agent: Option<&'a A>) -> &'a A {
+    latest_run_agent.unwrap_or(creation_agent)
 }
 
 fn effect_rank(effect: PermissionEffect) -> u8 {

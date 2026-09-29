@@ -545,7 +545,7 @@ impl Engine {
             .iter()
             .any(|message| pending(message) && message.reminder.is_none());
         let user_pending = super::residency::has_runless_pending_inputs(
-            &self.inner.store.get(session)?.log.event_snapshot(),
+            &self.inner.store.log(session)?.event_snapshot(),
         );
         if !real
             && !user_pending
@@ -855,7 +855,7 @@ impl Engine {
             .iter()
             .any(|message| pending(message) && message.reminder.is_none());
         let user_pending = super::residency::has_runless_pending_inputs(
-            &self.inner.store.get(session)?.log.event_snapshot(),
+            &self.inner.store.log(session)?.event_snapshot(),
         );
         if !real {
             let valid = projection.goal.as_ref().is_some_and(|goal| {
@@ -1054,7 +1054,7 @@ impl Engine {
         session: SessionId,
     ) -> Result<GoalProducerProjection, EngineError> {
         Ok(GoalProducerProjection::from_events(
-            &self.inner.store.get(session)?.log.event_snapshot(),
+            &self.inner.store.log(session)?.event_snapshot(),
         ))
     }
 
@@ -1072,10 +1072,7 @@ impl Engine {
     }
 
     fn require_root_goal(&self, session: SessionId) -> Result<(), EngineError> {
-        if !matches!(
-            self.inner.store.get(session)?.meta.origin,
-            SessionOrigin::Root
-        ) {
+        if !matches!(self.inner.store.origin(session)?, SessionOrigin::Root) {
             return Err(EngineError::Goal(
                 "goals are available only in root sessions".into(),
             ));
@@ -1664,7 +1661,7 @@ impl Engine {
             },
             connection_epoch: None,
         };
-        let events = self.inner.store.get(session)?.log.event_snapshot();
+        let events = self.inner.store.log(session)?.event_snapshot();
         let already_logged = events.iter().any(|event| {
             matches!(
                 event.payload,
@@ -1760,10 +1757,7 @@ impl Engine {
         recovery: bool,
         harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
-        if !matches!(
-            self.inner.store.get(session)?.meta.origin,
-            SessionOrigin::Root
-        ) {
+        if !matches!(self.inner.store.origin(session)?, SessionOrigin::Root) {
             return Ok(());
         }
         let projection = self.harvested_or_folded(session, harvested)?;
@@ -1800,10 +1794,7 @@ impl Engine {
         session: SessionId,
         harvested: Option<&GoalProducerProjection>,
     ) -> Result<(), EngineError> {
-        let is_root = matches!(
-            self.inner.store.get(session)?.meta.origin,
-            SessionOrigin::Root
-        );
+        let is_root = matches!(self.inner.store.origin(session)?, SessionOrigin::Root);
         let projection = self.harvested_or_folded(session, harvested)?;
         let active = projection.goal.as_ref().filter(|goal| {
             is_root && goal.status == GoalStatus::Active && self.plugin_goals_ready()
@@ -1988,7 +1979,7 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.get(session)?.log.event_snapshot();
+        let events = self.inner.store.log(session)?.event_snapshot();
         let surviving: HashSet<_> = events
             .iter()
             .filter_map(|event| match &event.payload {

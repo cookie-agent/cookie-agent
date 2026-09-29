@@ -434,7 +434,7 @@ impl Engine {
             self.inner.store.append(session, run, origin, event)?
         };
         if !was_persisted && self.inner.store.is_persisted(session)? {
-            for durable in self.inner.store.get(session)?.log.all_events().iter() {
+            for durable in self.inner.store.log(session)?.all_events().iter() {
                 let drops = self
                     .inner
                     .plugins
@@ -1427,7 +1427,7 @@ impl Engine {
                         self.promote_producer_inputs_direct(session, run, false)?;
                     let promoted = already_promoted || !eligible.is_empty() || producer_promoted;
                     let pending =
-                        pending_inputs(&self.inner.store.get(session)?.log.event_snapshot(), run);
+                        pending_inputs(&self.inner.store.log(session)?.event_snapshot(), run);
                     if pending.is_empty() && !promoted && complete_if_empty {
                         self.append_direct(
                             session,
@@ -1557,7 +1557,7 @@ impl Engine {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .clear();
-                    let events = self.inner.store.get(session)?.log.event_snapshot();
+                    let events = self.inner.store.log(session)?.event_snapshot();
                     let pending = approval_records(session, &events)
                         .into_values()
                         .filter(|record| {
@@ -1791,7 +1791,7 @@ impl Engine {
                             super::event_origin("engine:tool-result"),
                             event,
                         )?;
-                        self.inner.store.get(session)?.log.flush()?;
+                        self.inner.store.log(session)?.flush()?;
                         Ok(true)
                     })()
                 };
@@ -1987,7 +1987,7 @@ impl Engine {
                     .ok_or(EngineError::MissingRun(run))
                     .and_then(|_| {
                         self.promote_producer_inputs_direct(session, run, false)?;
-                        let events = self.inner.store.get(session)?.log.event_snapshot();
+                        let events = self.inner.store.log(session)?.event_snapshot();
                         let applied: HashSet<u64> = events
                             .iter()
                             .filter_map(|event| match &event.payload {

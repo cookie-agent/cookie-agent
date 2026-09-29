@@ -256,9 +256,14 @@ pub(crate) async fn await_projection(
     session_id: SessionId,
     description: &str,
     predicate: impl Fn(&crate::session::SessionProjection) -> bool,
-) -> crate::session::SessionProjection {
+) -> std::sync::Arc<crate::session::SessionProjection> {
     await_session_change(engine, session_id, description, || {
-        engine.inner.store.get(session_id).ok().filter(&predicate)
+        engine
+            .inner
+            .store
+            .get(session_id)
+            .ok()
+            .filter(|projection| predicate(projection))
     })
     .await
 }

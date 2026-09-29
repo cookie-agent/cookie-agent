@@ -96,7 +96,7 @@ impl Engine {
         resume_session_id: SessionId,
         agent_type: &cookie_agent_protocol::AgentId,
         preset: Option<&str>,
-    ) -> Result<session::SessionProjection, EngineError> {
+    ) -> Result<Arc<session::SessionProjection>, EngineError> {
         if resume_session_id == parent_session_id {
             return Err(EngineError::ToolFailed(
                 "resume_session_id cannot reference the delegating session itself".into(),
@@ -2091,7 +2091,7 @@ impl Engine {
         &self,
         child_session_id: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.get(child_session_id)?.log.event_snapshot();
+        let events = self.inner.store.log(child_session_id)?.event_snapshot();
         let boundary = events
             .iter()
             .rev()

@@ -106,12 +106,31 @@ impl AutomaticTitleEligibility {
 }
 
 pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
-    #[cfg(test)]
-    PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
-    projection_fold(log)
+    refold(log, None)
 }
 
+/// Folds `log` again, sharing the agent snapshots `previous` already holds
+/// for the same log. A `RunStarted` record is immutable and unique per run,
+/// so its snapshot never changes between folds.
+pub(super) fn refold(
+    log: Arc<EventLog>,
+    previous: Option<&SessionProjection>,
+) -> Result<SessionProjection, SessionError> {
+    #[cfg(test)]
+    PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
+    let previous = previous.filter(|previous| Arc::ptr_eq(&previous.log, &log));
+    projection_fold_with(log, previous)
+}
+
+#[cfg(test)]
 pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
+    projection_fold_with(log, None)
+}
+
+fn projection_fold_with(
+    log: Arc<EventLog>,
+    previous: Option<&SessionProjection>,
+) -> Result<SessionProjection, SessionError> {
     let events = log.event_snapshot();
     let physical_tip = log.last_event().expect("creation checked by EventLog");
     let (
@@ -150,7 +169,10 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
             short_id.clone(),
             cwd_identity.clone(),
             creation_selection.clone(),
-            creation_agent.as_ref().clone(),
+            previous.map_or_else(
+                || Arc::new(creation_agent.as_ref().clone()),
+                |previous| previous.creation_agent.clone(),
+            ),
             runtime_revision.clone(),
             catalog_revision.clone(),
             provider_state_revision.clone(),
@@ -269,7 +291,12 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
                         client_run_id: client_run_id.clone(),
                         input: String::new(),
                         selection: selection.clone(),
-                        agent: agent.as_ref().clone(),
+                        agent: previous
+                            .and_then(|previous| previous.runs.get(&run_id))
+                            .map_or_else(
+                                || Arc::new(agent.as_ref().clone()),
+                                |run| run.agent.clone(),
+                            ),
                         status: SessionStatus::Running,
                         final_text: None,
                         pending_calls: HashMap::new(),
