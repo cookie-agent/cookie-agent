@@ -141,6 +141,13 @@ impl<T: CatalogTransport> CatalogManager<T> {
             Ok(parsed) => parsed,
             Err(error) => return self.select_fallback(cache, error, now),
         };
+        let rejected = cache
+            .as_ref()
+            .ok()
+            .and_then(|cached| guard_model_loss(cached, &parsed, now).err());
+        if let Some(error) = rejected {
+            return self.select_fallback(cache, error, now);
+        }
         let parsed = self.remember(parsed);
         let mut meta = metadata_for(
             &parsed,
@@ -501,6 +508,52 @@ fn body_too_large() -> CatalogError {
         "catalog_body_too_large",
         "catalog response exceeds the byte limit",
     )
+}
+
+/// Refuses a fetched catalog that would replace a recently validated cache
+/// with fewer than half of its usable models (provider models that parsed
+/// rather than quarantined). models.dev only grows in normal operation, so
+/// losing half of it in one step means a broken upstream deploy or a schema
+/// change that quarantines most rows, and keeping the last good catalog is
+/// the better answer. The guard lapses once the cache was last validated seven
+/// days ago (the stale-age warning threshold): a rejected refresh does not
+/// revalidate the cache, so a smaller catalog that upstream keeps serving for a
+/// week is accepted as the new normal.
+fn guard_model_loss(
+    cached: &ValidatedCache,
+    fetched: &ParsedCatalog,
+    now: Timestamp,
+) -> Result<(), CatalogError> {
+    if age_state(cached.meta.validated_at, now) != CatalogAgeState::Current {
+        return Ok(());
+    }
+    let kept = usable_models(&cached.catalog);
+    let offered = usable_models(fetched);
+    if offered.saturating_mul(2) >= kept {
+        return Ok(());
+    }
+    Err(CatalogError::new(
+        "catalog_model_loss_rejected",
+        format!(
+            "fetched catalog has {offered} usable models, fewer than half of the \
+             {kept} cached; keeping the cached catalog"
+        ),
+    ))
+}
+
+fn usable_models(catalog: &ParsedCatalog) -> usize {
+    catalog
+        .providers
+        .values()
+        .filter_map(|provider| provider.record.as_ref())
+        .map(|provider| {
+            provider
+                .models
+                .values()
+                .filter(|model| model.record.is_some())
+                .count()
+        })
+        .sum()
 }
 
 struct ValidatedCache {
