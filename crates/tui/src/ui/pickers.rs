@@ -308,6 +308,8 @@ pub(crate) fn render_lines(
     frame.render_stateful_widget(
         List::new(entries.into_iter().map(ListItem::new).collect::<Vec<_>>())
             .highlight_symbol("> ")
+            // Rows keep their column even when only unselectable rows show.
+            .highlight_spacing(ratatui::widgets::HighlightSpacing::Always)
             .highlight_style(highlight_style)
             .block(block),
         area,

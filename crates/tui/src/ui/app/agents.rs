@@ -433,6 +433,37 @@ impl App {
             .collect()
     }
 
+    /// Configured providers' unavailable models matching the model search,
+    /// listed after the selectable models but never selectable. Delegated
+    /// sessions only ever offer their frozen suffix, so they list none.
+    pub(in crate::ui) fn filtered_unavailable_models(
+        &self,
+    ) -> Vec<(
+        &cookie_agent_protocol::ProviderId,
+        &cookie_agent_protocol::UnavailableModelDescriptor,
+    )> {
+        if self.new_session_draft.is_none() && !self.watching_root_session() {
+            return Vec::new();
+        }
+        let query = self.model_search.query().trim().to_lowercase();
+        self.providers
+            .iter()
+            .flat_map(|provider| {
+                provider
+                    .unavailable_models
+                    .iter()
+                    .map(move |model| (&provider.id, model))
+            })
+            .filter(|(provider, model)| {
+                query.is_empty()
+                    || model.display_name.as_str().to_lowercase().contains(&query)
+                    || format!("{provider}/{}", model.id)
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect()
+    }
+
     pub(in crate::ui) fn filtered_draft_models(&self) -> Vec<ModelSelection> {
         self.draft_models()
             .into_iter()

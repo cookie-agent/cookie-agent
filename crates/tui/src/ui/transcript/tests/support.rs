@@ -1056,6 +1056,39 @@ pub(crate) fn provider_descriptor(
         .expect("provider descriptor")
 }
 
+/// A Kimi-like provider whose catalog models are all quarantined or
+/// unsupported, with the models.dev doc URL and env name.
+pub(crate) fn unusable_provider(connected: bool) -> cookie_agent_protocol::ProviderDescriptor {
+    let mut value = serde_json::to_value(provider_descriptor(
+        "kimi-code",
+        "supported",
+        "current",
+        connected,
+    ))
+    .expect("serialize provider");
+    value["display_name"] = serde_json::json!("Kimi Code");
+    value["setup_fields"] = serde_json::json!([]);
+    value["documentation_url"] = serde_json::json!("https://platform.moonshot.ai/docs");
+    value["environment"] = serde_json::json!(["KIMI_API_KEY"]);
+    value["model_counts"] = serde_json::json!({
+        "available": 0,
+        "quarantined": 2,
+        "unsupported": 1,
+        "needs_setup": 0,
+        "needs_credentials": 0
+    });
+    value["unavailable_models"] = if connected {
+        serde_json::json!([
+            {"id": "k2", "display_name": "k2", "kind": "quarantined", "reason": "invalid_catalog_model_record"},
+            {"id": "k2-thinking", "display_name": "k2-thinking", "kind": "quarantined", "reason": "invalid_catalog_model_record"},
+            {"id": "k3-vision", "display_name": "Kimi K3 Vision", "kind": "unsupported", "reason": "unsupported_model_capabilities"}
+        ])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::from_value(value).expect("unusable provider")
+}
+
 pub(crate) fn multi_auth_provider() -> cookie_agent_protocol::ProviderDescriptor {
     let mut value = serde_json::to_value(provider_descriptor(
         "multi-auth",
