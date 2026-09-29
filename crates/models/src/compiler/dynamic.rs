@@ -17,10 +17,7 @@ use crate::{
     compiler::{
         executable::{CompatibleThinkingToggle, compatible_thinking_toggle},
         fingerprint::fingerprint,
-        projection::{
-            capabilities_from_catalog, managed_defaults, validate_capability_shape,
-            validate_defaults,
-        },
+        projection::{capabilities_from_catalog, validate_capability_shape, validate_defaults},
         variants::{CompiledVariant, CompiledVariantOrigin, custom_variants, managed_variants},
     },
     recipes::{
@@ -506,7 +503,9 @@ impl DynamicCompiler {
             required_auth_method,
             authored,
         )?;
-        let mut defaults = managed_defaults(model);
+        // Catalog models carry no output default: requests send the model's output limit
+        // unless an override or agent cap sets one.
+        let mut defaults = RequestDefaults::default();
         if let Some(override_) = override_ {
             override_.defaults.apply(&mut defaults);
         }

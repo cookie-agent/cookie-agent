@@ -104,26 +104,36 @@ fn compaction_trigger_uses_input_limit_or_context_less_output_cap() {
     assert!(usage_reaches_compaction_trigger(100_000, trigger));
     assert!(100_000 < resolve_compaction_trigger(400_000, &percent));
 
-    // Without one, the context less the output cap the request actually sends: a nonzero agent
-    // cap bounded by the output limit, else the model's request default, else the output limit.
+    // Requests send the full output limit unless an agent cap or authored default lowers it.
     binding.descriptor.capabilities.limits.input = None;
-    binding.defaults.request.max_output_tokens = Some(32_000);
-    assert_eq!(effective_max_output_tokens(&binding, 0), Some(32_000));
+    assert_eq!(effective_max_output_tokens(&binding, 0), Some(128_000));
     assert_eq!(effective_max_output_tokens(&binding, 64_000), Some(64_000));
     assert_eq!(
         effective_max_output_tokens(&binding, 500_000),
         Some(128_000)
     );
-    assert_eq!(
-        input_token_budget(&binding, effective_max_output_tokens(&binding, 0)),
-        Some(368_000)
-    );
+    binding.defaults.request.max_output_tokens = Some(8_192);
+    assert_eq!(effective_max_output_tokens(&binding, 0), Some(8_192));
+    assert_eq!(effective_max_output_tokens(&binding, 64_000), Some(64_000));
     binding.defaults.request.max_output_tokens = None;
-    assert_eq!(effective_max_output_tokens(&binding, 0), Some(128_000));
-    assert_eq!(
-        input_token_budget(&binding, effective_max_output_tokens(&binding, 0)),
-        Some(272_000)
-    );
+
+    // Without an input limit, the context less min(output cap, 32000, context / 2).
+    let budget = |binding: &cookie_agent_protocol::FrozenModelBinding, cap| {
+        input_token_budget(binding, effective_max_output_tokens(binding, cap))
+    };
+    assert_eq!(budget(&binding, 0), Some(368_000));
+    assert_eq!(budget(&binding, 4_096), Some(395_904));
+    let limits = &mut binding.descriptor.capabilities.limits;
+    limits.context = Some(200_000);
+    limits.output = Some(64_000);
+    assert_eq!(budget(&binding, 0), Some(168_000));
+    // An output limit equal to the context reserves half the window, not all of it.
+    let limits = &mut binding.descriptor.capabilities.limits;
+    limits.context = Some(32_768);
+    limits.output = Some(32_768);
+    assert_eq!(budget(&binding, 0), Some(16_384));
+    binding.descriptor.capabilities.limits.output = None;
+    assert_eq!(budget(&binding, 0), Some(32_768));
     binding.descriptor.capabilities.limits.context = None;
     assert_eq!(input_token_budget(&binding, Some(1)), None);
 }
@@ -315,8 +325,12 @@ fn compaction_budget_uses_harness_or_native_limit_and_reserves_output() {
         native_compaction_input_budget(&native_binding, &policy),
         50_000 - DEFAULT_COMPACTION_OUTPUT_RESERVE_TOKENS
     );
+    // The output reserve never takes more than half the window.
     native_binding.descriptor.capabilities.limits.context = Some(10_000);
-    assert_eq!(native_compaction_input_budget(&native_binding, &policy), 1);
+    assert_eq!(
+        native_compaction_input_budget(&native_binding, &policy),
+        5_000
+    );
 }
 
 #[test]

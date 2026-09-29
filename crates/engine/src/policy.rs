@@ -934,8 +934,8 @@ pub(crate) fn resolve_model(
 }
 
 /// The output-token cap sent with a request. A nonzero agent `cap` is bounded by the model's
-/// output limit; otherwise the model's request default applies (catalog models default to
-/// `min(output limit, 32000)`), falling back to the model's output limit.
+/// output limit; otherwise an authored `generation_options.max_output_tokens` applies, falling
+/// back to the model's output limit (catalog models author none, so they send their limit).
 pub(crate) fn effective_max_output_tokens(
     binding: &protocol::FrozenModelBinding,
     cap: u64,
@@ -952,8 +952,18 @@ pub(crate) fn effective_max_output_tokens(
     Some(limit.map_or(cap, |limit| limit.min(cap)))
 }
 
+/// Largest output reservation subtracted from the context window when a model declares no input
+/// limit (opencode's output cap). Requests may still ask for more output than this.
+const MAX_OUTPUT_RESERVE_TOKENS: u64 = 32_000;
+
 /// The input tokens a request may occupy: the model's separately documented input limit when it
-/// has one, otherwise the context window less the output cap sent with the request.
+/// has one, otherwise the context window less an output reserve of
+/// `min(max_output_tokens, 32000, context / 2)`.
+///
+/// The reserve is capped at 32,000 so models with very large output limits (128k on a 400k
+/// window) do not give up a third of their window to output that rarely materializes, and at half
+/// the context so catalog entries whose output limit equals their context (a shared window) keep
+/// a usable budget instead of zero; half still leaves the model room to answer.
 pub(crate) fn input_token_budget(
     binding: &protocol::FrozenModelBinding,
     max_output_tokens: Option<u64>,
@@ -962,7 +972,13 @@ pub(crate) fn input_token_budget(
     let context = limits.context?;
     Some(match limits.input.filter(|input| *input > 0) {
         Some(input) => input.min(context),
-        None => context.saturating_sub(max_output_tokens.unwrap_or(0)),
+        None => {
+            let reserve = max_output_tokens
+                .unwrap_or(0)
+                .min(MAX_OUTPUT_RESERVE_TOKENS)
+                .min(context / 2);
+            context - reserve
+        }
     })
 }
 

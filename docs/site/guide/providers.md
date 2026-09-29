@@ -284,7 +284,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `input` | array of strings | Nonempty modalities: `text`, `image`, `audio`, `pdf`, `video`; subject to adaptor support. |
 | `output` | array of strings | Currently only `["text"]` is supported. Structured JSON is text, not a separate modality. |
 | `context_tokens` | integer | Context window in tokens; must be greater than zero. |
-| `input_tokens` | integer | Optional input-token limit for providers that document one below the context window; must be greater than zero and at most `context_tokens`. Omitted, requests may use the context window less the output cap. Compaction triggers against this budget. |
+| `input_tokens` | integer | Optional input-token limit for providers that document one below the context window; must be greater than zero and at most `context_tokens`. Omitted, the input budget is the context window less `min(output cap, 32000, context_tokens / 2)`. Compaction triggers against this budget. |
 | `output_tokens` | integer | Maximum output tokens; must be greater than zero and at most `context_tokens`. |
 | `tool_calling` | boolean | Defaults to `true` when not declared or inherited. |
 | `parallel_tool_calls` | boolean | Defaults to `true`; requires `tool_calling = true`. |
@@ -380,7 +380,7 @@ and explicit request settings can further constrain the effective request.
 |---|---|---|
 | `temperature` | float | Finite value; requires `capabilities.temperature`. |
 | `top_p` | float | Finite value; requires `capabilities.top_p`. |
-| `max_output_tokens` | integer | Must be greater than zero and at most `capabilities.output_tokens`. Sent when the agent sets no output cap of its own; managed catalog models default it to `min(output limit, 32000)`, and a custom model without one sends its full `output_tokens`. |
+| `max_output_tokens` | integer | Must be greater than zero and at most `capabilities.output_tokens`. Sent when the agent sets no output cap of its own; without it, requests send the full `output_tokens`. Catalog models have no default. |
 | `stop` | array of strings | Stop sequences. |
 | `seed` | integer | Requires `capabilities.seed`. |
 | `tool_choice` | string or table | `"auto"`, `"none"`, `"required"`, or `{ named = "tool-name" }`; requires `capabilities.tool_calling`. |

@@ -45,16 +45,19 @@ Triggers are measured against the model's **input budget**, the number of
 tokens a request may occupy:
 
 ```text
-input_budget = model_input_limit                          when the model declares one
-input_budget = model_context_limit - max_output_tokens    otherwise
+input_budget = model_input_limit                     when the model declares one
+input_budget = model_context_limit - output_reserve  otherwise
+output_reserve = min(max_output_tokens, 32000, model_context_limit / 2)
 ```
 
 Catalog models take the input limit from models.dev `limit.input` when it is
 narrower than the context window (for example `gpt-5`: 400,000 context,
 272,000 input); custom models declare it as `capabilities.input_tokens`.
-`max_output_tokens` is the output cap the run actually sends (see
-[agent limits](agents.md)); for catalog models it defaults to
-`min(output limit, 32000)`.
+`max_output_tokens` is the output cap the run sends (see
+[agent limits](agents.md)), by default the model's full output limit. The
+reserve is capped at 32,000 tokens so a large output limit does not claim a big
+share of the window, and at half the context so a model whose output limit
+equals its context window keeps a usable budget.
 
 By default, compaction uses a proportional trigger:
 
@@ -63,7 +66,7 @@ trigger_tokens = input_budget * percent / 100
 ```
 
 `percent` defaults to 70, so a model with a 200,000-token context window and a
-32,000-token output cap triggers at 117,600 tokens, and `gpt-5` at 190,400. Valid percentages are 1 through 99; 100 is rejected
+64,000-token output limit triggers at 117,600 tokens, and `gpt-5` at 190,400. Valid percentages are 1 through 99; 100 is rejected
 because compaction at the model limit does not preserve useful request
 headroom.
 
