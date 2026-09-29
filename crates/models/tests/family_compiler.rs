@@ -270,6 +270,40 @@ fn tool_less_catalog_models_stay_available_without_parallel_tools() {
     }
 }
 
+#[test]
+fn claude_on_vertex_is_unsupported_with_an_honest_reason() {
+    let vertex_authored = || ModelsDevProvider {
+        base_url: None,
+        setup: setup(&[("project", "example-project"), ("location", "us-east5")]),
+        api_key: None,
+        auth_override: Some(auth("oauth-access-token-v1", &[("access_token", "token")])),
+        cache: None,
+        headers: BTreeMap::new(),
+        model_overrides: BTreeMap::new(),
+    };
+    let native = record("@ai-sdk/google-vertex/anthropic", None);
+    let mut nested = record("@ai-sdk/google-vertex", None);
+    only_model(&mut nested).provider = Some(CatalogModelProviderMetadata {
+        npm: Some("@ai-sdk/google-vertex/anthropic".into()),
+        api: None,
+        shape: None,
+    });
+    for catalog in [native, nested] {
+        let compiled = DynamicCompiler::family_registry()
+            .compile_managed("sha256:test", &catalog, Some(&vertex_authored()))
+            .unwrap();
+        assert!(compiled.models.is_empty(), "{}", catalog.npm);
+        assert_eq!(compiled.unsupported_models.len(), 1);
+        assert!(
+            compiled.unsupported_models[0]
+                .reason
+                .starts_with("unsupported_wire: Claude on Vertex AI"),
+            "{}",
+            compiled.unsupported_models[0].reason
+        );
+    }
+}
+
 fn auth(method: &str, fields: &[(&str, &str)]) -> AuthOverride {
     AuthOverride {
         method: AuthMethodId::new(method).unwrap(),

@@ -298,7 +298,7 @@ fn adapter_config(
             "settings": {
                 "project": setup(model, "project")?,
                 "location": setup(model, "location")?,
-                "resource": { "type": "publisher_model", "publisher": if model.family_id == "vertex-anthropic" { "anthropic" } else { "google" }, "model": model.wire_model_id.as_str() },
+                "resource": { "type": "publisher_model", "publisher": "google", "model": model.wire_model_id.as_str() },
                 "thinking": vertex_thinking(reasoning),
                 "provider_tools": false,
                 "mixed_client_and_provider_tools": false,

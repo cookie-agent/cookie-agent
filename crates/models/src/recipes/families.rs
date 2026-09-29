@@ -321,6 +321,12 @@ pub enum FamilyResolutionError {
     UnknownFamily,
     #[error("unsupported_model_shape")]
     UnsupportedShape,
+    /// Claude on Vertex AI is served through `:streamRawPredict` with an
+    /// Anthropic Messages body; no Oven adapter speaks that wire.
+    #[error(
+        "unsupported_wire: Claude on Vertex AI needs the Anthropic Messages rawPredict wire, which cookie-agent does not implement"
+    )]
+    VertexAnthropic,
 }
 
 pub fn resolve_model(
@@ -390,7 +396,8 @@ fn adapter(
             ResolvedShape::Responses => OvenAdapterFamily::OpenaiResponses,
         },
         FamilyKind::Google => OvenAdapterFamily::GoogleGemini,
-        FamilyKind::Vertex | FamilyKind::VertexAnthropic => OvenAdapterFamily::GoogleVertexGemini,
+        FamilyKind::Vertex => OvenAdapterFamily::GoogleVertexGemini,
+        FamilyKind::VertexAnthropic => return Err(FamilyResolutionError::VertexAnthropic),
         FamilyKind::Bedrock => match shape {
             ResolvedShape::Chat => OvenAdapterFamily::AwsBedrockConverse,
             ResolvedShape::Responses => OvenAdapterFamily::OpenaiResponses,

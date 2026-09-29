@@ -1011,7 +1011,7 @@ fn resolved_managed_setup_and_endpoint(
     template: Option<&str>,
     authored: Option<&ModelsDevProvider>,
 ) -> Result<(Option<ValidatedSetup>, Option<String>), ModelLocalError> {
-    if template.is_none() && !matches!(family, FamilyKind::Vertex | FamilyKind::VertexAnthropic) {
+    if template.is_none() && family != FamilyKind::Vertex {
         return Ok((None, None));
     }
     let input = authored
@@ -1032,9 +1032,7 @@ fn resolved_managed_setup_and_endpoint(
         .map(|name| crate::recipes::setup_field_name(&name))
         .collect::<Vec<_>>();
     match family {
-        FamilyKind::Vertex | FamilyKind::VertexAnthropic => {
-            required.extend(["project".into(), "location".into()])
-        }
+        FamilyKind::Vertex => required.extend(["project".into(), "location".into()]),
         FamilyKind::Bedrock => required.push("region".into()),
         FamilyKind::Azure => required.push("resource_name".into()),
         _ => {}
@@ -1048,7 +1046,7 @@ fn resolved_managed_setup_and_endpoint(
         .and_then(|template| substitute_placeholders(template, &values))
         .map(|value| value.trim_end_matches('/').to_owned())
         .or_else(|| match family {
-            FamilyKind::Vertex | FamilyKind::VertexAnthropic => Some(format!(
+            FamilyKind::Vertex => Some(format!(
                 "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}",
                 values.get("location")?,
                 values.get("project")?,
