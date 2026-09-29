@@ -240,12 +240,198 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
     .expect("open engine");
     if with_skills {
         engine
-            .try_register_tool_provider(Arc::new(cookie_agent_tools::skill::SkillTool::new(
-                engine.clone(),
-            )))
+            .try_register_tool_provider(Arc::new(SkillFixtureTool {
+                engine: engine.clone(),
+            }))
             .expect("skill tool");
     }
     (directory, Arc::new(Server::new(engine)))
+}
+
+/// Minimal stand-in for the builtin `skill` tool: loads the named skill through
+/// the engine so direct slash-command runs reach approval and `SkillLoaded`
+/// without building the tools crate.
+struct SkillFixtureTool {
+    engine: Engine,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct SkillFixtureArgs {
+    name: String,
+    #[serde(default)]
+    args: String,
+}
+
+fn fixture_tool_error(error: impl std::fmt::Display) -> cookie_agent_engine::ToolError {
+    cookie_agent_engine::ToolError::execution(error.to_string())
+}
+
+#[async_trait::async_trait]
+impl cookie_agent_engine::ToolProvider for SkillFixtureTool {
+    fn provider_id(&self) -> &'static str {
+        "test.skill"
+    }
+
+    fn tools_for_session(
+        &self,
+        ctx: &cookie_agent_engine::SessionToolContext,
+    ) -> Result<Vec<cookie_agent_engine::ToolSpec>, cookie_agent_engine::ToolError> {
+        if !self
+            .engine
+            .skill_tool_available(ctx.session)
+            .map_err(fixture_tool_error)?
+        {
+            return Ok(Vec::new());
+        }
+        Ok(vec![cookie_agent_engine::ToolSpec {
+            output: Default::default(),
+            concurrency: Default::default(),
+            result_truncation: Default::default(),
+            name: "skill".into(),
+            permission_name: "skill".into(),
+            description: "Load an available skill.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "args": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": false,
+            }),
+        }])
+    }
+
+    fn get_permission_name(
+        _tool_name: &str,
+    ) -> Result<&'static str, cookie_agent_engine::ToolError> {
+        Ok("skill")
+    }
+
+    fn permission_for_unlisted_tool(
+        &self,
+        tool_name: &str,
+    ) -> Result<Option<&'static str>, cookie_agent_engine::ToolError> {
+        Ok((tool_name == "skill").then_some("skill"))
+    }
+
+    fn get_permission_resource(
+        &self,
+        _name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(&'static str, Option<String>), cookie_agent_engine::ToolError> {
+        let args: SkillFixtureArgs =
+            serde_json::from_value(arguments.clone()).map_err(fixture_tool_error)?;
+        Ok(("skill", Some(args.name)))
+    }
+
+    fn get_display_argument(
+        &self,
+        _name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, cookie_agent_engine::ToolError> {
+        Ok(
+            serde_json::from_value::<SkillFixtureArgs>(arguments.clone())
+                .map_err(fixture_tool_error)?
+                .name,
+        )
+    }
+
+    async fn prepare(
+        &self,
+        ctx: cookie_agent_engine::ToolPreparationContext,
+        call: cookie_agent_engine::ToolCall,
+    ) -> Result<cookie_agent_engine::PreparedTool, cookie_agent_engine::ToolError> {
+        let args: SkillFixtureArgs =
+            serde_json::from_value(call.arguments).map_err(fixture_tool_error)?;
+        if self.engine.is_direct_skill_call(call.id) {
+            self.engine
+                .get_user_skill(ctx.session, &args.name, &args.args)
+                .map_err(fixture_tool_error)?;
+        } else {
+            self.engine
+                .get_model_skill(ctx.session, &args.name, &args.args)
+                .map_err(fixture_tool_error)?;
+        }
+        let resource = PreparedApprovalResource {
+            capability: PermissionAction::Skill,
+            canonical: PreparedResourceIdentity::new(format!(
+                "skill:{}",
+                Sha256Digest::of_bytes(args.name.as_bytes()).as_str()
+            ))
+            .map_err(fixture_tool_error)?,
+            binding_digest: PreparedResourceDigest::from_canonical_binding_bytes(
+                args.name.as_bytes(),
+            ),
+            binding_lifetime: PreparedBindingLifetime::RestartStable,
+            boundary: ApprovalBoundary::Exact,
+            source: ApprovalResourceSource::PrimaryOperation,
+        };
+        let normalized = serde_json::to_value(&args).map_err(fixture_tool_error)?;
+        let operation = PreparedOperationIdentity::new(
+            Sha256Digest::of_bytes(normalized.to_string().as_bytes()),
+            vec![ApprovalCapability {
+                action: PermissionAction::Skill,
+                operation: PreparedCapabilityOperation::new("skill:load")
+                    .map_err(fixture_tool_error)?,
+            }],
+            vec![resource],
+            Sha256Digest::of_bytes(ctx.cwd.to_string_lossy().as_bytes()),
+        )
+        .map_err(fixture_tool_error)?;
+        cookie_agent_engine::PreparedTool::new(
+            operation,
+            normalized,
+            None,
+            Box::new(SkillFixtureExecutor {
+                engine: self.engine.clone(),
+                args,
+            }),
+        )
+    }
+}
+
+struct SkillFixtureExecutor {
+    engine: Engine,
+    args: SkillFixtureArgs,
+}
+
+#[async_trait::async_trait]
+impl cookie_agent_engine::PreparedExecutor for SkillFixtureExecutor {
+    async fn revalidate(&self) -> Result<(), cookie_agent_engine::ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        context: cookie_agent_engine::ToolExecutionContext,
+    ) -> Result<cookie_agent_engine::ToolCompletion, cookie_agent_engine::ToolError> {
+        let invocation = self
+            .engine
+            .invoke_skill(
+                context.session,
+                Some(context.run),
+                &self.args.name,
+                &self.args.args,
+                true,
+            )
+            .await
+            .map_err(fixture_tool_error)?;
+        Ok(cookie_agent_engine::ToolCompletion::single(
+            cookie_agent_protocol::PersistedToolResult {
+                display: None,
+                retained_output: None,
+                title: cookie_agent_protocol::SafeDisplayText::new(format!(
+                    "Loaded skill {}",
+                    invocation.name
+                ))
+                .map_err(fixture_tool_error)?,
+                output: invocation.rendered,
+                metadata: serde_json::json!({"skill": invocation.name}),
+                truncation: None,
+                attachments: Vec::new(),
+                additional_messages: Vec::new(),
+            },
+        ))
+    }
 }
 
 fn approval_request() -> ApprovalRequest {
