@@ -62,8 +62,8 @@ Review the requested change and report concrete findings.
 nonzero value caps each request at the smaller of the document value and the
 model's own output limit. For the non-internal `primary`, `subagent`, and `all`
 modes, `0` means no document cap: the request sends the model's
-`generation_options.max_output_tokens` (catalog models default it to
-`min(output limit, 32000)`), or the model's output limit when it has none.
+`generation_options.max_output_tokens` when one is configured, otherwise the
+model's full output limit.
 
 Internal agents run on `${parent_model}` by default, so `0` there means they
 inherit the owner run's output cap the same way they inherit its model. The
@@ -97,7 +97,7 @@ it fail with an error directing the author to `models`.
 
 The former `limits.max_input_tokens` field is removed. Internal-agent input
 budgets now come from each resolved model's input limit, or its context limit
-minus its effective output reserve; candidates that cannot fit an invocation are skipped. A model
+minus its effective output reserve (at most 32,000 tokens or half the context); candidates that cannot fit an invocation are skipped. A model
 whose context limit is unknown uses a 16,384-token input budget.
 
 The durable protocol event for advancing through a model chain remains named
@@ -337,7 +337,8 @@ is currently using — including its position in the fallback chain: if the run
 has fallen back to its second model, internal agents resolve to that second
 model too. An internal agent's input budget is derived from each
 resolved model's input limit when it declares one, otherwise from its context
-limit after reserving its effective maximum output, with a minimum of one token. A model with an unknown context limit uses a
+limit after reserving its effective maximum output (at most 32,000 tokens or half
+the context), with a minimum of one token. A model with an unknown context limit uses a
 16,384-token input budget. Agent documents cannot set an input-token cap.
 
 The title agent runs only for root sessions that still need an automatic title.
