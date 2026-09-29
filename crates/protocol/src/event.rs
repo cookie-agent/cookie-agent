@@ -2764,6 +2764,78 @@ pub fn visible_events(events: &[StoredEvent]) -> Vec<StoredEvent> {
     }
     visible
 }
+impl StoredEvent {
+    /// Decodes one JSONL record that needs no repair, typed in a single pass
+    /// over its bytes. `None` means the record has to go through the tolerant
+    /// reader, which reports what it repaired or skipped.
+    #[must_use]
+    pub fn decode_strict(line: &[u8]) -> Option<Self> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Strict {
+            #[serde(default)]
+            engine_version: Option<String>,
+            #[serde(default)]
+            origin: Option<EventOrigin>,
+            #[serde(default, rename = "event_schema_version")]
+            _event_schema_version: Option<serde::de::IgnoredAny>,
+            session_id: SessionId,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            run_id: Option<RunId>,
+            seq: u64,
+            timestamp: Timestamp,
+            payload: EventPayload,
+        }
+        let strict = serde_json::from_slice::<Strict>(line).ok()?;
+        let event = Self {
+            engine_version: strict.engine_version,
+            origin: strict.origin,
+            session_id: strict.session_id,
+            run_id: strict.run_id,
+            seq: strict.seq,
+            timestamp: strict.timestamp,
+            payload: strict.payload,
+        };
+        event.validate().ok()?;
+        Some(event)
+    }
+}
+
+/// A stored event's envelope, decoded apart from its payload so a tolerant
+/// reader can pair it with a payload it already decoded.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredEventEnvelope {
+    #[serde(default)]
+    engine_version: Option<String>,
+    #[serde(default)]
+    origin: Option<EventOrigin>,
+    #[serde(default, rename = "event_schema_version")]
+    _event_schema_version: Option<serde::de::IgnoredAny>,
+    session_id: SessionId,
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    run_id: Option<RunId>,
+    seq: u64,
+    timestamp: Timestamp,
+}
+
+impl StoredEventEnvelope {
+    /// Pairs the envelope with its payload. The result still has to pass
+    /// [`StoredEvent::validate`].
+    #[must_use]
+    pub fn with_payload(self, payload: EventPayload) -> StoredEvent {
+        StoredEvent {
+            engine_version: self.engine_version,
+            origin: self.origin,
+            session_id: self.session_id,
+            run_id: self.run_id,
+            seq: self.seq,
+            timestamp: self.timestamp,
+            payload,
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for StoredEvent {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
@@ -2794,7 +2866,7 @@ impl<'de> Deserialize<'de> for StoredEvent {
             run_id: w.run_id,
             seq: w.seq,
             timestamp: w.timestamp,
-            payload: deserialize_event_payload_best_effort(w.payload)
+            payload: deserialize_event_payload_best_effort(&w.payload)
                 .map_err(serde::de::Error::custom)?
                 .payload,
         };
@@ -2815,19 +2887,41 @@ pub struct EventPayloadRead {
 /// nullable fields. Required-field and unknown-variant failures remain errors.
 /// Historical checklist item IDs are ignored here only; authored tool/RPC values
 /// remain strict. The original event log is not rewritten.
-pub fn deserialize_event_payload_best_effort(mut value: Value) -> Result<EventPayloadRead, String> {
+///
+/// A payload that decodes strictly is read in place; only a payload that
+/// needs repair is copied and re-decoded with path tracking.
+pub fn deserialize_event_payload_best_effort(value: &Value) -> Result<EventPayloadRead, String> {
+    let mut value = Cow::Borrowed(value);
     let mut degraded_fields = Vec::new();
-    if value.get("type").and_then(Value::as_str) == Some("goal_checklist_revised")
-        && let Some(items) = value.get_mut("items").and_then(Value::as_array_mut)
+    let has_checklist_item_ids = value.get("type").and_then(Value::as_str)
+        == Some("goal_checklist_revised")
+        && value
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_object)
+                    .any(|item| item.contains_key("id"))
+            });
+    if has_checklist_item_ids
+        && let Some(items) = value
+            .to_mut()
+            .get_mut("items")
+            .and_then(Value::as_array_mut)
     {
-        let mut removed_item_ids = false;
         for item in items.iter_mut().filter_map(Value::as_object_mut) {
-            removed_item_ids |= item.remove("id").is_some();
+            item.remove("id");
         }
-        if removed_item_ids {
-            degraded_fields.push("items[].id".into());
-        }
+        degraded_fields.push("items[].id".into());
     }
+    if let Ok(payload) = EventPayload::deserialize(value.as_ref()) {
+        return Ok(EventPayloadRead {
+            payload,
+            degraded_fields,
+        });
+    }
+    let mut value = value.into_owned();
     let mut previous_path = None;
     for _ in 0..=MAX_DEGRADED_FIELDS {
         match serde_path_to_error::deserialize::<_, EventPayload>(value.clone().into_deserializer())

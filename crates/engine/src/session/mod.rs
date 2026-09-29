@@ -883,7 +883,31 @@ impl SessionStore {
         if let Some(session) = self.get_resident(id) {
             return Ok(session.log.event_snapshot());
         }
-        Ok(EventLog::open_read_only(self.resolve_dir(id)?.join(EVENTS_FILE), id)?.event_snapshot())
+        let path = self.resolve_dir(id)?.join(EVENTS_FILE);
+        Ok(self.read_only_log(id, path)?.event_snapshot())
+    }
+
+    /// A parsed read-only copy of `id`'s log at `path`, kept while the file
+    /// is unchanged so repeated reads of a session this process does not own
+    /// parse it once.
+    fn read_only_log(&self, id: SessionId, path: PathBuf) -> Result<Arc<EventLog>, SessionError> {
+        let fingerprint = ReadOnlyLogFingerprint::of(&path)?;
+        let cached = self
+            .read_only_logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(id, fingerprint);
+        if let Some(log) = cached {
+            return Ok(log);
+        }
+        // Parse outside the cache lock: a large log takes seconds.
+        self.note_log_open(id);
+        let log = EventLog::open_read_only(path, id)?;
+        self.read_only_logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, fingerprint, log.clone());
+        Ok(log)
     }
 
     /// Arc clone of the resident log plus its persistence flag, without
@@ -954,12 +978,20 @@ impl SessionStore {
             direct || TreeLoadReads::active() || !self.is_filed_child(id),
             "child log {id} opened outside a tree load"
         );
-        self.note_log_open(id);
         let session_dir = self.resolve_dir(id)?;
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(id));
         }
-        let snapshot = projection(EventLog::open_read_only(session_dir.join(EVENTS_FILE), id)?)?;
+        let path = session_dir.join(EVENTS_FILE);
+        // A direct read may repeat for as long as another process owns the
+        // session; tree loads read each member once and bypass the cache.
+        let log = if direct {
+            self.read_only_log(id, path)?
+        } else {
+            self.note_log_open(id);
+            EventLog::open_read_only(path, id)?
+        };
+        let snapshot = projection(log)?;
         self.residency
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1605,26 +1637,7 @@ impl SessionStore {
         if !session_dir.is_dir() {
             return Err(SessionError::Missing(session));
         }
-        let path = session_dir.join(EVENTS_FILE);
-        let fingerprint = ReadOnlyLogFingerprint::of(&path)?;
-        let cached = self
-            .read_only_logs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(session, fingerprint);
-        let log = match cached {
-            Some(log) => log,
-            None => {
-                // Parse outside the cache lock: a large log takes seconds.
-                self.note_log_open(session);
-                let log = EventLog::open_read_only(path, session)?;
-                self.read_only_logs
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(session, fingerprint, log.clone());
-                log
-            }
-        };
+        let log = self.read_only_log(session, session_dir.join(EVENTS_FILE))?;
         Ok(log.events_after(cursor, limit))
     }
 

@@ -755,12 +755,12 @@ fn agent_md_event_round_trips_and_enforces_entry_bounds() {
 
 #[test]
 fn event_payload_best_effort_defaults_only_optional_fields() {
-    let missing = deserialize_event_payload_best_effort(json!({"type":"run_cancelled"}))
+    let missing = deserialize_event_payload_best_effort(&json!({"type":"run_cancelled"}))
         .expect("missing optional field defaults");
     assert_eq!(missing.degraded_fields, ["reason"]);
     assert_eq!(missing.payload, EventPayload::RunCancelled { reason: None });
 
-    let mismatched = deserialize_event_payload_best_effort(json!({
+    let mismatched = deserialize_event_payload_best_effort(&json!({
         "type":"run_interrupted",
         "reason": 42
     }))
@@ -771,14 +771,14 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         EventPayload::RunInterrupted { reason: None }
     );
 
-    assert!(deserialize_event_payload_best_effort(json!({"type":"future_event"})).is_err());
-    assert!(deserialize_event_payload_best_effort(json!({"type":"run_failed"})).is_err());
+    assert!(deserialize_event_payload_best_effort(&json!({"type":"future_event"})).is_err());
+    assert!(deserialize_event_payload_best_effort(&json!({"type":"run_failed"})).is_err());
     assert!(
-        deserialize_event_payload_best_effort(json!({"type":"run_failed","error":42})).is_err()
+        deserialize_event_payload_best_effort(&json!({"type":"run_failed","error":42})).is_err()
     );
 
     let tool_call_id = ToolCallId::new_v7();
-    let old_progress = deserialize_event_payload_best_effort(json!({
+    let old_progress = deserialize_event_payload_best_effort(&json!({
         "type": "tool_call_progress",
         "tool_call_id": tool_call_id,
         "message": "working"
@@ -794,7 +794,7 @@ fn event_payload_best_effort_defaults_only_optional_fields() {
         }
     );
 
-    let chunk_progress = deserialize_event_payload_best_effort(json!({
+    let chunk_progress = deserialize_event_payload_best_effort(&json!({
         "type": "tool_call_progress",
         "tool_call_id": tool_call_id,
         "message": "bash stdout",
