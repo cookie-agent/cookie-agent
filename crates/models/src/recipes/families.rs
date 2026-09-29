@@ -73,6 +73,21 @@ const RECIPES: &[FamilyRecipe] = &[
         Some("https://openrouter.ai/api/v1"),
     ),
     compatible("@qvac/ai-sdk-provider", None),
+    // OpenAI-compatible gateways. Endpoints follow each provider's docs:
+    // vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions,
+    // docs.aihubmix.com (unified OpenAI interface), the `@ai-sdk/vercel` v0
+    // default base URL, docs.salad.com/ai-gateway, and docs.merge.dev/merge-gateway.
+    compatible("@ai-sdk/gateway", Some("https://ai-gateway.vercel.sh/v1")),
+    compatible("@aihubmix/ai-sdk-provider", Some("https://aihubmix.com/v1")),
+    compatible("@ai-sdk/vercel", Some("https://api.v0.dev/v1")),
+    compatible(
+        "@saladtechnologies-oss/ai-sdk-provider",
+        Some("https://ai.salad.cloud/v1"),
+    ),
+    compatible(
+        "merge-gateway-ai-sdk-provider",
+        Some("https://api-gateway.merge.dev/v1/openai"),
+    ),
     family(
         "@ai-sdk/anthropic",
         FamilyKind::Anthropic,

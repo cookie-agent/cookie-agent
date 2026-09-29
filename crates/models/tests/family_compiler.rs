@@ -459,7 +459,7 @@ fn non_video_model_behavior_fingerprint_is_stable() {
             .unwrap()
             .behavior_fingerprint
             .as_str(),
-        "32b7489f23ce065088a8fbecbdf3509a5d9703e1de7476a6ce4153896305af8e"
+        "1c721db784071199efada3d679b461951c84cdb2a4443881d05ac4d32c41580d"
     );
 }
 

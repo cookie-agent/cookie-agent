@@ -62,11 +62,11 @@ fn model() -> CatalogModelRecord {
 #[test]
 fn classifies_every_supported_npm_family() {
     let registry = family_registry();
-    assert_eq!(registry.recipes().len(), 20);
+    assert_eq!(registry.recipes().len(), 25);
     for recipe in registry.recipes() {
         assert_eq!(registry.by_npm(recipe.npm), Some(recipe));
     }
-    assert!(registry.by_npm("@ai-sdk/vercel").is_none());
+    assert!(registry.by_npm("gitlab-ai-provider").is_none());
     assert!(registry.by_npm("future-unknown-provider").is_none());
 }
 
@@ -84,23 +84,70 @@ fn classifies_every_provider_in_the_bundled_catalog() {
                 .is_some()
         })
         .count();
-    assert_eq!(supported, 170);
+    assert_eq!(supported, 174);
     for provider in providers.values() {
         let npm = provider["npm"].as_str().unwrap();
         let known = family_registry().by_npm(npm).is_some();
         if !known {
             assert!(matches!(
                 npm,
-                "@ai-sdk/vercel"
-                    | "gitlab-ai-provider"
-                    | "@aihubmix/ai-sdk-provider"
+                "gitlab-ai-provider"
                     | "@jerome-benoit/sap-ai-provider-v2"
                     | "ai-gateway-provider"
-                    | "merge-gateway-ai-sdk-provider"
-                    | "@ai-sdk/gateway"
+                    | "watsonx-ai-provider"
             ));
         }
     }
+}
+
+#[test]
+fn openai_compatible_gateways_default_to_their_documented_endpoints() {
+    for (npm, endpoint) in [
+        ("@ai-sdk/gateway", "https://ai-gateway.vercel.sh/v1"),
+        ("@aihubmix/ai-sdk-provider", "https://aihubmix.com/v1"),
+        ("@ai-sdk/vercel", "https://api.v0.dev/v1"),
+        (
+            "@saladtechnologies-oss/ai-sdk-provider",
+            "https://ai.salad.cloud/v1",
+        ),
+        (
+            "merge-gateway-ai-sdk-provider",
+            "https://api-gateway.merge.dev/v1/openai",
+        ),
+    ] {
+        let resolved = resolve_model(&provider(npm, None), &model(), None, None).unwrap();
+        assert_eq!(
+            resolved.recipe.family,
+            FamilyKind::OpenAiCompatibleChat,
+            "{npm}"
+        );
+        assert_eq!(
+            resolved.adapter,
+            OvenAdapterFamily::OpenaiCompatible,
+            "{npm}"
+        );
+        assert_eq!(
+            resolved.endpoint_template.as_deref(),
+            Some(endpoint),
+            "{npm}"
+        );
+        assert_eq!(resolved.recipe.default_auth_method, "bearer-api-key-v1");
+    }
+    // A catalog API URL still wins over the recipe default.
+    let resolved = resolve_model(
+        &provider(
+            "merge-gateway-ai-sdk-provider",
+            Some("https://api-gateway.merge.dev/v1/ai-sdk"),
+        ),
+        &model(),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.endpoint_template.as_deref(),
+        Some("https://api-gateway.merge.dev/v1/ai-sdk")
+    );
 }
 
 #[test]
