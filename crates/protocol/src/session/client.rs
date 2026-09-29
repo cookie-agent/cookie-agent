@@ -104,10 +104,6 @@ pub enum ClientError {
     Rpc(JsonRpcError),
     #[error("websocket error: {0}")]
     WebSocket(String),
-    #[error("daemon authentication token is unavailable")]
-    TokenUnavailable,
-    #[error("daemon authentication token path is unsafe")]
-    UnsafeToken,
     #[error("a subscription replay is already in progress")]
     ReplayInProgress,
     #[error("subscription replay response timed out")]
