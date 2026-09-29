@@ -36,8 +36,14 @@ api_key = "${env:OPENAI_API_KEY}"
 ```
 
 Authored `api_key` or `auth_override` takes precedence over an eligible saved
-connection, then a supported no-auth recipe, otherwise the provider is
-unavailable. An authored `base_url` cannot inherit store credentials or setup.
+connection, then no-auth access, otherwise the provider is unavailable.
+No-auth access applies to a catalog provider that declares no credential
+variable, and to a local server: an authored provider whose endpoint
+(`base_url`, else the catalog API URL) is on `localhost`, `127.0.0.1`, or
+`::1`. Local catalog providers such as LM Studio stay unavailable until
+authored, so `[providers.lmstudio]` with `source = "models_dev"` is enough to
+use a running LM Studio. An authored `base_url` cannot inherit store
+credentials or setup.
 Endpoint selection uses authored `base_url`, catalog API URL, then family
 default; setup-derived families retain their own routing.
 
@@ -106,7 +112,7 @@ stored); unconfigured providers report counts alone.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `source` | string | *(required)* | Must be `"models_dev"`. |
-| `base_url` | string | *(none)* | HTTPS override of the provider-level API URL; per-model catalog endpoints follow the rules above. Requires same-definition auth (`api_key` or `auth_override`) and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
+| `base_url` | string | *(none)* | Override of the provider-level API URL; per-model catalog endpoints follow the rules above. Must be `https`, or `http` to `localhost`, `127.0.0.1`, or `::1`. Requires same-definition auth (`api_key` or `auth_override`) unless it is such a loopback URL, and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
 | `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Native Azure Responses compaction also requires `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |

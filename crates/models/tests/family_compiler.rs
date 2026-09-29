@@ -431,6 +431,43 @@ fn authored_base_url_routes_mixed_provider_models() {
     );
 }
 
+#[test]
+fn only_exact_loopback_hosts_count_as_local() {
+    use cookie_agent_models::adapters::is_loopback_url;
+    for url in [
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://[::1]:8080/v1",
+        "https://localhost/v1",
+    ] {
+        assert!(is_loopback_url(url), "{url}");
+    }
+    for url in [
+        "http://127.0.0.2/v1",
+        "http://localhost.example/v1",
+        "http://example.com/v1",
+        "ftp://localhost/v1",
+    ] {
+        assert!(!is_loopback_url(url), "{url}");
+    }
+    // Managed base_url accepts plain HTTP only on those hosts.
+    let catalog = record("@ai-sdk/openai-compatible", Some("https://example.com/v1"));
+    let compile = |base_url: &str| {
+        let authored: ModelsDevProvider =
+            toml::from_str(&format!("base_url = \"{base_url}\"")).unwrap();
+        DynamicCompiler::default().compile_managed("test", &catalog, Some(&authored))
+    };
+    assert!(compile("http://[::1]:8080/v1").is_ok());
+    assert!(matches!(
+        compile("http://127.0.0.2:8080/v1"),
+        Err(DynamicCompileError::Endpoint)
+    ));
+    assert!(matches!(
+        compile("https://gateway.example/v1"),
+        Err(DynamicCompileError::BaseUrlWithoutAuth)
+    ));
+}
+
 fn auth(method: &str, fields: &[(&str, &str)]) -> AuthOverride {
     AuthOverride {
         method: AuthMethodId::new(method).unwrap(),

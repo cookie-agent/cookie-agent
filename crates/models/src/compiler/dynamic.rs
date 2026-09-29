@@ -341,7 +341,12 @@ impl DynamicCompiler {
             .map_err(|_| DynamicCompileError::Endpoint)?;
         }
         if authored.is_some_and(|value| {
-            value.base_url.is_some() && value.api_key.is_none() && value.auth_override.is_none()
+            value
+                .base_url
+                .as_ref()
+                .is_some_and(|url| !crate::adapters::is_loopback_url(url.as_str()))
+                && value.api_key.is_none()
+                && value.auth_override.is_none()
         }) {
             return Err(DynamicCompileError::BaseUrlWithoutAuth);
         }

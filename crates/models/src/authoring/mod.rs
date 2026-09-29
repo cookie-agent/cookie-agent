@@ -17,7 +17,6 @@ pub use cache::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    net::IpAddr,
 };
 
 use cookie_agent_identity::{
@@ -104,9 +103,12 @@ impl EndpointUrl {
         }
         let secure = parsed.scheme() == "https";
         let loopback_http = parsed.scheme() == "http"
-            && parsed.host_str().is_some_and(|host| {
-                host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-            });
+            && match parsed.host() {
+                Some(url::Host::Domain(host)) => host == "localhost",
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            };
         if !secure && !loopback_http {
             return Err(AuthoringError::Endpoint);
         }
@@ -380,7 +382,10 @@ impl ProviderDefinition {
                 if provider.api_key.is_some() && provider.auth_override.is_some() {
                     return Err(AuthoringError::AuthConflict);
                 }
-                if provider.base_url.is_some()
+                if provider
+                    .base_url
+                    .as_ref()
+                    .is_some_and(|url| !crate::adapters::is_loopback_url(url.as_str()))
                     && provider.api_key.is_none()
                     && provider.auth_override.is_none()
                 {
@@ -711,7 +716,7 @@ pub enum AuthoringError {
     HeaderValue,
     #[error("api_key and auth_override are mutually exclusive")]
     AuthConflict,
-    #[error("authored base_url requires same-definition auth")]
+    #[error("authored non-loopback base_url requires same-definition auth")]
     BaseUrlWithoutAuth,
     #[error("authored base_url is forbidden by this provider recipe")]
     BaseUrlForbidden,

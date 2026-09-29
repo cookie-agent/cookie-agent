@@ -1628,6 +1628,27 @@ fn effective_managed(
     let setup_values = setup_input.cloned().unwrap_or_default();
     let setup_fingerprint = setup_fingerprint(&setup_values);
 
+    // Providers need no credentials when their catalog entry declares no
+    // credential variable, or, once authored, when their endpoint (authored
+    // base_url, else catalog API URL) is a loopback URL: a local server such
+    // as LM Studio, Ollama, or QVAC. Local catalog providers stay opt-in so
+    // servers that are not running never show up as available.
+    let local = record.environment.is_empty()
+        || authored.is_some_and(|authored| {
+            authored
+                .base_url
+                .as_ref()
+                .map(crate::authoring::EndpointUrl::as_str)
+                .or(record.api.as_deref())
+                .is_some_and(crate::adapters::is_loopback_url)
+        });
+    let no_auth_method = if auth_method(recipe.default_auth_method)
+        .is_some_and(|method| method.credentials.is_empty())
+    {
+        Some(recipe.default_auth_method)
+    } else {
+        local.then_some("no-auth-v1")
+    };
     let credential_source = if authored.is_some_and(|value| value.api_key.is_some()) {
         EffectiveCredentialSource::AuthoredApiKey
     } else if authored.is_some_and(|value| value.auth_override.is_some()) {
@@ -1641,9 +1662,7 @@ fn effective_managed(
         })
     {
         EffectiveCredentialSource::ProviderStore
-    } else if auth_method(recipe.default_auth_method)
-        .is_some_and(|method| method.credentials.is_empty())
-    {
+    } else if no_auth_method.is_some() {
         EffectiveCredentialSource::NoAuth
     } else {
         EffectiveCredentialSource::Unavailable
@@ -1704,7 +1723,9 @@ fn effective_managed(
             }
         }
         EffectiveCredentialSource::NoAuth => ExecutableCredentialMaterial {
-            method: recipe.default_auth_method.to_owned(),
+            method: no_auth_method
+                .ok_or(ModelManagerError::RuntimeCompileFailed)?
+                .to_owned(),
             values: BTreeMap::new(),
         },
         EffectiveCredentialSource::Unavailable => ExecutableCredentialMaterial {
@@ -1731,8 +1752,10 @@ fn effective_managed(
     } else if credential_source == EffectiveCredentialSource::NoAuth {
         provider.api_key = None;
         provider.auth_override = Some(AuthOverride {
-            method: AuthMethodId::new(recipe.default_auth_method)
-                .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
+            method: AuthMethodId::new(
+                no_auth_method.ok_or(ModelManagerError::RuntimeCompileFailed)?,
+            )
+            .map_err(|_| ModelManagerError::RuntimeCompileFailed)?,
             values: BTreeMap::new(),
         });
     }

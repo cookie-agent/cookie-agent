@@ -2836,3 +2836,138 @@ async fn anthropic_models_in_bearer_providers_send_x_api_key() {
     assert!(request.contains("x-api-key: mixed-key\r\n"), "{request}");
     assert!(!request.contains("authorization:"), "{request}");
 }
+
+/// One-model managed provider catalog for local-server tests.
+fn local_catalog(npm: &str, environment: &[&str], api: Option<&str>) -> Arc<CatalogSnapshot> {
+    let mut snapshot = (*cloud_catalog("local", npm, environment, "local-model", None)).clone();
+    snapshot
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .api = api.map(str::to_owned);
+    Arc::new(snapshot)
+}
+
+async fn assert_local_no_auth_dispatch(
+    catalog: Arc<CatalogSnapshot>,
+    authored: BTreeMap<ProviderId, ProviderDefinition>,
+    captured: tokio::task::JoinHandle<String>,
+) {
+    let temporary = TempDir::new().unwrap();
+    for definition in authored.values() {
+        definition
+            .validate_for(&ProviderId::new("local").unwrap())
+            .unwrap();
+    }
+    let manager = ModelManager::new(authored, catalog, store(&temporary)).unwrap();
+    let runtime = manager.current();
+    assert_eq!(
+        runtime.providers()[0].effective_auth,
+        EffectiveCredentialSource::NoAuth
+    );
+    let model = &runtime.models().values().next().unwrap().model;
+    assert_eq!(
+        model.status,
+        cookie_agent_models::compiler::CompiledModelStatus::Available
+    );
+    assert_eq!(model.auth.method, "no-auth-v1");
+    dispatch_captured(&manager, "local/local-model").await;
+    let request = captured.await.unwrap().to_ascii_lowercase();
+    assert!(
+        request.starts_with("post /v1/chat/completions"),
+        "{request}"
+    );
+    assert!(!request.contains("authorization:"), "{request}");
+}
+
+#[tokio::test]
+async fn loopback_catalog_provider_runs_without_credentials() {
+    // LM Studio's catalog entry names an API-key variable but serves on
+    // loopback; authoring the provider opts in without a key.
+    let (endpoint, captured) = capture_http_request().await;
+    let catalog = local_catalog(
+        "@ai-sdk/openai-compatible",
+        &["LMSTUDIO_API_KEY"],
+        Some(&format!("{endpoint}/v1")),
+    );
+    let temporary = TempDir::new().unwrap();
+    let unauthored =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    assert_eq!(
+        unauthored.current().providers()[0].effective_auth,
+        EffectiveCredentialSource::Unavailable
+    );
+    let authored = BTreeMap::from([(
+        ProviderId::new("local").unwrap(),
+        toml::from_str::<ProviderDefinition>("source = \"models_dev\"\n").unwrap(),
+    )]);
+    assert_local_no_auth_dispatch(catalog, authored, captured).await;
+}
+
+#[tokio::test]
+async fn loopback_http_base_url_runs_without_credentials() {
+    // QVAC has no catalog endpoint; the local server comes from base_url.
+    let (endpoint, captured) = capture_http_request().await;
+    let endpoint = endpoint.replace("127.0.0.1", "localhost");
+    let catalog = local_catalog("@qvac/ai-sdk-provider", &["QVAC_API_KEY"], None);
+    let authored = BTreeMap::from([(
+        ProviderId::new("local").unwrap(),
+        toml::from_str::<ProviderDefinition>(&format!(
+            "source = \"models_dev\"\nbase_url = \"{endpoint}/v1\"\n"
+        ))
+        .unwrap(),
+    )]);
+    assert_local_no_auth_dispatch(catalog, authored, captured).await;
+}
+
+#[test]
+fn remote_providers_still_need_credentials_and_https() {
+    let temporary = TempDir::new().unwrap();
+    let catalog = local_catalog(
+        "@ai-sdk/openai-compatible",
+        &["REMOTE_API_KEY"],
+        Some("https://remote.example/v1"),
+    );
+    let manager =
+        ModelManager::new(BTreeMap::new(), Arc::clone(&catalog), store(&temporary)).unwrap();
+    assert_eq!(
+        manager.current().providers()[0].effective_auth,
+        EffectiveCredentialSource::Unavailable
+    );
+    // A catalog entry without credential variables needs none.
+    let open = local_catalog(
+        "@ai-sdk/openai-compatible",
+        &[],
+        Some("https://open.example/v1"),
+    );
+    let manager = ModelManager::new(BTreeMap::new(), open, store(&temporary)).unwrap();
+    assert_eq!(
+        manager.current().providers()[0].effective_auth,
+        EffectiveCredentialSource::NoAuth
+    );
+    for (base_url, auth) in [
+        ("https://gateway.example/v1", ""),
+        ("http://gateway.example/v1", "api_key = \"secret\"\n"),
+        ("http://127.0.0.2/v1", "api_key = \"secret\"\n"),
+    ] {
+        let Ok(definition) = toml::from_str::<ProviderDefinition>(&format!(
+            "source = \"models_dev\"\nbase_url = \"{base_url}\"\n{auth}"
+        )) else {
+            continue;
+        };
+        let rejected = definition
+            .validate_for(&ProviderId::new("local").unwrap())
+            .is_err()
+            || ModelManager::new(
+                BTreeMap::from([(ProviderId::new("local").unwrap(), definition)]),
+                Arc::clone(&catalog),
+                store(&temporary),
+            )
+            .is_err();
+        assert!(rejected, "{base_url}");
+    }
+}
