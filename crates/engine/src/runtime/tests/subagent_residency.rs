@@ -777,18 +777,21 @@ async fn subagent_residency_pages_oldest_idle_and_reopens_transparently() {
             .engine
             .evict_idle_subagents_for_test(0, std::time::Duration::ZERO)
             .await
-            .expect("evict before steer"),
+            .expect("evict before result read"),
         [children[0]]
     );
     fixture
         .engine
-        .steer_subagent(
+        .get_subagent_result(
             parent.session_id,
             children[0],
-            "cannot steer a terminal child".into(),
+            false,
+            0,
+            20,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
-        .expect_err("terminal steer is rejected after transparent reopen");
+        .expect("terminal result read reopens the child transparently");
     assert!(fixture.engine.inner.store.is_resident(children[0]));
     fixture
         .engine

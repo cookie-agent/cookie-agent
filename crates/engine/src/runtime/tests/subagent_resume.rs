@@ -474,16 +474,6 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
             .count(),
         1
     );
-    let steered = fixture
-        .engine
-        .steer_subagent(
-            parent.session_id,
-            resumed_session_id,
-            "queued terminal resume correction".into(),
-        )
-        .await
-        .expect("steer queued terminal resume");
-    assert_eq!(steered.metadata["status"], "queued");
     release.send(()).expect("release concurrency slot");
     await_projection(
         &fixture.engine,
@@ -498,40 +488,19 @@ async fn terminal_resume_obeys_the_same_background_slot_and_queue_accounting() {
             .delegation_queue_contains(resumed_session_id)
             .expect("drained queue state")
     );
-    let resumed_events = fixture
-        .engine
-        .inner
-        .store
-        .get(resumed_session_id)
-        .expect("steered resumed child")
-        .log
-        .events();
-    assert!(resumed_events.iter().any(|event| {
-        event.run_id.is_none()
-            && matches!(
-                &event.payload,
-                EventPayload::UserInputAdmitted { input }
-                    if input == "queued terminal resume correction"
-            )
-    }));
-    assert!(resumed_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputSubmitted { input }
-            if input == "queued terminal resume correction"
-    )));
     assert_eq!(fixture.config.runtime.delegation.max_concurrency, Some(1));
     assert_eq!(
         with_watchdog("server fixture completion", server)
             .await
             .expect("queued resume server")
             .len(),
-        10
+        9
     );
     fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
-async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_steers() {
+async fn queued_terminal_resume_cancel_is_durable() {
     let (endpoint, resume_id, queued, _release, server) = scripted_queued_resume_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint_primary_internal_and_concurrency(
         &endpoint,
@@ -607,15 +576,6 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
         .await
         .expect("terminal resume queue timeout")
         .expect("terminal resume queued for cancellation");
-    fixture
-        .engine
-        .steer_subagent(
-            parent.session_id,
-            resumed_session_id,
-            "must not leak into a later resume".into(),
-        )
-        .await
-        .expect("steer before queued cancellation");
     let cancelled = fixture
         .engine
         .cancel_subagent(
@@ -657,22 +617,6 @@ async fn queued_terminal_resume_cancel_is_durable_and_does_not_reuse_pending_ste
     // still terminal, so the tool reports that status and its last message.
     assert!(result.output.starts_with("<status>completed</status>"));
     assert!(!result.output.contains("queued resume done"));
-    let child_events = fixture
-        .engine
-        .inner
-        .store
-        .get(resumed_session_id)
-        .expect("cancelled resume projection")
-        .log
-        .events();
-    assert!(child_events.iter().any(|event| {
-        event.run_id.is_none()
-            && matches!(
-                &event.payload,
-                EventPayload::UserInputRecalled { input }
-                    if input == "must not leak into a later resume"
-            )
-    }));
     assert_eq!(
         fixture
             .engine

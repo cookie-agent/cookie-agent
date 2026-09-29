@@ -2415,92 +2415,6 @@ impl Engine {
         }
     }
 
-    pub async fn steer_subagent(
-        &self,
-        caller_session_id: SessionId,
-        child_session_id: SessionId,
-        message: String,
-    ) -> Result<ToolResult, EngineError> {
-        if message.trim().is_empty() {
-            return Err(EngineError::ToolFailed(
-                "subagent steer message must not be empty".into(),
-            ));
-        }
-        let handle = self
-            .ensure_subagent_owned(caller_session_id, child_session_id)
-            .await?;
-        let admission_guard = self.inner.delegation.admission.lock().await;
-        let record = self
-            .inner
-            .delegation
-            .by_session
-            .lock()
-            .map_err(|_| EngineError::ActorStopped)?
-            .get(&child_session_id)
-            .copied()
-            .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))?;
-        let child = self.inner.store.get(child_session_id)?;
-        match record.state {
-            DelegationState::Queued => {
-                self.append(
-                    child_session_id,
-                    None,
-                    super::event_origin("engine:delegation"),
-                    Event::UserInputAdmitted { input: message },
-                )
-                .await?;
-                drop(admission_guard);
-                Ok(steered_delegate_result(
-                    child_session_id,
-                    child.meta.short_id.as_deref(),
-                    "queued",
-                ))
-            }
-            DelegationState::Starting | DelegationState::Running => {
-                if matches!(
-                    child.status,
-                    SessionStatus::Completed
-                        | SessionStatus::Failed
-                        | SessionStatus::Interrupted
-                        | SessionStatus::Cancelled
-                ) {
-                    return Err(EngineError::ToolFailed(format!(
-                        "subagent is terminal ({}) and cannot be steered",
-                        session_status_name(child.status)
-                    )));
-                }
-                let child_run_id =
-                    record.child_run_id.or(handle.child_run_id).ok_or_else(|| {
-                        EngineError::ToolFailed("subagent has not started a run".into())
-                    })?;
-                drop(admission_guard);
-                let result = self
-                    .admit_steer(
-                        child_session_id,
-                        child_run_id,
-                        super::event_origin("engine:delegation"),
-                        message,
-                        None,
-                    )
-                    .await?;
-                if !result.accepted {
-                    return Err(EngineError::ToolFailed(
-                        "subagent is no longer running".into(),
-                    ));
-                }
-                Ok(steered_delegate_result(
-                    child_session_id,
-                    child.meta.short_id.as_deref(),
-                    "running",
-                ))
-            }
-            DelegationState::Finished(status) => Err(EngineError::ToolFailed(format!(
-                "subagent is terminal ({}) and cannot be steered",
-                session_status_name(status)
-            ))),
-        }
-    }
-
     pub async fn cancel_subagent(
         &self,
         caller_session_id: SessionId,
@@ -3858,27 +3772,6 @@ fn reference_label(session_id: Option<SessionId>, short_id: Option<&str>) -> Opt
         .or_else(|| session_id.map(|id| id.to_string()))
 }
 
-fn steered_delegate_result(
-    child_session_id: SessionId,
-    short_id: Option<&str>,
-    status: &str,
-) -> ToolResult {
-    let label = reference_label(Some(child_session_id), short_id)
-        .expect("steer result has a session reference");
-    structured_delegate_result(
-        "Subagent steered",
-        format!(
-            "Subagent steered. [subagent session {label}; {}]",
-            safe_display(status)
-        ),
-        serde_json::json!({
-            "session_id": child_session_id,
-            "handle": short_id,
-            "status": status,
-        }),
-    )
-}
-
 pub(crate) fn completed_delegate_result(
     child: &session::SessionProjection,
     child_run_id: Option<RunId>,
@@ -4023,18 +3916,13 @@ mod concurrency_tests {
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
         context_seed_from_history, delegate_failure_result, paginated_subagent_result,
         preview_is_truncated, preview_text, render_background_completion,
-        render_delegate_teaser_body, steered_delegate_result, validate_redelivery_mode,
+        render_delegate_teaser_body, validate_redelivery_mode,
     };
 
     #[test]
     fn delegate_outputs_are_concise_and_preserve_metadata() {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let cases = [
-            (
-                steered_delegate_result(session_id, None, "running"),
-                format!("Subagent steered. [subagent session {session_id}; running]"),
-                serde_json::json!({"session_id": session_id, "handle": null, "status": "running"}),
-            ),
             (
                 cancelled_delegate_result(session_id, None, Some("Work so far".into())),
                 format!(
@@ -4082,11 +3970,6 @@ mod concurrency_tests {
     fn delegate_outputs_surface_the_handle_in_place_of_the_uuid() {
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let handle = "explore_1a2b3c4d";
-        let steered = steered_delegate_result(session_id, Some(handle), "running");
-        assert_eq!(
-            steered.output,
-            "Subagent steered. [subagent session explore_1a2b3c4d; running]"
-        );
         let cancelled = cancelled_delegate_result(session_id, Some(handle), None);
         assert_eq!(
             cancelled.output,
@@ -4151,7 +4034,6 @@ second line
         let session_id = cookie_agent_protocol::SessionId::new_v7();
         let text = format!("\x1b\n\t{}", "é".repeat(2048));
         for (result, key) in [
-            (steered_delegate_result(session_id, None, &text), "status"),
             (
                 cancelled_delegate_result(session_id, None, Some(text.clone())),
                 "partial_report",
