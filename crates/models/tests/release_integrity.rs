@@ -527,7 +527,6 @@ fn model_package_catalog_network_is_fixed_and_has_no_unapproved_adapters() {
     for forbidden in [
         "reqwest::get",
         "Policy::limited",
-        "Accept-Encoding: gzip",
         "catalog_url",
         "MODELS_DEV_LIVE_SHA256",
         "std::env::var",
@@ -539,7 +538,8 @@ fn model_package_catalog_network_is_fixed_and_has_no_unapproved_adapters() {
         );
     }
     assert!(catalog_source.contains("Policy::none"));
-    assert!(catalog_source.contains("accept_encoding: \"identity\""));
+    assert!(catalog_source.contains("header(header::ACCEPT_ENCODING, \"gzip\")"));
+    assert!(catalog_source.contains("GzDecoder::new(compressed)"));
     assert!(catalog_source.contains("connect_timeout(Duration::from_secs(5))"));
     assert!(catalog_source.contains("timeout(Duration::from_secs(15))"));
 

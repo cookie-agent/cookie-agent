@@ -680,6 +680,7 @@ dependencies = [
  "arc-swap",
  "cookie_agent_identity",
  "cookie_agent_protocol",
+ "flate2",
  "futures-util",
  "http",
  "jiff",

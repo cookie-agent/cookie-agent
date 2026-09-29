@@ -1,9 +1,11 @@
 use std::{
+    io::Read as _,
     path::Path,
     sync::{Arc, Mutex, PoisonError},
 };
 
 use cookie_agent_identity::CatalogRevision;
+use flate2::read::GzDecoder;
 use futures_util::StreamExt as _;
 use jiff::Timestamp;
 use thiserror::Error;
@@ -12,10 +14,10 @@ use crate::secure_store::{DEFAULT_LOCK_BUDGET, SecureDirectory, SecureStoreError
 
 use super::{
     CATALOG_BODY_FILE, CATALOG_CACHE_SCHEMA_VERSION, CATALOG_LOCK_FILE, CATALOG_MAX_BYTES,
-    CATALOG_META_FILE, CatalogAgeState, CatalogAvailability, CatalogCacheMeta, CatalogRequest,
-    CatalogRuntimeState, CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource, CatalogTransport,
-    CatalogTransportError, CatalogTransportResponse, MODELS_DEV_BOOTSTRAP, MODELS_DEV_CATALOG_URL,
-    ParsedCatalog, parse_cache_meta, parse_catalog,
+    CATALOG_META_FILE, CatalogAgeState, CatalogAvailability, CatalogCacheMeta, CatalogRuntimeState,
+    CatalogSafeErrorMeta, CatalogSnapshot, CatalogSource, CatalogTransport, CatalogTransportError,
+    CatalogTransportResponse, MODELS_DEV_BOOTSTRAP, MODELS_DEV_CATALOG_URL, ParsedCatalog,
+    parse_cache_meta, parse_catalog,
 };
 
 const MAX_META_BYTES: u64 = 128 * 1024;
@@ -84,7 +86,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
 
     /// [`Self::load_cached`] at a supplied time for deterministic tests.
     pub fn load_cached_at(&self, now: Timestamp) -> Result<CatalogSnapshot, CatalogError> {
-        match self.load_cache(now) {
+        match self.load_cache() {
             Ok(cached) => {
                 let availability = if cached.meta.stale {
                     CatalogAvailability::Stale
@@ -123,86 +125,82 @@ impl<T: CatalogTransport> CatalogManager<T> {
 
     /// Refreshes at a supplied time for deterministic tests.
     pub async fn refresh_at(&self, now: Timestamp) -> Result<CatalogSnapshot, CatalogError> {
-        let cache = self.load_cache(now);
+        let cache = self.load_cache();
         let etag = cache
             .as_ref()
             .ok()
             .and_then(|cache| cache.meta.etag.clone());
-        let network = match self.transport.fetch(CatalogRequest::fixed(etag)).await {
-            Ok(response) => self.validate_response(response),
-            Err(error) => Err(CatalogError::from_transport(error)),
+        let fetched = match self.fetch(etag).await {
+            Ok(fetched) => fetched,
+            Err(error) => return self.select_fallback(cache, error, now),
         };
-        let network = match network {
-            Ok(result) => Self::finish_stream(result).await,
-            Err(error) => Err(error),
+        let Some(FetchedCatalog { bytes, etag }) = fetched else {
+            return self.not_modified(cache, now);
         };
-
-        match network {
-            Ok(NetworkResult::NotModified) => {
-                let cached = match cache {
-                    Ok(cached) => cached,
-                    Err(cache_error) => {
-                        return self.select_fallback(
-                            Err(cache_error),
-                            CatalogError::new(
-                                "not_modified_without_valid_cache",
-                                "catalog server returned not modified without a valid cache",
-                            ),
-                            now,
-                        );
-                    }
-                };
-                let mut meta = cached.meta;
-                meta.validated_at = now;
-                meta.last_checked_at = now;
-                meta.selected_source = CatalogSource::Network;
-                meta.stale = false;
-                meta.last_error = None;
-                let write_error = self.commit_meta(&meta).err();
-                Ok(snapshot_from_parsed(
-                    &cached.catalog,
-                    CatalogSource::Network,
-                    meta.validated_at,
-                    now,
-                    meta.etag.clone(),
-                    CatalogAvailability::Ready,
-                    write_error.map(|error| error.safe_meta(now)),
-                ))
-            }
-            Ok(NetworkResult::Body { bytes, etag }) => {
-                let parsed = match parse_catalog(&bytes) {
-                    Ok(parsed) => self.remember(parsed),
-                    Err(error) => return self.select_fallback(cache, error, now),
-                };
-                let mut meta = metadata_for(
-                    &parsed,
-                    CatalogSource::Network,
-                    false,
-                    now,
-                    now,
-                    etag.clone(),
-                    None,
-                );
-                let write_error = self.commit_cache(&bytes, &meta).err();
-                if let Some(error) = &write_error {
-                    meta.last_error = Some(error.safe_meta(now));
-                }
-                Ok(snapshot_from_parsed(
-                    &parsed,
-                    CatalogSource::Network,
-                    now,
-                    now,
-                    etag,
-                    CatalogAvailability::Ready,
-                    meta.last_error,
-                ))
-            }
-            Ok(NetworkResult::Streaming { .. }) => Err(CatalogError::new(
-                "catalog_internal_stream_state",
-                "catalog response stream was not finalized",
-            )),
-            Err(network_error) => self.select_fallback(cache, network_error, now),
+        let parsed = match parse_catalog(&bytes) {
+            Ok(parsed) => parsed,
+            Err(error) => return self.select_fallback(cache, error, now),
+        };
+        let parsed = self.remember(parsed);
+        let mut meta = metadata_for(
+            &parsed,
+            CatalogSource::Network,
+            false,
+            now,
+            now,
+            etag.clone(),
+            None,
+        );
+        if let Err(error) = self.commit_cache(&bytes, &meta) {
+            meta.last_error = Some(error.safe_meta(now));
         }
+        Ok(snapshot_from_parsed(
+            &parsed,
+            CatalogSource::Network,
+            now,
+            now,
+            etag,
+            CatalogAvailability::Ready,
+            meta.last_error,
+        ))
+    }
+
+    /// A `304 Not Modified` revalidates the cached body: only its metadata is
+    /// rewritten, and the catalog already parsed for it is reused.
+    fn not_modified(
+        &self,
+        cache: Result<ValidatedCache, CatalogError>,
+        now: Timestamp,
+    ) -> Result<CatalogSnapshot, CatalogError> {
+        let cached = match cache {
+            Ok(cached) => cached,
+            Err(cache_error) => {
+                return self.select_fallback(
+                    Err(cache_error),
+                    CatalogError::new(
+                        "not_modified_without_valid_cache",
+                        "catalog server returned not modified without a valid cache",
+                    ),
+                    now,
+                );
+            }
+        };
+        let mut meta = cached.meta;
+        meta.validated_at = now;
+        meta.last_checked_at = now;
+        meta.selected_source = CatalogSource::Network;
+        meta.stale = false;
+        meta.last_error = None;
+        let write_error = self.commit_meta(&meta).err();
+        Ok(snapshot_from_parsed(
+            &cached.catalog,
+            CatalogSource::Network,
+            meta.validated_at,
+            now,
+            meta.etag.clone(),
+            CatalogAvailability::Ready,
+            write_error.map(|error| error.safe_meta(now)),
+        ))
     }
 
     fn select_fallback(
@@ -273,70 +271,40 @@ impl<T: CatalogTransport> CatalogManager<T> {
         }
     }
 
-    fn validate_response(
-        &self,
-        response: CatalogTransportResponse,
-    ) -> Result<NetworkResult, CatalogError> {
-        if (300..400).contains(&response.status) && response.status != 304 {
-            return Err(CatalogError::new(
-                "catalog_redirect_rejected",
-                "catalog redirects are forbidden",
-            ));
-        }
-        if response.status == 304 {
-            return Ok(NetworkResult::NotModified);
-        }
-        if response.status != 200 {
-            return Err(CatalogError::new(
-                "catalog_http_status",
-                "catalog server returned an unusable status",
-            ));
-        }
-        if response
-            .content_encoding
-            .as_deref()
-            .is_some_and(|encoding| !encoding.trim().eq_ignore_ascii_case("identity"))
-        {
-            return Err(CatalogError::new(
-                "catalog_compression_rejected",
-                "compressed catalog responses are forbidden",
-            ));
-        }
-        let json_content_type = response
-            .content_type
-            .as_deref()
-            .is_some_and(|content_type| {
-                content_type.split(';').next().is_some_and(|media_type| {
-                    media_type.trim().eq_ignore_ascii_case("application/json")
-                })
-            });
-        if !json_content_type {
-            return Err(CatalogError::new(
-                "catalog_content_type_rejected",
-                "catalog response is not JSON",
-            ));
-        }
-        if response
-            .content_length
-            .is_some_and(|length| length > CATALOG_MAX_BYTES as u64)
-        {
-            return Err(CatalogError::new(
-                "catalog_body_too_large",
-                "catalog response exceeds the byte limit",
-            ));
-        }
+    /// Fetches the catalog body, decoded and within [`CATALOG_MAX_BYTES`];
+    /// `None` is a `304 Not Modified` for the supplied ETag.
+    async fn fetch(&self, etag: Option<String>) -> Result<Option<FetchedCatalog>, CatalogError> {
+        let response = self
+            .transport
+            .fetch(etag)
+            .await
+            .map_err(CatalogError::from_transport)?;
+        let Some(coding) = validate_response(&response)? else {
+            return Ok(None);
+        };
         let etag = response.etag.map(validate_etag).transpose()?;
-        Ok(NetworkResult::Streaming {
-            body: response.body,
-            capacity: response
-                .content_length
-                .and_then(|length| usize::try_from(length).ok())
-                .unwrap_or(0),
-            etag,
-        })
+        let capacity = response
+            .content_length
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(CATALOG_MAX_BYTES);
+        let mut body = response.body;
+        let mut bytes = Vec::with_capacity(capacity);
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(CatalogError::from_transport)?;
+            if bytes.len().saturating_add(chunk.len()) > CATALOG_MAX_BYTES {
+                return Err(body_too_large());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let bytes = match coding {
+            ContentCoding::Identity => bytes,
+            ContentCoding::Gzip => decode_gzip(&bytes)?,
+        };
+        Ok(Some(FetchedCatalog { bytes, etag }))
     }
 
-    fn load_cache(&self, _now: Timestamp) -> Result<ValidatedCache, CatalogError> {
+    fn load_cache(&self) -> Result<ValidatedCache, CatalogError> {
         let directory = self.cache.as_ref().map_err(Clone::clone)?;
         let lock = directory
             .lock_within(CATALOG_LOCK_FILE, DEFAULT_LOCK_BUDGET)
@@ -348,6 +316,7 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 CatalogError::new("catalog_cache_missing", "catalog cache metadata is missing")
             })?;
         let meta = parse_cache_meta(&meta_bytes)?;
+        validate_meta_error(&meta)?;
         // The metadata names its body by SHA-256 revision and length. When
         // that is the catalog already parsed in memory (a 304 refresh, or any
         // check after startup loaded the cache), reuse it rather than reading
@@ -356,7 +325,6 @@ impl<T: CatalogTransport> CatalogManager<T> {
         // mismatch falls through to the full load.
         if let Some(catalog) = self.loaded_revision(&meta) {
             validate_meta(&meta, catalog.byte_length, &catalog.revision)?;
-            validate_parsed_meta(&meta, &catalog)?;
             return Ok(ValidatedCache { catalog, meta });
         }
         let body = lock
@@ -366,10 +334,10 @@ impl<T: CatalogTransport> CatalogManager<T> {
                 CatalogError::new("catalog_cache_missing", "catalog cache body is missing")
             })?;
         // Parsing computes the body's revision, the one hash of it this load
-        // needs; the metadata is checked against that.
+        // needs. Metadata naming a different body (a write torn between the
+        // two files) rejects the pair.
         let parsed = parse_catalog(&body)?;
         validate_meta(&meta, body.len() as u64, &parsed.revision)?;
-        validate_parsed_meta(&meta, &parsed)?;
         Ok(ValidatedCache {
             catalog: self.remember(parsed),
             meta,
@@ -447,42 +415,92 @@ impl<T: CatalogTransport> CatalogManager<T> {
     }
 }
 
-enum NetworkResult {
-    NotModified,
-    Body {
-        bytes: Vec<u8>,
-        etag: Option<String>,
-    },
-    Streaming {
-        body: super::CatalogBodyStream,
-        capacity: usize,
-        etag: Option<String>,
-    },
+struct FetchedCatalog {
+    bytes: Vec<u8>,
+    etag: Option<String>,
 }
 
-impl<T: CatalogTransport> CatalogManager<T> {
-    async fn finish_stream(result: NetworkResult) -> Result<NetworkResult, CatalogError> {
-        let NetworkResult::Streaming {
-            mut body,
-            capacity,
-            etag,
-        } = result
-        else {
-            return Ok(result);
-        };
-        let mut bytes = Vec::with_capacity(capacity.min(CATALOG_MAX_BYTES));
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(CatalogError::from_transport)?;
-            if bytes.len().saturating_add(chunk.len()) > CATALOG_MAX_BYTES {
-                return Err(CatalogError::new(
-                    "catalog_body_too_large",
-                    "catalog response exceeds the byte limit",
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(NetworkResult::Body { bytes, etag })
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContentCoding {
+    Identity,
+    Gzip,
+}
+
+/// Checks a response's status and headers, returning the body's content
+/// coding, or `None` for a `304 Not Modified`.
+fn validate_response(
+    response: &CatalogTransportResponse,
+) -> Result<Option<ContentCoding>, CatalogError> {
+    if response.status == 304 {
+        return Ok(None);
     }
+    if (300..400).contains(&response.status) {
+        return Err(CatalogError::new(
+            "catalog_redirect_rejected",
+            "catalog redirects are forbidden",
+        ));
+    }
+    if response.status != 200 {
+        return Err(CatalogError::new(
+            "catalog_http_status",
+            "catalog server returned an unusable status",
+        ));
+    }
+    let coding = match response.content_encoding.as_deref().map(str::trim) {
+        None => ContentCoding::Identity,
+        Some(coding) if coding.eq_ignore_ascii_case("identity") => ContentCoding::Identity,
+        Some(coding) if coding.eq_ignore_ascii_case("gzip") => ContentCoding::Gzip,
+        Some(_) => {
+            return Err(CatalogError::new(
+                "catalog_encoding_rejected",
+                "catalog response uses an unsupported content encoding",
+            ));
+        }
+    };
+    let json_content_type = response
+        .content_type
+        .as_deref()
+        .is_some_and(|content_type| {
+            content_type.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("application/json")
+            })
+        });
+    if !json_content_type {
+        return Err(CatalogError::new(
+            "catalog_content_type_rejected",
+            "catalog response is not JSON",
+        ));
+    }
+    if response
+        .content_length
+        .is_some_and(|length| length > CATALOG_MAX_BYTES as u64)
+    {
+        return Err(body_too_large());
+    }
+    Ok(Some(coding))
+}
+
+/// Decodes a gzip body, stopping as soon as the output passes the byte limit.
+fn decode_gzip(compressed: &[u8]) -> Result<Vec<u8>, CatalogError> {
+    let mut decoded =
+        Vec::with_capacity(compressed.len().saturating_mul(10).min(CATALOG_MAX_BYTES));
+    GzDecoder::new(compressed)
+        .take(CATALOG_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut decoded)
+        .map_err(|_| {
+            CatalogError::new("catalog_gzip_invalid", "catalog response is not valid gzip")
+        })?;
+    if decoded.len() > CATALOG_MAX_BYTES {
+        return Err(body_too_large());
+    }
+    Ok(decoded)
+}
+
+fn body_too_large() -> CatalogError {
+    CatalogError::new(
+        "catalog_body_too_large",
+        "catalog response exceeds the byte limit",
+    )
 }
 
 struct ValidatedCache {
@@ -543,11 +561,7 @@ fn validate_meta(
     Ok(())
 }
 
-fn validate_parsed_meta(
-    meta: &CatalogCacheMeta,
-    parsed: &ParsedCatalog,
-) -> Result<(), CatalogError> {
-    let _ = parsed;
+fn validate_meta_error(meta: &CatalogCacheMeta) -> Result<(), CatalogError> {
     let error_valid = meta.last_error.as_ref().is_none_or(|error| {
         !error.code.is_empty()
             && error.code.len() <= 128
@@ -559,13 +573,13 @@ fn validate_parsed_meta(
             && error.safe_message.len() <= MAX_SAFE_MESSAGE_BYTES
             && !error.safe_message.chars().any(char::is_control)
     });
-    if !error_valid {
+    if error_valid {
+        Ok(())
+    } else {
         Err(CatalogError::new(
             "invalid_catalog_cache_metadata",
-            "catalog cache metadata quarantine state is invalid",
+            "catalog cache metadata error state is invalid",
         ))
-    } else {
-        Ok(())
     }
 }
 
@@ -685,7 +699,6 @@ impl CatalogError {
     fn from_transport(error: CatalogTransportError) -> Self {
         let code = match error {
             CatalogTransportError::ClientBuild => "catalog_transport_client_build_failed",
-            CatalogTransportError::InvalidRequest => "catalog_transport_invalid_request",
             CatalogTransportError::InvalidEtag => "invalid_catalog_etag",
             CatalogTransportError::InvalidHeaders => "catalog_response_headers_invalid",
             CatalogTransportError::RequestFailed => "catalog_network_failed",

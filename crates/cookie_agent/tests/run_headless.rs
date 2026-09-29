@@ -24,8 +24,8 @@ use cookie_agent_engine::{Engine, EngineHistoryView, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
     catalog::{
-        CatalogManager, CatalogRequest, CatalogTransport, CatalogTransportFuture,
-        CatalogTransportResponse, MODELS_DEV_BOOTSTRAP,
+        CatalogManager, CatalogTransport, CatalogTransportFuture, CatalogTransportResponse,
+        MODELS_DEV_BOOTSTRAP,
     },
     provider_store::ProviderStore,
 };
@@ -170,7 +170,7 @@ impl Drop for MockModelServer {
 struct BundledCatalogTransport;
 
 impl CatalogTransport for BundledCatalogTransport {
-    fn fetch(&self, _request: CatalogRequest) -> CatalogTransportFuture<'_> {
+    fn fetch(&self, _etag: Option<String>) -> CatalogTransportFuture<'_> {
         Box::pin(async {
             Ok(CatalogTransportResponse::from_bytes(
                 200,

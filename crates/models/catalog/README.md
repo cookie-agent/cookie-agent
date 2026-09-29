@@ -20,9 +20,11 @@ Normative source order is:
 2. independently validated cache schema 2;
 3. independently validated bundled bootstrap.
 
-The network client sends `Accept-Encoding: identity`, rejects compressed
-responses, rejects `Content-Length` above 16 MiB before reading, and enforces a
-streamed 16 MiB hard cap before buffering/decoding. Parsed JSON is bounded to
+The network client sends `Accept-Encoding: gzip` and accepts gzip or identity
+responses; any other content coding is rejected. It rejects `Content-Length`
+above 64 MiB before reading, enforces a streamed 64 MiB cap on the body as
+sent, and decodes gzip under the same 64 MiB cap on the decoded bytes, so a
+small compressed body cannot expand past it. Parsed JSON is bounded to
 depth 32, 4096 providers, 65,536 provider models per provider, 65,536 root
 canonical models, 1,000,000 aggregate container entries, and 256 KiB strings
 before narrower field limits.

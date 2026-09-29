@@ -17,9 +17,9 @@ use cookie_agent_models::{
     catalog::{
         CatalogAgeState, CatalogAvailability, CatalogLimits, CatalogModalities, CatalogModelCost,
         CatalogModelEntry, CatalogModelRecord, CatalogModelStatus, CatalogProviderEntry,
-        CatalogProviderRecord, CatalogReasoningOption, CatalogRequest, CatalogRuntimeState,
-        CatalogSnapshot, CatalogSource, CatalogTransport, CatalogTransportFuture,
-        CatalogTransportResponse, PicoUsdPerMillion,
+        CatalogProviderRecord, CatalogReasoningOption, CatalogRuntimeState, CatalogSnapshot,
+        CatalogSource, CatalogTransport, CatalogTransportFuture, CatalogTransportResponse,
+        PicoUsdPerMillion,
     },
     manager::{
         EffectiveCredentialSource, ModelManager, ModelManagerError, ProviderConnectRequest,
@@ -841,7 +841,7 @@ struct FixtureCatalogTransport {
 }
 
 impl CatalogTransport for FixtureCatalogTransport {
-    fn fetch(&self, _request: CatalogRequest) -> CatalogTransportFuture<'_> {
+    fn fetch(&self, _etag: Option<String>) -> CatalogTransportFuture<'_> {
         let body = self.body.lock().unwrap().take().unwrap();
         Box::pin(async move { Ok(CatalogTransportResponse::from_bytes(200, body)) })
     }

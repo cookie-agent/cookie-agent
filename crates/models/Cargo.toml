@@ -16,6 +16,7 @@ test-support = []
 arc-swap.workspace = true
 cookie_agent_identity = { version = "=0.3.0", path = "../identity" }
 cookie_agent_protocol = { version = "=0.3.0", path = "../protocol" }
+flate2.workspace = true
 http.workspace = true
 jiff.workspace = true
 futures-util.workspace = true
