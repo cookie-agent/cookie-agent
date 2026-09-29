@@ -382,9 +382,6 @@ async fn resume_settles_recovered_background_delegations_before_returning() {
     let cwd = fixture._directory.path().to_owned();
     let config = fixture.config.clone();
     let manager = Arc::clone(&fixture.manager);
-    for session in fixture.engine.inner.store.all() {
-        session.log.flush().expect("flush crash snapshot");
-    }
     copy_test_tree(
         &fixture._directory.path().join("data"),
         &snapshot.path().join("data"),

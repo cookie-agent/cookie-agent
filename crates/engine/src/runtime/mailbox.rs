@@ -330,7 +330,6 @@ impl Engine {
                         super::event_origin("engine:tool-result"),
                         event,
                     )?;
-                    engine.inner.store.log(session)?.flush()?;
                     Ok(true)
                 })()
             };
