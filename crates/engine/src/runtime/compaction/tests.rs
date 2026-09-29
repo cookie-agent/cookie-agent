@@ -402,6 +402,10 @@ fn checkpoint_dedup_includes_the_exact_snapshot_boundary() {
             },
         },
     }];
+    let events = events
+        .into_iter()
+        .map(std::sync::Arc::new)
+        .collect::<Vec<_>>();
     assert!(checkpoint_covers_input(&events, 10));
     assert!(!checkpoint_covers_input(&events, 11));
 }

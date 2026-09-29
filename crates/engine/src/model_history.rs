@@ -1,6 +1,9 @@
 //! Role-safe Oven history assembly and durable turn conversion.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+};
 
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ArtifactReference, ContextCheckpoint, ContextRehydratedFile,
@@ -42,11 +45,13 @@ pub(crate) fn framed_compaction_summary(summary: &str) -> String {
     format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}")
 }
 
-pub(crate) fn checkpoint_retained_history(
+pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
     history: &[HistoryTurn],
-    events: &[StoredEvent],
+    events: &[E],
     summary: Option<&str>,
 ) -> Vec<HistoryTurn> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     let pinned_skills = events
         .iter()
         .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
@@ -318,9 +323,9 @@ pub(crate) struct ModelContext {
     pub(crate) replay_decisions: Vec<ReplayDecision>,
 }
 
-fn latest_checkpoint(
-    events: &[StoredEvent],
-) -> Option<&cookie_agent_protocol::ContextCheckpointCommit> {
+fn latest_checkpoint<'a>(
+    events: &[&'a StoredEvent],
+) -> Option<&'a cookie_agent_protocol::ContextCheckpointCommit> {
     events.iter().rev().find_map(|event| match &event.payload {
         EventPayload::ContextCheckpointCommitted { commit } => Some(commit),
         _ => None,
@@ -343,13 +348,13 @@ enum CheckpointSelectionMode {
     NativeWindow,
 }
 
-fn selected_checkpoint_events(
-    events: &[StoredEvent],
+fn selected_checkpoint_events<'a>(
+    events: &[&'a StoredEvent],
     source_through_seq: u64,
     recent_from_seq: Option<u64>,
     close_dependencies: bool,
     mode: CheckpointSelectionMode,
-) -> Vec<StoredEvent> {
+) -> Vec<&'a StoredEvent> {
     let latest_agent_md_seq = latest_agent_md_event(events).map(|event| event.seq);
     let pending_producer_admissions = match mode {
         CheckpointSelectionMode::InternalSummary => GoalProducerProjection::from_events(events)
@@ -379,7 +384,7 @@ fn selected_checkpoint_events(
     selected
 }
 
-fn close_event_dependencies(events: &[StoredEvent], selected: &mut Vec<StoredEvent>) {
+fn close_event_dependencies<'a>(events: &[&'a StoredEvent], selected: &mut Vec<&'a StoredEvent>) {
     // Applied inputs and late tool completions can refer to events before the retained range.
     loop {
         let selected_seqs = selected
@@ -434,7 +439,7 @@ fn close_event_dependencies(events: &[StoredEvent], selected: &mut Vec<StoredEve
     }
 }
 
-fn pinned_history_len(events: &[StoredEvent]) -> usize {
+fn pinned_history_len(events: &[&StoredEvent]) -> usize {
     usize::from(latest_agent_md_event(events).is_some())
         + events
             .iter()
@@ -442,7 +447,7 @@ fn pinned_history_len(events: &[StoredEvent]) -> usize {
             .count()
 }
 
-fn insert_summary(assembled: &mut AssembledHistory, events: &[StoredEvent], summary: &str) {
+fn insert_summary(assembled: &mut AssembledHistory, events: &[&StoredEvent], summary: &str) {
     let history_index = 1 + pinned_history_len(events);
     assembled.history.insert(
         history_index,
@@ -455,8 +460,8 @@ fn insert_summary(assembled: &mut AssembledHistory, events: &[StoredEvent], summ
     }
 }
 
-pub(crate) fn project_summary_context(
-    events: &[StoredEvent],
+pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
+    events: &[E],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
@@ -464,6 +469,8 @@ pub(crate) fn project_summary_context(
     recent_from_seq: Option<u64>,
     summary: &str,
 ) -> Result<ModelContext, HistoryError> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     let selected = selected_checkpoint_events(
         events,
         source_through_seq,
@@ -481,13 +488,15 @@ pub(crate) fn project_summary_context(
     })
 }
 
-pub(crate) fn compaction_prefix_history(
-    events: &[StoredEvent],
+pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
+    events: &[E],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
     recent_from_seq: Option<u64>,
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     let Some(recent_from_seq) = recent_from_seq else {
         return Ok(assemble_model_context(events, store, binding, composed_prompt)?.history);
     };
@@ -530,7 +539,9 @@ pub(crate) fn compaction_prefix_history(
     Ok(assembled.history)
 }
 
-pub(crate) fn compaction_tail_candidates(events: &[StoredEvent]) -> Vec<u64> {
+pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -> Vec<u64> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     #[derive(Default)]
     struct Group {
         start: u64,
@@ -717,12 +728,14 @@ struct AssembledHistory {
     replay_decisions: Vec<ReplayDecision>,
 }
 
-pub(crate) fn assemble_model_context(
-    events: &[StoredEvent],
+pub(crate) fn assemble_model_context<E: Borrow<StoredEvent>>(
+    events: &[E],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<ModelContext, HistoryError> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     let checkpoint = latest_checkpoint(events);
     let Some(commit) = checkpoint else {
         let assembled =
@@ -765,20 +778,22 @@ pub(crate) fn assemble_model_context(
     }
 }
 
-pub(crate) fn assemble_full_history(
-    events: &[StoredEvent],
+pub(crate) fn assemble_full_history<E: Borrow<StoredEvent>>(
+    events: &[E],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
+    let events = crate::events::event_refs(events);
+    let events = events.as_slice();
     Ok(assemble_history_with_replay(events, events, store, binding, composed_prompt)?.history)
 }
 
 // Message selection must not roll back session-wide replay decisions or pinned context.
 // context_events is the full visible snapshot, before checkpoint or summary-prefix filtering.
 fn assemble_history_with_replay(
-    events: &[StoredEvent],
-    context_events: &[StoredEvent],
+    events: &[&StoredEvent],
+    context_events: &[&StoredEvent],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
@@ -1310,11 +1325,11 @@ fn assemble_history_with_replay(
     })
 }
 
-fn latest_agent_md_event(events: &[StoredEvent]) -> Option<&StoredEvent> {
+fn latest_agent_md_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent> {
     let latest_run = events.iter().rev().find_map(|event| {
         matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
     });
-    events.iter().rev().find(|event| {
+    events.iter().rev().copied().find(|event| {
         matches!(event.payload, EventPayload::AgentMdLoaded { .. })
             && latest_run.is_none_or(|run| event.run_id == run)
     })

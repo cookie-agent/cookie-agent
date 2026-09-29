@@ -161,6 +161,8 @@ pub struct SessionProjection {
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
+    /// Whether the visible title history still admits an automatic title.
+    pub automatic_title_eligible: bool,
     pub log: Arc<EventLog>,
 }
 
@@ -851,7 +853,7 @@ impl SessionStore {
     pub(crate) fn recovery_event_snapshot(
         &self,
         id: SessionId,
-    ) -> Result<Arc<[cookie_agent_protocol::StoredEvent]>, SessionError> {
+    ) -> Result<crate::events::EventSnapshot, SessionError> {
         if let Some(session) = self.get_resident(id) {
             return Ok(session.log.event_snapshot());
         }
@@ -1663,7 +1665,7 @@ impl SessionStore {
             .collect::<Vec<_>>();
         if through_seq == 0
             || through_seq > source_events.last().map_or(0, |event| event.seq)
-            || !cookie_agent_protocol::visible_events(&prefix)
+            || !crate::events::visible_events(prefix)
                 .iter()
                 .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
         {
@@ -1721,7 +1723,7 @@ impl SessionStore {
                 .iter()
                 .filter(|event| event.seq <= through_seq)
             {
-                let mut copied = event.clone();
+                let mut copied = event.as_ref().clone();
                 copied.session_id = session_id;
                 crate::events::append_copied_event_jsonl(&log_path, &copied)?;
             }
@@ -1866,8 +1868,8 @@ impl SessionStore {
             let log_path = temporary.join("events.jsonl");
             #[cfg(windows)]
             create_windows_session_file(&log_path)?;
-            for event in projection.log.all_events() {
-                crate::events::append_jsonl(&log_path, &event)?;
+            for event in projection.log.all_events().iter() {
+                crate::events::append_jsonl(&log_path, event.as_ref())?;
             }
             write_cache(
                 &temporary.join(SESSION_META_FILE),

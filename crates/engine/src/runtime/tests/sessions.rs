@@ -752,8 +752,9 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .expect("source prefix")
         .log
         .all_events()
-        .into_iter()
+        .iter()
         .filter(|event| event.seq <= through_seq)
+        .cloned()
         .collect::<Vec<_>>();
     let fork_physical = fixture
         .engine
@@ -764,7 +765,7 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .log
         .all_events();
     assert_eq!(fork_physical.len(), source_prefix.len() + 2);
-    for (source_event, fork_event) in source_prefix.iter().zip(&fork_physical) {
+    for (source_event, fork_event) in source_prefix.iter().zip(fork_physical.iter()) {
         assert_eq!(fork_event.session_id, fork.session_id);
         assert_eq!(fork_event.engine_version, source_event.engine_version);
         assert_eq!(fork_event.run_id, source_event.run_id);
@@ -850,8 +851,9 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .expect("first fork")
         .log
         .all_events()
-        .into_iter()
+        .iter()
         .filter(|event| event.seq <= through_seq)
+        .cloned()
         .collect::<Vec<_>>();
     let reverted_fork_prefix = fixture
         .engine
@@ -861,8 +863,9 @@ async fn revert_and_fork_preserve_prefix_context_replay_and_independence() {
         .expect("fork after revert")
         .log
         .all_events()
-        .into_iter()
+        .iter()
         .filter(|event| event.seq <= through_seq)
+        .cloned()
         .collect::<Vec<_>>();
     assert_eq!(first_fork_prefix.len(), reverted_fork_prefix.len());
     for (first, second) in first_fork_prefix.iter().zip(&reverted_fork_prefix) {

@@ -1,6 +1,7 @@
 //! Buffered/durable session event logs and ephemeral tool-output hubs.
 
 use std::{
+    borrow::Borrow,
     collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::{self, BufWriter, Write},
@@ -135,6 +136,8 @@ struct EventIndex {
     last_checkpoint_input_through_seq: u64,
     last_recorded_usage: Option<(u64, u64)>,
     last_turn_usage: Option<(u64, u64)>,
+    /// Visible `ModelAttemptStarted` records per run.
+    run_attempts: HashMap<RunId, u32>,
 }
 
 impl EventIndex {
@@ -159,6 +162,11 @@ impl EventIndex {
                     self.last_turn_usage = Some(usage);
                 }
             }
+            EventPayload::ModelAttemptStarted { .. } => {
+                if let Some(run) = event.run_id {
+                    *self.run_attempts.entry(run).or_default() += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -168,84 +176,95 @@ impl EventIndex {
     }
 }
 
+/// A shared, immutable view of a log's events. Taking one is a reference
+/// count bump; the log copies the pointer list only when it appends while an
+/// older view is still alive, and never deep-copies an event.
+pub type EventSnapshot = Arc<Vec<Arc<StoredEvent>>>;
+
 #[derive(Debug)]
 struct EventStorage {
-    all: Vec<StoredEvent>,
-    visible: Vec<usize>,
+    /// Every physical record, including ones hidden by a later revert.
+    all: EventSnapshot,
+    /// The currently visible branch, in log order.
+    visible: EventSnapshot,
     visible_ceiling: u64,
-    snapshot: Option<Arc<[StoredEvent]>>,
     index: EventIndex,
+    /// Physical `ModelTurnCommitted` records. Model turn sequences are
+    /// session-global and stay contiguous across reverts, so this counts
+    /// hidden records too.
+    physical_model_turns: u64,
+}
+
+fn is_model_turn(event: &StoredEvent) -> bool {
+    matches!(event.payload, EventPayload::ModelTurnCommitted { .. })
 }
 
 impl EventStorage {
-    fn new(all: Vec<StoredEvent>) -> Self {
+    fn new(all: Vec<Arc<StoredEvent>>) -> Self {
+        let physical_model_turns = all.iter().filter(|event| is_model_turn(event)).count() as u64;
         let mut storage = Self {
-            all,
-            visible: Vec::new(),
+            all: Arc::new(all),
+            visible: Arc::default(),
             visible_ceiling: u64::MAX,
-            snapshot: None,
             index: EventIndex::default(),
+            physical_model_turns,
         };
         storage.rebuild_visible();
         storage
     }
 
-    fn push(&mut self, event: StoredEvent) {
-        let revert = match &event.payload {
-            EventPayload::SessionReverted { through_seq } => Some(*through_seq),
-            _ => None,
-        };
-        let index = self.all.len();
-        self.all.push(event);
-        if let Some(through_seq) = revert {
-            self.visible_ceiling = self.visible_ceiling.min(through_seq);
-            let all = &self.all;
-            self.visible
-                .retain(|candidate| all[*candidate].seq <= self.visible_ceiling);
-            self.visible.push(index);
+    fn push(&mut self, event: impl Into<Arc<StoredEvent>>) {
+        let event = event.into();
+        self.physical_model_turns += u64::from(is_model_turn(&event));
+        Arc::make_mut(&mut self.all).push(event.clone());
+        if let EventPayload::SessionReverted { through_seq } = &event.payload {
+            self.visible_ceiling = self.visible_ceiling.min(*through_seq);
+            let ceiling = self.visible_ceiling;
+            let visible = Arc::make_mut(&mut self.visible);
+            visible.retain(|candidate| candidate.seq <= ceiling);
+            visible.push(event);
             self.rebuild_index();
         } else {
-            self.index.observe(&self.all[index]);
-            self.visible.push(index);
+            self.index.observe(&event);
+            Arc::make_mut(&mut self.visible).push(event);
         }
-        self.snapshot = None;
     }
 
     fn rebuild_visible(&mut self) {
-        self.visible.clear();
+        let mut visible: Vec<Arc<StoredEvent>> = Vec::with_capacity(self.all.len());
         self.visible_ceiling = u64::MAX;
-        for (index, event) in self.all.iter().enumerate() {
+        for event in self.all.iter() {
             if let EventPayload::SessionReverted { through_seq } = &event.payload {
                 self.visible_ceiling = self.visible_ceiling.min(*through_seq);
-                let all = &self.all;
-                self.visible
-                    .retain(|candidate| all[*candidate].seq <= self.visible_ceiling);
+                let ceiling = self.visible_ceiling;
+                visible.retain(|candidate| candidate.seq <= ceiling);
             }
-            self.visible.push(index);
+            visible.push(event.clone());
         }
+        self.visible = Arc::new(visible);
         self.rebuild_index();
-        self.snapshot = None;
     }
 
     fn rebuild_index(&mut self) {
         self.index = EventIndex::default();
-        for index in &self.visible {
-            self.index.observe(&self.all[*index]);
+        for event in self.visible.iter() {
+            self.index.observe(event);
         }
     }
 
-    fn snapshot(&mut self) -> Arc<[StoredEvent]> {
-        self.snapshot
-            .get_or_insert_with(|| {
-                Arc::from(
-                    self.visible
-                        .iter()
-                        .map(|index| self.all[*index].clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .clone()
+    fn snapshot(&self) -> EventSnapshot {
+        self.visible.clone()
     }
+}
+
+/// The branch of `events` that its revert markers leave visible.
+pub(crate) fn visible_events(events: Vec<Arc<StoredEvent>>) -> EventSnapshot {
+    EventStorage::new(events).snapshot()
+}
+
+/// Borrows each event of a slice of owned or shared events.
+pub(crate) fn event_refs<E: Borrow<StoredEvent>>(events: &[E]) -> Vec<&StoredEvent> {
+    events.iter().map(Borrow::borrow).collect()
 }
 
 fn usage_total(seq: u64, usage: &cookie_agent_protocol::Usage) -> Option<(u64, u64)> {
@@ -615,7 +634,7 @@ impl EventLog {
                 TornTail::Truncate
             },
         )?;
-        let records = loaded.records;
+        let records = loaded.records.into_iter().map(Arc::new).collect::<Vec<_>>();
         if !matches!(
             records.first().map(|record| &record.payload),
             Some(EventPayload::SessionCreated { .. })
@@ -775,31 +794,55 @@ impl EventLog {
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let event = Arc::new(event);
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
-        Ok(event)
+        Ok(Arc::unwrap_or_clone(event))
     }
 
+    /// Owned copies of the visible events. Deep-copies every payload; hot
+    /// paths use [`Self::event_snapshot`].
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
-        self.event_snapshot().to_vec()
+        self.event_snapshot()
+            .iter()
+            .map(|event| event.as_ref().clone())
+            .collect()
     }
 
+    /// The visible events. O(1): a shared view, not a copy.
     #[must_use]
-    pub fn event_snapshot(&self) -> Arc<[StoredEvent]> {
+    pub fn event_snapshot(&self) -> EventSnapshot {
+        self.storage().snapshot()
+    }
+
+    /// Every physical event, including ones a revert hid. O(1).
+    #[must_use]
+    pub fn all_events(&self) -> EventSnapshot {
+        self.storage().all.clone()
+    }
+
+    fn storage(&self) -> std::sync::MutexGuard<'_, EventStorage> {
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .snapshot()
     }
 
+    /// Physical `ModelTurnCommitted` records, including reverted ones.
     #[must_use]
-    pub fn all_events(&self) -> Vec<StoredEvent> {
-        self.events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .all
-            .to_vec()
+    pub(crate) fn physical_model_turns(&self) -> u64 {
+        self.storage().physical_model_turns
+    }
+
+    /// Visible `ModelAttemptStarted` records of `run`.
+    #[must_use]
+    pub(crate) fn visible_run_attempts(&self, run: RunId) -> u32 {
+        self.storage()
+            .index
+            .run_attempts
+            .get(&run)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Physical events after `cursor`, at most `limit` of them. Only the
@@ -820,7 +863,11 @@ impl EventLog {
             .all
             .iter()
             .filter(|event| cursor.is_none_or(|cursor| event.seq > cursor));
-        let page = after.by_ref().take(limit).cloned().collect();
+        let page = after
+            .by_ref()
+            .take(limit)
+            .map(|event| event.as_ref().clone())
+            .collect();
         cookie_agent_protocol::EventsSubscribeResult {
             events: page,
             has_more: after.next().is_some(),
@@ -835,7 +882,7 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut open = Vec::new();
-        for event in &events.all {
+        for event in events.all.iter() {
             match &event.payload {
                 EventPayload::ToolCallStarted { start } => open.push(start.tool_call_id),
                 EventPayload::ToolCallTerminated { termination } => {
@@ -848,13 +895,8 @@ impl EventLog {
     }
 
     #[must_use]
-    pub fn last_event(&self) -> Option<StoredEvent> {
-        self.events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .all
-            .last()
-            .cloned()
+    pub fn last_event(&self) -> Option<Arc<StoredEvent>> {
+        self.storage().all.last().cloned()
     }
 
     pub(crate) fn last_run_started(
@@ -1655,7 +1697,10 @@ fn delegation_invocation_from_event(
     }
 }
 
-fn validate_observed_duplicates(path: &Path, records: &[StoredEvent]) -> Result<(), EventLogError> {
+fn validate_observed_duplicates<E: Borrow<StoredEvent>>(
+    path: &Path,
+    records: &[E],
+) -> Result<(), EventLogError> {
     let mut runs = HashSet::new();
     let mut attempts = HashSet::new();
     let mut turns = HashSet::new();
@@ -1667,6 +1712,7 @@ fn validate_observed_duplicates(path: &Path, records: &[StoredEvent]) -> Result<
     let mut model_calls = HashSet::new();
     let mut provider_items = HashSet::new();
     for record in records {
+        let record: &StoredEvent = record.borrow();
         match &record.payload {
             EventPayload::RunStarted { .. } => {
                 let Some(run_id) = record.run_id else {
@@ -1786,16 +1832,17 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
     Ok(())
 }
 
-fn validate_records(
+fn validate_records<E: Borrow<StoredEvent>>(
     path: &Path,
     session_id: SessionId,
-    records: &[StoredEvent],
+    records: &[E],
     initial_taint: &ValidationTaint,
     strict_from_seq: Option<u64>,
 ) -> Result<ValidationState, EventLogError> {
     validate_observed_duplicates(path, records)?;
     let mut state = ValidationState::new(initial_taint.clone());
     for record in records {
+        let record: &StoredEvent = record.borrow();
         let strict = strict_from_seq.is_some_and(|from| record.seq >= from);
         validate_record_incremental(path, session_id, record, &mut state, strict)?;
     }

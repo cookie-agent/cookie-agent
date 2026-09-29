@@ -75,16 +75,7 @@ impl Engine {
     }
 
     pub(super) fn next_model_turn_seq(&self, session_id: SessionId) -> Result<u64, EngineError> {
-        Ok(self
-            .inner
-            .store
-            .get(session_id)?
-            .log
-            .all_events()
-            .iter()
-            .filter(|event| matches!(event.payload, Event::ModelTurnCommitted { .. }))
-            .count() as u64
-            + 1)
+        Ok(self.inner.store.get(session_id)?.log.physical_model_turns() + 1)
     }
 
     pub(super) fn run_agent_prompt(

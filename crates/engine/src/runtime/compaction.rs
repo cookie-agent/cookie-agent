@@ -124,7 +124,7 @@ pub(super) struct CompactionInput<'a> {
     pub(super) owner_policy: &'a FrozenRunPolicy,
     pub(super) internal_policy: &'a FrozenInternalAgentPolicy,
     pub(super) tools: &'a [ToolDefinition],
-    pub(super) events: Arc<[StoredEvent]>,
+    pub(super) events: crate::events::EventSnapshot,
     pub(super) force: bool,
     /// Predictive compaction has already made its own trigger decision.
     pub(super) skip_usage_trigger: bool,
@@ -223,7 +223,7 @@ impl Engine {
     pub(super) async fn maybe_compact_context(
         &self,
         mut input: CompactionInput<'_>,
-    ) -> Result<Arc<[StoredEvent]>, EngineError> {
+    ) -> Result<crate::events::EventSnapshot, EngineError> {
         let Some(context_limit) = input.binding.descriptor.capabilities.limits.context else {
             return Ok(input.events);
         };
@@ -384,7 +384,7 @@ impl Engine {
         }
 
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
-        let mut events = input.events.to_vec();
+        let mut events = input.events.clone();
         let mut context = assemble_model_context(
             &events,
             &self.inner.artifacts,
@@ -416,7 +416,7 @@ impl Engine {
             events = self
                 .stage_tool_output_elision(
                     input.session,
-                    events,
+                    &events,
                     input.actor_direct,
                     input.origin.clone(),
                 )
@@ -430,7 +430,7 @@ impl Engine {
             self.estimated_request_tokens(input.session, &context.history, input.tools)?
         };
         if !input.force && context_tokens_before < trigger_tokens {
-            return Ok(Arc::from(events));
+            return Ok(events);
         }
 
         let input_through_seq = events.last().map_or(0, |event| event.seq);
@@ -619,7 +619,7 @@ impl Engine {
                 .unwrap_or(false),
         );
         if prefix.len() <= checkpoint_prefix.len().saturating_add(prior_summary_count) {
-            return Ok(Arc::from(events));
+            return Ok(events);
         }
         let (history, instruction) = compaction_history(
             context.history,
@@ -703,10 +703,10 @@ impl Engine {
                         .to_string(),
                 );
             }
-            return Ok(Arc::from(events));
+            return Ok(events);
         };
         if summary.text.trim().is_empty() {
-            return Ok(Arc::from(events));
+            return Ok(events);
         }
         let checkpoint = InternalSummaryCheckpoint::new(
             summary.text,
@@ -745,7 +745,7 @@ impl Engine {
         if input_tokens_after > retained_limit
             || input_tokens_after.saturating_sub(actual_base_tokens) > keep_recent_tokens
         {
-            return Ok(Arc::from(events));
+            return Ok(events);
         }
         boundaries.recent_from_seq = recent_from_seq;
         if let Some(recent_from_seq) = recent_from_seq {
@@ -765,7 +765,7 @@ impl Engine {
             budgets,
         };
         if commit.validate().is_err() {
-            return Ok(Arc::from(events));
+            return Ok(events);
         }
         self.append_compaction_event(
             input.session,
@@ -785,7 +785,7 @@ impl Engine {
         &self,
         session: SessionId,
         input_tokens_after: u64,
-    ) -> Result<Arc<[StoredEvent]>, EngineError> {
+    ) -> Result<crate::events::EventSnapshot, EngineError> {
         self.inner
             .compaction
             .context_token_estimators
@@ -800,10 +800,10 @@ impl Engine {
     async fn stage_tool_output_elision(
         &self,
         session: SessionId,
-        events: Vec<StoredEvent>,
+        events: &[Arc<StoredEvent>],
         actor_direct: bool,
         origin: cookie_agent_protocol::EventOrigin,
-    ) -> Result<Vec<StoredEvent>, EngineError> {
+    ) -> Result<crate::events::EventSnapshot, EngineError> {
         let protected_turns = events
             .iter()
             .rev()
@@ -829,7 +829,7 @@ impl Engine {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        for event in &events {
+        for event in events {
             let Event::ToolCallTerminated { termination } = &event.payload else {
                 continue;
             };
@@ -864,7 +864,7 @@ impl Engine {
             )
             .await?;
         }
-        Ok(self.inner.store.get(session)?.log.events())
+        Ok(self.inner.store.get(session)?.log.event_snapshot())
     }
 
     fn estimated_request_tokens(
@@ -907,7 +907,7 @@ impl Engine {
 
 pub(crate) fn active_compaction_binding<'a>(
     policy: &'a FrozenRunPolicy,
-    events: &[StoredEvent],
+    events: &[Arc<StoredEvent>],
     run: RunId,
 ) -> Result<&'a cookie_agent_protocol::FrozenModelBinding, EngineError> {
     policy
@@ -965,7 +965,7 @@ fn select_recent_tail(
 }
 
 #[cfg(test)]
-fn checkpoint_covers_input(events: &[StoredEvent], input_through_seq: u64) -> bool {
+fn checkpoint_covers_input(events: &[Arc<StoredEvent>], input_through_seq: u64) -> bool {
     events.iter().rev().any(|event| {
         matches!(
             &event.payload,
@@ -1197,7 +1197,7 @@ fn compaction_instruction(focus: Option<&str>) -> String {
 }
 
 fn pruned_compaction_history(
-    events: &[StoredEvent],
+    events: &[Arc<StoredEvent>],
     store: &super::artifacts::ArtifactRouter,
     session: SessionId,
     binding: &cookie_agent_protocol::FrozenModelBinding,
@@ -1207,7 +1207,13 @@ fn pruned_compaction_history(
     // snapshot first, then prune only results in the active checkpoint-aware history.
     let mut events = events.to_vec();
     for event in &mut events {
-        if let Event::ToolCallTerminated { termination } = &mut event.payload
+        let carries_result = matches!(
+            &event.payload,
+            Event::ToolCallTerminated { termination } if termination.result.is_some()
+        );
+        // Copy only the records this private snapshot changes.
+        if carries_result
+            && let Event::ToolCallTerminated { termination } = &mut Arc::make_mut(event).payload
             && let Some(result) = &mut termination.result
         {
             result.additional_messages.clear();

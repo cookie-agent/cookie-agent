@@ -1212,11 +1212,16 @@ fn reference_validate_records(
 }
 
 fn assert_storage_matches_full_projection(storage: &mut EventStorage) {
-    let expected = cookie_agent_protocol::visible_events(&storage.all);
+    let all = storage
+        .all
+        .iter()
+        .map(|event| event.as_ref().clone())
+        .collect::<Vec<_>>();
+    let expected = cookie_agent_protocol::visible_events(&all);
     let actual = storage
         .visible
         .iter()
-        .map(|index| storage.all[*index].clone())
+        .map(|event| event.as_ref().clone())
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
     let expected_run = expected
@@ -1267,7 +1272,13 @@ fn assert_storage_matches_full_projection(storage: &mut EventStorage) {
     let first = storage.snapshot();
     let second = storage.snapshot();
     assert!(Arc::ptr_eq(&first, &second));
-    assert_eq!(first.as_ref(), expected);
+    assert_eq!(
+        first
+            .iter()
+            .map(|event| event.as_ref().clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[test]
@@ -1527,7 +1538,11 @@ fn incremental_validation_matches_historical_reference_corpus() {
 }
 
 fn assert_log_rebuilt_against_reference(log: &EventLog) {
-    let records = log.all_events();
+    let records = log
+        .all_events()
+        .iter()
+        .map(|event| event.as_ref().clone())
+        .collect::<Vec<_>>();
     let reference = reference_validate_records(
         log.path(),
         log.session_id,

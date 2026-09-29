@@ -1,6 +1,9 @@
 //! Durable goal and producer-message projection.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet},
+};
 
 use cookie_agent_protocol::{
     EventPayload, GoalId, GoalReminderIdentity, GoalReminderKind, GoalState, GoalStatus,
@@ -94,7 +97,7 @@ impl GoalProducerProjection {
     }
 
     #[must_use]
-    pub(crate) fn from_events(events: &[StoredEvent]) -> Self {
+    pub(crate) fn from_events<E: Borrow<StoredEvent>>(events: &[E]) -> Self {
         let mut projection = Self::default();
         let mut goal_revisions = HashMap::<cookie_agent_protocol::GoalId, u64>::new();
         let mut message_indexes = HashMap::<ProducerMessageId, usize>::new();
@@ -102,6 +105,7 @@ impl GoalProducerProjection {
         let mut terminal_runs = HashSet::<RunId>::new();
 
         for event in events {
+            let event: &StoredEvent = event.borrow();
             match &event.payload {
                 EventPayload::GoalActivated {
                     goal_id,

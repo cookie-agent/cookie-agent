@@ -62,10 +62,47 @@ pub(super) fn assert_projection_equivalent(
         actual.permission_overlay, expected.permission_overlay,
         "permission_overlay"
     );
+    assert_eq!(
+        actual.automatic_title_eligible, expected.automatic_title_eligible,
+        "automatic_title_eligible"
+    );
     let logs_match = Arc::ptr_eq(&actual.log, &expected.log)
         || (actual.log.physical_tip_seq() == expected.log.physical_tip_seq()
             && actual.log.event_snapshot().len() == expected.log.event_snapshot().len());
     assert!(logs_match, "log tip/length");
+}
+
+/// Whether an automatic title may still be generated, folded from the
+/// visible `SessionTitleCommitted` records in log order.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct AutomaticTitleEligibility {
+    latest_automatic: Option<u64>,
+    /// Latest user or delegated change, and whether it was a reset.
+    latest_user: Option<(u64, bool)>,
+}
+
+impl AutomaticTitleEligibility {
+    pub(super) fn observe(&mut self, seq: u64, change: &SessionTitleChange) {
+        match change {
+            SessionTitleChange::InternalAgentSet { .. }
+            | SessionTitleChange::FallbackSet { .. } => {
+                self.latest_automatic = Some(seq);
+            }
+            SessionTitleChange::DelegatedSet { .. }
+            | SessionTitleChange::UserSet { .. }
+            | SessionTitleChange::UserClear { .. } => self.latest_user = Some((seq, false)),
+            SessionTitleChange::UserReset { .. } => self.latest_user = Some((seq, true)),
+        }
+    }
+
+    #[must_use]
+    pub(super) fn eligible(self) -> bool {
+        match self.latest_user {
+            Some((_, false)) => false,
+            Some((reset_seq, true)) => self.latest_automatic.is_none_or(|seq| seq < reset_seq),
+            None => self.latest_automatic.is_none(),
+        }
+    }
 }
 
 pub(crate) fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
@@ -161,6 +198,7 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
     let mut automatic_title = None;
     let mut delegated_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
+    let mut title_eligibility = AutomaticTitleEligibility::default();
     let recorded_usage_turns = events
         .iter()
         .filter_map(|event| match event.payload {
@@ -173,6 +211,7 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
             permission_overlay = overlay.clone();
         }
         if let EventPayload::SessionTitleCommitted { change, .. } = &envelope.payload {
+            title_eligibility.observe(envelope.seq, change);
             match change {
                 SessionTitleChange::UserSet { title, .. } => {
                     user_title = Some(Some(title.clone()));
@@ -350,6 +389,7 @@ pub(super) fn projection_fold(log: Arc<EventLog>) -> Result<SessionProjection, S
         runs,
         rename_records,
         permission_overlay,
+        automatic_title_eligible: title_eligibility.eligible(),
         log,
     })
 }
@@ -417,7 +457,7 @@ pub(super) fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
 }
 
 pub(super) fn turns_tool_name(
-    events: &[cookie_agent_protocol::StoredEvent],
+    events: &[Arc<cookie_agent_protocol::StoredEvent>],
     owner: &cookie_agent_protocol::AssistantToolCallRef,
 ) -> Option<String> {
     events.iter().rev().find_map(|event| match &event.payload {

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision,
@@ -470,7 +473,7 @@ fn canonical_approval_parameters(value: &Value) -> Value {
     }
 }
 
-fn latest_user_message(events: &[StoredEvent], run: RunId) -> Option<&str> {
+fn latest_user_message(events: &[Arc<StoredEvent>], run: RunId) -> Option<&str> {
     events
         .iter()
         .rev()
