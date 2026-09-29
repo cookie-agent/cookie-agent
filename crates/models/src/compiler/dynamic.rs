@@ -1070,8 +1070,12 @@ fn managed_auth(
     if let Some(authored) = authored {
         if authored.api_key.is_some() {
             let source_method = provider_family.default_auth_method;
-            let target_method =
-                compatible_model_auth(source_method, effective_recipe, required_method);
+            let target_method = compatible_model_auth(
+                source_method,
+                provider_family,
+                effective_recipe,
+                required_method,
+            );
             let Some(method) = target_method.and_then(auth_method) else {
                 return Ok(auth_shape(
                     auth_method(effective_recipe.default_auth_method)
@@ -1093,8 +1097,12 @@ fn managed_auth(
             ));
         }
         if let Some(auth) = &authored.auth_override {
-            let target_method =
-                compatible_model_auth(auth.method.as_str(), effective_recipe, required_method);
+            let target_method = compatible_model_auth(
+                auth.method.as_str(),
+                provider_family,
+                effective_recipe,
+                required_method,
+            );
             let Some(method) = target_method.and_then(auth_method) else {
                 return Ok(auth_shape(
                     auth_method(effective_recipe.default_auth_method)
@@ -1121,10 +1129,15 @@ fn managed_auth(
 
 fn compatible_model_auth(
     source_method: &str,
+    provider_family: &FamilyRecipe,
     effective_recipe: &FamilyRecipe,
     required_method: Option<&'static str>,
 ) -> Option<&'static str> {
-    let mapped = crate::recipes::compatible_auth_method(source_method, effective_recipe)?;
+    let mapped = crate::recipes::compatible_auth_method(
+        source_method,
+        provider_family.family,
+        effective_recipe,
+    )?;
     required_method.map_or(Some(mapped), |required| {
         (mapped == required).then_some(required)
     })

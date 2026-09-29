@@ -2623,3 +2623,100 @@ fn managed_shipped_headers_reach_manifest_blueprints() {
     assert_eq!(binding.static_headers, blueprint.static_headers);
     runtime.resolve(&binding.selection).unwrap();
 }
+
+/// Catalog with one OpenAI-compatible provider whose single model is routed to
+/// another npm family at `model_api` (a mixed gateway such as zenmux or ofox).
+fn mixed_gateway_catalog(
+    provider_api: &str,
+    model_npm: &str,
+    model_api: Option<&str>,
+) -> Arc<CatalogSnapshot> {
+    let mut snapshot = (*cloud_catalog(
+        "mixed",
+        "@ai-sdk/openai-compatible",
+        &["MIXED_API_KEY"],
+        "claude-test",
+        None,
+    ))
+    .clone();
+    let record = snapshot
+        .providers
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap();
+    record.api = Some(provider_api.to_owned());
+    record
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+        .provider = Some(cookie_agent_models::catalog::CatalogModelProviderMetadata {
+        npm: Some(model_npm.to_owned()),
+        api: model_api.map(str::to_owned),
+        shape: None,
+    });
+    Arc::new(snapshot)
+}
+
+async fn dispatch_captured(manager: &ModelManager, key: &str) {
+    let resolved = manager
+        .current()
+        .resolve(&cookie_agent_identity::ModelSelection {
+            model: key.parse().unwrap(),
+            variant: None,
+        })
+        .unwrap();
+    let request = oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
+        oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
+            "hello",
+        ))]),
+    )]);
+    let _ = resolved
+        .model()
+        .complete(
+            resolved.prepare_request(request),
+            oven_sdk::AbortSignal::default(),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn anthropic_models_in_bearer_providers_send_x_api_key() {
+    let temporary = TempDir::new().unwrap();
+    let (endpoint, captured) = capture_http_request().await;
+    let catalog = mixed_gateway_catalog(
+        &format!("{endpoint}/v1"),
+        "@ai-sdk/anthropic",
+        Some(&format!("{endpoint}/anthropic/v1")),
+    );
+    let authored = BTreeMap::from([(
+        ProviderId::new("mixed").unwrap(),
+        toml::from_str::<ProviderDefinition>("source = \"models_dev\"\napi_key = \"mixed-key\"\n")
+            .unwrap(),
+    )]);
+    let manager = ModelManager::new(authored, catalog, store(&temporary)).unwrap();
+    let model = manager
+        .current()
+        .models()
+        .values()
+        .next()
+        .unwrap()
+        .model
+        .clone();
+    assert_eq!(model.adapter, OvenAdapterFamily::AnthropicCompatible);
+    assert_eq!(model.auth.method, "anthropic-api-key-v1");
+    dispatch_captured(&manager, "mixed/claude-test").await;
+    let request = captured.await.unwrap().to_ascii_lowercase();
+    assert!(
+        request.starts_with("post /anthropic/v1/messages "),
+        "{request}"
+    );
+    assert!(request.contains("x-api-key: mixed-key\r\n"), "{request}");
+    assert!(!request.contains("authorization:"), "{request}");
+}

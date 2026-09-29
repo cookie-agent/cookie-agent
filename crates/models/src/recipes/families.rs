@@ -226,16 +226,23 @@ impl FamilyRecipeRegistry {
 /// effective model family. Only equivalent credential semantics are mapped:
 /// single API keys may change header/bearer encoding, and an explicit access
 /// token may become bearer auth. AWS static credentials never cross families.
+///
+/// Within the provider's own family an allowed method is kept as authored.
+/// Across families the target family's own encoding wins, so an API key of an
+/// OpenAI-compatible (bearer) provider reaches its Anthropic models as
+/// `x-api-key`, the way `@ai-sdk/anthropic` sends it.
 #[must_use]
 pub fn compatible_auth_method(
     source_method: &str,
+    source_family: FamilyKind,
     effective: &FamilyRecipe,
 ) -> Option<&'static str> {
-    if let Some(method) = effective
-        .allowed_auth_methods
-        .iter()
-        .copied()
-        .find(|method| *method == source_method)
+    if source_family == effective.family
+        && let Some(method) = effective
+            .allowed_auth_methods
+            .iter()
+            .copied()
+            .find(|method| *method == source_method)
     {
         return Some(method);
     }
@@ -254,7 +261,8 @@ pub fn compatible_auth_method(
         FamilyKind::Anthropic => {
             // `@ai-sdk/anthropic` sends configured API keys as `x-api-key`, and
             // Microsoft Foundry accepts `x-api-key` on its Anthropic endpoint.
-            if source_method == "bearer-api-key-v1" || source_is_access_token {
+            // Only OAuth access tokens stay bearer tokens.
+            if source_is_access_token {
                 "bearer-api-key-v1"
             } else {
                 "anthropic-api-key-v1"
