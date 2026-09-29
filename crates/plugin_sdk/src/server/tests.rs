@@ -1027,6 +1027,23 @@ fn helper_results_have_protocol_actions() {
     );
 }
 
+#[test]
+fn tool_output_display_previews_text_on_a_char_boundary() {
+    let text = "é".repeat(cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES);
+    let output = ToolOutput::error(text.clone());
+    assert!(output.is_error);
+    assert!(!ToolOutput::success("ok").is_error);
+    assert_eq!(
+        output.output,
+        cookie_agent_protocol::ToolCompletionOutput::Single { text: text.clone() }
+    );
+    assert_eq!(
+        output.display.len(),
+        cookie_agent_protocol::MAX_TOOL_DISPLAY_BYTES
+    );
+    assert!(text.starts_with(&output.display));
+}
+
 async fn write_wire<W: AsyncWrite + Unpin>(writer: &mut W, value: &impl Serialize) {
     let mut bytes = serde_json::to_vec(value).unwrap();
     bytes.push(b'\n');
