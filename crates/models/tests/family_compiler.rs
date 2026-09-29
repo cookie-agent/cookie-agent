@@ -233,6 +233,43 @@ fn absent_catalog_structured_output_defaults_true_and_explicit_false_survives() 
     }
 }
 
+fn only_model(record: &mut CatalogProviderRecord) -> &mut CatalogModelRecord {
+    record
+        .models
+        .values_mut()
+        .next()
+        .unwrap()
+        .record
+        .as_mut()
+        .unwrap()
+}
+
+fn api_key_provider() -> ModelsDevProvider {
+    toml::from_str("api_key = \"secret\"").unwrap()
+}
+
+#[test]
+fn tool_less_catalog_models_stay_available_without_parallel_tools() {
+    for (npm, api) in [
+        ("@ai-sdk/perplexity", None),
+        ("@ai-sdk/openai-compatible", Some("https://example.com/v1")),
+        ("@ai-sdk/openai", None),
+        ("@ai-sdk/anthropic", None),
+        ("@ai-sdk/google", None),
+    ] {
+        let mut catalog = record(npm, api);
+        only_model(&mut catalog).tool_call = false;
+        let compiled = DynamicCompiler::default()
+            .compile_managed("test", &catalog, Some(&api_key_provider()))
+            .unwrap();
+        assert!(compiled.unsupported_models.is_empty(), "{npm}");
+        let model = compiled.models.values().next().unwrap();
+        assert_eq!(model.status, CompiledModelStatus::Available, "{npm}");
+        assert!(!model.capabilities.tool_calling, "{npm}");
+        assert!(!model.capabilities.parallel_tool_calls, "{npm}");
+    }
+}
+
 fn auth(method: &str, fields: &[(&str, &str)]) -> AuthOverride {
     AuthOverride {
         method: AuthMethodId::new(method).unwrap(),

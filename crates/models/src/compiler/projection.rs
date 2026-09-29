@@ -152,7 +152,7 @@ pub(crate) fn capabilities_from_catalog(
         "input_tokens": model.limits.input.filter(|input| *input > 0 && *input < model.limits.context),
         "output_tokens": model.limits.output,
         "tool_calling": model.tool_call,
-        "parallel_tool_calls": true,
+        "parallel_tool_calls": model.tool_call,
         "structured_output": model.structured_output.unwrap_or(true),
         "reasoning": model.reasoning,
         "temperature": model.temperature.unwrap_or(false),

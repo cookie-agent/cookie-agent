@@ -492,7 +492,7 @@ impl DynamicCompiler {
             return Err(if override_.is_some() {
                 ModelLocalError::Provider(DynamicCompileError::CustomModel)
             } else {
-                ModelLocalError::Unsupported("unsupported_model_capabilities; tool_calling = false conflicts with the parallel_tool_calls = true fallback".to_owned())
+                ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
             });
         }
         let template = authored

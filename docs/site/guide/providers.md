@@ -18,6 +18,10 @@ catalog on first run) and refreshes `https://models.dev/catalog.json` in the
 background right away, then hourly. Supported, non-deprecated text-output
 models are included automatically. Catalog declarations are not probes of your
 endpoint: account access, deployed model features, and billing may differ.
+Models the catalog lists without tool calling stay selectable: they work for
+agents that publish no tools and for internal agents such as session titles,
+while a request that carries tools or tool history fails with "tool calling is
+not supported by this model".
 
 This is a complete `config.toml` alternative to `/connect`, with credentials
 supplied by the environment:
