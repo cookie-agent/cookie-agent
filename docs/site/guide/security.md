@@ -174,15 +174,23 @@ access tokens. Display clipping does not redact stored content. See the
 ### Media attachments
 
 Media files read through `read` or returned by MCP servers are sniffed by
-content and strictly validated (image container structure with header dimension,
-pixel, and frame limits, classic
-cross-reference PDF structure, frame-sync and container magic-byte checks for
-audio and video) before
-bytes are retained or sent to a provider. Validation rejects malformed input,
-but it is not content screening: an image or PDF can embed adversarial text
-intended for the model (visible prompt injection). Media attachments are in the
-same trust class as file text the model already reads; apply the same judgement
-about which files an agent is pointed at.
+content and structurally validated before bytes are retained or sent to a
+provider: images must parse as a complete PNG, JPEG, static WebP, or GIF
+container whose header dimensions, pixel count, and frame count stay within
+bounds; PDFs need a version header, an `%%EOF` marker near the end, a
+`startxref` offset that lands on a cross-reference table or stream, and no
+encryption dictionary; audio and video get frame-sync and container magic-byte
+checks. Pixel data and PDF content streams are never decoded, so a file with a
+valid container but corrupt compressed data is accepted and left to the
+provider. A provider that rejects such a file fails the request, and because
+history replays the attachment, later requests fail too until the session is
+reverted or forked to before it.
+
+Validation rejects malformed input, but it is not content screening: an image
+or PDF can embed adversarial text intended for the model (visible prompt
+injection). Media attachments are in the same trust class as file text the model
+already reads; apply the same judgement about which files an agent is pointed
+at.
 
 ## Process boundary
 
