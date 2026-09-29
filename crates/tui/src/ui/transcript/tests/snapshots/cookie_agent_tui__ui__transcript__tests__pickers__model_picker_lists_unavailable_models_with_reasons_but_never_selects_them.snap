@@ -1,0 +1,36 @@
+---
+source: crates/tui/src/ui/transcript/tests/pickers.rs
+expression: "format!(\"== all ==\\n{}\\n== filtered: vision ==\\n{}\", rows.join(\"\\n\"),\nfiltered.join(\"\\n\"))"
+---
+== all ==
+╭ Model (1/1) ─────────────────────────────────────────────────────────────────────╮
+│> First Choice alpha/first-model[base]                                            │
+│  Unavailable (3) — not selectable                                                │
+│    kimi-code/k2 — quarantined: invalid_catalog_model_record                      │
+│    kimi-code/k2-thinking — quarantined: invalid_catalog_model_record             │
+│    Kimi K3 Vision kimi-code/k3-vision — unsupported: unsupported_model_capabilit…│
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+╰─────────────────────────────────────────── ↑↓ move · enter: select · esc: search ╯
+== filtered: vision ==
+╭ Model (0/1) ─────────────────────────────────────────────────────────────────────╮
+│  No selectable models · unavailable (1):                                         │
+│    Kimi K3 Vision kimi-code/k3-vision — unsupported: unsupported_model_capabilit…│
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+╰─────────────────────────────────────────── ↑↓ move · enter: select · esc: search ╯

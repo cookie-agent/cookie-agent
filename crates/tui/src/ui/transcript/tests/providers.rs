@@ -1329,3 +1329,123 @@ async fn loading_stale_bootstrap_and_error_retry_have_distinct_durable_ui() {
     assert!(error.contains("runtime error — retry"));
     assert!(error.contains("runtime unavailable"));
 }
+
+fn credentials_only_provider() -> cookie_agent_protocol::ProviderDescriptor {
+    let mut provider = provider_descriptor("moonshot", "supported", "current", false);
+    provider.model_counts = cookie_agent_protocol::ProviderModelCounts {
+        needs_credentials: 4,
+        ..Default::default()
+    };
+    provider
+}
+
+fn stale_catalog_snapshot() -> cookie_agent_protocol::RuntimeSnapshotV1 {
+    let mut snapshot = runtime_snapshot(
+        "8",
+        Vec::new(),
+        vec![model_descriptor()],
+        vec![descriptor("primary", true)],
+    );
+    snapshot.catalog_source = cookie_agent_protocol::CatalogSource::Cache;
+    snapshot.catalog_state.stale = true;
+    snapshot.catalog_state.age = cookie_agent_protocol::CatalogAge::OlderThanSevenDays;
+    snapshot.catalog_state.model_quarantine_count = 3;
+    snapshot.catalog_state.last_error = Some(cookie_agent_protocol::CatalogSafeErrorMeta {
+        code: SafeCode::new("catalog_regression").expect("code"),
+        message: SafeErrorMessage::new("refresh would drop 63% of models; kept previous catalog")
+            .expect("message"),
+        time: Timestamp::now(),
+    });
+    snapshot
+}
+
+#[tokio::test]
+async fn provider_rows_explain_why_a_provider_has_no_usable_models() {
+    let mut app = test_app().await;
+    app.providers = vec![
+        unusable_provider(true),
+        credentials_only_provider(),
+        unusable_provider(false),
+    ];
+    // Distinct IDs keep the provider list strictly sorted for rendering.
+    app.providers[2].id = ProviderId::new("kimi-unconnected").expect("provider ID");
+    app.modal = Modal::ConnectProviders;
+    let rendered = rendered_frame(&mut app, 240, 40);
+    assert!(
+        rendered.contains(
+            "Kimi Code (kimi-code) — connected · no usable models: 2 quarantined (invalid_catalog_model_record) · 1 unsupported (unsupported_model_capabilities) · Enter: reconnect/update"
+        ),
+        "{rendered}"
+    );
+    // Needing credentials is what "disconnected" already says.
+    assert!(rendered.contains("moonshot provider (moonshot) — disconnected "));
+    assert!(!rendered.contains("need credentials"));
+    // Connecting cannot help a provider whose every model is broken.
+    assert!(rendered.contains(
+        "Kimi Code (kimi-unconnected) — disconnected · no usable models: 2 quarantined · 1 unsupported"
+    ));
+}
+
+#[tokio::test]
+async fn provider_panel_leads_with_the_catalog_status_line() {
+    let mut app = test_app().await;
+    app.runtime = crate::state::RuntimeState::default();
+    app.runtime.install_initial(stale_catalog_snapshot());
+    app.providers = vec![credentials_only_provider()];
+    app.modal = Modal::ConnectProviders;
+    let rendered = rendered_frame(&mut app, 240, 40);
+    assert!(
+        rendered.contains(
+            "Catalog: models.dev (cache) · older than 7 days · stale · 3 quarantined model records · last refresh failed (catalog_regression): refresh would drop 63% of models; kept previous catalog"
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains(crate::ui::provider::DURABLE_PROVIDER_COPY));
+}
+
+#[tokio::test]
+async fn provider_details_list_unavailable_models_docs_and_env() {
+    let mut app = test_app().await;
+    app.connect_provider = Some(unusable_provider(true));
+    app.modal = Modal::ConnectDetails;
+    let rendered = rendered_frame(&mut app, 200, 60);
+    for text in [
+        "Models: 0 usable · 2 quarantined (invalid_catalog_model_record) · 1 unsupported (unsupported_model_capabilities)",
+        "Docs: https://platform.moonshot.ai/docs",
+        "Catalog env: KIMI_API_KEY",
+        "Catalog: models.dev (network)",
+        "Unavailable models:",
+        "  k2 — quarantined: invalid_catalog_model_record",
+        "Kimi K3 Vision (k3-vision) — unsupported: unsupported_model_capabilities",
+    ] {
+        assert!(rendered.contains(text), "missing {text}: {rendered}");
+    }
+}
+
+#[tokio::test]
+async fn connect_form_shows_docs_and_env_config_hint() {
+    let mut app = test_app().await;
+    app.begin_provider_form(unusable_provider(false));
+    assert_eq!(app.modal, Modal::ConnectSetup);
+    let rendered = rendered_frame(&mut app, 200, 40);
+    assert!(rendered.contains("Docs: https://platform.moonshot.ai/docs"));
+    assert!(rendered.contains(
+        "Or in config.toml: [providers.kimi-code] source = \"models_dev\", api_key = \"${env:KIMI_API_KEY}\""
+    ));
+
+    // Multi-credential methods cannot use `api_key`, so they get no hint.
+    let mut app = test_app().await;
+    let mut provider = multi_auth_provider();
+    provider.environment =
+        vec![cookie_agent_protocol::CredentialFieldName::new("MULTI_API_KEY").expect("env name")];
+    provider
+        .auth_methods
+        .retain(|method| method.id.as_str() == "bearer");
+    let mut second = provider.auth_methods[0].credentials[0].clone();
+    second.id = cookie_agent_protocol::AuthFieldName::new("session_token").expect("field");
+    provider.auth_methods[0].credentials.push(second);
+    app.begin_provider_form(provider);
+    let rendered = rendered_frame(&mut app, 200, 40);
+    assert!(!rendered.contains("Or in config.toml"));
+    assert!(!rendered.contains("Docs:"));
+}

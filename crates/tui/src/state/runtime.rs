@@ -1,7 +1,8 @@
 //! Coherent protocol-10 runtime snapshot state machine.
 
 use cookie_agent_protocol::{
-    CatalogSource, RuntimeChangedNotification, RuntimeRevision, RuntimeSnapshotV1,
+    CatalogSource, ProviderConfigurationState, RuntimeChangedNotification, RuntimeRevision,
+    RuntimeSnapshotV1,
 };
 
 pub const EMPTY_RUNTIME_GUIDANCE: &str = "type /connect to continue";
@@ -106,7 +107,10 @@ impl RuntimeState {
     fn install(&mut self, snapshot: RuntimeSnapshotV1) {
         let empty = snapshot.models.is_empty();
         let (phase, explanation) = if empty {
-            (RuntimePhase::Empty, catalog_explanation(&snapshot))
+            (
+                RuntimePhase::Empty,
+                catalog_explanation(&snapshot).or_else(|| unusable_providers(&snapshot)),
+            )
         } else if snapshot.catalog_source == CatalogSource::Bootstrap {
             (
                 RuntimePhase::Bootstrap,
@@ -134,6 +138,34 @@ fn catalog_explanation(snapshot: &RuntimeSnapshotV1) -> Option<String> {
         format!(
             "Using stale catalog cache after {} at {}: {}",
             error.code, error.time, error.message
+        )
+    })
+}
+
+/// Names configured providers that yield no usable models, so an empty
+/// runtime says why instead of only "No models are available".
+fn unusable_providers(snapshot: &RuntimeSnapshotV1) -> Option<String> {
+    let names = snapshot
+        .providers
+        .iter()
+        .filter(|provider| {
+            (provider.configuration != ProviderConfigurationState::Unconfigured
+                || provider.durable_connection.is_some())
+                && provider.model_counts.available == 0
+                && provider.model_counts.unavailable() > 0
+        })
+        .map(|provider| {
+            format!(
+                "{} ({} unavailable)",
+                provider.id,
+                provider.model_counts.unavailable()
+            )
+        })
+        .collect::<Vec<_>>();
+    (!names.is_empty()).then(|| {
+        format!(
+            "No usable models from {}; /connect details list the reasons",
+            names.join(", ")
         )
     })
 }
@@ -241,5 +273,39 @@ mod tests {
         let mut state = RuntimeState::default();
         state.install_initial(snapshot(false));
         assert_eq!(state.phase(), RuntimePhase::Empty);
+        assert_eq!(state.durable_explanation(), None);
+    }
+
+    #[test]
+    fn empty_runtime_names_configured_providers_without_usable_models() {
+        let mut empty = snapshot(false);
+        empty.providers = vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "kimi-code",
+                "display_name": "Kimi Code",
+                "presence": "current",
+                "support": {"state": "supported", "reason": null},
+                "setup_fields": [],
+                "auth_methods": [],
+                "configuration": "authored",
+                "effective_auth_state": "authored_api_key",
+                "durable_connection": null,
+                "quarantine": null,
+                "documentation_url": null,
+                "environment": [],
+                "model_counts": {"available": 0, "quarantined": 4, "unsupported": 0, "needs_setup": 0, "needs_credentials": 0},
+                "unavailable_models": []
+            }))
+            .expect("provider"),
+        ];
+        let mut state = RuntimeState::default();
+        state.install_initial(empty);
+        assert_eq!(state.phase(), RuntimePhase::Empty);
+        assert_eq!(
+            state.durable_explanation(),
+            Some(
+                "No usable models from kimi-code (4 unavailable); /connect details list the reasons"
+            )
+        );
     }
 }

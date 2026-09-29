@@ -284,16 +284,37 @@ impl App {
                     area.width,
                     area.height.saturating_sub(input_height),
                 );
-                let copy_height = 3.min(remaining.height);
+                // The catalog line leads so a long refresh error is never
+                // clipped behind the fixed store copy.
+                let mut copy_lines = Vec::new();
+                if let Some(snapshot) = self.runtime.snapshot() {
+                    let style = if crate::ui::provider::catalog_needs_attention(snapshot) {
+                        self.theme.warning()
+                    } else {
+                        self.theme.internal()
+                    };
+                    copy_lines.push(Line::from(Span::styled(
+                        crate::ui::provider::catalog_status_line(snapshot),
+                        style,
+                    )));
+                }
+                copy_lines.push(Line::from(DURABLE_PROVIDER_COPY));
+                let copy_width = usize::from(remaining.width.saturating_sub(2)).max(1);
+                let copy_rows = copy_lines
+                    .iter()
+                    .map(|line| line.width().div_ceil(copy_width).max(1))
+                    .sum::<usize>();
+                let copy_height = u16::try_from(copy_rows)
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(2)
+                    .min(remaining.height);
                 let copy = Rect::new(remaining.x, remaining.y, remaining.width, copy_height);
                 frame.render_widget(
-                    Paragraph::new(DURABLE_PROVIDER_COPY)
-                        .wrap(Wrap { trim: false })
-                        .block(
-                            crate::ui::panel_block()
-                                .border_style(self.theme.panel_border())
-                                .title(crate::ui::panel_title("Global provider store")),
-                        ),
+                    Paragraph::new(copy_lines).wrap(Wrap { trim: false }).block(
+                        crate::ui::panel_block()
+                            .border_style(self.theme.panel_border())
+                            .title(crate::ui::panel_title("Global provider store")),
+                    ),
                     copy,
                 );
                 let picker = Rect::new(
@@ -327,7 +348,17 @@ impl App {
                 );
             }
             Modal::ConnectDetails => {
-                self.render_connect_details(frame, centered(frame.area(), 80, 62));
+                // Listed unavailable models need the extra height.
+                let height = if self
+                    .connect_provider
+                    .as_ref()
+                    .is_some_and(|provider| !provider.unavailable_models.is_empty())
+                {
+                    84
+                } else {
+                    62
+                };
+                self.render_connect_details(frame, centered(frame.area(), 80, height));
             }
             Modal::ConnectSetup => {
                 self.render_connect_setup(frame, centered(frame.area(), 86, 86));
@@ -912,7 +943,7 @@ impl App {
         let row_width = usize::from(inner_rect(picker).width.saturating_sub(2));
         self.clamp_picker_selection();
         let selected = self.picker_state.selected();
-        let entries = models
+        let mut entries = models
             .iter()
             .enumerate()
             .map(|(index, selection)| {
@@ -925,7 +956,56 @@ impl App {
                     &self.theme,
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // Unavailable models trail the selectable rows as a dimmed group;
+        // selection is clamped to the selectable rows above them.
+        let unavailable = self.filtered_unavailable_models();
+        if !unavailable.is_empty() {
+            let header = if models.is_empty() {
+                format!(
+                    "No selectable models · unavailable ({}):",
+                    unavailable.len()
+                )
+            } else {
+                format!("Unavailable ({}) — not selectable", unavailable.len())
+            };
+            entries.push(Line::from(Span::styled(
+                truncate_with_ellipsis(&header, row_width),
+                self.theme.muted(),
+            )));
+            if models.is_empty()
+                && let Some(snapshot) = self
+                    .runtime
+                    .snapshot()
+                    .filter(|snapshot| crate::ui::provider::catalog_needs_attention(snapshot))
+            {
+                entries.push(Line::from(Span::styled(
+                    truncate_with_ellipsis(
+                        &format!("  {}", crate::ui::provider::catalog_status_line(snapshot)),
+                        row_width,
+                    ),
+                    self.theme.warning(),
+                )));
+            }
+            entries.extend(unavailable.iter().map(|(provider, model)| {
+                let key = format!("{provider}/{}", model.id);
+                let name = if model.display_name.as_str() == model.id.as_str() {
+                    key
+                } else {
+                    format!("{} {key}", model.display_name)
+                };
+                Line::from(Span::styled(
+                    truncate_with_ellipsis(
+                        &format!(
+                            "  {name} — {}",
+                            crate::ui::provider::unavailable_model_reason(model)
+                        ),
+                        row_width,
+                    ),
+                    self.theme.muted(),
+                ))
+            }));
+        }
         let empty_message = if total == 0 {
             Some("No models are available for this draft.")
         } else if models.is_empty() {
@@ -949,6 +1029,7 @@ impl App {
             self.theme.selected_overlay(),
         )
         .into_iter()
+        .filter(|(_, index)| *index < models.len())
         .map(|(rect, index)| PickerRowHit { rect, index })
         .collect();
     }
@@ -1108,8 +1189,8 @@ impl App {
                 | ProviderRowState::ErrorRetry => "Enter: details only · Esc: close".into(),
             }
         };
-        let content = format!(
-            "{DURABLE_PROVIDER_COPY}\n\nProvider: {} ({})\nState: {:?}\nPresence: {:?}\nSupport: {:?}\nTyped reason: {reason}\nConfiguration: {:?}\nEffective auth: {:?}\nQuarantine: {quarantine}\nSetup fields: {}\nAuth methods: {}\n\n{action}",
+        let mut content = format!(
+            "{DURABLE_PROVIDER_COPY}\n\nProvider: {} ({})\nState: {:?}\nPresence: {:?}\nSupport: {:?}\nTyped reason: {reason}\nConfiguration: {:?}\nEffective auth: {:?}\nQuarantine: {quarantine}\nSetup fields: {}\nAuth methods: {}\nModels: {}",
             provider.display_name,
             provider.id,
             state,
@@ -1119,7 +1200,51 @@ impl App {
             provider.effective_auth_state,
             provider.setup_fields.len(),
             provider.auth_methods.len(),
+            crate::ui::provider::model_counts_summary(provider),
         );
+        if let Some(url) = &provider.documentation_url {
+            content.push_str(&format!("\nDocs: {url}"));
+        }
+        if !provider.environment.is_empty() {
+            content.push_str(&format!(
+                "\nCatalog env: {}",
+                provider
+                    .environment
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(snapshot) = self.runtime.snapshot() {
+            content.push('\n');
+            content.push_str(&crate::ui::provider::catalog_status_line(snapshot));
+        }
+        // Keys stay above the list so a long list never clips them.
+        content.push_str(&format!("\n\n{action}"));
+        const LISTED_UNAVAILABLE: usize = 8;
+        if !provider.unavailable_models.is_empty() {
+            content.push_str("\n\nUnavailable models:");
+            for model in provider.unavailable_models.iter().take(LISTED_UNAVAILABLE) {
+                let name = if model.display_name.as_str() == model.id.as_str() {
+                    model.id.to_string()
+                } else {
+                    format!("{} ({})", model.display_name, model.id)
+                };
+                content.push_str(&format!(
+                    "\n  {name} — {}",
+                    crate::ui::provider::unavailable_model_reason(model)
+                ));
+            }
+            if let Some(more) = provider
+                .unavailable_models
+                .len()
+                .checked_sub(LISTED_UNAVAILABLE)
+                .filter(|more| *more > 0)
+            {
+                content.push_str(&format!("\n  … and {more} more"));
+            }
+        }
         frame.render_widget(
             Paragraph::new(content).wrap(Wrap { trim: false }).block(
                 crate::ui::panel_block()
@@ -1150,23 +1275,38 @@ impl App {
         } else {
             "Tab/Down: next · Shift-Tab/Up: previous · Enter: activate/submit · Esc: cancel"
         };
-        // A validation failure renders inline above the fields instead of
-        // taking over the panel; editing any value clears it.
-        let header_height = if form.error.is_some() { 5 } else { 4 }.min(inner.height);
         let mut header = vec![
             Line::from(DURABLE_PROVIDER_COPY),
             Line::from(format!(
                 "Provider: {} ({})",
                 form.provider.display_name, form.provider.id
             )),
-            Line::from(instructions),
         ];
+        if let Some(url) = &form.provider.documentation_url {
+            header.push(Line::from(vec![
+                Span::styled("Docs: ", self.theme.internal()),
+                Span::styled(url.to_string(), self.theme.link()),
+            ]));
+        }
+        if let Some(hint) =
+            crate::ui::provider::env_config_hint(&form.provider, form.selected_auth())
+        {
+            header.push(Line::from(Span::styled(hint, self.theme.internal())));
+        }
+        header.push(Line::from(instructions));
+        // A validation failure renders inline above the fields instead of
+        // taking over the panel; editing any value clears it.
         if let Some(error) = form.error.as_deref() {
             header.push(Line::from(Span::styled(
                 error.to_owned(),
                 self.theme.error(),
             )));
         }
+        // One spare row absorbs a wrapped line at narrow widths.
+        let header_height = u16::try_from(header.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(1)
+            .min(inner.height);
         frame.render_widget(
             Paragraph::new(header).wrap(Wrap { trim: false }),
             Rect::new(inner.x, inner.y, inner.width, header_height),

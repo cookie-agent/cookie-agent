@@ -1146,3 +1146,52 @@ async fn draft_clicks_do_not_mutate_active_or_committed_frozen_attribution() {
     assert!(rendered.contains("primary • gateway/arbitrary-model[default]"));
     assert!(rendered.contains("primary • gateway/arbitrary-model[fast]"));
 }
+
+fn model_picker_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| app.draw_for_test(frame))
+        .expect("model picker render");
+    let buffer = terminal.backend().buffer();
+    let picker = app.hit_map.picker.expect("model picker area");
+    (picker.y..picker.bottom())
+        .map(|y| {
+            (picker.x..picker.right())
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn model_picker_lists_unavailable_models_with_reasons_but_never_selects_them() {
+    let mut app = test_app().await;
+    let mut first = catalog_model("alpha/first-model", &[], None);
+    first.display_name = "First Choice".into();
+    app.models = vec![first];
+    app.providers = vec![unusable_provider(true)];
+    app.draft = app.default_draft_selection();
+    app.open_selection_modal(Modal::Models);
+    app.model_search.focus_list();
+
+    let rows = model_picker_rows(&mut app, 150, 40);
+    // Only the selectable row is clickable, and keys cannot move past it.
+    assert_eq!(app.hit_map.picker_rows.len(), 1);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.picker_state.selected(), Some(0));
+
+    type_input(&mut app, "vision").await;
+    assert_eq!(app.model_search.query(), "vision");
+    let filtered = model_picker_rows(&mut app, 150, 40);
+    assert!(app.hit_map.picker_rows.is_empty());
+    assert_eq!(app.picker_state.selected(), None);
+
+    insta::assert_snapshot!(format!(
+        "== all ==\n{}\n== filtered: vision ==\n{}",
+        rows.join("\n"),
+        filtered.join("\n")
+    ));
+}
