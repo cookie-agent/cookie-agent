@@ -469,8 +469,8 @@ impl Engine {
                 let mut request = ModelRequest::new(context.history.clone())
                     .with_tools(input.tools.to_vec())
                     .with_header_context(self.model_header_context(input.session)?);
-                crate::media::validate_media_part_counts(
-                    &request.history,
+                crate::media::elide_excess_media(
+                    &mut request.history,
                     &input
                         .owner_policy
                         .model_capabilities(input.binding)

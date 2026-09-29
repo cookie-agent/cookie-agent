@@ -112,8 +112,17 @@ audio, or 25 MiB video). Media goes in the tool result when the family's wire
 API accepts it there; otherwise, when the API accepts that kind in user
 messages, it is sent as a file in one emitted user turn immediately after the
 tool result. Each model also advertises per-kind count limits, enforced per
-request. Media parts do not contribute to context fit estimates, except video,
-which carries a flat conservative cost.
+request (catalog models: 20 images, 5 PDFs, 5 audio files, and 2 videos, 1 on
+Bedrock). When the history holds more parts of a kind than the limit, the
+oldest are replaced in the outgoing request by a placeholder such as
+`[image omitted: over the model's per-request image limit]`; the saved history
+keeps them. The elided count grows in steps of half the limit, so later media
+appends to an unchanged prompt prefix (and prompt cache) until the limit is
+reached again, at the cost of sending as few as half the limit's parts right
+after a step. The latest user message is never elided: a request fails only
+when that message alone attaches more parts than the limit. Media parts do not
+contribute to context fit estimates, except video, which carries a flat
+conservative cost.
 
 MCP media blocks (images, audio, embedded resource blobs) follow the same gate
 and delivery selection. Blob resources without a declared MIME type are
