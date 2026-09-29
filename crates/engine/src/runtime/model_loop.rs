@@ -1785,6 +1785,9 @@ impl Engine {
                 let mut request = ModelRequest::new(context.history)
                     .with_tools(tools.clone())
                     .with_header_context(self.model_header_context(session)?);
+                // Elide before plugins and prompt-cache placement see the request.
+                crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
+                    .map_err(ModelError::invalid_request)?;
                 request.inference.max_output_tokens =
                     policy::effective_max_output_tokens(binding, policy.agent.max_output_tokens);
                 if let Some(native_context) = context.native_context {
@@ -1919,11 +1922,9 @@ impl Engine {
                     }
                 }
                 request.header_context = self.model_header_context(session)?;
-                crate::media::validate_media_part_counts(
-                    &request.history,
-                    &turn_context.capabilities,
-                )
-                .map_err(ModelError::invalid_request)?;
+                // Re-applied after interception in case a plugin added media; a no-op otherwise.
+                crate::media::elide_excess_media(&mut request.history, &turn_context.capabilities)
+                    .map_err(ModelError::invalid_request)?;
                 let authoritative_prompt = serde_json::to_vec(&request)
                     .map_err(|error| ModelError::invalid_request(error.to_string()))?;
                 self.append(

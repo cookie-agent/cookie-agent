@@ -735,6 +735,97 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
 }
 
 #[tokio::test]
+async fn history_media_over_the_model_count_limit_elides_oldest_and_proceeds() {
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5,
+        0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0xf8, 0x0f, 0x00, 0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xe3, 0x66, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let primary = "---\ndescription: Media limit test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n---\nRead media.\n";
+    let capabilities = "input = [\"text\", \"image\"]\noutput = [\"text\"]\ncontext_tokens = 4096\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = false\nnative_replay = \"unsupported\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 20971520, max_count = 1 } }";
+    let bodies = vec![
+        anthropic_tool_body(
+            "read-first",
+            "read",
+            serde_json::json!({"filePath":"first.png"}),
+        ),
+        anthropic_tool_body(
+            "read-second",
+            "read",
+            serde_json::json!({"filePath":"second.png"}),
+        ),
+        anthropic_usage_body("read both", 1, 0, 0),
+    ];
+    let (endpoint, captured, _reached, _release) =
+        scripted_server_with_delayed_response(bodies, usize::MAX).await;
+    let (fixture, selection) = custom_fixture_with_capabilities(
+        &endpoint,
+        primary,
+        None,
+        None,
+        false,
+        None,
+        None,
+        4_096,
+        None,
+        "anthropic-compatible",
+        Some(capabilities),
+    );
+    fs::write(fixture._directory.path().join("first.png"), PNG).unwrap();
+    fs::write(fixture._directory.path().join("second.png"), PNG).unwrap();
+    fixture
+        .engine
+        .register_tool_provider(Arc::new(TestMediaReadProvider));
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("media-limit").unwrap(),
+                selection,
+                input: "read both images".into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session.session_id).await;
+    assert_eq!(
+        fixture
+            .engine
+            .get_session(session.session_id)
+            .unwrap()
+            .status,
+        SessionStatus::Completed
+    );
+    let requests = with_watchdog("captured media limit completion", captured)
+        .await
+        .unwrap();
+    assert_eq!(requests.len(), 3);
+    let last = serde_json::to_string(&request_body(&requests[2])).unwrap();
+    assert_eq!(last.matches("\"type\":\"image\"").count(), 1, "{last}");
+    assert_eq!(
+        last.matches("[image omitted: over the model's per-request image limit]")
+            .count(),
+        1,
+        "{last}"
+    );
+    let placeholder = last
+        .find("[image omitted: over the model's per-request image limit]")
+        .unwrap();
+    assert!(placeholder < last.find("\"type\":\"image\"").unwrap());
+    // Durable history keeps both images; elision is request assembly only.
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    let durable = serde_json::to_string(&projection.log.events()).unwrap();
+    assert!(!durable.contains("image omitted"));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn shutdown_joins_in_flight_run_tasks_and_records_run_cancelled() {
     // The fixture answers nothing until it is released, so the run is parked in
     // its provider stream for the whole of shutdown.

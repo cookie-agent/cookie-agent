@@ -295,7 +295,7 @@ Custom fields are required unless a default or omission rule is stated below.
 | `seed` | boolean | Seed parameter support. |
 | `compaction` | string | Defaults to `"unsupported"`, the only accepted custom capability value. Native opt-in is managed-model configuration. |
 | `native_replay` | string | Optional `"unsupported"`, `"optional"`, or `"required"`; omission derives supported replay from the resolved adaptor and endpoint. |
-| `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. Exactly the non-text input modalities need entries; text-only models use `{}`. |
+| `media` | map | Per-kind (`image`, `audio`, `pdf`, `video`) input limits: nonempty `mime_types` string array, positive `max_bytes` and `max_count`. `max_count` is per request: when the history holds more parts of a kind, the oldest are replaced by a text placeholder in the outgoing request (see [media reads](../reference/tools.md#media-reads)). Exactly the non-text input modalities need entries; text-only models use `{}`. |
 
 The three optimistic `true` defaults are declarations, not endpoint detection.
 Set unsupported features to `false`. In particular, disabling tool calling also
