@@ -111,6 +111,10 @@ pub struct CompiledProviderState {
     pub stored: bool,
     pub effective_auth: EffectiveCredentialSource,
     pub durable_connection: Option<DurableConnectionDescriptor>,
+    /// Catalog model rows that compiled to no model, sorted by ID, with the
+    /// quarantine or compiler reason. Compiled-but-unavailable models (setup
+    /// or credentials missing) live in the runtime model map instead.
+    pub unsupported_models: Vec<crate::compiler::UnsupportedModel>,
 }
 
 /// One complete compiled model plus its exact safe source and credential bindings.
@@ -1393,6 +1397,7 @@ fn compile_runtime(
             stored: stored.is_some(),
             effective_auth: EffectiveCredentialSource::Unavailable,
             durable_connection: stored.map(StoredManagedConnection::descriptor),
+            unsupported_models: Vec::new(),
         };
         let Some(record) = entry.and_then(|entry| entry.record.as_ref()) else {
             if let Some(reason) = entry.and_then(|entry| entry.quarantine.as_ref()) {
@@ -1438,6 +1443,7 @@ fn compile_runtime(
             }
             Err(error) => return Err(ModelManagerError::DynamicCompile(error)),
         };
+        state.unsupported_models = compiled.unsupported_models;
         for (model_id, model) in compiled.models {
             let key = ModelKey::new(provider_id.clone(), model_id)
                 .map_err(|_| ModelManagerError::RuntimeCompileFailed)?;

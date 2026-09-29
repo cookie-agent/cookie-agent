@@ -614,6 +614,32 @@ fn unknown_nested_family_only_marks_that_model_unsupported() {
         compiled.unsupported_models[0].reason,
         "no_known_protocol_family"
     );
+    assert_eq!(
+        compiled.unsupported_models[0].kind,
+        cookie_agent_models::compiler::UnsupportedModelKind::Unsupported
+    );
+}
+
+#[test]
+fn quarantined_catalog_model_is_recorded_with_its_reason() {
+    let mut provider = record("@ai-sdk/openai-compatible", Some("https://example.com/v1"));
+    let entry = provider.models.values_mut().next().unwrap();
+    entry.record = None;
+    entry.quarantine =
+        Some(cookie_agent_models::catalog::CatalogQuarantineReason::InvalidCatalogModelRecord);
+    let id = entry.id.clone();
+    let compiled = DynamicCompiler::family_registry()
+        .compile_managed("sha256:test", &provider, None)
+        .unwrap();
+    assert!(compiled.models.is_empty());
+    assert_eq!(
+        compiled.unsupported_models,
+        [cookie_agent_models::compiler::UnsupportedModel {
+            id,
+            kind: cookie_agent_models::compiler::UnsupportedModelKind::Quarantined,
+            reason: "invalid_catalog_model_record".to_owned(),
+        }]
+    );
 }
 
 #[test]
