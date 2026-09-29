@@ -735,7 +735,6 @@ dependencies = [
  "cookie_agent_models",
  "cookie_agent_protocol",
  "cookie_agent_server",
- "cookie_agent_tools",
  "crossterm",
  "foldhash",
  "futures-util",
