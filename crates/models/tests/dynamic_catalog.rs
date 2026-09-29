@@ -525,6 +525,62 @@ fn candidate_with_models(count: usize) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn refresh_that_loses_most_models_keeps_the_cached_catalog() {
+    let temporary = tempfile::tempdir().unwrap();
+    let transport = ScriptedTransport::with(
+        [10, 4, 5, 2]
+            .map(|count| CatalogTransportResponse::from_bytes(200, candidate_with_models(count))),
+    );
+    let manager = manager(transport, &temporary);
+    let usable = |snapshot: &cookie_agent_models::catalog::CatalogSnapshot| {
+        snapshot
+            .provider(&ProviderId::new("test").unwrap())
+            .unwrap()
+            .record
+            .as_ref()
+            .unwrap()
+            .models
+            .len()
+    };
+
+    let installed = manager.refresh_at(now()).await.unwrap();
+    assert_eq!(usable(&installed), 10);
+
+    // Fewer than half the cached models: refused, the cache is kept and the
+    // refusal is visible as a stale catalog with an error.
+    let rejected = manager.refresh_at(now()).await.unwrap();
+    assert_eq!(rejected.source, CatalogSource::Cache);
+    assert_eq!(rejected.state.availability, CatalogAvailability::Stale);
+    assert_eq!(rejected.revision, installed.revision);
+    let error = rejected.state.last_error.as_ref().unwrap();
+    assert_eq!(error.code, "catalog_model_loss_rejected");
+    assert!(error.safe_message.contains("4 usable models"), "{error:?}");
+    assert!(error.safe_message.contains("10 cached"), "{error:?}");
+    // The state persists for the next startup.
+    let reopened = self::manager(ScriptedTransport::default(), &temporary)
+        .load_cached_at(now())
+        .unwrap();
+    assert_eq!(reopened.revision, installed.revision);
+    assert_eq!(reopened.state.availability, CatalogAvailability::Stale);
+    assert_eq!(
+        reopened.state.last_error.unwrap().code,
+        "catalog_model_loss_rejected"
+    );
+
+    // Exactly half is accepted.
+    let half = manager.refresh_at(now()).await.unwrap();
+    assert_eq!(half.source, CatalogSource::Network);
+    assert_eq!(half.state.availability, CatalogAvailability::Ready);
+    assert_eq!(usable(&half), 5);
+
+    // A cache last validated a week ago no longer blocks a smaller catalog.
+    let week_later: Timestamp = "2026-08-12T00:00:00Z".parse().unwrap();
+    let accepted = manager.refresh_at(week_later).await.unwrap();
+    assert_eq!(accepted.source, CatalogSource::Network);
+    assert_eq!(usable(&accepted), 2);
+}
+
+#[tokio::test]
 async fn torn_install_falls_back_and_the_next_refresh_repairs_it() {
     let temporary = tempfile::tempdir().unwrap();
     let mut first_response = CatalogTransportResponse::from_bytes(200, candidate());

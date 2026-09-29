@@ -56,6 +56,14 @@ bootstrap, and the next refresh (sent without an ETag) installs a consistent
 pair. A `304` or a failed refresh rewrites only the metadata, after checking it
 still names the installed body.
 
+A fetched catalog is refused when it has fewer than half the usable provider
+models (rows that parsed rather than quarantined) of a cache validated within
+the last seven days. models.dev only grows in normal operation, so such a drop
+means a broken upstream deploy or a schema change that quarantines most rows.
+The cache stays in use, marked stale with the `catalog_model_loss_rejected`
+error. A refused refresh does not revalidate the cache, so if upstream keeps
+serving the smaller catalog for a week, it is accepted.
+
 Invalid candidate structure rejects that source. Once a bounded root provider
 map is recovered, malformed/ambiguous provider records are quarantined with all
 children and malformed/ambiguous model records are quarantined individually;

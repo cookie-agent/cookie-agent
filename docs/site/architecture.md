@@ -174,8 +174,11 @@ See [Configuration](guide/configuration.md) and the
    recompiled only when the catalog revision or availability changes. A new
    body is installed by atomically replacing the body and then the metadata
    that names its SHA-256 revision; a pair torn by a crash fails validation,
-   so startup falls back to the bootstrap and the next refresh repairs it.
-   Catalog selection is network, cache, or bootstrap.
+   so startup falls back to the bootstrap and the next refresh repairs it. A
+   refresh that would replace a cache validated within the last seven days
+   with fewer than half of its usable models is refused: the cache stays in
+   use, marked stale with a `catalog_model_loss_rejected` error. Catalog
+   selection is network, cache, or bootstrap.
 2. **Family registry.** A code-owned recipe registry (schema 1) maps the catalog's
    npm package names to protocol families: OpenAI, OpenAI-compatible chat,
    Anthropic, Google, Vertex, Bedrock, Azure, and Cohere. Each recipe declares a
