@@ -41,6 +41,24 @@ unavailable. An authored `base_url` cannot inherit store credentials or setup.
 Endpoint selection uses authored `base_url`, catalog API URL, then family
 default; setup-derived families retain their own routing.
 
+Some catalog providers mix wires: zenmux, ofox, and opencode serve Anthropic,
+Gemini, or Responses models next to OpenAI-compatible Chat ones, and a model
+may pin its own catalog API URL. An authored `base_url` replaces the
+provider-level API URL, and each model's endpoint follows these rules:
+
+- A model without its own API URL, or with the provider's, uses `base_url`.
+- A model API URL on the provider API's origin is rebased by path. With
+  zenmux's `https://zenmux.ai/api/v1` and an Anthropic model at
+  `https://zenmux.ai/api/anthropic/v1`, `base_url = "https://gw.example/api/v1"`
+  sends that model to `https://gw.example/api/anthropic/v1`.
+- When `base_url` does not end with the provider's differing path suffix
+  (`v1` above), it is a gateway with its own layout and every model uses
+  `base_url` itself, whatever its wire (`/chat/completions`, `/messages`,
+  `/responses`, ...).
+- A model API URL on another origin is a separate upstream and is kept.
+
+To send a single model somewhere else, define it in a custom provider.
+
 ### Unavailable models
 
 A catalog model that cookie cannot run stays visible with its reason instead of
@@ -88,7 +106,7 @@ stored); unconfigured providers report counts alone.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `source` | string | *(required)* | Must be `"models_dev"`. |
-| `base_url` | string | *(none)* | HTTPS endpoint override. Requires same-definition auth (`api_key` or `auth_override`) and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
+| `base_url` | string | *(none)* | HTTPS override of the provider-level API URL; per-model catalog endpoints follow the rules above. Requires same-definition auth (`api_key` or `auth_override`) and never inherits provider-store setup or credentials. Forbidden for families that compute their endpoint from setup (Vertex, Bedrock, Azure). |
 | `setup` | map of string values | empty | Setup fields the provider recipe requires (for example `project`, `location`, `region`, `resource_name`). Native Azure Responses compaction also requires `model`, `version`, and `deployment_type`. Interpolates `${env:NAME}`. |
 | `api_key` | string | *(none)* | Single-secret default auth. Allowed only for providers whose default method is an unambiguous single API key. Interpolates `${env:NAME}`. |
 | `auth_override` | table | *(none)* | Explicit auth method override. Mutually exclusive with `api_key`. |
