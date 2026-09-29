@@ -2143,6 +2143,35 @@ fn stored_event_rejects_unknown_envelope_fields_and_ignores_legacy_version() {
 }
 
 #[test]
+fn strict_record_decoder_agrees_with_the_tolerant_reader_or_defers_to_it() {
+    for record in attribution_records() {
+        let line = serde_json::to_vec(&record).expect("serialize record");
+        assert_eq!(StoredEvent::decode_strict(&line), Some(record));
+    }
+    let mut legacy = serde_json::to_value(stored_event()).expect("serialize record");
+    legacy["event_schema_version"] = Value::from(3);
+    assert_eq!(
+        StoredEvent::decode_strict(&serde_json::to_vec(&legacy).unwrap()),
+        Some(stored_event())
+    );
+    // Anything the tolerant reader would repair, report, or skip is left to it.
+    for (field, replacement) in [
+        ("legacy", Value::Bool(true)),
+        ("engine_version", Value::from(7)),
+        ("seq", Value::from(0)),
+    ] {
+        let mut value = serde_json::to_value(stored_event()).expect("serialize record");
+        value[field] = replacement;
+        let line = serde_json::to_vec(&value).expect("serialize variant");
+        assert_eq!(StoredEvent::decode_strict(&line), None, "{field}");
+    }
+    let duplicated = String::from_utf8(serde_json::to_vec(&stored_event()).unwrap())
+        .unwrap()
+        .replacen('{', "{\"seq\":1,", 1);
+    assert_eq!(StoredEvent::decode_strict(duplicated.as_bytes()), None);
+}
+
+#[test]
 fn tolerant_loader_accepts_origin_as_a_known_envelope_field() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("events.jsonl");

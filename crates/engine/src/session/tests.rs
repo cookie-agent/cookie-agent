@@ -396,6 +396,47 @@ fn foreign_snapshot_preserves_torn_tail_until_owned_adoption() {
 }
 
 #[test]
+fn foreign_get_parses_an_unchanged_log_once() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let data = temporary.path().join("data");
+    let owner = SessionStore::open(&data, &cwd).expect("owner store");
+    let session_id = persist_test_session(&owner);
+    let observer = SessionStore::open(&data, &cwd).expect("observer store");
+
+    let first = observer.get(session_id).expect("first foreign read");
+    let opens = observer.log_open_count(session_id);
+    let second = observer.get(session_id).expect("second foreign read");
+    assert_eq!(observer.log_open_count(session_id), opens, "unchanged log");
+    assert!(Arc::ptr_eq(&first.log, &second.log));
+
+    let tip = first.meta.last_event_seq;
+    owner
+        .append(
+            session_id,
+            None,
+            fuzz_origin(),
+            EventPayload::SessionPermissionOverlaySet {
+                overlay: SessionPermissionOverlay::default(),
+            },
+        )
+        .expect("owner append");
+    owner
+        .log(session_id)
+        .unwrap()
+        .flush()
+        .expect("flush owner log");
+    let refreshed = observer.get(session_id).expect("read after append");
+    assert_eq!(
+        observer.log_open_count(session_id),
+        opens + 1,
+        "changed log"
+    );
+    assert_eq!(refreshed.meta.last_event_seq, tip + 1);
+}
+
+#[test]
 fn failed_adoption_is_unobservable_and_retryable() {
     let temporary = private_tempdir();
     let cwd = temporary.path().join("workspace");

@@ -21,7 +21,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
     AssistantToolCallRef, AttemptId, EventOrigin, EventPayload, ModelCallId, OutputDelta,
     OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId, StoredEvent,
-    ToolCallId, ToolCallStart, deserialize_event_payload_best_effort,
+    StoredEventEnvelope, ToolCallId, ToolCallStart, deserialize_event_payload_best_effort,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -2743,6 +2743,37 @@ struct LoadedEvents {
     next_seq: u64,
 }
 
+/// Checks that a record's sequence advances the log and records any gap
+/// before it.
+fn observe_sequence(
+    path: &Path,
+    seq: u64,
+    last_observed_seq: &mut u64,
+    diagnostics: &mut Vec<EventLoadDiagnostic>,
+    validation_taint: &mut ValidationTaint,
+) -> Result<(), EventLogError> {
+    if seq <= *last_observed_seq {
+        return corrupt_value(path, "event sequences are not strictly increasing");
+    }
+    if *last_observed_seq > 0 && seq > *last_observed_seq + 1 {
+        let start = *last_observed_seq + 1;
+        let end = seq - 1;
+        diagnostics.push(EventLoadDiagnostic {
+            seq: start,
+            reason: if start == end {
+                "event sequence is absent from the physical log".into()
+            } else {
+                format!("event sequences {start}..={end} are absent from the physical log")
+            },
+            engine_version: None,
+            skipped: true,
+        });
+        validation_taint.mark_broad(start, end);
+    }
+    *last_observed_seq = seq;
+    Ok(())
+}
+
 fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, EventLogError> {
     let bytes = read_complete_jsonl(path, torn_tail)?;
     let mut records = Vec::new();
@@ -2755,6 +2786,19 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
         .enumerate()
     {
         let line_number = index as u64 + 1;
+        // Nearly every record is intact: type it straight from the bytes and
+        // leave the untyped, repairing reader to the rest.
+        if let Some(event) = StoredEvent::decode_strict(line) {
+            observe_sequence(
+                path,
+                event.seq,
+                &mut last_observed_seq,
+                &mut diagnostics,
+                &mut validation_taint,
+            )?;
+            records.push(event);
+            continue;
+        }
         let mut value = match serde_json::from_slice::<serde_json::Value>(line) {
             Ok(value) => value,
             Err(error) => {
@@ -2797,27 +2841,15 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
             .map(str::to_owned);
         let envelope_run_id = object
             .get("run_id")
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
+            .and_then(|value| RunId::deserialize(value).ok());
         if object.get("seq").and_then(Value::as_u64).is_some() {
-            if seq <= last_observed_seq {
-                return corrupt_value(path, "event sequences are not strictly increasing");
-            }
-            if last_observed_seq > 0 && seq > last_observed_seq + 1 {
-                let start = last_observed_seq + 1;
-                let end = seq - 1;
-                diagnostics.push(EventLoadDiagnostic {
-                    seq: start,
-                    reason: if start == end {
-                        "event sequence is absent from the physical log".into()
-                    } else {
-                        format!("event sequences {start}..={end} are absent from the physical log")
-                    },
-                    engine_version: None,
-                    skipped: true,
-                });
-                validation_taint.mark_broad(start, end);
-            }
-            last_observed_seq = seq;
+            observe_sequence(
+                path,
+                seq,
+                &mut last_observed_seq,
+                &mut diagnostics,
+                &mut validation_taint,
+            )?;
         }
         let unknown = object
             .keys()
@@ -2872,7 +2904,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
             object.remove("engine_version");
             degraded.push("engine_version".to_owned());
         }
-        let Some(payload_value) = object.get("payload").cloned() else {
+        let Some(payload_value) = object.remove("payload") else {
             if index == 0 {
                 return corrupt_value(path, "SessionCreated payload is absent");
             }
@@ -2885,17 +2917,14 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
             validation_taint.mark_broad(seq, seq);
             continue;
         };
-        match deserialize_event_payload_best_effort(payload_value.clone()) {
+        let payload = match deserialize_event_payload_best_effort(&payload_value) {
             Ok(read) => {
                 degraded.extend(
                     read.degraded_fields
                         .into_iter()
                         .map(|field| format!("payload.{field}")),
                 );
-                object.insert(
-                    "payload".into(),
-                    serde_json::to_value(read.payload).expect("event payload serializes"),
-                );
+                read.payload
             }
             Err(reason) => {
                 if index == 0 {
@@ -2918,9 +2947,21 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                     })?;
                 continue;
             }
-        }
-        let final_payload = object.get("payload").cloned();
-        match serde_json::from_value::<StoredEvent>(value) {
+        };
+        drop(payload_value);
+        // The envelope is decoded without its payload, which is already typed:
+        // no line is re-serialized or decoded a second time.
+        let event = match StoredEventEnvelope::deserialize(&value) {
+            Ok(envelope) => {
+                let event = envelope.with_payload(payload);
+                match event.validate() {
+                    Ok(()) => Ok(event),
+                    Err(error) => Err((error.to_string(), event.payload)),
+                }
+            }
+            Err(error) => Err((error.to_string(), payload)),
+        };
+        match event {
             Ok(event) => {
                 if !degraded.is_empty() {
                     diagnostics.push(EventLoadDiagnostic {
@@ -2932,7 +2973,7 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 }
                 records.push(event);
             }
-            Err(error) => {
+            Err((error, payload)) => {
                 if index == 0 {
                     return corrupt_value(
                         path,
@@ -2941,20 +2982,17 @@ fn load_event_jsonl(path: &Path, torn_tail: TornTail) -> Result<LoadedEvents, Ev
                 }
                 diagnostics.push(EventLoadDiagnostic {
                     seq,
-                    reason: error.to_string(),
+                    reason: error,
                     engine_version,
                     skipped: true,
                 });
-                if let Some(payload) = final_payload.as_ref() {
-                    validation_taint
-                        .mark_record(seq, envelope_run_id, payload)
-                        .map_err(|message| EventLogError::Corrupt {
-                            path: path.to_owned(),
-                            message: message.into(),
-                        })?;
-                } else {
-                    validation_taint.mark_broad(seq, seq);
-                }
+                let payload = serde_json::to_value(payload).expect("event payload serializes");
+                validation_taint
+                    .mark_record(seq, envelope_run_id, &payload)
+                    .map_err(|message| EventLogError::Corrupt {
+                        path: path.to_owned(),
+                        message: message.into(),
+                    })?;
             }
         }
     }

@@ -458,7 +458,7 @@ fn historical_checklist_item_ids_are_ignored_only_by_event_history_decoding() {
     let legacy_item = json!({"id":GoalId::new_v7(),"description":"Verify","finished":false});
     let legacy = json!({"type":"goal_checklist_revised","goal_id":goal_id,"revision":7,"items":vec![legacy_item; 12]});
     assert!(serde_json::from_value::<EventPayload>(legacy.clone()).is_err());
-    let read = deserialize_event_payload_best_effort(legacy.clone()).unwrap();
+    let read = deserialize_event_payload_best_effort(&legacy).unwrap();
     assert_eq!(read.degraded_fields, ["items[].id"]);
     let EventPayload::GoalChecklistRevised {
         goal_id: decoded_id,
@@ -489,7 +489,7 @@ fn historical_checklist_item_ids_are_ignored_only_by_event_history_decoding() {
         let mut malformed = legacy.clone();
         malformed["items"][0][field] = json!(42);
         assert!(
-            deserialize_event_payload_best_effort(malformed).is_err(),
+            deserialize_event_payload_best_effort(&malformed).is_err(),
             "must not ignore {field}"
         );
     }
@@ -655,7 +655,7 @@ fn reminder_kind_round_trips_and_legacy_events_default_to_continuation() {
             }
         );
         wire["reminder"].as_object_mut().unwrap().remove("kind");
-        let recovered = deserialize_event_payload_best_effort(wire).unwrap();
+        let recovered = deserialize_event_payload_best_effort(&wire).unwrap();
         assert!(recovered.degraded_fields.is_empty());
         assert!(stored(recovered.payload.clone(), None).validate().is_ok());
         assert!(matches!(
@@ -688,7 +688,7 @@ fn producer_description_round_trips_and_legacy_events_default_to_empty() {
     round_trip(payload.clone());
     let mut wire = serde_json::to_value(payload).unwrap();
     wire.as_object_mut().unwrap().remove("description");
-    let recovered = deserialize_event_payload_best_effort(wire.clone()).unwrap();
+    let recovered = deserialize_event_payload_best_effort(&wire).unwrap();
     assert!(recovered.degraded_fields.is_empty());
     assert!(stored(recovered.payload.clone(), None).validate().is_ok());
     assert!(matches!(
@@ -740,14 +740,14 @@ fn reminder_metadata_is_not_send_identity_and_is_best_effort_on_read() {
             .is_ok()
     );
     wire["reminder"] = json!(42);
-    let recovered = deserialize_event_payload_best_effort(wire.clone()).unwrap();
+    let recovered = deserialize_event_payload_best_effort(&wire).unwrap();
     assert!(!recovered.degraded_fields.is_empty());
     assert!(matches!(
         recovered.payload,
         EventPayload::ProducerMessageAccepted { reminder: None, .. }
     ));
     wire.as_object_mut().unwrap().remove("message_id");
-    assert!(deserialize_event_payload_best_effort(wire).is_err());
+    assert!(deserialize_event_payload_best_effort(&wire).is_err());
 }
 
 #[test]
