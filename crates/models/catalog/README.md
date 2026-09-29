@@ -46,6 +46,14 @@ validation/check times, source, stale flag, structural-record diagnostics, and s
 last-error code/message/time. Cache or bootstrap fallback explicitly persists
 stale/error metadata when safe atomic writing is available.
 
+Installing a new body takes the cache lock, atomically replaces the body, then
+atomically replaces the metadata naming the body's revision and length. There
+is no journal: a crash between the two replaces leaves metadata naming the
+previous body, loading rejects that mismatched pair, startup serves the
+bootstrap, and the next refresh (sent without an ETag) installs a consistent
+pair. A `304` or a failed refresh rewrites only the metadata, after checking it
+still names the installed body.
+
 Invalid candidate structure rejects that source. Once a bounded root provider
 map is recovered, malformed/ambiguous provider records are quarantined with all
 children and malformed/ambiguous model records are quarantined individually;

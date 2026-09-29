@@ -440,6 +440,79 @@ async fn streamed_limit_and_compression_fail_without_exposing_a_body() {
     assert_eq!(snapshot.source, CatalogSource::Bootstrap);
 }
 
+/// [`candidate`] with `count` usable provider models.
+fn candidate_with_models(count: usize) -> Vec<u8> {
+    let mut document: serde_json::Value = serde_json::from_slice(&candidate()).unwrap();
+    let models = &mut document["providers"]["test"]["models"];
+    let template = models["group/model"].clone();
+    *models = serde_json::json!({});
+    for index in 0..count {
+        let id = format!("model-{index}");
+        let mut model = template.clone();
+        model["id"] = serde_json::json!(id);
+        models[&id] = model;
+    }
+    serde_json::to_vec(&document).unwrap()
+}
+
+#[tokio::test]
+async fn torn_install_falls_back_and_the_next_refresh_repairs_it() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut first_response = CatalogTransportResponse::from_bytes(200, candidate());
+    first_response.etag = Some("\"revision-one\"".to_owned());
+    let first = manager(ScriptedTransport::with([first_response]), &temporary)
+        .refresh_at(now())
+        .await
+        .unwrap();
+
+    // A crash between the two replaces: the new body is installed, but the
+    // metadata still names the previous one. Leftovers of the earlier
+    // journaled commit are present too.
+    let replacement = candidate_with_models(3);
+    let cache_root = temporary.path().join("catalog");
+    fs::write(cache_root.join(CATALOG_BODY_FILE), &replacement).unwrap();
+    fs::write(cache_root.join(".models-dev-v2.json.backup"), candidate()).unwrap();
+
+    let startup = manager(ScriptedTransport::default(), &temporary)
+        .load_cached_at(now())
+        .unwrap();
+    assert_eq!(startup.source, CatalogSource::Bootstrap);
+
+    let mut second_response = CatalogTransportResponse::from_bytes(200, replacement.clone());
+    second_response.etag = Some("\"revision-two\"".to_owned());
+    let transport = ScriptedTransport::with([second_response]);
+    let requests = Arc::clone(&transport.requests);
+    let repaired = manager(transport, &temporary)
+        .refresh_at(now())
+        .await
+        .unwrap();
+    // The torn pair is not a cache, so the refresh asks unconditionally.
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].if_none_match, None);
+    assert_eq!(repaired.source, CatalogSource::Network);
+    assert_ne!(repaired.revision, first.revision);
+
+    let cached = manager(ScriptedTransport::default(), &temporary)
+        .load_cached_at(now())
+        .unwrap();
+    assert_eq!(cached.source, CatalogSource::Cache);
+    assert_eq!(cached.state.availability, CatalogAvailability::Ready);
+    assert_eq!(cached.revision, repaired.revision);
+    assert_eq!(cached.etag.as_deref(), Some("\"revision-two\""));
+    let entries = fs::read_dir(&cache_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        entries,
+        [CATALOG_BODY_FILE, CATALOG_META_FILE, CATALOG_LOCK_FILE]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+}
+
 #[tokio::test]
 async fn validated_bootstrap_is_the_final_offline_source() {
     let temporary = tempfile::tempdir().unwrap();
