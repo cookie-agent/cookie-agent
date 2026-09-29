@@ -60,9 +60,9 @@ and the CLI share one implementation of the protocol mechanics.
 - **Transport.** `protocol::Transport` is a frame-level channel:
   `send(MessageFrame)` / `recv() -> Option<MessageFrame>`, with `MessageFrame`
   either a `Text` string or a `Value`. It carries no JSON-RPC semantics. The
-  `server` crate provides `WebSocketTransport` and `InProcessStream`
-  implementations; the daemon's axum accept path implements the same trait
-  server-side.
+  `protocol` crate provides the `InProcessStream` pair and, behind its
+  `websocket` feature, the client `WebSocketTransport`; the daemon's axum
+  accept path in the `server` crate implements the same trait server-side.
 - **ServerProtocol.** The server contract is one async method per RPC plus
   `connected`. The `server` crate implements it over `Engine`. `protocol::serve`
   drives one complete session over a transport: it rejects every method before

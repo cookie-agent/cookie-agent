@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use ratatui::{Terminal, backend::TestBackend, text::Line};
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::state::{AssistantChild, SessionState, StateStore};
 
@@ -19,7 +19,7 @@ use crate::ui::app::*;
 
 use crate::ui::slash::SlashCommand;
 
-use cookie_agent_server::MessageFrame;
+use cookie_agent_protocol::MessageFrame;
 
 use super::support::*;
 

@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventK
 
 use ratatui::{Terminal, backend::TestBackend, text::Line};
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::markdown::{MarkdownDocument, PlainHighlighter};
 

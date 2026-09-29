@@ -29,7 +29,7 @@ use cookie_agent_server::Server;
 use jiff::Timestamp;
 use ratatui::{Terminal, backend::TestBackend};
 
-use crate::{Client, state::StateStore, ui::App};
+use crate::{state::StateStore, ui::App};
 
 pub(crate) fn test_run_selection() -> RunSelection {
     RunSelection {
@@ -542,7 +542,7 @@ fn terminal_run_expires_pending_approvals() {
 #[tokio::test]
 async fn app_draws_conversation_approval_tree_and_input() {
     let (_directory, server) = in_process_server();
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let models = client.runtime_snapshot().await.expect("runtime snapshot");
     assert_eq!(
@@ -605,7 +605,7 @@ async fn app_draws_conversation_approval_tree_and_input() {
 #[tokio::test]
 async fn client_round_trips_handshake_create_and_event_replay_in_process() {
     let (_directory, server) = in_process_server();
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let session = client
         .create_session(SessionCreateParams {
@@ -638,7 +638,7 @@ async fn client_round_trips_handshake_create_and_event_replay_in_process() {
 #[tokio::test]
 async fn fresh_session_selection_discovers_skill_slash_commands() {
     let (_directory, server) = in_process_server_with_skills(true);
-    let setup = Client::connect_in_process(server.clone());
+    let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let session = setup
         .create_session(SessionCreateParams {
@@ -655,7 +655,7 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
         .await
         .expect("yolo mode");
 
-    let observer = Client::connect_in_process(server.clone());
+    let observer = server.clone().connect_in_process();
     observer.handshake().await.expect("observer handshake");
     let mut deliveries = observer
         .subscribe_deliveries()
@@ -665,7 +665,7 @@ async fn fresh_session_selection_discovers_skill_slash_commands() {
         .await
         .expect("observe session");
 
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let mut app = App::new(client).await.expect("app");
     app.wait_for_skill_refresh_for_test().await;
@@ -737,7 +737,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
     let (_directory, server) = in_process_server_with_skills(true);
-    let setup = Client::connect_in_process(server.clone());
+    let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let session = setup
         .create_session(SessionCreateParams {
@@ -754,7 +754,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
         .await
         .expect("ask mode");
 
-    let observer = Client::connect_in_process(server.clone());
+    let observer = server.clone().connect_in_process();
     observer.handshake().await.expect("observer handshake");
     let mut deliveries = observer
         .subscribe_deliveries()
@@ -763,7 +763,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
         .subscribe_events(session.session_id, Some(1))
         .await
         .expect("subscribe events");
-    let runner = Client::connect_in_process(server);
+    let runner = server.connect_in_process();
     runner.handshake().await.expect("runner handshake");
     let started = match runner
         .start_run(cookie_agent_protocol::RunStartParams {
@@ -911,7 +911,7 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
 #[tokio::test]
 async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selection() {
     let (_directory, server) = in_process_server();
-    let setup = Client::connect_in_process(server.clone());
+    let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let existing = setup
         .create_session(SessionCreateParams {
@@ -921,7 +921,7 @@ async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selectio
         .expect("existing session")
         .session;
 
-    let attached = Client::connect_in_process(server.clone());
+    let attached = server.clone().connect_in_process();
     attached.handshake().await.expect("attach handshake");
     let attached_app = App::new(attached).await.expect("attached TUI config");
     assert_eq!(attached_app.store.sessions.len(), 1);
@@ -932,7 +932,7 @@ async fn local_startup_creates_a_fresh_root_while_attach_keeps_existing_selectio
             .contains_key(&existing.session_id)
     );
 
-    let local = Client::connect_in_process(server);
+    let local = server.connect_in_process();
     local.handshake().await.expect("local handshake");
     let local_app = App::new_with_new_session(local)
         .await

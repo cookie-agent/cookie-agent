@@ -36,28 +36,34 @@ The workspace is layered bottom-up by dependency:
 
 ```text
 identity
-  └─ protocol        (wire types + session transport/client/server traits)
+  └─ protocol        (wire types + session layer: transports, client, serve)
        ├─ plugin_sdk
+       ├─ tui           (depends on protocol only; never on the engine)
        ├─ models
        │    └─ config
        │         └─ engine
        │              ├─ tools
        │              └─ server
-       │                   └─ tui
        └─ cookie_agent (binary: composes every layer)
 ```
+
+The TUI deliberately sits beside the engine rather than above it: it speaks
+only the protocol, receives an already-connected `Client`, and the
+`cookie_agent` binary does the in-process wiring to `server`. Engine edits
+therefore never rebuild the TUI library, and the two compile in parallel.
+The TUI's own tests still drive a real `server` through a dev-dependency.
 
 | Crate | Responsibility |
 |---|---|
 | `identity` | Strict shared identities: agent IDs, provider IDs, model keys, variants, wildcard patterns, revisions. The bottom of the stack with no `cookie_agent_*` dependencies. |
-| `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. Re-exports `identity` and hosts the unified wire types. |
+| `protocol` | Current-only wire contracts **and the protocol session layer**: RPC roots, events, session metadata, agent snapshots, JSON Schema bindings, the frame-level `Transport` trait, the in-memory `InProcessStream` pair, the `ServerProtocol` trait, the shared `Client`, `ServerContext`, protocol-owned `serve`, and shared setup-value parsing. The opt-in `websocket` feature adds the daemon client transport (`WebSocketTransport`, `Client::connect_websocket_with_token`, `validate_websocket_url`). Re-exports `identity` and hosts the unified wire types. |
 | `plugin_sdk` | Official Rust SDK for out-of-process plugins: JSON-RPC framing, handler registration, tool declarations, event publication, and interception hooks. |
 | `models` | Dynamic provider/model runtime: models.dev catalog, family recipe registry, provider store, Oven adapters, compiled model manifests. Re-exports the capability wire types from `protocol`. |
 | `config` | Strict runtime configuration and Markdown agent documents; layered user/workspace loading with secret zeroization. Re-exports `AgentMode`, `PermissionAction`, `PermissionEffect`, `PermissionRule`, and `AgentDocumentSource` from `protocol`. |
 | `engine` | Session actors, run loops, permissions, approvals, delegation, compaction, internal agents, persistence. |
 | `tools` | Built-in `read` (filesystem and artifact URIs), `write`, `edit`, `bash`, and `webfetch` tools plus the delegation (`delegate_subagent`, `get_subagent_result`, `cancel_subagent`), messaging (`send_message`), `skill`, and goal providers. |
-| `server` | The `ServerProtocol` implementation over `Engine`, concrete transports (WebSocket + `InProcessStream`), a thin connection wrapper, and the public per-run token / `validate_websocket_url` APIs. |
-| `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Its client is a thin adapter re-exporting the shared protocol client. |
+| `server` | The `ServerProtocol` implementation over `Engine`, the axum WebSocket accept path, `Server::connect_in_process`, and the per-run token / ready-line APIs. Server side only. |
+| `tui` | ratatui terminal client: composer, transcript, approvals, sessions, provider connect flow. Depends only on `protocol` and runs over a `protocol::Client` it is handed. |
 | `cookie_agent` | CLI and composition root wiring every crate together. The only binary. |
 
 ### Type unification
@@ -83,11 +89,12 @@ implementation of the protocol mechanics.
 
 `protocol::Transport` is a frame-level channel: `send(MessageFrame)` /
 `recv() -> Option<MessageFrame>`, with `MessageFrame` either a `Text` string or a
-`Value`. It has no JSON-RPC semantics. The `server` crate provides the concrete
-transports: `WebSocketTransport` (tokio-tungstenite, used by the TUI and CLI to
-reach a daemon) and `InProcessStream` (used by the local frontend over an
-in-memory mpsc pair). The axum WebSocket accept path implements `MessageStream`
-(the `Transport` alias) server-side.
+`Value`. It has no JSON-RPC semantics. The `protocol` crate also provides the
+concrete client transports: `InProcessStream` (an in-memory mpsc pair used by
+the local frontend and tests) and, behind the `websocket` feature,
+`WebSocketTransport` (tokio-tungstenite, used by the TUI and CLI to reach a
+daemon). The `server` crate's axum WebSocket accept path implements
+`MessageStream` (the `Transport` alias) server-side.
 
 ### Server side
 
@@ -133,9 +140,10 @@ handles:
 - **Shutdown** via a cancellation token that fails outstanding calls with
   `ClientError::Closed`.
 
-The `server` crate wraps this in a thin `Client` (Deref to `protocol::Client`)
-and adds `connect_websocket`/`connect_in_process`/`connect_stream`. The **TUI
-client is a ~6-line adapter** re-exporting it, and the CLI uses the same `Client`.
+Connections are made with `Client::connect_stream` over any transport,
+`Client::connect_websocket_with_token` (the `websocket` feature), or
+`Server::connect_in_process` in the `server` crate. The TUI and the CLI use this
+same `protocol::Client` directly; there is no per-frontend wrapper.
 
 ## Configuration and layering
 

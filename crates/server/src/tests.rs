@@ -30,9 +30,11 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::{
-    Client, ClientDelivery, InProcessStream, MessageFrame, MessageStream, Server, in_process_pair,
+use cookie_agent_protocol::{
+    ClientDelivery, InProcessStream, MessageFrame, MessageStream, in_process_pair,
 };
+
+use crate::Server;
 
 struct Harness {
     _directory: TempDir,
@@ -192,7 +194,7 @@ fn harness_with_mcp(mcp_servers: BTreeMap<String, LoadedMcpServer>) -> Harness {
 #[tokio::test]
 async fn mcp_management_is_reachable_through_protocol() {
     let harness = harness();
-    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let client = Arc::clone(&harness.server).connect_in_process();
     client.handshake().await.expect("handshake");
     let runtime_definition = McpServerDefinition {
         command: Some("runtime-server".into()),
@@ -452,7 +454,7 @@ async fn connect(server: Arc<Server>) -> InProcessStream {
 #[tokio::test]
 async fn shared_client_handshakes_calls_and_receives_events_in_process() {
     let harness = harness();
-    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let client = Arc::clone(&harness.server).connect_in_process();
     let mut deliveries = client.subscribe_deliveries().expect("delivery stream");
 
     let hello = client.handshake().await.expect("handshake");

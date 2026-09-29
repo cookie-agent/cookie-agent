@@ -78,7 +78,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
-    client::{Client, ClientDelivery, ClientError},
+    Client, ClientDelivery, ClientError,
     config::TuiConfig,
     markdown::{Highlighter, SyntectHighlighter},
     state::{

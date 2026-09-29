@@ -1,47 +1,81 @@
+//! Client-side WebSocket transport for reaching a local cookie daemon.
+
+use std::net::IpAddr;
+
 use async_trait::async_trait;
-use cookie_agent_protocol::{MessageFrame, Transport, TransportError};
 use futures_util::{SinkExt as _, StreamExt as _};
-use tokio::sync::mpsc;
+use thiserror::Error;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest as _},
 };
+use url::{Host, Url};
 use zeroize::Zeroizing;
 
-use crate::validate_websocket_url;
+use super::{Client, ClientError, MessageFrame, Transport, TransportError};
+use crate::diagnostics;
 
-pub struct InProcessStream {
-    sender: mpsc::Sender<MessageFrame>,
-    receiver: mpsc::Receiver<MessageFrame>,
+/// Length of the base64url encoding of the daemon's 32-byte bearer token.
+const TOKEN_ENCODED_BYTES: usize = 43;
+
+/// Errors returned when a daemon WebSocket URL is not a safe attach endpoint.
+#[derive(Debug, Error)]
+pub enum WebSocketUrlError {
+    /// The URL could not be parsed.
+    #[error("parse daemon WebSocket URL: {0}")]
+    Parse(#[source] url::ParseError),
+    /// The URL does not use WebSocket transport.
+    #[error("daemon WebSocket URL scheme must be ws or wss")]
+    InvalidScheme,
+    /// The URL embeds credentials.
+    #[error("daemon WebSocket URL must not contain credentials")]
+    Credentials,
+    /// The URL has no host.
+    #[error("daemon WebSocket URL requires a host")]
+    MissingHost,
+    /// The URL host is not loopback.
+    #[error("daemon WebSocket URL host must be loopback")]
+    NonLoopbackHost,
+    /// The URL does not target the exact daemon endpoint.
+    #[error("daemon WebSocket URL path must be exactly /ws without query or fragment")]
+    InvalidEndpoint,
 }
 
-#[must_use]
-pub fn in_process_pair(capacity: usize) -> (InProcessStream, InProcessStream) {
-    let (client_to_server_tx, client_to_server_rx) = mpsc::channel(capacity);
-    let (server_to_client_tx, server_to_client_rx) = mpsc::channel(capacity);
-    (
-        InProcessStream {
-            sender: client_to_server_tx,
-            receiver: server_to_client_rx,
-        },
-        InProcessStream {
-            sender: server_to_client_tx,
-            receiver: client_to_server_rx,
-        },
-    )
-}
-
-#[async_trait]
-impl Transport for InProcessStream {
-    async fn send(&mut self, frame: MessageFrame) -> Result<(), TransportError> {
-        self.sender
-            .send(frame)
-            .await
-            .map_err(|_| TransportError::Closed)
+/// Validates that a URL targets the daemon's exact loopback WebSocket endpoint.
+pub fn validate_websocket_url(value: &str) -> Result<(), WebSocketUrlError> {
+    let url = Url::parse(value).map_err(WebSocketUrlError::Parse)?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(WebSocketUrlError::InvalidScheme);
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(WebSocketUrlError::Credentials);
+    }
+    let loopback = match url.host().ok_or(WebSocketUrlError::MissingHost)? {
+        Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(address) => IpAddr::V4(address).is_loopback(),
+        Host::Ipv6(address) => IpAddr::V6(address).is_loopback(),
+    };
+    if !loopback {
+        return Err(WebSocketUrlError::NonLoopbackHost);
+    }
+    if url.path() != "/ws" || url.query().is_some() || url.fragment().is_some() {
+        return Err(WebSocketUrlError::InvalidEndpoint);
+    }
+    Ok(())
+}
 
-    async fn recv(&mut self) -> Result<Option<MessageFrame>, TransportError> {
-        Ok(self.receiver.recv().await)
+impl Client {
+    /// Connect to a validated daemon endpoint using the per-run bearer token.
+    pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
+        WebSocketTransport::connect_with_token(url, token)
+            .await
+            .map(Self::connect_stream)
+            .map_err(|error| {
+                ClientError::WebSocket(diagnostics::sanitize(
+                    &diagnostics::error_chain(&error),
+                    4096,
+                ))
+            })
     }
 }
 
@@ -69,10 +103,10 @@ fn websocket_error(error: &tokio_tungstenite::tungstenite::Error) -> TransportEr
     {
         message.push_str(&format!(
             "\nResponse body:\n{}",
-            cookie_agent_protocol::diagnostics::sanitize(&String::from_utf8_lossy(body), 4096)
+            diagnostics::sanitize(&String::from_utf8_lossy(body), 4096)
         ));
     }
-    TransportError::Other(cookie_agent_protocol::diagnostics::sanitize(&message, 4096))
+    TransportError::Other(diagnostics::sanitize(&message, 4096))
 }
 
 #[async_trait]
@@ -104,11 +138,11 @@ impl Transport for WebSocketTransport {
     }
 }
 
-pub(crate) fn authenticated_request(
+fn authenticated_request(
     url: &str,
     token: &str,
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, TransportError> {
-    if token.len() != crate::token::TOKEN_ENCODED_BYTES
+    if token.len() != TOKEN_ENCODED_BYTES
         || !token
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))

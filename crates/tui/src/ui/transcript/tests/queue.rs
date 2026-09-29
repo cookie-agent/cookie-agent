@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use ratatui::{Terminal, backend::TestBackend};
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::markdown::PlainHighlighter;
 
@@ -20,7 +20,7 @@ use crate::ui::app::*;
 
 use crate::ui::terminal_layout_with_tree_rows;
 
-use cookie_agent_server::MessageFrame;
+use cookie_agent_protocol::MessageFrame;
 
 use super::support::*;
 

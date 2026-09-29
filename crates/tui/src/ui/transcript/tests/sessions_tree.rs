@@ -9,9 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
-use crate::Client;
-
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::ui::app::*;
 
@@ -834,12 +832,12 @@ async fn watching_a_descendant_keeps_the_stable_root() {
 
 #[test]
 fn ownership_classification_uses_rpc_code_instead_of_message_text() {
-    let owned = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+    let owned = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
         code: SESSION_OWNED_BY_ANOTHER_PROCESS_CODE,
         message: "unrelated wording".into(),
         data: None,
     });
-    let same_message = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+    let same_message = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
         code: -32000,
         message: "session is owned by another cookie process".into(),
         data: None,
@@ -851,12 +849,12 @@ fn ownership_classification_uses_rpc_code_instead_of_message_text() {
 
 #[test]
 fn store_contention_retry_policy_is_exactly_once() {
-    let contention = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+    let contention = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
         code: -32011,
         message: "provider connect error".into(),
         data: Some(serde_json::json!({"code": "lock_contention"})),
     });
-    let other = crate::client::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
+    let other = crate::ClientError::Rpc(cookie_agent_protocol::JsonRpcError {
         code: -32011,
         message: "provider connect error".into(),
         data: Some(serde_json::json!({"code": "provider_store_write_failed"})),
@@ -944,7 +942,7 @@ async fn session_picker_selection_always_runs_per_session_classification() {
 #[tokio::test]
 async fn opening_a_session_over_a_new_session_draft_sends_the_prompt_to_it() {
     let (_directory, server) = crate::tests::in_process_server();
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let mut app = App::new(client.clone()).await.expect("app");
     let _deliveries = app.take_deliveries();
@@ -987,7 +985,7 @@ async fn opening_a_session_over_a_new_session_draft_sends_the_prompt_to_it() {
 #[tokio::test]
 async fn successful_new_after_delivery_handoff_uses_event_loop_receiver() {
     let (_directory, server) = crate::tests::in_process_server();
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let mut app = App::new(client).await.expect("app");
     let mut deliveries = app.take_deliveries();
@@ -1016,7 +1014,7 @@ async fn successful_new_after_delivery_handoff_uses_event_loop_receiver() {
 #[tokio::test]
 async fn successful_sessions_picker_selection_after_delivery_handoff_uses_event_loop_receiver() {
     let (_directory, server) = crate::tests::in_process_server();
-    let client = Client::connect_in_process(server);
+    let client = server.connect_in_process();
     client.handshake().await.expect("handshake");
     let mut app = App::new(client.clone()).await.expect("app");
     let mut deliveries = app.take_deliveries();

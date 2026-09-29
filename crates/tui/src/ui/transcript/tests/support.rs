@@ -55,7 +55,7 @@ use ratatui::{Terminal, backend::TestBackend, text::Line};
 
 use crate::Client;
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::markdown::PlainHighlighter;
 
@@ -70,7 +70,9 @@ use crate::ui::app::*;
 
 use async_trait::async_trait;
 
-use cookie_agent_server::{MessageFrame, MessageStream, Server, TransportError};
+use cookie_agent_protocol::{MessageFrame, MessageStream, TransportError};
+
+use cookie_agent_server::Server;
 
 use serde_json::Value;
 
@@ -1516,7 +1518,7 @@ pub(crate) fn failed_tree_usage_update(
         generation,
         session_id: Some(session_id),
         session: Ok(None),
-        tree: Err(crate::client::ClientError::Rpc(
+        tree: Err(crate::ClientError::Rpc(
             cookie_agent_protocol::JsonRpcError {
                 code,
                 message: message.into(),

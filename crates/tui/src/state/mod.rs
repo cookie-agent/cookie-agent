@@ -30,7 +30,7 @@ use cookie_agent_protocol::{
 };
 use serde::Serialize;
 
-use crate::{client::ClientDelivery, markdown::MarkdownDocument};
+use crate::{ClientDelivery, markdown::MarkdownDocument};
 
 /// The visible state of a tool invocation, reduced from the exact protocol-10
 /// termination outcome. Failed, cancelled, and interrupted stay distinct.

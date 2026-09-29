@@ -6,8 +6,6 @@ use zeroize::Zeroizing;
 
 /// Random bytes encoded into each daemon token.
 const TOKEN_BYTES: usize = 32;
-/// Length in characters of a base64url-encoded 32-byte token.
-pub(crate) const TOKEN_ENCODED_BYTES: usize = 43;
 /// Literal prefix that marks the single machine-readable startup frame.
 pub const READY_LINE_PREFIX: &str = "daemon-ready ";
 
@@ -48,6 +46,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    /// Length in characters of a base64url-encoded 32-byte token.
+    const TOKEN_ENCODED_BYTES: usize = 43;
 
     #[test]
     fn generated_tokens_are_43_char_base64url_and_distinct() {
