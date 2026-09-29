@@ -17,14 +17,13 @@ use cookie_agent_models::{
     provider_store::ProviderStore,
 };
 use cookie_agent_protocol::{
-    AuthMethodDescriptor, ClientConnectId, ClientRequestId, EffectiveAuthState, McpAuthBeginParams,
-    McpServerState, ProviderConfigurationState, ProviderConnectResult, ProviderDescriptor,
-    ProviderDisconnectParams, ProviderDisconnectResult, ProviderId, ProviderSupportState,
-    RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value, paths, setup_value_text,
+    AuthMethodDescriptor, Client, ClientConnectId, ClientRequestId, EffectiveAuthState,
+    McpAuthBeginParams, McpServerState, ProviderConfigurationState, ProviderConnectResult,
+    ProviderDescriptor, ProviderDisconnectParams, ProviderDisconnectResult, ProviderId,
+    ProviderSupportState, RuntimeSnapshotResult, SafeCode, SafeSetupValue, parse_setup_value,
+    paths, setup_value_text, validate_websocket_url,
 };
-use cookie_agent_server::{
-    Client, Server, generate_token, in_process_pair, ready_line, validate_websocket_url,
-};
+use cookie_agent_server::{Server, generate_token, ready_line};
 use cookie_agent_tools::{
     BuiltinTools, delegate::DelegateToolProvider, message::MessageToolProvider,
 };
@@ -534,10 +533,10 @@ fn data_dir() -> anyhow::Result<PathBuf> {
 
 #[cfg(feature = "tui")]
 async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
-    let (client_stream, server_stream) = in_process_pair(128);
+    let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(128);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
     let result = async {
-        let client = cookie_agent_tui::Client::connect_stream(client_stream);
+        let client = Client::connect_stream(client_stream);
         client.handshake().await.context("handshake with daemon")?;
         cookie_agent_tui::run_with_new_session(client).await
     }
@@ -565,7 +564,7 @@ async fn run_local_frontend(mut runtime: Runtime) -> anyhow::Result<()> {
 #[cfg(feature = "tui")]
 async fn run_attached_tui(url: &str, token: &str) -> anyhow::Result<()> {
     validate_websocket_url(url)?;
-    let client = cookie_agent_tui::Client::connect_websocket_with_token(url, token)
+    let client = Client::connect_websocket_with_token(url, token)
         .await
         .context("connect to daemon WebSocket")?;
     client.handshake().await.context("handshake with daemon")?;

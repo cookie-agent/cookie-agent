@@ -4,7 +4,7 @@ use cookie_agent_protocol::{AttemptId, EventSubscriptionMessage, SessionId};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::markdown::MarkdownDocument;
 

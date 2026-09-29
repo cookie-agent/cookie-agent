@@ -726,6 +726,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "cookie_agent_identity",
+ "futures-util",
  "insta",
  "jiff",
  "oven-sdk",
@@ -737,7 +738,9 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -762,9 +765,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
- "url",
  "zeroize",
 ]
 

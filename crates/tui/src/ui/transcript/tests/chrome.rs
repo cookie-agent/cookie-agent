@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 
 use ratatui::{Terminal, backend::TestBackend};
 
-use crate::client::ClientDelivery;
+use crate::ClientDelivery;
 
 use crate::state::{SessionState, StateStore};
 
@@ -21,7 +21,7 @@ use crate::ui::slash::SlashCommand;
 
 use crate::ui::terminal_layout_with_tree_rows;
 
-use cookie_agent_server::MessageFrame;
+use cookie_agent_protocol::MessageFrame;
 
 use super::support::*;
 

@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 use zeroize::Zeroizing;
 
 use super::{RunningServer, Server, ServerError};
-use crate::{MessageFrame, MessageStream, TransportError};
+use cookie_agent_protocol::{MessageFrame, MessageStream, TransportError};
 
 struct WebSocketStream {
     socket: axum::extract::ws::WebSocket,

@@ -6,7 +6,7 @@ mod websocket;
 use std::{io, net::SocketAddr, sync::Arc};
 
 use cookie_agent_engine::Engine;
-use cookie_agent_protocol::{MessageStream, TransportError};
+use cookie_agent_protocol::{Client, MessageStream, TransportError, in_process_pair};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +37,17 @@ impl Server {
     {
         let connection_shutdown = self.shutdown.child_token();
         cookie_agent_protocol::serve(self, stream, connection_shutdown).await
+    }
+
+    /// Serves one in-process connection on a spawned task and returns the
+    /// protocol client attached to it. The session ends with the server's
+    /// shutdown or when the client is dropped.
+    pub fn connect_in_process(self: Arc<Self>) -> Client {
+        let (client, service) = in_process_pair(128);
+        tokio::spawn(async move {
+            let _ = self.serve_stream(service).await;
+        });
+        Client::connect_stream(client)
     }
 }
 

@@ -1060,7 +1060,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
     );
 
     let before_wipe = SECRET_VALUES_WIPED.load(TestOrdering::SeqCst);
-    let (client_stream, server_stream) = cookie_agent_server::in_process_pair(32);
+    let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
     let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
     let client = Client::connect_stream(client_stream);
     let mut io = ScriptedConnectIo {
@@ -1117,7 +1117,7 @@ async fn cli_reconnects_supported_removed_provider_through_real_server() {
             .unwrap()
             .as_str()
             .to_owned();
-        let (client_stream, server_stream) = cookie_agent_server::in_process_pair(32);
+        let (client_stream, server_stream) = cookie_agent_protocol::in_process_pair(32);
         let server_task = tokio::spawn(runtime.server.clone().serve_stream(server_stream));
         let client = Client::connect_stream(client_stream);
         let mut io = ScriptedConnectIo::default();

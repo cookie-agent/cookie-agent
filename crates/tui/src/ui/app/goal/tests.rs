@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::{client::Client, config::TuiConfig, state::SessionState, theme::Theme};
+use crate::{Client, config::TuiConfig, state::SessionState, theme::Theme};
 
 struct ScriptedStream {
     incoming: mpsc::UnboundedReceiver<MessageFrame>,

@@ -15,7 +15,7 @@ use crate::ui::pickers::SearchPickerFocus;
 
 use crate::ui::slash::{GoalCommand, SlashCommand};
 
-use cookie_agent_server::MessageFrame;
+use cookie_agent_protocol::MessageFrame;
 
 use super::support::*;
 

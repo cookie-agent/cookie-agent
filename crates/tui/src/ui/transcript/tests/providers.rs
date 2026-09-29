@@ -9,8 +9,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use jiff::Timestamp;
 
-use crate::Client;
-
 use crate::state::SessionState;
 
 use crate::ui::app::*;
@@ -789,7 +787,7 @@ async fn unsupported_enter_is_details_only_and_never_connects() {
 async fn supported_removed_provider_reconnects_through_setup_and_secret_workflow() {
     let current_catalog = production_openai_catalog('a', false);
     let harness = production_provider_harness(Arc::clone(&current_catalog), |_| {});
-    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let client = Arc::clone(&harness.server).connect_in_process();
     client.handshake().await.expect("production handshake");
     let current = client.runtime_snapshot().await.expect("current runtime");
     let mut initial_form = ProviderForm::new(current.snapshot.providers[0].clone(), false)
@@ -891,7 +889,7 @@ async fn unsupported_removed_provider_is_typed_details_only() {
     let harness = production_provider_harness(Arc::clone(&catalog), move |store| {
         install_unmatched_openai_connection(store, &store_catalog);
     });
-    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let client = Arc::clone(&harness.server).connect_in_process();
     client.handshake().await.expect("production handshake");
     let runtime = client.runtime_snapshot().await.expect("unmatched runtime");
     let projected = &runtime.snapshot.providers[0];
@@ -935,7 +933,7 @@ async fn unsupported_removed_provider_is_typed_details_only() {
 async fn catalog_shape_does_not_quarantine_provider() {
     let catalog = production_openai_catalog('e', true);
     let harness = production_provider_harness(catalog, |_| {});
-    let client = Client::connect_in_process(Arc::clone(&harness.server));
+    let client = Arc::clone(&harness.server).connect_in_process();
     client.handshake().await.expect("production handshake");
     let runtime = client.runtime_snapshot().await.expect("family runtime");
     let projected = &runtime.snapshot.providers[0];
