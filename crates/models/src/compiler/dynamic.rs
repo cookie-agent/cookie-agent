@@ -224,9 +224,20 @@ pub(crate) fn provider_wire_model_id(
         .map_err(|reason| DynamicCompileError::EndpointSelection(reason.into()))
 }
 
+/// Why a catalog model row compiled to no usable model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnsupportedModelKind {
+    /// The catalog parser quarantined the model record; `reason` is its code.
+    Quarantined,
+    /// The record parsed but the compiler cannot drive it.
+    Unsupported,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct UnsupportedModel {
     pub id: ProviderModelId,
+    pub kind: UnsupportedModelKind,
     pub reason: String,
 }
 
@@ -337,6 +348,18 @@ impl DynamicCompiler {
         let mut unsupported_models = Vec::new();
         for (table_id, entry) in &record.models {
             let Some(model) = entry.record.as_ref() else {
+                unsupported_models.push(UnsupportedModel {
+                    id: table_id.clone(),
+                    kind: UnsupportedModelKind::Quarantined,
+                    reason: entry
+                        .quarantine
+                        .as_ref()
+                        .map_or(
+                            "invalid_catalog_model_record",
+                            crate::catalog::CatalogQuarantineReason::code,
+                        )
+                        .to_owned(),
+                });
                 continue;
             };
             if model.status == crate::catalog::CatalogModelStatus::Deprecated
@@ -353,6 +376,7 @@ impl DynamicCompiler {
                 Err(error) => {
                     unsupported_models.push(UnsupportedModel {
                         id: table_id.clone(),
+                        kind: UnsupportedModelKind::Unsupported,
                         reason: error.to_string(),
                     });
                     continue;
@@ -374,6 +398,7 @@ impl DynamicCompiler {
                 Err(ModelLocalError::Unsupported(reason)) => {
                     unsupported_models.push(UnsupportedModel {
                         id: table_id.clone(),
+                        kind: UnsupportedModelKind::Unsupported,
                         reason,
                     });
                 }
