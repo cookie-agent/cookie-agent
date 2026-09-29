@@ -1,9 +1,8 @@
 use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Instant};
 
 use cookie_agent_protocol::*;
-use tokio::sync::oneshot;
 
-use super::{Engine, EngineError, Event, SessionCommand, event_origin};
+use super::{Engine, EngineError, Event, event_origin};
 use crate::goal_projection::{GoalProducerProjection, ProducerMessageRecord};
 
 pub(super) fn producer_description(prefix: &str, detail: &str) -> SafeDisplayText {
@@ -60,105 +59,6 @@ pub(super) struct SessionProducers {
     pub(super) starting: bool,
     pub(super) preempted: bool,
     diagnostics: HashSet<String>,
-}
-
-pub(super) enum ProducerCommand {
-    GetGoal {
-        reply: oneshot::Sender<Result<SessionGoalGetResult, EngineError>>,
-    },
-    SetGoal {
-        objective: String,
-        selection: Option<RunSelection>,
-        origin: EventOrigin,
-        reply: oneshot::Sender<Result<SessionGoalSetResult, EngineError>>,
-    },
-    Lifecycle {
-        params: SessionGoalLifecycleParams,
-        origin: EventOrigin,
-        reply: oneshot::Sender<Result<SessionGoalLifecycleResult, EngineError>>,
-    },
-    UpdateGoal {
-        params: GoalUpdateParams,
-        reply: oneshot::Sender<Result<GoalUpdateResult, EngineError>>,
-    },
-    Inspect {
-        reply: oneshot::Sender<Result<SessionProducersResult, EngineError>>,
-    },
-    Register {
-        authority: ProducerAuthority,
-        reply: oneshot::Sender<Result<ProducerId, EngineError>>,
-    },
-    Send {
-        authority: ProducerAuthority,
-        producer_id: ProducerId,
-        mode: ProducerDeliveryMode,
-        key: ProducerIdempotencyKey,
-        description: SafeDisplayText,
-        body: String,
-        reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
-    },
-    /// Atomic agent-mail accept: the hop guard, pending-agent-mail cap check,
-    /// pair-window guard, and durable `ProducerMessageAccepted` append happen
-    /// inside one actor handler, so concurrent senders cannot interleave
-    /// count-then-accept and the readable envelope renders once. Guards run
-    /// strictly after the idempotency replay
-    /// check, so a retried acceptance never re-judges a stored message.
-    SendAgentMessage {
-        authority: ProducerAuthority,
-        producer_id: ProducerId,
-        mode: ProducerDeliveryMode,
-        key: ProducerIdempotencyKey,
-        description: SafeDisplayText,
-        sender: SessionId,
-        sender_agent_type: String,
-        body: String,
-        include_reply_hint: bool,
-        /// Chain depth computed from the sender's own log before this command
-        /// is issued; stamped onto the accepted event as guard metadata.
-        hop: u32,
-        reply: oneshot::Sender<Result<ProducerMessageId, EngineError>>,
-    },
-    CommitDelegationCompletion {
-        reservation: DelegationReservation,
-        producer_id: Option<ProducerId>,
-        teaser: super::delegation::DelegateTeaser,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
-    },
-    Unregister {
-        authority: ProducerAuthority,
-        producer_id: ProducerId,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    Discard {
-        authority: ProducerAuthority,
-        message_id: ProducerMessageId,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    ClaimInputs {
-        run: RunId,
-        reply: oneshot::Sender<Result<super::producer_claims::ClaimedPrompt, EngineError>>,
-    },
-    ReleaseClaim {
-        run: RunId,
-        claim_seq: u64,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    Reconcile {
-        projection: Option<GoalProducerProjection>,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    Wake {
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    CommitStart {
-        run: RunId,
-        event: Box<Event>,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    WakeFinished {
-        successful: bool,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
 }
 
 impl Engine {
@@ -280,203 +180,6 @@ impl Engine {
             let _ = self.reconcile_producers(session).await;
         }
     }
-    pub(super) async fn handle_producer_command(
-        &self,
-        session: SessionId,
-        command: ProducerCommand,
-    ) {
-        match command {
-            ProducerCommand::GetGoal { reply } => {
-                let _ = reply.send(self.require_root_goal(session).and_then(|()| {
-                    self.goal_producer_projection(session)
-                        .map(|projection| SessionGoalGetResult {
-                            goal: projection.goal,
-                        })
-                }));
-            }
-            ProducerCommand::SetGoal {
-                objective,
-                selection,
-                origin,
-                reply,
-            } => {
-                let _ = reply.send(self.set_goal_direct(session, objective, selection, origin));
-            }
-            ProducerCommand::Lifecycle {
-                params,
-                origin,
-                reply,
-            } => {
-                let _ = reply.send(self.lifecycle_direct(session, params, origin));
-            }
-            ProducerCommand::UpdateGoal { params, reply } => {
-                let _ = reply.send(self.update_goal_direct(session, params));
-            }
-            ProducerCommand::Inspect { reply } => {
-                let producers = self
-                    .inner
-                    .sessions
-                    .producers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .entry(session)
-                    .or_default()
-                    .registrations
-                    .iter()
-                    .map(|record| ProducerRegistration {
-                        producer_id: record.id,
-                        producer_owner: record.authority.owner.clone(),
-                        session_id: session,
-                        age_ms: record
-                            .registered
-                            .elapsed()
-                            .as_millis()
-                            .min(u128::from(u64::MAX)) as u64,
-                    })
-                    .collect();
-                let _ = reply.send(Ok(SessionProducersResult {
-                    producers,
-                    plugin_recovery: self.inner.plugins.producer_recovery_states(),
-                }));
-            }
-            ProducerCommand::Register { authority, reply } => {
-                let _ = reply.send(self.register_producer_direct(session, authority));
-            }
-            ProducerCommand::Send {
-                authority,
-                producer_id,
-                mode,
-                key,
-                description,
-                body,
-                reply,
-            } => {
-                let _ = reply.send(self.accept_producer_direct(
-                    &authority,
-                    ExtensionProducerSendParams {
-                        session_id: session,
-                        producer_id,
-                        mode,
-                        idempotency_key: key,
-                        description,
-                        body,
-                    },
-                    None,
-                ));
-            }
-            ProducerCommand::SendAgentMessage {
-                authority,
-                producer_id,
-                mode,
-                key,
-                description,
-                sender,
-                sender_agent_type,
-                body,
-                include_reply_hint,
-                hop,
-                reply,
-            } => {
-                let _ = reply.send(self.accept_agent_message_direct(
-                    session,
-                    &authority,
-                    producer_id,
-                    mode,
-                    key,
-                    description,
-                    sender,
-                    &sender_agent_type,
-                    body,
-                    include_reply_hint,
-                    hop,
-                ));
-            }
-            ProducerCommand::CommitDelegationCompletion {
-                reservation,
-                producer_id,
-                teaser,
-                reply,
-            } => {
-                let _ = reply.send(self.commit_delegation_completion_direct(
-                    session,
-                    &reservation,
-                    producer_id,
-                    teaser,
-                ));
-            }
-            ProducerCommand::Unregister {
-                authority,
-                producer_id,
-                reply,
-            } => {
-                let result = self
-                    .require_registration(session, producer_id, &authority)
-                    .map(|()| {
-                        self.inner
-                            .sessions
-                            .producers
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .entry(session)
-                            .or_default()
-                            .registrations
-                            .retain(|record| record.id != producer_id);
-                    });
-                let _ = reply.send(result);
-            }
-            ProducerCommand::Discard {
-                authority,
-                message_id,
-                reply,
-            } => {
-                let _ = reply
-                    .send(self.discard_producer_message_direct(session, &authority, message_id));
-            }
-            ProducerCommand::ClaimInputs { run, reply } => {
-                let _ = reply.send(self.claim_producer_snapshot_direct(session, run));
-            }
-            ProducerCommand::ReleaseClaim {
-                run,
-                claim_seq,
-                reply,
-            } => {
-                let _ =
-                    reply.send(self.release_producer_claim_direct(session, run, claim_seq, false));
-            }
-            ProducerCommand::Reconcile { projection, reply } => {
-                let _ = reply.send(self.reconcile_producers_direct(session, projection));
-            }
-            ProducerCommand::CommitStart { run, event, reply } => {
-                let _ = reply.send(self.commit_producer_start(session, run, *event));
-            }
-            ProducerCommand::Wake { reply } => {
-                let result = self.begin_producer_wake(session);
-                let _ = reply.send(result);
-            }
-            ProducerCommand::WakeFinished { successful, reply } => {
-                let preempted = {
-                    let mut registry = self
-                        .inner
-                        .sessions
-                        .producers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    let state = registry.entry(session).or_default();
-                    let preempted = state.preempted;
-                    state.starting = false;
-                    state.wake_scheduled = false;
-                    state.preempted = false;
-                    preempted
-                };
-                let _ = reply.send(if successful || preempted {
-                    self.reconcile_producers_direct(session, None)
-                } else {
-                    Ok(())
-                });
-            }
-        }
-    }
-
     pub(super) fn reconcile_producers_direct(
         &self,
         session: SessionId,
@@ -643,9 +346,7 @@ impl Engine {
         let engine = self.clone();
         if !self.spawn_admission_task(&runtime, async move {
             let _ = engine
-                .request(session, |reply| {
-                    SessionCommand::Producer(ProducerCommand::Wake { reply })
-                })
+                .on_actor(session, move |engine| engine.begin_producer_wake(session))
                 .await;
         }) {
             self.inner
@@ -769,8 +470,26 @@ impl Engine {
                 eprintln!("session {session} producer wake failed: {error}");
             }
             let _ = engine
-                .request(session, |reply| {
-                    SessionCommand::Producer(ProducerCommand::WakeFinished { successful, reply })
+                .on_actor_unreconciled(session, move |engine| {
+                    let preempted = {
+                        let mut registry = engine
+                            .inner
+                            .sessions
+                            .producers
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let state = registry.entry(session).or_default();
+                        let preempted = state.preempted;
+                        state.starting = false;
+                        state.wake_scheduled = false;
+                        state.preempted = false;
+                        preempted
+                    };
+                    if successful || preempted {
+                        engine.reconcile_producers_direct(session, None)
+                    } else {
+                        Ok(())
+                    }
                 })
                 .await;
         });
@@ -792,8 +511,8 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn install_producer_wake_hook(
         &self,
-    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        let (reached, receiver) = oneshot::channel();
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = tokio::sync::oneshot::channel();
         let release = Arc::new(tokio::sync::Notify::new());
         *self
             .inner
@@ -829,7 +548,7 @@ impl Engine {
         }
     }
 
-    fn commit_producer_start(
+    pub(super) fn commit_producer_start(
         &self,
         session: SessionId,
         run: RunId,
@@ -930,8 +649,12 @@ impl Engine {
         &self,
         params: SessionGoalGetParams,
     ) -> Result<SessionGoalGetResult, EngineError> {
-        self.request(params.session_id, |reply| {
-            SessionCommand::Producer(ProducerCommand::GetGoal { reply })
+        let session = params.session_id;
+        self.on_actor(session, move |engine| {
+            engine.require_root_goal(session)?;
+            Ok(SessionGoalGetResult {
+                goal: engine.goal_producer_projection(session)?.goal,
+            })
         })
         .await
     }
@@ -941,13 +664,9 @@ impl Engine {
         params: SessionGoalSetParams,
         origin: EventOrigin,
     ) -> Result<SessionGoalSetResult, EngineError> {
-        self.request(params.session_id, |reply| {
-            SessionCommand::Producer(ProducerCommand::SetGoal {
-                objective: params.objective,
-                selection: params.selection,
-                origin,
-                reply,
-            })
+        let session = params.session_id;
+        self.on_actor(session, move |engine| {
+            engine.set_goal_direct(session, params.objective, params.selection, origin)
         })
         .await
     }
@@ -957,12 +676,9 @@ impl Engine {
         params: SessionGoalLifecycleParams,
         origin: EventOrigin,
     ) -> Result<SessionGoalLifecycleResult, EngineError> {
-        self.request(params.session_id, |reply| {
-            SessionCommand::Producer(ProducerCommand::Lifecycle {
-                params,
-                origin,
-                reply,
-            })
+        let session = params.session_id;
+        self.on_actor(session, move |engine| {
+            engine.lifecycle_direct(session, params, origin)
         })
         .await
     }
@@ -971,8 +687,33 @@ impl Engine {
         &self,
         params: SessionProducersParams,
     ) -> Result<SessionProducersResult, EngineError> {
-        self.request(params.session_id, |reply| {
-            SessionCommand::Producer(ProducerCommand::Inspect { reply })
+        let session = params.session_id;
+        self.on_actor(session, move |engine| {
+            let producers = engine
+                .inner
+                .sessions
+                .producers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(session)
+                .or_default()
+                .registrations
+                .iter()
+                .map(|record| ProducerRegistration {
+                    producer_id: record.id,
+                    producer_owner: record.authority.owner.clone(),
+                    session_id: session,
+                    age_ms: record
+                        .registered
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64,
+                })
+                .collect();
+            Ok(SessionProducersResult {
+                producers,
+                plugin_recovery: engine.inner.plugins.producer_recovery_states(),
+            })
         })
         .await
     }
@@ -991,8 +732,8 @@ impl Engine {
         session: SessionId,
         params: GoalUpdateParams,
     ) -> Result<GoalUpdateResult, EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::UpdateGoal { params, reply })
+        self.on_actor(session, move |engine| {
+            engine.update_goal_direct(session, params)
         })
         .await
     }
@@ -1002,8 +743,8 @@ impl Engine {
         session: SessionId,
         authority: ProducerAuthority,
     ) -> Result<ProducerId, EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Register { authority, reply })
+        self.on_actor(session, move |engine| {
+            engine.register_producer_direct(session, authority)
         })
         .await
     }
@@ -1019,16 +760,19 @@ impl Engine {
         description: SafeDisplayText,
         body: String,
     ) -> Result<ProducerMessageId, EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Send {
-                authority,
-                producer_id,
-                mode,
-                key,
-                description,
-                body,
-                reply,
-            })
+        self.on_actor(session, move |engine| {
+            engine.accept_producer_direct(
+                &authority,
+                ExtensionProducerSendParams {
+                    session_id: session,
+                    producer_id,
+                    mode,
+                    idempotency_key: key,
+                    description,
+                    body,
+                },
+                None,
+            )
         })
         .await
     }
@@ -1039,12 +783,19 @@ impl Engine {
         authority: ProducerAuthority,
         producer_id: ProducerId,
     ) -> Result<(), EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Unregister {
-                authority,
-                producer_id,
-                reply,
-            })
+        self.on_actor(session, move |engine| {
+            engine.require_registration(session, producer_id, &authority)?;
+            engine
+                .inner
+                .sessions
+                .producers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(session)
+                .or_default()
+                .registrations
+                .retain(|record| record.id != producer_id);
+            Ok(())
         })
         .await
     }
@@ -1530,7 +1281,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn accept_agent_message_direct(
+    pub(super) fn accept_agent_message_direct(
         &self,
         session: SessionId,
         authority: &ProducerAuthority,
@@ -1603,7 +1354,7 @@ impl Engine {
         Ok(message_id)
     }
 
-    fn commit_delegation_completion_direct(
+    pub(super) fn commit_delegation_completion_direct(
         &self,
         session: SessionId,
         reservation: &DelegationReservation,
@@ -1897,11 +1648,8 @@ impl Engine {
     }
 
     pub(super) async fn reconcile_producers(&self, session: SessionId) -> Result<(), EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Reconcile {
-                projection: None,
-                reply,
-            })
+        self.on_actor_unreconciled(session, move |engine| {
+            engine.reconcile_producers_direct(session, None)
         })
         .await
     }
@@ -1912,12 +1660,8 @@ impl Engine {
         authority: ProducerAuthority,
         message_id: ProducerMessageId,
     ) -> Result<(), EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::Discard {
-                authority,
-                message_id,
-                reply,
-            })
+        self.on_actor(session, move |engine| {
+            engine.discard_producer_message_direct(session, &authority, message_id)
         })
         .await
     }

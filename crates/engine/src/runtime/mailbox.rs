@@ -4,14 +4,11 @@ use std::{
     sync::{Arc, Mutex, atomic::Ordering},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    ApprovalStatus, EventOrigin, EventSubscriptionMessage, EventsSubscribeResult,
-    ExtensionBusEventParams, ExtensionEmitStatus, PersistedToolResult as ToolResult,
-    PluginDiagnosticKind, RunCancelResult, RunId, RunRecallSteerResult, RunSteerResult,
-    RunToolStdinResult, SafeToolError, SessionId, SessionRenameChange, SessionRenameResult,
-    SessionRevertResult, SessionStatus, SessionTitleChange, StoredEvent, ToolCallId,
-    ToolCallTermination, ToolTerminationOutcome,
+    EventOrigin, EventSubscriptionMessage, EventsSubscribeResult, ExtensionBusEventParams,
+    ExtensionEmitStatus, PersistedToolResult as ToolResult, PluginDiagnosticKind, RunId,
+    SafeToolError, SessionId, SessionStatus, StoredEvent, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -19,14 +16,11 @@ use tokio::sync::{mpsc, oneshot};
 use super::PagingRaceHook;
 use super::ToolCallFailureCode;
 use super::{
-    ApprovalTerminal, Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
+    Engine, EngineError, Event, MAX_COMPACTION_DEFERRED_COMMANDS, PendingInput,
     PendingPromotionState, PredictiveCompactionInput, SESSION_MAILBOX_CAPACITY, SessionCommand,
-    ToolFailure,
-    approval_projection::{approval_records, approval_run_id},
-    helpers::safe_error,
-    model_loop,
+    ToolFailure, helpers::safe_error, model_loop,
 };
-use crate::{actor::SessionActor, events, session::SessionError, tool_api::StdinWrite};
+use crate::{actor::SessionActor, events, session::SessionError};
 
 use super::{ActiveRun, producers};
 
@@ -141,10 +135,12 @@ impl Engine {
         if !self.inner.store.is_owned(session) {
             return Err(EngineError::SessionOwnedByAnotherProcess(session));
         }
-        self.request(session, |reply| SessionCommand::Subscribe {
-            cursor,
-            limit,
-            reply,
+        // A history page or live-tail registration appends nothing.
+        self.on_actor_unreconciled(session, move |engine| {
+            Ok(engine
+                .inner
+                .store
+                .subscribe_events(session, cursor, limit)?)
         })
         .await
     }
@@ -238,27 +234,16 @@ impl Engine {
         event: Event,
     ) -> Result<oneshot::Receiver<Result<(), EngineError>>, EngineError> {
         let (reply, receiver) = oneshot::channel();
-        let _residency = self.inner.sessions.residency_mutation.lock().await;
-        self.ensure_session_owned(session)?;
-        self.spawn_actor(session)?;
-        let actor = self
-            .inner
-            .sessions
-            .actors
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&session)
-            .cloned()
-            .ok_or(EngineError::MissingActor(session))?;
-        actor
-            .send(SessionCommand::Append {
+        self.send_command(
+            session,
+            SessionCommand::Append {
                 run,
                 origin,
                 event: Box::new(event),
                 reply,
-            })
-            .await
-            .map_err(|_| EngineError::ActorStopped)?;
+            },
+        )
+        .await?;
         Ok(receiver)
     }
 
@@ -308,12 +293,74 @@ impl Engine {
         result: Result<ToolResult, ToolFailure>,
         cancelled: bool,
     ) -> Result<bool, EngineError> {
-        self.request(session, |reply| SessionCommand::ToolResult {
-            run,
-            tool_call_id,
-            result,
-            cancelled,
-            reply,
+        self.on_actor(session, move |engine| {
+            let pending = engine
+                .inner
+                .store
+                .get(session)
+                .ok()
+                .and_then(|projection| projection.runs.get(&run).cloned())
+                .is_some_and(|run| run.pending_calls.contains_key(&tool_call_id));
+            let response = if !pending {
+                Ok(false)
+            } else {
+                (|| {
+                    let owner = engine.tool_call_owner(session, run, tool_call_id)?;
+                    let event = match result {
+                        Ok(result) => Event::ToolCallTerminated {
+                            termination: ToolCallTermination {
+                                tool_call_id,
+                                owner,
+                                outcome: if cancelled {
+                                    ToolTerminationOutcome::Cancelled
+                                } else {
+                                    ToolTerminationOutcome::Completed
+                                },
+                                result: Some(result),
+                                error: cancelled.then(|| SafeToolError {
+                                    code: super::safe_code(super::CANCELLED_AFTER_COMPLETION),
+                                    message: safe_error("tool call cancelled after it started"),
+                                }),
+                            },
+                        },
+                        Err(failure) => Event::ToolCallTerminated {
+                            termination: ToolCallTermination {
+                                tool_call_id,
+                                owner,
+                                outcome: if cancelled {
+                                    ToolTerminationOutcome::Cancelled
+                                } else {
+                                    ToolTerminationOutcome::Failed
+                                },
+                                result: failure.partial_output.map(|result| *result),
+                                error: Some(SafeToolError {
+                                    code: failure.code.safe_code(),
+                                    message: safe_error(&failure.message),
+                                }),
+                            },
+                        },
+                    };
+                    engine.append_direct(
+                        session,
+                        Some(run),
+                        super::event_origin("engine:tool-result"),
+                        event,
+                    )?;
+                    engine.inner.store.log(session)?.flush()?;
+                    Ok(true)
+                })()
+            };
+            if let Some(capture) = engine
+                .inner
+                .output
+                .captures
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&tool_call_id)
+            {
+                capture.release_publication();
+            }
+            response
         })
         .await
     }
@@ -616,30 +663,92 @@ impl Engine {
         }
     }
 
+    /// Queues `command` on `session`'s actor, adopting the session and
+    /// starting its actor first. Holds the residency lock only while queueing,
+    /// never while the command runs.
+    async fn send_command(
+        &self,
+        session: SessionId,
+        command: SessionCommand,
+    ) -> Result<(), EngineError> {
+        let _residency = self.inner.sessions.residency_mutation.lock().await;
+        self.ensure_session_owned(session)?;
+        self.spawn_actor(session)?;
+        let actor = self
+            .inner
+            .sessions
+            .actors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session)
+            .cloned()
+            .ok_or(EngineError::MissingActor(session))?;
+        actor
+            .send(command)
+            .await
+            .map_err(|_| EngineError::ActorStopped)
+    }
+
+    /// Sends one of the typed commands the actor loop special-cases and
+    /// waits for its reply.
     pub(super) async fn request<T>(
         &self,
         session: SessionId,
         command: impl FnOnce(oneshot::Sender<Result<T, EngineError>>) -> SessionCommand,
     ) -> Result<T, EngineError> {
         let (reply, receiver) = oneshot::channel();
-        {
-            let _residency = self.inner.sessions.residency_mutation.lock().await;
-            self.ensure_session_owned(session)?;
-            self.spawn_actor(session)?;
-            let actor = self
-                .inner
-                .sessions
-                .actors
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&session)
-                .cloned()
-                .ok_or(EngineError::MissingActor(session))?;
-            actor
-                .send(command(reply))
-                .await
-                .map_err(|_| EngineError::ActorStopped)?;
-        }
+        self.send_command(session, command(reply)).await?;
+        receiver.await.map_err(|_| EngineError::ActorStopped)?
+    }
+
+    /// Runs `call` on `session`'s actor, serialized with every other command
+    /// for that session, then reconciles the session's producers.
+    pub(super) async fn on_actor<T: Send + 'static>(
+        &self,
+        session: SessionId,
+        call: impl FnOnce(&Engine) -> Result<T, EngineError> + Send + 'static,
+    ) -> Result<T, EngineError> {
+        self.call_on_actor(session, true, move |engine| async move { call(&engine) })
+            .await
+    }
+
+    /// [`Self::on_actor`] for work that touches nothing producer
+    /// reconciliation reads, so no reconciliation follows it.
+    pub(super) async fn on_actor_unreconciled<T: Send + 'static>(
+        &self,
+        session: SessionId,
+        call: impl FnOnce(&Engine) -> Result<T, EngineError> + Send + 'static,
+    ) -> Result<T, EngineError> {
+        self.call_on_actor(session, false, move |engine| async move { call(&engine) })
+            .await
+    }
+
+    /// [`Self::on_actor`] for work that awaits while it holds the actor.
+    pub(super) async fn on_actor_async<T, Fut>(
+        &self,
+        session: SessionId,
+        call: impl FnOnce(Engine) -> Fut + Send + 'static,
+    ) -> Result<T, EngineError>
+    where
+        T: Send + 'static,
+        Fut: std::future::Future<Output = Result<T, EngineError>> + Send + 'static,
+    {
+        self.call_on_actor(session, true, call).await
+    }
+
+    async fn call_on_actor<T, F, Fut>(
+        &self,
+        session: SessionId,
+        reconcile_producers: bool,
+        call: F,
+    ) -> Result<T, EngineError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Engine) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, EngineError>> + Send + 'static,
+    {
+        let (command, receiver) = SessionCommand::call(reconcile_producers, call);
+        self.send_command(session, command).await?;
         receiver.await.map_err(|_| EngineError::ActorStopped)?
     }
 
@@ -807,12 +916,17 @@ impl Engine {
             .cloned()
             .ok_or(EngineError::MissingActor(session))?;
         let (reply, receiver) = oneshot::channel();
-        actor
-            .send(SessionCommand::Compact {
-                focus: None,
-                origin: super::event_origin("engine:auto-compact"),
+        let (command, _queued) = SessionCommand::call(true, move |engine| async move {
+            engine.spawn_compaction(
+                session,
+                None,
+                super::event_origin("engine:auto-compact"),
                 reply,
-            })
+            );
+            Ok(())
+        });
+        actor
+            .send(command)
             .await
             .map_err(|_| EngineError::ActorStopped)?;
         Ok(receiver)
@@ -952,13 +1066,23 @@ impl Engine {
     }
 
     pub(super) async fn finish_compaction(&self, session: SessionId) -> Result<(), EngineError> {
-        self.request(session, |reply| SessionCommand::CompactionFinished {
-            reply,
+        self.on_actor_async(session, move |engine| async move {
+            engine.release_compaction_direct(session).await;
+            Ok(())
         })
         .await
     }
 
-    async fn release_compaction_direct(&self, session: SessionId) {
+    /// Releases `session`'s compaction hold and replays the commands it
+    /// deferred, in arrival order. Called on the session actor.
+    ///
+    /// The replay future is boxed as a named type: callers of this function
+    /// are themselves reachable from [`Self::handle_actor_command`], so an
+    /// opaque return type would make that recursion unresolvable.
+    pub(super) fn release_compaction_direct(
+        &self,
+        session: SessionId,
+    ) -> futures_util::future::BoxFuture<'_, ()> {
         if let Some(state) = self
             .inner
             .sessions
@@ -983,9 +1107,11 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&session)
             .unwrap_or_default();
-        for command in deferred {
-            Box::pin(self.handle_actor_command(session, command)).await;
-        }
+        Box::pin(async move {
+            for command in deferred {
+                self.handle_actor_command(session, command).await;
+            }
+        })
     }
 
     pub(super) async fn handle_actor_command(&self, session: SessionId, command: SessionCommand) {
@@ -1038,7 +1164,10 @@ impl Engine {
             return;
         }
         let reconcile = match &command {
-            SessionCommand::EvictionBarrier { .. } => false,
+            SessionCommand::Call {
+                reconcile_producers,
+                ..
+            } => *reconcile_producers,
             SessionCommand::Append { event, .. } => matches!(
                 &**event,
                 Event::ModelTurnCommitted { .. }
@@ -1058,31 +1187,13 @@ impl Engine {
                     | Event::UserInputRecalledV2 { .. }
                     | Event::SessionReverted { .. }
             ),
-            SessionCommand::Producer(
-                super::producers::ProducerCommand::WakeFinished { .. }
-                | super::producers::ProducerCommand::Reconcile { .. }
-                | super::producers::ProducerCommand::CommitStart { .. },
-            ) => false,
-            // Commands that touch nothing producer reconciliation reads (the
-            // goal/producer/user-input/run-terminal events it folds, plus the
-            // active-run, delegation and producer registries): a history page
-            // or live-tail registration appends nothing; stdin forwards bytes
-            // to a running tool and appends only `ToolStdinSubmitted`; a rename
-            // appends only `SessionTitleCommitted`.
-            SessionCommand::Subscribe { .. }
-            | SessionCommand::Stdin { .. }
-            | SessionCommand::Rename { .. } => false,
-            // Everything else may move producer or goal state; a new command
-            // reconciles until shown otherwise.
-            _ => true,
+            SessionCommand::Start { .. }
+            | SessionCommand::Resume { .. }
+            | SessionCommand::PromotePendingOrComplete { .. }
+            | SessionCommand::PromotePendingInputs { .. } => true,
         };
         match command {
-            SessionCommand::Producer(command) => {
-                self.handle_producer_command(session, command).await
-            }
-            SessionCommand::EvictionBarrier { reply } => {
-                let _ = reply.send(Ok(()));
-            }
+            SessionCommand::Call { call, .. } => call(self.clone()).await,
             SessionCommand::Append {
                 run,
                 origin,
@@ -1127,39 +1238,6 @@ impl Engine {
                         }
                         Ok(result)
                     });
-                let _ = reply.send(result);
-            }
-            SessionCommand::EnsureToolCallLinked {
-                run,
-                tool_call_id,
-                child_session_id,
-                reply,
-            } => {
-                let result = (|| {
-                    let linked = self
-                        .inner
-                        .store
-                        .get(session)?
-                        .log
-                        .event_snapshot()
-                        .iter()
-                        .any(|event| {
-                            matches!(event.payload, Event::ToolCallLinked { tool_call_id: linked_call, child_session_id: linked_child }
-                                if linked_call == tool_call_id && linked_child == child_session_id)
-                        });
-                    if !linked {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("engine:delegation"),
-                            Event::ToolCallLinked {
-                                tool_call_id,
-                                child_session_id,
-                            },
-                        )?;
-                    }
-                    Ok(())
-                })();
                 let _ = reply.send(result);
             }
             SessionCommand::Start {
@@ -1210,633 +1288,11 @@ impl Engine {
                     });
                 }
             }
-            SessionCommand::Steer {
-                run,
-                origin,
-                input,
-                original_input,
-                reply,
-            } => {
-                let active = self
-                    .inner
-                    .sessions
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&run)
-                    .cloned()
-                    .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run));
-                let result = match active {
-                    Err(error) => Err(error),
-                    Ok(_) => {
-                        let projection = self.inner.store.get(session);
-                        match projection {
-                            Err(error) => Err(error.into()),
-                            Ok(projection)
-                                if !projection
-                                    .runs
-                                    .get(&run)
-                                    .is_some_and(|run| run.status == SessionStatus::Running) =>
-                            {
-                                Ok(RunSteerResult {
-                                    accepted: false,
-                                    handled_reason: None,
-                                })
-                            }
-                            Ok(_) => (|| {
-                                if let Some(original_input) = original_input {
-                                    self.append_direct(
-                                        session,
-                                        Some(run),
-                                        origin.clone(),
-                                        Event::UserInputTransformed {
-                                            original_input,
-                                            input: input.clone(),
-                                        },
-                                    )?;
-                                }
-                                self.append_direct(
-                                    session,
-                                    Some(run),
-                                    origin,
-                                    Event::UserInputAdmitted { input },
-                                )?;
-                                self.clear_skill_turn_state(session);
-                                Ok(RunSteerResult {
-                                    accepted: true,
-                                    handled_reason: None,
-                                })
-                            })(),
-                        }
-                    }
-                };
-                let _ = reply.send(result);
-            }
-            SessionCommand::AdmitDelegatedResume { run, input, reply } => {
-                let active = self
-                    .inner
-                    .sessions
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&run)
-                    .cloned()
-                    .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run));
-                let result = match active {
-                    Err(error) => Err(error),
-                    Ok(_) => {
-                        let projection = self.inner.store.get(session);
-                        match projection {
-                            Err(error) => Err(error.into()),
-                            Ok(projection)
-                                if !projection
-                                    .runs
-                                    .get(&run)
-                                    .is_some_and(|run| run.status == SessionStatus::Running) =>
-                            {
-                                Ok(super::DelegatedResumeAdmission {
-                                    accepted: false,
-                                    admission_seq: None,
-                                })
-                            }
-                            Ok(_) => self
-                                .append_direct(
-                                    session,
-                                    Some(run),
-                                    super::event_origin("engine:delegation"),
-                                    Event::UserInputAdmitted { input },
-                                )
-                                .and_then(|()| {
-                                    self.clear_skill_turn_state(session);
-                                    let admission_seq =
-                                        self.inner.store.get(session)?.meta.last_event_seq;
-                                    Ok(super::DelegatedResumeAdmission {
-                                        accepted: true,
-                                        admission_seq: Some(admission_seq),
-                                    })
-                                }),
-                        }
-                    }
-                };
-                let _ = reply.send(result);
-            }
-            SessionCommand::RecallDelegatedResume {
-                run,
-                admission_seq,
-                reply,
-            } => {
-                let result = (|| {
-                    let projection = self.inner.store.get(session)?;
-                    if !projection.runs.contains_key(&run) {
-                        return Err(EngineError::MissingRun(run));
-                    }
-                    let recalled = pending_inputs(&projection.log.event_snapshot(), run)
-                        .into_iter()
-                        .find(|pending| pending.admission_seq == admission_seq);
-                    if let Some(pending) = recalled {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("engine:delegation"),
-                            Event::UserInputRecalledV2 {
-                                user_input_seq: admission_seq,
-                                input: pending.input,
-                            },
-                        )?;
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                })();
-                let _ = reply.send(result);
-            }
-            SessionCommand::RecallSteer { run, reply } => {
-                let result = (|| {
-                    self.inner
-                        .sessions
-                        .active
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&run)
-                        .cloned()
-                        .filter(|active| active.session == session)
-                        .ok_or(EngineError::MissingRun(run))?;
-                    let projection = self.inner.store.get(session)?;
-                    if !projection
-                        .runs
-                        .get(&run)
-                        .is_some_and(|run| run.status == SessionStatus::Running)
-                    {
-                        return Ok(RunRecallSteerResult { recalled: None });
-                    }
-                    let recalled = pending_inputs(&projection.log.event_snapshot(), run)
-                        .pop()
-                        .map(|pending| pending.input);
-                    if let Some(input) = &recalled {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("user"),
-                            Event::UserInputRecalled {
-                                input: input.clone(),
-                            },
-                        )?;
-                    }
-                    Ok(RunRecallSteerResult { recalled })
-                })();
-                let _ = reply.send(result);
-            }
-            SessionCommand::CommitPendingPromotion {
-                run,
-                through_admission_seq,
-                final_text,
-                complete_if_empty,
-                already_promoted,
-                reply,
-            } => {
-                let result = (|| {
-                    let projection = self.inner.store.get(session)?;
-                    if !projection
-                        .runs
-                        .get(&run)
-                        .is_some_and(|run| run.status == SessionStatus::Running)
-                    {
-                        return Ok(PendingPromotionState {
-                            promoted: already_promoted,
-                            pending: Vec::new(),
-                            continue_run: false,
-                        });
-                    }
-                    let eligible = pending_inputs(&projection.log.event_snapshot(), run)
-                        .into_iter()
-                        .take_while(|pending| pending.admission_seq <= through_admission_seq)
-                        .collect::<Vec<_>>();
-                    for pending in &eligible {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            pending.origin.clone(),
-                            Event::UserInputSubmitted {
-                                input: pending.input.clone(),
-                            },
-                        )?;
-                    }
-                    let producer_promoted =
-                        self.promote_producer_inputs_direct(session, run, false)?;
-                    let promoted = already_promoted || !eligible.is_empty() || producer_promoted;
-                    let pending =
-                        pending_inputs(&self.inner.store.log(session)?.event_snapshot(), run);
-                    if pending.is_empty() && !promoted && complete_if_empty {
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("engine:model-loop"),
-                            Event::RunCompleted { final_text },
-                        )?;
-                    }
-                    Ok(PendingPromotionState {
-                        promoted,
-                        continue_run: promoted,
-                        pending,
-                    })
-                })();
-                if result.as_ref().is_ok_and(|state| state.pending.is_empty()) {
-                    self.release_compaction_direct(session).await;
-                }
-                let _ = reply.send(result);
-            }
-            SessionCommand::Compact {
-                focus,
-                origin,
-                reply,
-            } => {
-                if !self.reserve_compaction(session) {
-                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
-                } else {
-                    let engine = self.clone();
-                    tokio::spawn(async move {
-                        #[cfg(test)]
-                        let hook = engine
-                            .inner
-                            .test_hooks
-                            .compaction_execution_hook
-                            .lock()
-                            .expect("compaction execution hook lock poisoned")
-                            .take();
-                        #[cfg(test)]
-                        if let Some(hook) = hook {
-                            if let Some(reached) = hook
-                                .reached
-                                .lock()
-                                .expect("compaction execution reached lock poisoned")
-                                .take()
-                            {
-                                let _ = reached.send(());
-                            }
-                            hook.release.notified().await;
-                        }
-                        let mut result = engine
-                            .compact_session_direct(session, focus.as_deref(), origin)
-                            .await;
-                        if let Err(error) = engine.finish_compaction(session).await
-                            && result.is_ok()
-                        {
-                            result = Err(error);
-                        }
-                        let _ = reply.send(result);
-                    });
-                }
-            }
-            SessionCommand::Revert {
-                through_seq,
-                origin,
-                instructions_override,
-                reply,
-            } => {
-                if !self.reserve_compaction(session) {
-                    let _ = reply.send(Err(EngineError::SessionRunning(session)));
-                } else {
-                    let result = (|| {
-                        let projection = self.inner.store.get(session)?;
-                        if projection.status == SessionStatus::Running {
-                            return Err(EngineError::SessionRunning(session));
-                        }
-                        let tip = projection.log.last_event().map_or(0, |event| event.seq);
-                        if through_seq == 0 || through_seq > tip {
-                            return Err(SessionError::InvalidSequence {
-                                session_id: session,
-                                through_seq,
-                            }
-                            .into());
-                        }
-                        self.append_direct(
-                            session,
-                            None,
-                            origin,
-                            Event::SessionReverted { through_seq },
-                        )?;
-                        self.inner
-                            .compaction
-                            .context_token_estimators
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&session);
-                        self.rebuild_visible_tree_grants();
-                        self.inner.delegation_events.reconcile_parent(session)?;
-                        self.reconcile_reverted_producers_direct(session)?;
-                        Ok(SessionRevertResult {
-                            session: self.inner.store.get(session)?.metadata(),
-                            instructions_override,
-                        })
-                    })();
-                    self.release_compaction_direct(session).await;
-                    let _ = reply.send(result);
-                }
-            }
-            SessionCommand::CompactionFinished { reply } => {
-                self.release_compaction_direct(session).await;
-                let _ = reply.send(Ok(()));
-            }
-            SessionCommand::Cancel { run, reply } => {
-                let result = (|| {
-                    let active = self
-                        .inner
-                        .sessions
-                        .active
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&run)
-                        .cloned()
-                        .filter(|active| active.session == session)
-                        .ok_or(EngineError::MissingRun(run))?;
-                    active.cancellation.cancel();
-                    active
-                        .stdin
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clear();
-                    let events = self.inner.store.log(session)?.event_snapshot();
-                    let pending = approval_records(session, &events)
-                        .into_values()
-                        .filter(|record| {
-                            matches!(
-                                record.status,
-                                ApprovalStatus::Pending | ApprovalStatus::Escalated
-                            ) && approval_run_id(&events, record.request.approval_id()) == Some(run)
-                        })
-                        .map(|record| record.request.approval_id())
-                        .collect::<Vec<_>>();
-                    for approval_id in pending {
-                        self.approval_terminal_direct(
-                            session,
-                            run,
-                            approval_id,
-                            ApprovalTerminal::Cancelled,
-                        )?;
-                    }
-                    Ok(RunCancelResult { cancelled: true })
-                })();
-                let _ = reply.send(result);
-            }
-            SessionCommand::Stdin { params, reply } => {
-                let result = (|| {
-                    let active = self
-                        .inner
-                        .sessions
-                        .active
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&params.run_id)
-                        .cloned()
-                        .filter(|active| active.session == session)
-                        .ok_or(EngineError::MissingRun(params.run_id))?;
-                    let data = params
-                        .data
-                        .map(|encoded| STANDARD.decode(encoded))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let sender = active
-                        .stdin
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&params.call_id)
-                        .cloned()
-                        .ok_or(EngineError::StdinUnavailable)?;
-                    sender
-                        .try_send(StdinWrite {
-                            data: data.clone(),
-                            eof: params.eof,
-                        })
-                        .map_err(|_| EngineError::StdinUnavailable)?;
-                    if params.eof {
-                        active
-                            .stdin
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&params.call_id);
-                    }
-                    self.append_direct(
-                        session,
-                        Some(params.run_id),
-                        super::event_origin("engine:tool-execution"),
-                        Event::ToolStdinSubmitted {
-                            tool_call_id: params.call_id,
-                            byte_count: data.len() as u64,
-                        },
-                    )?;
-                    Ok(RunToolStdinResult { accepted: true })
-                })();
-                let _ = reply.send(result);
-            }
-            SessionCommand::Subscribe {
-                cursor,
-                limit,
-                reply,
-            } => {
-                let result = self.inner.store.subscribe_events(session, cursor, limit);
-                let _ = reply.send(result.map_err(EngineError::from));
-            }
             SessionCommand::Resume { reply } => {
                 let result = self
                     .resolve_interrupted_direct(session)
                     .await
                     .and_then(|()| Ok(self.inner.store.get(session)?.metadata()));
-                let _ = reply.send(result);
-            }
-            SessionCommand::Rename {
-                params,
-                origin: _request_origin,
-                reply,
-            } => {
-                let result = (|| {
-                    let projection = self.inner.store.get(session)?;
-                    if let Some(record) = projection.rename_records.get(&params.client_rename_id) {
-                        if record.conflicts_with(&params) {
-                            return Err(EngineError::RenameConflict);
-                        }
-                        return Ok(SessionRenameResult {
-                            client_rename_id: params.client_rename_id,
-                            session: projection.metadata(),
-                        });
-                    }
-                    let commit = match params.change {
-                        SessionRenameChange::Set { title } => SessionTitleChange::UserSet {
-                            title,
-                            client_rename_id: params.client_rename_id.clone(),
-                        },
-                        SessionRenameChange::Clear => SessionTitleChange::UserClear {
-                            client_rename_id: params.client_rename_id.clone(),
-                        },
-                        SessionRenameChange::Reset => SessionTitleChange::UserReset {
-                            client_rename_id: params.client_rename_id.clone(),
-                        },
-                    };
-                    let input_through_seq =
-                        projection.log.last_event().map_or(0, |event| event.seq);
-                    self.append_direct(
-                        session,
-                        None,
-                        super::event_origin("user"),
-                        Event::SessionTitleCommitted {
-                            input_through_seq,
-                            change: commit,
-                        },
-                    )?;
-                    Ok(SessionRenameResult {
-                        client_rename_id: params.client_rename_id,
-                        session: self.inner.store.get(session)?.metadata(),
-                    })
-                })();
-                let _ = reply.send(result);
-            }
-            SessionCommand::ApprovalRespond {
-                params,
-                origin: _request_origin,
-                reply,
-            } => {
-                let _ = reply.send(self.approval_respond_direct(params));
-            }
-            SessionCommand::ApprovalCapabilityInvalid {
-                params,
-                invalidation,
-                reply,
-            } => {
-                let _ = reply.send(self.approval_capability_invalid_direct(params, invalidation));
-            }
-            SessionCommand::ApprovalEvaluationComplete {
-                run,
-                request,
-                executor,
-                decision,
-                permission_mode,
-                cancelled,
-                reply,
-            } => {
-                let _ = reply.send(self.approval_evaluation_complete_direct(
-                    session,
-                    run,
-                    request,
-                    executor,
-                    (permission_mode, decision),
-                    cancelled,
-                ));
-            }
-            SessionCommand::ApprovalTerminal {
-                run,
-                approval_id,
-                terminal,
-                reply,
-            } => {
-                let _ =
-                    reply.send(self.approval_terminal_direct(session, run, approval_id, terminal));
-            }
-            SessionCommand::ToolResult {
-                run,
-                tool_call_id,
-                result,
-                cancelled,
-                reply,
-            } => {
-                let pending = self
-                    .inner
-                    .store
-                    .get(session)
-                    .ok()
-                    .and_then(|projection| projection.runs.get(&run).cloned())
-                    .is_some_and(|run| run.pending_calls.contains_key(&tool_call_id));
-                let response = if !pending {
-                    Ok(false)
-                } else {
-                    (|| {
-                        let owner = self.tool_call_owner(session, run, tool_call_id)?;
-                        let event = match result {
-                            Ok(result) => Event::ToolCallTerminated {
-                                termination: ToolCallTermination {
-                                    tool_call_id,
-                                    owner,
-                                    outcome: if cancelled {
-                                        ToolTerminationOutcome::Cancelled
-                                    } else {
-                                        ToolTerminationOutcome::Completed
-                                    },
-                                    result: Some(result),
-                                    error: cancelled.then(|| SafeToolError {
-                                        code: super::safe_code(super::CANCELLED_AFTER_COMPLETION),
-                                        message: safe_error("tool call cancelled after it started"),
-                                    }),
-                                },
-                            },
-                            Err(failure) => Event::ToolCallTerminated {
-                                termination: ToolCallTermination {
-                                    tool_call_id,
-                                    owner,
-                                    outcome: if cancelled {
-                                        ToolTerminationOutcome::Cancelled
-                                    } else {
-                                        ToolTerminationOutcome::Failed
-                                    },
-                                    result: failure.partial_output.map(|result| *result),
-                                    error: Some(SafeToolError {
-                                        code: failure.code.safe_code(),
-                                        message: safe_error(&failure.message),
-                                    }),
-                                },
-                            },
-                        };
-                        self.append_direct(
-                            session,
-                            Some(run),
-                            super::event_origin("engine:tool-result"),
-                            event,
-                        )?;
-                        self.inner.store.log(session)?.flush()?;
-                        Ok(true)
-                    })()
-                };
-                if let Some(capture) = self
-                    .inner
-                    .output
-                    .captures
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&tool_call_id)
-                {
-                    capture.release_publication();
-                }
-                let _ = reply.send(response);
-            }
-            SessionCommand::ResolveDelegateFailureIfPending {
-                run,
-                tool_call_id,
-                result,
-                reply,
-            } => {
-                let result = self.resolve_delegate_failure_if_pending_direct(
-                    session,
-                    run,
-                    tool_call_id,
-                    result,
-                );
-                let _ = reply.send(result);
-            }
-            SessionCommand::ResolveAbandonedDelegateFailureIfPending {
-                invocation_id,
-                generation,
-                run,
-                tool_call_id,
-                result,
-                reply,
-            } => {
-                let result = self.resolve_abandoned_delegate_failure_if_pending_direct(
-                    invocation_id,
-                    generation,
-                    session,
-                    run,
-                    tool_call_id,
-                    result,
-                );
                 let _ = reply.send(result);
             }
             SessionCommand::PromotePendingOrComplete {
@@ -1853,17 +1309,7 @@ impl Engine {
                             return;
                         }
                     };
-                let active = self
-                    .inner
-                    .sessions
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&run)
-                    .cloned()
-                    .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run));
-                let active = match active {
+                let active = match self.active_run_in(session, run) {
                     Ok(active) => active,
                     Err(error) => {
                         let _ = reply.send(Err(error));
@@ -1944,14 +1390,14 @@ impl Engine {
                                 break Err(error);
                             }
                             match engine
-                                .request(session, |reply| SessionCommand::CommitPendingPromotion {
+                                .commit_pending_promotion(
+                                    session,
                                     run,
                                     through_admission_seq,
-                                    final_text: final_text.clone(),
+                                    final_text.clone(),
                                     complete_if_empty,
-                                    already_promoted: promoted,
-                                    reply,
-                                })
+                                    promoted,
+                                )
                                 .await
                             {
                                 Ok(state) if state.pending.is_empty() => {
@@ -1975,50 +1421,37 @@ impl Engine {
                 }
             }
             SessionCommand::PromotePendingInputs { run, reply } => {
-                let result = self
-                    .inner
-                    .sessions
-                    .active
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&run)
-                    .cloned()
-                    .filter(|active| active.session == session)
-                    .ok_or(EngineError::MissingRun(run))
-                    .and_then(|_| {
-                        self.promote_producer_inputs_direct(session, run, false)?;
-                        let events = self.inner.store.log(session)?.event_snapshot();
-                        let applied: HashSet<u64> = events
-                            .iter()
-                            .filter_map(|event| match &event.payload {
-                                Event::UserInputApplied { user_input_seq }
-                                    if event.run_id == Some(run) =>
-                                {
-                                    Some(*user_input_seq)
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        for user_input_seq in
-                            events.iter().filter_map(|event| match &event.payload {
-                                Event::UserInputSubmitted { .. }
-                                    if event.run_id == Some(run)
-                                        && !applied.contains(&event.seq) =>
-                                {
-                                    Some(event.seq)
-                                }
-                                _ => None,
-                            })
+                let result = self.active_run_in(session, run).and_then(|_| {
+                    self.promote_producer_inputs_direct(session, run, false)?;
+                    let events = self.inner.store.log(session)?.event_snapshot();
+                    let applied: HashSet<u64> = events
+                        .iter()
+                        .filter_map(|event| match &event.payload {
+                            Event::UserInputApplied { user_input_seq }
+                                if event.run_id == Some(run) =>
+                            {
+                                Some(*user_input_seq)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    for user_input_seq in events.iter().filter_map(|event| match &event.payload {
+                        Event::UserInputSubmitted { .. }
+                            if event.run_id == Some(run) && !applied.contains(&event.seq) =>
                         {
-                            self.append_direct(
-                                session,
-                                Some(run),
-                                super::event_origin("engine:model-loop"),
-                                Event::UserInputApplied { user_input_seq },
-                            )?;
+                            Some(event.seq)
                         }
-                        self.claim_producer_snapshot_direct(session, run)
-                    });
+                        _ => None,
+                    }) {
+                        self.append_direct(
+                            session,
+                            Some(run),
+                            super::event_origin("engine:model-loop"),
+                            Event::UserInputApplied { user_input_seq },
+                        )?;
+                    }
+                    self.claim_producer_snapshot_direct(session, run)
+                });
                 let _ = reply.send(result);
             }
         }
@@ -2026,9 +1459,76 @@ impl Engine {
             eprintln!("session {session} producer reconciliation failed: {error}");
         }
     }
+
+    /// Submits the pending inputs admitted through `through_admission_seq`,
+    /// completing the run when nothing was left to promote, and releases the
+    /// compaction hold once no input is pending.
+    async fn commit_pending_promotion(
+        &self,
+        session: SessionId,
+        run: RunId,
+        through_admission_seq: u64,
+        final_text: Option<String>,
+        complete_if_empty: bool,
+        already_promoted: bool,
+    ) -> Result<PendingPromotionState, EngineError> {
+        self.on_actor_async(session, move |engine| async move {
+            let result = (|| {
+                let projection = engine.inner.store.get(session)?;
+                if !projection
+                    .runs
+                    .get(&run)
+                    .is_some_and(|run| run.status == SessionStatus::Running)
+                {
+                    return Ok(PendingPromotionState {
+                        promoted: already_promoted,
+                        pending: Vec::new(),
+                        continue_run: false,
+                    });
+                }
+                let eligible = pending_inputs(&projection.log.event_snapshot(), run)
+                    .into_iter()
+                    .take_while(|pending| pending.admission_seq <= through_admission_seq)
+                    .collect::<Vec<_>>();
+                for pending in &eligible {
+                    engine.append_direct(
+                        session,
+                        Some(run),
+                        pending.origin.clone(),
+                        Event::UserInputSubmitted {
+                            input: pending.input.clone(),
+                        },
+                    )?;
+                }
+                let producer_promoted =
+                    engine.promote_producer_inputs_direct(session, run, false)?;
+                let promoted = already_promoted || !eligible.is_empty() || producer_promoted;
+                let pending =
+                    pending_inputs(&engine.inner.store.log(session)?.event_snapshot(), run);
+                if pending.is_empty() && !promoted && complete_if_empty {
+                    engine.append_direct(
+                        session,
+                        Some(run),
+                        super::event_origin("engine:model-loop"),
+                        Event::RunCompleted { final_text },
+                    )?;
+                }
+                Ok(PendingPromotionState {
+                    promoted,
+                    continue_run: promoted,
+                    pending,
+                })
+            })();
+            if result.as_ref().is_ok_and(|state| state.pending.is_empty()) {
+                engine.release_compaction_direct(session).await;
+            }
+            result
+        })
+        .await
+    }
 }
 
-fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
+pub(super) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
     events: &[E],
     run: RunId,
 ) -> Vec<PendingInput> {

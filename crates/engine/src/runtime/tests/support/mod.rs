@@ -1501,9 +1501,9 @@ pub(crate) async fn settle_session_actor(engine: &Engine, session: SessionId) {
     let Some(actor) = actor else {
         return;
     };
-    let (reply, receiver) = tokio::sync::oneshot::channel();
+    let (barrier, receiver) = crate::runtime::SessionCommand::call(false, |_| async { Ok(()) });
     actor
-        .send(crate::runtime::SessionCommand::EvictionBarrier { reply })
+        .send(barrier)
         .await
         .expect("session actor accepts the barrier");
     receiver

@@ -1,14 +1,19 @@
 use std::collections::HashSet;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_protocol::{
-    EventOrigin, RunCancelResult, RunId, RunRecallSteerResult, RunStartParams, RunStartResult,
-    RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId, SessionStatus,
+    ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunRecallSteerResult, RunStartParams,
+    RunStartResult, RunSteerResult, RunToolStdinParams, RunToolStdinResult, SessionId,
+    SessionStatus,
 };
 
 use super::{
-    ActiveRun, Engine, EngineError, Event, SessionCommand, UserInputInterception,
+    ActiveRun, ApprovalTerminal, Engine, EngineError, Event, SessionCommand, UserInputInterception,
+    approval_projection::{approval_records, approval_run_id},
     helpers::safe_error,
+    mailbox::pending_inputs,
 };
+use crate::tool_api::StdinWrite;
 
 impl Engine {
     pub async fn start_run(
@@ -61,20 +66,58 @@ impl Engine {
                 input,
                 original_input,
             } => {
-                self.request(active.session, |reply| SessionCommand::Steer {
-                    run: run_id,
-                    origin,
-                    input,
-                    original_input,
-                    reply,
-                })
-                .await
+                self.admit_steer(active.session, run_id, origin, input, original_input)
+                    .await
             }
             UserInputInterception::Handled { reason } => Ok(RunSteerResult {
                 accepted: false,
                 handled_reason: Some(reason),
             }),
         }
+    }
+
+    /// Admits `input` into `run` as pending user input, unless the run is no
+    /// longer running.
+    pub(super) async fn admit_steer(
+        &self,
+        session: SessionId,
+        run_id: RunId,
+        origin: EventOrigin,
+        input: String,
+        original_input: Option<String>,
+    ) -> Result<RunSteerResult, EngineError> {
+        self.on_actor(session, move |engine| {
+            engine.active_run_in(session, run_id)?;
+            if !engine.run_is_running(session, run_id)? {
+                return Ok(RunSteerResult {
+                    accepted: false,
+                    handled_reason: None,
+                });
+            }
+            if let Some(original_input) = original_input {
+                engine.append_direct(
+                    session,
+                    Some(run_id),
+                    origin.clone(),
+                    Event::UserInputTransformed {
+                        original_input,
+                        input: input.clone(),
+                    },
+                )?;
+            }
+            engine.append_direct(
+                session,
+                Some(run_id),
+                origin,
+                Event::UserInputAdmitted { input },
+            )?;
+            engine.clear_skill_turn_state(session);
+            Ok(RunSteerResult {
+                accepted: true,
+                handled_reason: None,
+            })
+        })
+        .await
     }
 
     /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
@@ -103,9 +146,27 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
-        self.request(active.session, |reply| SessionCommand::RecallSteer {
-            run: run_id,
-            reply,
+        let session = active.session;
+        self.on_actor(session, move |engine| {
+            engine.active_run_in(session, run_id)?;
+            if !engine.run_is_running(session, run_id)? {
+                return Ok(RunRecallSteerResult { recalled: None });
+            }
+            let recalled =
+                pending_inputs(&engine.inner.store.log(session)?.event_snapshot(), run_id)
+                    .pop()
+                    .map(|pending| pending.input);
+            if let Some(input) = &recalled {
+                engine.append_direct(
+                    session,
+                    Some(run_id),
+                    super::event_origin("user"),
+                    Event::UserInputRecalled {
+                        input: input.clone(),
+                    },
+                )?;
+            }
+            Ok(RunRecallSteerResult { recalled })
         })
         .await
     }
@@ -120,12 +181,7 @@ impl Engine {
             .get(&run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(run_id))?;
-        let result = self
-            .request(active.session, |reply| SessionCommand::Cancel {
-                run: run_id,
-                reply,
-            })
-            .await?;
+        let result = self.cancel_on_actor(active.session, run_id).await?;
         let inflight_runs: Vec<_> = {
             let mut inflight = self
                 .inner
@@ -193,10 +249,7 @@ impl Engine {
                 if let Some(child_active) = child_active {
                     child_active.cancellation.cancel();
                     let _ = self
-                        .request(child_active.session, |reply| SessionCommand::Cancel {
-                            run: child_run_id,
-                            reply,
-                        })
+                        .cancel_on_actor(child_active.session, child_run_id)
                         .await;
                 }
             }
@@ -358,9 +411,117 @@ impl Engine {
             .get(&params.run_id)
             .cloned()
             .ok_or(EngineError::MissingRun(params.run_id))?;
-        self.request(active.session, |reply| SessionCommand::Stdin {
-            params,
-            reply,
+        let session = active.session;
+        // Stdin forwards bytes to a running tool and appends only
+        // `ToolStdinSubmitted`, which producer reconciliation never reads.
+        self.on_actor_unreconciled(session, move |engine| {
+            let active = engine.active_run_in(session, params.run_id)?;
+            let data = params
+                .data
+                .map(|encoded| STANDARD.decode(encoded))
+                .transpose()?
+                .unwrap_or_default();
+            let sender = active
+                .stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&params.call_id)
+                .cloned()
+                .ok_or(EngineError::StdinUnavailable)?;
+            sender
+                .try_send(StdinWrite {
+                    data: data.clone(),
+                    eof: params.eof,
+                })
+                .map_err(|_| EngineError::StdinUnavailable)?;
+            if params.eof {
+                active
+                    .stdin
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&params.call_id);
+            }
+            engine.append_direct(
+                session,
+                Some(params.run_id),
+                super::event_origin("engine:tool-execution"),
+                Event::ToolStdinSubmitted {
+                    tool_call_id: params.call_id,
+                    byte_count: data.len() as u64,
+                },
+            )?;
+            Ok(RunToolStdinResult { accepted: true })
+        })
+        .await
+    }
+
+    /// The active run `run` when it belongs to `session`.
+    pub(super) fn active_run_in(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<std::sync::Arc<ActiveRun>, EngineError> {
+        self.inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run)
+            .cloned()
+            .filter(|active| active.session == session)
+            .ok_or(EngineError::MissingRun(run))
+    }
+
+    /// Whether `session`'s projection still reports `run` as running.
+    pub(super) fn run_is_running(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<bool, EngineError> {
+        Ok(self
+            .inner
+            .store
+            .get(session)?
+            .runs
+            .get(&run)
+            .is_some_and(|run| run.status == SessionStatus::Running))
+    }
+
+    /// Cancels `run` on `session`'s actor: trips its cancellation, drops its
+    /// stdin channels, and cancels the approvals it still has pending.
+    async fn cancel_on_actor(
+        &self,
+        session: SessionId,
+        run: RunId,
+    ) -> Result<RunCancelResult, EngineError> {
+        self.on_actor(session, move |engine| {
+            let active = engine.active_run_in(session, run)?;
+            active.cancellation.cancel();
+            active
+                .stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            let events = engine.inner.store.log(session)?.event_snapshot();
+            let pending = approval_records(session, &events)
+                .into_values()
+                .filter(|record| {
+                    matches!(
+                        record.status,
+                        ApprovalStatus::Pending | ApprovalStatus::Escalated
+                    ) && approval_run_id(&events, record.request.approval_id()) == Some(run)
+                })
+                .map(|record| record.request.approval_id())
+                .collect::<Vec<_>>();
+            for approval_id in pending {
+                engine.approval_terminal_direct(
+                    session,
+                    run,
+                    approval_id,
+                    ApprovalTerminal::Cancelled,
+                )?;
+            }
+            Ok(RunCancelResult { cancelled: true })
         })
         .await
     }

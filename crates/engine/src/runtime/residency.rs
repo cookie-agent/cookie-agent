@@ -253,9 +253,9 @@ impl Engine {
                     .cloned()
             };
             if let Some(actor) = actor {
-                let (reply, receiver) = tokio::sync::oneshot::channel();
+                let (barrier, receiver) = SessionCommand::call(false, |_| async { Ok(()) });
                 actor
-                    .send(SessionCommand::EvictionBarrier { reply })
+                    .send(barrier)
                     .await
                     .map_err(|_| EngineError::ActorStopped)?;
                 receiver.await.map_err(|_| EngineError::ActorStopped)??;

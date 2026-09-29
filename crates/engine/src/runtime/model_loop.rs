@@ -532,12 +532,9 @@ impl Engine {
             input_through_seq,
         };
         if producer_start {
-            self.request(params.session_id, |reply| {
-                super::SessionCommand::Producer(super::producers::ProducerCommand::CommitStart {
-                    run: run_id,
-                    event: Box::new(run_started),
-                    reply,
-                })
+            let session = params.session_id;
+            self.on_actor_unreconciled(session, move |engine| {
+                engine.commit_producer_start(session, run_id, run_started)
             })
             .await?;
         } else {

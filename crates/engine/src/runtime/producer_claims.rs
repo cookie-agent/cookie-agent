@@ -2,7 +2,7 @@ use std::sync::{Arc, Weak};
 
 use cookie_agent_protocol::{EventPayload, RunId, SessionId};
 
-use super::{Engine, EngineError, Inner, SessionCommand, event_origin, producers::ProducerCommand};
+use super::{Engine, EngineError, Inner, event_origin};
 
 /// A request-input reservation, not evidence that a provider received the input.
 /// The lease remains held through compaction, hooks, streaming, and model commit.
@@ -21,13 +21,7 @@ impl ClaimedPrompt {
         };
         let inner = self.engine.upgrade().ok_or(EngineError::ActorStopped)?;
         Engine { inner }
-            .request(self.session, |reply| {
-                SessionCommand::Producer(ProducerCommand::ReleaseClaim {
-                    run: self.run,
-                    claim_seq,
-                    reply,
-                })
-            })
+            .release_producer_claim(self.session, self.run, claim_seq)
             .await?;
         self.claim_seq = None;
         Ok(())
@@ -56,13 +50,7 @@ impl Drop for ClaimedPrompt {
         let release = engine.clone();
         engine.spawn_admission_task(&runtime, async move {
             let _ = release
-                .request(session, |reply| {
-                    SessionCommand::Producer(ProducerCommand::ReleaseClaim {
-                        run,
-                        claim_seq,
-                        reply,
-                    })
-                })
+                .release_producer_claim(session, run, claim_seq)
                 .await;
         });
     }
@@ -74,8 +62,20 @@ impl Engine {
         session: SessionId,
         run: RunId,
     ) -> Result<ClaimedPrompt, EngineError> {
-        self.request(session, |reply| {
-            SessionCommand::Producer(ProducerCommand::ClaimInputs { run, reply })
+        self.on_actor(session, move |engine| {
+            engine.claim_producer_snapshot_direct(session, run)
+        })
+        .await
+    }
+
+    async fn release_producer_claim(
+        &self,
+        session: SessionId,
+        run: RunId,
+        claim_seq: u64,
+    ) -> Result<(), EngineError> {
+        self.on_actor(session, move |engine| {
+            engine.release_producer_claim_direct(session, run, claim_seq, false)
         })
         .await
     }

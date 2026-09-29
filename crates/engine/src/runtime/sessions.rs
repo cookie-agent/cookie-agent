@@ -6,8 +6,8 @@ use std::{
 use cookie_agent_protocol::{
     AgentId, ChildSummary, EventOrigin, InvocationId, PermissionMode, RunSelection,
     SessionForkResult, SessionId, SessionMeta, SessionOrigin, SessionRenameChange,
-    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionTreeUsageResult,
-    SessionUsageResult, UsageRollup,
+    SessionRenameParams, SessionRenameResult, SessionRevertResult, SessionStatus,
+    SessionTitleChange, SessionTreeUsageResult, SessionUsageResult, UsageRollup,
 };
 
 use super::{
@@ -16,6 +16,7 @@ use super::{
     helpers::{cwd_identity, root_id, session_depth},
 };
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
+use crate::session::SessionError;
 
 impl Engine {
     /// The accepted selection, advanced only by a committed fallback model turn.
@@ -414,11 +415,47 @@ impl Engine {
                 Err(error) => self.record_interception_error(session_id, plugin, error),
             }
         }
-        self.request(session_id, |reply| SessionCommand::Revert {
-            through_seq,
-            origin,
-            instructions_override,
-            reply,
+        let session = session_id;
+        self.on_actor_async(session, move |engine| async move {
+            if !engine.reserve_compaction(session) {
+                return Err(EngineError::SessionRunning(session));
+            }
+            let result = (|| {
+                let projection = engine.inner.store.get(session)?;
+                if projection.status == SessionStatus::Running {
+                    return Err(EngineError::SessionRunning(session));
+                }
+                let tip = projection.log.last_event().map_or(0, |event| event.seq);
+                if through_seq == 0 || through_seq > tip {
+                    return Err(SessionError::InvalidSequence {
+                        session_id: session,
+                        through_seq,
+                    }
+                    .into());
+                }
+                engine.append_direct(
+                    session,
+                    None,
+                    origin,
+                    Event::SessionReverted { through_seq },
+                )?;
+                engine
+                    .inner
+                    .compaction
+                    .context_token_estimators
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&session);
+                engine.rebuild_visible_tree_grants();
+                engine.inner.delegation_events.reconcile_parent(session)?;
+                engine.reconcile_reverted_producers_direct(session)?;
+                Ok(SessionRevertResult {
+                    session: engine.inner.store.get(session)?.metadata(),
+                    instructions_override,
+                })
+            })();
+            engine.release_compaction_direct(session).await;
+            result
         })
         .await
     }
@@ -524,15 +561,50 @@ impl Engine {
     pub async fn rename_session(
         &self,
         params: SessionRenameParams,
-        origin: EventOrigin,
+        _origin: EventOrigin,
     ) -> Result<SessionRenameResult, EngineError> {
         let session_id = params.session_id;
         let reset = matches!(params.change, SessionRenameChange::Reset);
+        // A rename appends only `SessionTitleCommitted`, which producer
+        // reconciliation never reads.
         let mut result = self
-            .request(session_id, |reply| SessionCommand::Rename {
-                params,
-                origin,
-                reply,
+            .on_actor_unreconciled(session_id, move |engine| {
+                let projection = engine.inner.store.get(session_id)?;
+                if let Some(record) = projection.rename_records.get(&params.client_rename_id) {
+                    if record.conflicts_with(&params) {
+                        return Err(EngineError::RenameConflict);
+                    }
+                    return Ok(SessionRenameResult {
+                        client_rename_id: params.client_rename_id,
+                        session: projection.metadata(),
+                    });
+                }
+                let commit = match params.change {
+                    SessionRenameChange::Set { title } => SessionTitleChange::UserSet {
+                        title,
+                        client_rename_id: params.client_rename_id.clone(),
+                    },
+                    SessionRenameChange::Clear => SessionTitleChange::UserClear {
+                        client_rename_id: params.client_rename_id.clone(),
+                    },
+                    SessionRenameChange::Reset => SessionTitleChange::UserReset {
+                        client_rename_id: params.client_rename_id.clone(),
+                    },
+                };
+                let input_through_seq = projection.log.last_event().map_or(0, |event| event.seq);
+                engine.append_direct(
+                    session_id,
+                    None,
+                    super::event_origin("user"),
+                    Event::SessionTitleCommitted {
+                        input_through_seq,
+                        change: commit,
+                    },
+                )?;
+                Ok(SessionRenameResult {
+                    client_rename_id: params.client_rename_id,
+                    session: engine.inner.store.get(session_id)?.metadata(),
+                })
             })
             .await?;
         if reset {

@@ -12,15 +12,12 @@ use cookie_agent_config::LoadedConfiguration;
 use cookie_agent_identity::ModelKey;
 use cookie_agent_models::{ModelManager, manifests::ManifestError};
 use cookie_agent_protocol::{
-    AgentId, ApprovalId, ApprovalInternalDecisionKind, ApprovalRequest, ApprovalRespondErrorCode,
-    ApprovalRespondParams, ApprovalRespondResult, ApprovalStatus, EventPayload as Event,
-    EventSubscriptionMessage, EventsSubscribeResult, InvocationId, OperationFingerprint,
-    PermissionMode, PersistedModelTurn, PersistedToolResult as ToolResult, ProviderConnectParams,
-    ProviderConnectResult, ProviderDisconnectParams, ProviderDisconnectResult, RunCancelResult,
-    RunId, RunRecallSteerResult, RunStartParams, RunStartResult, RunSteerResult,
-    RunToolStdinParams, RunToolStdinResult, RuntimeChangeReason, RuntimeChangedNotification,
-    RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta, SessionRenameParams,
-    SessionRenameResult, SessionRevertResult, ToolCallId, ToolCallPresentation,
+    AgentId, ApprovalId, ApprovalRespondErrorCode, ApprovalStatus, EventPayload as Event,
+    InvocationId, OperationFingerprint, PersistedModelTurn, PersistedToolResult as ToolResult,
+    ProviderConnectParams, ProviderConnectResult, ProviderDisconnectParams,
+    ProviderDisconnectResult, RunId, RunStartParams, RunStartResult, RuntimeChangeReason,
+    RuntimeChangedNotification, RuntimeSnapshotResult, SafeCode, SessionId, SessionMeta,
+    ToolCallId, ToolCallPresentation,
 };
 use oven_sdk::{ModelError, ToolDefinition};
 use serde::{Deserialize, Serialize};
@@ -132,8 +129,8 @@ pub(crate) use test_hooks::*;
 pub(crate) const CANCELLED_AFTER_COMPLETION: &str = "cancelled_after_completion";
 
 use crate::tool_api::{
-    PreparedExecutorCell, PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall,
-    ToolConcurrency, ToolError, ToolProvider, ToolSpec, TurnAgentContext,
+    PreparedSerializationKey, PreparedTool, StdinWrite, ToolCall, ToolConcurrency, ToolError,
+    ToolProvider, ToolSpec, TurnAgentContext,
 };
 
 #[derive(Clone)]
@@ -533,25 +530,30 @@ pub(super) fn event_origin(value: &'static str) -> cookie_agent_protocol::EventO
     cookie_agent_protocol::EventOrigin::new(value).expect("static event origin is valid")
 }
 
-/// One page of a session's events, and its live tail when it is the final
-/// page.
-pub(crate) type EventPage = (
-    EventsSubscribeResult,
-    Option<mpsc::Receiver<EventSubscriptionMessage>>,
-);
+/// Work run on a session actor, in mailbox order, with the engine handle the
+/// actor holds.
+type ActorCall = Box<dyn FnOnce(Engine) -> futures_util::future::BoxFuture<'static, ()> + Send>;
 
+/// One message on a session actor's mailbox.
+///
+/// Everything the actor loop does not inspect is a [`Self::Call`]. The typed
+/// variants are the commands it special-cases: `Start`, `Resume`, and the two
+/// pending-input promotions are deferred while a compaction holds the session,
+/// `Start` also preempts a starting producer wake, and `Append` decides from
+/// its event whether producer reconciliation follows.
 enum SessionCommand {
-    Producer(producers::ProducerCommand),
+    Call {
+        /// Whether producer reconciliation runs after the call. Only work that
+        /// touches nothing reconciliation reads (the goal, producer,
+        /// user-input and run-terminal events it folds, plus the active-run,
+        /// delegation and producer registries) may skip it.
+        reconcile_producers: bool,
+        call: ActorCall,
+    },
     Append {
         run: Option<RunId>,
         origin: cookie_agent_protocol::EventOrigin,
         event: Box<Event>,
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    EnsureToolCallLinked {
-        run: RunId,
-        tool_call_id: ToolCallId,
-        child_session_id: SessionId,
         reply: oneshot::Sender<Result<(), EngineError>>,
     },
     Start {
@@ -560,115 +562,8 @@ enum SessionCommand {
         admission: Option<(InvocationId, u64)>,
         reply: oneshot::Sender<Result<RunStartResult, EngineError>>,
     },
-    Steer {
-        run: RunId,
-        origin: cookie_agent_protocol::EventOrigin,
-        input: String,
-        original_input: Option<String>,
-        reply: oneshot::Sender<Result<RunSteerResult, EngineError>>,
-    },
-    AdmitDelegatedResume {
-        run: RunId,
-        input: String,
-        reply: oneshot::Sender<Result<DelegatedResumeAdmission, EngineError>>,
-    },
-    RecallDelegatedResume {
-        run: RunId,
-        admission_seq: u64,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
-    },
-    RecallSteer {
-        run: RunId,
-        reply: oneshot::Sender<Result<RunRecallSteerResult, EngineError>>,
-    },
-    CommitPendingPromotion {
-        run: RunId,
-        through_admission_seq: u64,
-        final_text: Option<String>,
-        complete_if_empty: bool,
-        already_promoted: bool,
-        reply: oneshot::Sender<Result<PendingPromotionState, EngineError>>,
-    },
-    Compact {
-        focus: Option<String>,
-        origin: cookie_agent_protocol::EventOrigin,
-        reply: oneshot::Sender<Result<cookie_agent_protocol::SessionCompactResult, EngineError>>,
-    },
-    Revert {
-        through_seq: u64,
-        origin: cookie_agent_protocol::EventOrigin,
-        instructions_override: Option<String>,
-        reply: oneshot::Sender<Result<SessionRevertResult, EngineError>>,
-    },
-    CompactionFinished {
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
-    Cancel {
-        run: RunId,
-        reply: oneshot::Sender<Result<RunCancelResult, EngineError>>,
-    },
-    Stdin {
-        params: RunToolStdinParams,
-        reply: oneshot::Sender<Result<RunToolStdinResult, EngineError>>,
-    },
-    Subscribe {
-        cursor: Option<u64>,
-        limit: Option<std::num::NonZeroU32>,
-        reply: oneshot::Sender<Result<EventPage, EngineError>>,
-    },
     Resume {
         reply: oneshot::Sender<Result<SessionMeta, EngineError>>,
-    },
-    Rename {
-        params: SessionRenameParams,
-        origin: cookie_agent_protocol::EventOrigin,
-        reply: oneshot::Sender<Result<SessionRenameResult, EngineError>>,
-    },
-    ApprovalRespond {
-        params: ApprovalRespondParams,
-        origin: cookie_agent_protocol::EventOrigin,
-        reply: oneshot::Sender<Result<ApprovalRespondResult, EngineError>>,
-    },
-    ApprovalCapabilityInvalid {
-        params: ApprovalRespondParams,
-        invalidation: PreparedApprovalInvalidation,
-        reply: oneshot::Sender<Result<ApprovalRespondResult, EngineError>>,
-    },
-    ApprovalEvaluationComplete {
-        run: RunId,
-        request: ApprovalRequest,
-        executor: PreparedExecutorCell,
-        decision: ApprovalInternalDecisionKind,
-        permission_mode: PermissionMode,
-        cancelled: bool,
-        reply: oneshot::Sender<Result<ApprovalEvaluationTransition, EngineError>>,
-    },
-    ApprovalTerminal {
-        run: RunId,
-        approval_id: ApprovalId,
-        terminal: ApprovalTerminal,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
-    },
-    ToolResult {
-        run: RunId,
-        tool_call_id: ToolCallId,
-        result: Result<ToolResult, ToolFailure>,
-        cancelled: bool,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
-    },
-    ResolveDelegateFailureIfPending {
-        run: RunId,
-        tool_call_id: ToolCallId,
-        result: ToolResult,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
-    },
-    ResolveAbandonedDelegateFailureIfPending {
-        invocation_id: InvocationId,
-        generation: u64,
-        run: RunId,
-        tool_call_id: ToolCallId,
-        result: ToolResult,
-        reply: oneshot::Sender<Result<bool, EngineError>>,
     },
     PromotePendingOrComplete {
         run: RunId,
@@ -680,12 +575,32 @@ enum SessionCommand {
         run: RunId,
         reply: oneshot::Sender<Result<producer_claims::ClaimedPrompt, EngineError>>,
     },
-    EvictionBarrier {
-        reply: oneshot::Sender<Result<(), EngineError>>,
-    },
 }
 
 impl SessionCommand {
+    /// A [`Self::Call`] running `call` on the actor, and the receiver its
+    /// result is sent to.
+    fn call<T, F, Fut>(
+        reconcile_producers: bool,
+        call: F,
+    ) -> (Self, oneshot::Receiver<Result<T, EngineError>>)
+    where
+        T: Send + 'static,
+        F: FnOnce(Engine) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, EngineError>> + Send + 'static,
+    {
+        let (reply, receiver) = oneshot::channel();
+        let command = Self::Call {
+            reconcile_producers,
+            call: Box::new(move |engine| {
+                Box::pin(async move {
+                    let _ = reply.send(call(engine).await);
+                })
+            }),
+        };
+        (command, receiver)
+    }
+
     fn compaction_deferred_kind(&self) -> Option<CompactionDeferredKind> {
         match self {
             Self::Start { .. } => Some(CompactionDeferredKind::Start),
@@ -1306,13 +1221,8 @@ impl Engine {
                     return;
                 };
                 let _ = Engine { inner }
-                    .request(session, |reply| {
-                        SessionCommand::Producer(
-                            crate::runtime::producers::ProducerCommand::Reconcile {
-                                projection: Some(projection.clone()),
-                                reply,
-                            },
-                        )
+                    .on_actor_unreconciled(session, move |engine| {
+                        engine.reconcile_producers_direct(session, Some(projection))
                     })
                     .await;
             }

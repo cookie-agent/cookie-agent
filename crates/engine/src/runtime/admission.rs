@@ -11,7 +11,7 @@ use cookie_agent_protocol::{
 use tokio::sync::oneshot;
 
 use super::{
-    Engine, EngineError, Event, Inner, SessionCommand,
+    Engine, EngineError, Event, Inner,
     delegation::{DelegationRecord, cancelled_delegate_result_with_reason},
     helpers::{invocation_id, session_depth},
 };
@@ -861,15 +861,16 @@ impl Engine {
             short_id.as_deref(),
             "delegate admission was abandoned",
         );
-        self.request(target.parent_session_id, |reply| {
-            SessionCommand::ResolveAbandonedDelegateFailureIfPending {
+        let parent_session_id = target.parent_session_id;
+        self.on_actor(parent_session_id, move |engine| {
+            engine.resolve_abandoned_delegate_failure_if_pending_direct(
                 invocation_id,
                 generation,
-                run: target.parent_run_id,
-                tool_call_id: target.parent_tool_call_id,
+                parent_session_id,
+                target.parent_run_id,
+                target.parent_tool_call_id,
                 result,
-                reply,
-            }
+            )
         })
         .await
         .map(|_| ())
