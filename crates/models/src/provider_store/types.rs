@@ -530,27 +530,6 @@ impl ProviderStoreSnapshot {
     pub fn provider(&self, id: &ProviderId) -> Option<&StoredManagedConnection> {
         self.providers.get(id)
     }
-
-    #[must_use]
-    pub fn connect_receipt(&self, id: &ClientConnectId) -> Option<ProviderStoreMutation> {
-        self.connect_receipts
-            .get(id)
-            .map(|receipt| ProviderStoreMutation::Connect {
-                durable_receipt: receipt.durable_receipt.clone(),
-                durable_connection: receipt.durable_connection.clone(),
-            })
-    }
-
-    #[must_use]
-    pub fn disconnect_receipt(&self, id: &ClientRequestId) -> Option<ProviderStoreMutation> {
-        self.disconnect_receipts
-            .get(id)
-            .map(|receipt| ProviderStoreMutation::Disconnect {
-                durable_receipt: receipt.durable_receipt.clone(),
-                provider_id: receipt.provider_id.clone(),
-                disconnected: receipt.disconnected,
-            })
-    }
 }
 
 impl fmt::Debug for ProviderStoreSnapshot {

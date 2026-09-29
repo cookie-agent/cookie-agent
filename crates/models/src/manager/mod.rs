@@ -46,8 +46,7 @@ use crate::{
         FrozenCredentialSource, FrozenProviderSource, FrozenResolvedRequestDefaults,
         FrozenSetupBinding, FrozenVariantBlueprint, HeaderName, ModelSnapshotPayloadV1,
         NormalizedDecimal, SafeEndpointIdentity, SafeStaticHeaderValue, behavior_fingerprint,
-        blueprint_fingerprint, canonical_state_fingerprint, selected_behavior,
-        selection_fingerprint,
+        blueprint_fingerprint, canonical_state_fingerprint, selection_fingerprint,
     },
     provider_store::{
         ClientConnectId, ClientRequestId, ConnectMutation, ConnectProposal, DisconnectMutation,
@@ -816,46 +815,6 @@ impl CompiledRuntimeModel {
             provider_options: behavior.provider_options.clone(),
             behavior_fingerprint: behavior.behavior_fingerprint.clone(),
         })
-    }
-
-    pub fn resolved_defaults(
-        &self,
-        variant: Option<&cookie_agent_identity::VariantId>,
-    ) -> Option<&crate::ResolvedRequestDefaults> {
-        match variant {
-            Some(variant) => self
-                .variant_executables
-                .get(variant)
-                .map(|value| &value.defaults),
-            None => self.executable.as_ref().map(|value| &value.defaults),
-        }
-    }
-
-    pub fn frozen_behavior(
-        &self,
-        variant: Option<&cookie_agent_identity::VariantId>,
-    ) -> Result<
-        (
-            protocol::FrozenResolvedRequestDefaults,
-            protocol::FrozenProviderOptions,
-            protocol::Sha256Digest,
-            protocol::Sha256Digest,
-        ),
-        ModelManagerError,
-    > {
-        let blueprint = self.blueprint()?;
-        let selection = ModelSelection {
-            model: self.key.clone(),
-            variant: variant.cloned(),
-        };
-        let behavior = selected_behavior(&blueprint, &selection)
-            .ok_or(ModelManagerError::UnknownVariant(selection))?;
-        Ok((
-            behavior.defaults.clone(),
-            behavior.options.clone(),
-            behavior.behavior_fingerprint.clone(),
-            behavior.selection_fingerprint.clone(),
-        ))
     }
 
     fn blueprint(&self) -> Result<CompiledSafeModelBlueprint, ModelManagerError> {
