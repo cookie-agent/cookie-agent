@@ -781,8 +781,6 @@ impl SessionState {
 pub struct StateStore {
     pub sessions: HashMap<SessionId, SessionState>,
     physical_events: HashMap<SessionId, Vec<StoredEvent>>,
-    abandoned_output: HashMap<ToolCallId, SessionId>,
-    tool_sessions: HashMap<ToolCallId, SessionId>,
     quarantined_sessions: HashSet<SessionId>,
     replays: HashMap<SessionId, ReplayProgress>,
 }
@@ -812,7 +810,7 @@ impl StateStore {
     /// projection changes only through a validated `ReplayEnd` swap or live
     /// events after that replay's final sequence. Once a replay for a session
     /// is abandoned, that session's visible projection is immutable until a
-    /// validated replacement replay ends; all of its output is quarantined.
+    /// validated replacement replay ends.
     pub fn apply_delivery(&mut self, delivery: ClientDelivery) -> DeliveryOutcome {
         match delivery {
             ClientDelivery::Live {
@@ -885,13 +883,6 @@ impl StateStore {
                 event,
             } => {
                 let event = *event;
-                let started_call = match &event.payload {
-                    EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
-                    _ => None,
-                };
-                if let Some(call_id) = started_call {
-                    self.tool_sessions.insert(call_id, session_id);
-                }
                 let valid = self.replays.get_mut(&session_id).is_some_and(|replay| {
                     if replay.generation != generation || replay.final_seq != final_seq {
                         return false;
@@ -938,11 +929,6 @@ impl StateStore {
                 match replay {
                     Some(mut replay) if valid => {
                         self.quarantined_sessions.remove(&session_id);
-                        self.abandoned_output
-                            .retain(|_, output_session| *output_session != session_id);
-                        for call_id in replay.scratch.tools.keys() {
-                            self.abandoned_output.remove(call_id);
-                        }
                         replay.scratch.version = self
                             .sessions
                             .get(&session_id)
@@ -955,32 +941,8 @@ impl StateStore {
                         self.sessions.insert(session_id, replay.scratch);
                         DeliveryOutcome::Applied
                     }
-                    Some(replay) => {
-                        self.quarantine_replay_output(session_id, &replay);
-                        DeliveryOutcome::ReplayFailed { session_id }
-                    }
-                    None => DeliveryOutcome::ReplayFailed { session_id },
+                    _ => DeliveryOutcome::ReplayFailed { session_id },
                 }
-            }
-            // Display comes from durable progress/terminal events. Do not retain
-            // raw payloads even when a caller bypasses the display-only client.
-            ClientDelivery::OutputSnapshot(snapshot) => {
-                if let Some(session_id) = self.quarantined_output(snapshot.snapshot.call_id) {
-                    return DeliveryOutcome::ReplayFailed { session_id };
-                }
-                DeliveryOutcome::Applied
-            }
-            ClientDelivery::OutputDelta(delta) => {
-                if let Some(session_id) = self.quarantined_output(delta.call_id) {
-                    return DeliveryOutcome::ReplayFailed { session_id };
-                }
-                DeliveryOutcome::Applied
-            }
-            ClientDelivery::OutputGap(gap) => {
-                if let Some(session_id) = self.quarantined_output(gap.call_id) {
-                    return DeliveryOutcome::ReplayFailed { session_id };
-                }
-                DeliveryOutcome::Applied
             }
             ClientDelivery::RecoveryFailed { .. } => DeliveryOutcome::Applied,
             ClientDelivery::Disconnected { error } => {
@@ -1026,35 +988,9 @@ impl StateStore {
         sessions
     }
 
-    fn quarantined_output(&self, call_id: ToolCallId) -> Option<SessionId> {
-        if self
-            .replays
-            .values()
-            .any(|replay| replay.scratch.tools.contains_key(&call_id))
-        {
-            return None;
-        }
-        self.tool_sessions
-            .get(&call_id)
-            .copied()
-            .filter(|session_id| {
-                self.quarantined_sessions.contains(session_id)
-                    || self.replays.contains_key(session_id)
-            })
-            .or_else(|| self.abandoned_output.get(&call_id).copied())
-    }
-
     fn abandon_replay(&mut self, session_id: SessionId) {
         self.quarantined_sessions.insert(session_id);
-        if let Some(replay) = self.replays.remove(&session_id) {
-            self.quarantine_replay_output(session_id, &replay);
-        }
-    }
-
-    fn quarantine_replay_output(&mut self, session_id: SessionId, replay: &ReplayProgress) {
-        for call_id in replay.scratch.tools.keys() {
-            self.abandoned_output.insert(*call_id, session_id);
-        }
+        self.replays.remove(&session_id);
     }
 
     /// Drain a session's voided inputs for restoration into the composer.
@@ -1080,13 +1016,6 @@ impl StateStore {
     }
 
     pub fn apply_event_for_generation(&mut self, event: StoredEvent, generation: u64) -> bool {
-        let started_call = match &event.payload {
-            EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
-            _ => None,
-        };
-        if let Some(call_id) = started_call {
-            self.tool_sessions.insert(call_id, event.session_id);
-        }
         if self.quarantined_sessions.contains(&event.session_id) {
             return false;
         }

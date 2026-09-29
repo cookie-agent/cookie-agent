@@ -1,11 +1,5 @@
-use cookie_agent_engine::events::OutputMessage;
-use cookie_agent_protocol::{
-    EventPayload, EventSubscriptionMessage, OutputSnapshotEnvelope, OutputStream, ServerContext,
-};
-use tokio::{
-    sync::mpsc,
-    time::{Duration, sleep},
-};
+use cookie_agent_protocol::{EventSubscriptionMessage, ServerContext};
+use tokio::sync::mpsc;
 
 use super::Server;
 
@@ -15,7 +9,6 @@ impl Server {
         mut receiver: mpsc::Receiver<EventSubscriptionMessage>,
         context: ServerContext,
     ) {
-        let server = self.clone();
         tokio::spawn(async move {
             let shutdown = context.shutdown();
             loop {
@@ -26,13 +19,6 @@ impl Server {
                         None => return,
                     },
                 };
-                let tool_call_id = match &message {
-                    EventSubscriptionMessage::Event { event } => match &event.payload {
-                        EventPayload::ToolCallStarted { start } => Some(start.tool_call_id),
-                        _ => None,
-                    },
-                    EventSubscriptionMessage::Gap { .. } => None,
-                };
                 if context
                     .notify("events.subscription", &message)
                     .await
@@ -40,99 +26,7 @@ impl Server {
                 {
                     return;
                 }
-                if let Some(tool_call_id) = tool_call_id {
-                    server.start_output_tail(tool_call_id, context.clone());
-                }
             }
         });
-    }
-
-    pub(super) fn start_output_tail(
-        &self,
-        tool_call_id: cookie_agent_protocol::ToolCallId,
-        context: ServerContext,
-    ) {
-        let engine = self.engine.clone();
-        tokio::spawn(async move {
-            let shutdown = context.shutdown();
-            for _ in 0..10 {
-                if let Some(streams) = engine.tool_output_streams(tool_call_id) {
-                    for stream in streams {
-                        if let Some((snapshot, receiver)) =
-                            engine.subscribe_tool_output(tool_call_id, stream.clone())
-                        {
-                            tokio::spawn(forward_output(
-                                stream,
-                                snapshot,
-                                receiver,
-                                context.clone(),
-                            ));
-                        }
-                    }
-                    return;
-                }
-                tokio::select! {
-                    _ = shutdown.cancelled() => return,
-                    _ = sleep(Duration::from_millis(5)) => {}
-                }
-            }
-        });
-    }
-}
-
-async fn forward_output(
-    stream: OutputStream,
-    snapshot: cookie_agent_protocol::OutputSnapshot,
-    mut receiver: mpsc::Receiver<OutputMessage>,
-    context: ServerContext,
-) {
-    let shutdown = context.shutdown();
-    let held_delta = match receiver.try_recv() {
-        Ok(OutputMessage::Gap(gap)) => {
-            if context
-                .notify("events.tool_output_gap", &gap)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            None
-        }
-        Ok(OutputMessage::Delta(delta)) => Some(delta),
-        Err(_) => None,
-    };
-    if context
-        .notify(
-            "events.tool_output_snapshot",
-            &OutputSnapshotEnvelope { stream, snapshot },
-        )
-        .await
-        .is_err()
-    {
-        return;
-    }
-    if let Some(delta) = held_delta
-        && context
-            .notify("events.tool_output_delta", &delta)
-            .await
-            .is_err()
-    {
-        return;
-    }
-    loop {
-        let message = tokio::select! {
-            _ = shutdown.cancelled() => return,
-            message = receiver.recv() => match message {
-                Some(message) => message,
-                None => return,
-            },
-        };
-        let result = match message {
-            OutputMessage::Delta(delta) => context.notify("events.tool_output_delta", &delta).await,
-            OutputMessage::Gap(gap) => context.notify("events.tool_output_gap", &gap).await,
-        };
-        if result.is_err() {
-            return;
-        }
     }
 }

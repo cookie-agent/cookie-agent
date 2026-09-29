@@ -1,18 +1,14 @@
 use crate::ui::transcript::*;
 
-use cookie_agent_protocol::{OutputDelta, OutputStream, SessionId, ToolCallId};
+use cookie_agent_protocol::{SessionId, ToolCallId};
 
 use crossterm::event::{MouseButton, MouseEventKind};
 
 use ratatui::text::Line;
 
-use crate::client::ClientDelivery;
-
 use crate::state::{AssistantChild, ToolCallState};
 
 use crate::ui::app::*;
-
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use super::support::*;
 
@@ -370,7 +366,7 @@ async fn clicking_tool_output_notice_expands_and_collapses_nested_view() {
 }
 
 #[tokio::test]
-async fn raw_streams_do_not_create_implicit_display_click_regions() {
+async fn running_tool_display_is_the_only_implicit_output_click_region() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();
     let call_id = ToolCallId::new_v7();
@@ -389,15 +385,6 @@ async fn raw_streams_do_not_create_implicit_display_click_regions() {
         },
     );
     app.store.sessions.insert(session, state);
-    for stream in [OutputStream::Stdout, OutputStream::Stderr] {
-        app.store
-            .apply_delivery(ClientDelivery::OutputDelta(OutputDelta {
-                call_id,
-                stream,
-                byte_offset: 0,
-                data: STANDARD.encode(text.as_bytes()),
-            }));
-    }
     app.selected = Some(session);
     app.tree_root = Some(session);
     app.expanded_blocks

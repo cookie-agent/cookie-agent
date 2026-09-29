@@ -1,15 +1,12 @@
 use crate::ui::transcript::*;
 
 use cookie_agent_protocol::{
-    AttemptId, EventPayload, ModelSelection, OutputDelta, OutputStream, SafeCode, SessionId,
-    SessionTree, ToolCallId,
+    AttemptId, EventPayload, ModelSelection, SafeCode, SessionId, SessionTree, ToolCallId,
 };
 
 use jiff::Timestamp;
 
 use ratatui::text::Line;
-
-use crate::client::ClientDelivery;
 
 use crate::markdown::{MarkdownDocument, PlainHighlighter};
 
@@ -18,8 +15,6 @@ use crate::state::{AssistantChild, EventLevel, StateStore, ToolCallState};
 use crate::ui::app::DescendantEvent;
 
 use crate::ui::events::RenderScheduler;
-
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use super::support::*;
 
@@ -311,43 +306,6 @@ fn replay_projection_deduplicates_logical_transitions_without_losing_evidence() 
     let mut reopened = StateStore::default();
     assert!(reopened.rebuild_session(session, 0, events));
     assert_projection(&reopened);
-}
-
-#[test]
-fn sustained_raw_output_and_gaps_do_not_change_tool_display() {
-    let session = SessionId::new_v7();
-    let call = ToolCallId::new_v7();
-    let mut store = StateStore::default();
-    store.sessions.entry(session).or_default().tools.insert(
-        call,
-        ToolCallState {
-            id: call,
-            owner: owner(1, "call-1"),
-            presentation: presentation("bash", None),
-            arguments: String::new(),
-            status: ToolStatus::Running,
-            detail: String::new(),
-            has_output_chunks: false,
-        },
-    );
-    let before = format!("{store:?}");
-    store.apply_delivery(ClientDelivery::OutputGap(
-        cookie_agent_protocol::OutputGap {
-            call_id: call,
-            stream: OutputStream::Stdout,
-            next_offset: 3,
-        },
-    ));
-    let data = STANDARD.encode(vec![b'x'; 64 * 1024]);
-    for byte_offset in (0..1600).rev() {
-        store.apply_delivery(ClientDelivery::OutputDelta(OutputDelta {
-            call_id: call,
-            stream: OutputStream::Stdout,
-            byte_offset: byte_offset * 64 * 1024,
-            data: data.clone(),
-        }));
-    }
-    assert_eq!(format!("{store:?}"), before);
 }
 
 #[tokio::test]

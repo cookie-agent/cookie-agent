@@ -301,23 +301,6 @@ impl ServerProtocol for Server {
         };
         context.register_session_subscription(params.session_id);
         self.start_event_tail(receiver, context.clone());
-        // Tail every call this page starts, and every call still running
-        // whose start an earlier page of this replay carried.
-        let mut tailed = std::collections::HashSet::new();
-        let started = result
-            .events
-            .iter()
-            .filter_map(|event| match &event.payload {
-                cookie_agent_protocol::EventPayload::ToolCallStarted { start } => {
-                    Some(start.tool_call_id)
-                }
-                _ => None,
-            });
-        for tool_call_id in started.chain(self.engine.open_tool_calls(params.session_id)) {
-            if tailed.insert(tool_call_id) {
-                self.start_output_tail(tool_call_id, context.clone());
-            }
-        }
         Ok(result)
     }
 

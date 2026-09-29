@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, fs, sync::Arc};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cookie_agent_config::{
     AgentDocument, AgentDocumentSource, AgentFrontmatter, AgentMode, ApprovalConfig,
     ContextCompactionConfig, EngineConfig, LoadedConfiguration, ServerConfig, SessionTitleConfig,
@@ -21,11 +20,10 @@ use cookie_agent_protocol::{
     AgentId, ApprovalBoundary, ApprovalCapability, ApprovalConstraints, ApprovalEvaluation,
     ApprovalId, ApprovalRequest, ApprovalResourceSource, ApprovalTrigger, DecisionTrace,
     EventPayload, EventSubscriptionMessage, MatchedPermissionRule, ModelKey, ModelSelection,
-    OutputDelta, OutputSnapshot, OutputSnapshotEnvelope, OutputStream, PermissionAction,
-    PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
+    PermissionAction, PermissionEffect, PreparedApprovalResource, PreparedBindingLifetime,
     PreparedCapabilityOperation, PreparedOperationIdentity, PreparedResourceDigest,
     PreparedResourceIdentity, ProviderId, RunSelection, SafeCode, SessionCreateParams, SessionId,
-    Sha256Digest, StoredEvent, ToolCallId,
+    Sha256Digest, StoredEvent,
 };
 use cookie_agent_server::Server;
 use jiff::Timestamp;
@@ -250,10 +248,6 @@ fn in_process_server_with_skills(with_skills: bool) -> (tempfile::TempDir, Arc<S
     (directory, Arc::new(Server::new(engine)))
 }
 
-fn call_id() -> ToolCallId {
-    ToolCallId::new_v7()
-}
-
 fn approval_request() -> ApprovalRequest {
     let resource = PreparedApprovalResource {
         capability: PermissionAction::Bash,
@@ -329,36 +323,6 @@ fn text_event(
             text: text.into(),
         },
     }
-}
-
-#[test]
-fn sustained_unknown_raw_output_does_not_create_tui_state() {
-    let mut store = StateStore::default();
-    let before = format!("{store:?}");
-    let data = STANDARD.encode(vec![b'x'; 64 * 1024]);
-    for byte_offset in (0..1600).rev() {
-        store.apply_delivery(crate::ClientDelivery::OutputDelta(OutputDelta {
-            call_id: call_id(),
-            stream: OutputStream::Stdout,
-            byte_offset: byte_offset * 64 * 1024,
-            data: data.clone(),
-        }));
-    }
-    assert_eq!(format!("{store:?}"), before);
-}
-
-#[test]
-fn empty_snapshot_keeps_its_explicit_stream_identity() {
-    let envelope = OutputSnapshotEnvelope {
-        stream: OutputStream::Stderr,
-        snapshot: OutputSnapshot {
-            call_id: call_id(),
-            start_offset: 0,
-            end_offset: 0,
-            chunks: Vec::new(),
-        },
-    };
-    assert_eq!(envelope.stream, OutputStream::Stderr);
 }
 
 #[test]

@@ -279,8 +279,8 @@ usage projections rebuild from these events after restart, revert, and fork.
 Its `prompt_fingerprint` hashes the authoritative normalized request sent to the provider, while
 `model_attempt_started` remains the earlier cancellation and lifecycle boundary.
 
-`tool_call_started` records the single/named output declaration. Raw output
-subscriptions enumerate these channels, including arbitrary named streams.
+`tool_call_started` records the single/named output declaration, including
+arbitrary named streams.
 `tool_call_progress` contains a control-free status `message` and optional UI-only
 `display`. Display deltas append; terminal `result.display` replaces them. The
 reader accepts historical `output_chunk` fields, but current writers use `display`.

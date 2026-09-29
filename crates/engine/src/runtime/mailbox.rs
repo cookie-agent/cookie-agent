@@ -160,18 +160,6 @@ impl Engine {
         Ok(self.inner.store.snapshot_events(session, cursor, limit)?)
     }
 
-    /// Tool calls `session`'s resident log shows as still running. A paged
-    /// replay needs these on its final page: their starts may have been on
-    /// earlier pages.
-    #[must_use]
-    pub fn open_tool_calls(&self, session: SessionId) -> Vec<ToolCallId> {
-        self.inner
-            .store
-            .get_resident(session)
-            .map(|session| session.log.open_tool_calls())
-            .unwrap_or_default()
-    }
-
     /// Subscribes to a currently running call's retained output and live tail.
     /// Output is ephemeral and intentionally separate from event cursors.
     pub fn subscribe_tool_output(
