@@ -80,6 +80,55 @@ fn automatic_compaction_gate_changes_at_proportional_threshold() {
 }
 
 #[test]
+fn compaction_trigger_uses_input_limit_or_context_less_output_cap() {
+    use crate::policy::{effective_max_output_tokens, input_token_budget};
+    let percent = ContextCompactionTrigger::Percent { percent: 70 };
+    let mut binding = crate::test_support::model_binding();
+    let limits = &mut binding.descriptor.capabilities.limits;
+    limits.context = Some(400_000);
+    limits.input = Some(272_000);
+    limits.output = Some(128_000);
+
+    // A documented input limit is the budget, whatever the output cap.
+    let budget = input_token_budget(&binding, effective_max_output_tokens(&binding, 0)).unwrap();
+    assert_eq!(budget, 272_000);
+    let trigger = resolve_compaction_trigger(budget, &percent);
+    assert_eq!(trigger, 190_400);
+    assert!(usage_reaches_compaction_trigger(200_000, trigger));
+
+    // An input limit below 70% of the context triggers well before 70% of the context.
+    binding.descriptor.capabilities.limits.input = Some(100_000);
+    let budget = input_token_budget(&binding, effective_max_output_tokens(&binding, 0)).unwrap();
+    let trigger = resolve_compaction_trigger(budget, &percent);
+    assert_eq!(trigger, 70_000);
+    assert!(usage_reaches_compaction_trigger(100_000, trigger));
+    assert!(100_000 < resolve_compaction_trigger(400_000, &percent));
+
+    // Without one, the context less the output cap the request actually sends: a nonzero agent
+    // cap bounded by the output limit, else the model's request default, else the output limit.
+    binding.descriptor.capabilities.limits.input = None;
+    binding.defaults.request.max_output_tokens = Some(32_000);
+    assert_eq!(effective_max_output_tokens(&binding, 0), Some(32_000));
+    assert_eq!(effective_max_output_tokens(&binding, 64_000), Some(64_000));
+    assert_eq!(
+        effective_max_output_tokens(&binding, 500_000),
+        Some(128_000)
+    );
+    assert_eq!(
+        input_token_budget(&binding, effective_max_output_tokens(&binding, 0)),
+        Some(368_000)
+    );
+    binding.defaults.request.max_output_tokens = None;
+    assert_eq!(effective_max_output_tokens(&binding, 0), Some(128_000));
+    assert_eq!(
+        input_token_budget(&binding, effective_max_output_tokens(&binding, 0)),
+        Some(272_000)
+    );
+    binding.descriptor.capabilities.limits.context = None;
+    assert_eq!(input_token_budget(&binding, Some(1)), None);
+}
+
+#[test]
 fn auto_off_blocks_automatic_compaction_but_not_manual_force() {
     assert!(!compaction_gate(false, false, 100));
     assert!(compaction_gate(true, false, 0));

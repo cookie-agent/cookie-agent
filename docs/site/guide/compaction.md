@@ -41,25 +41,40 @@ compaction rereads files or emits new `context_rehydrated` events.
 
 ## The trigger threshold
 
+Triggers are measured against the model's **input budget**, the number of
+tokens a request may occupy:
+
+```text
+input_budget = model_input_limit                          when the model declares one
+input_budget = model_context_limit - max_output_tokens    otherwise
+```
+
+Catalog models take the input limit from models.dev `limit.input` when it is
+narrower than the context window (for example `gpt-5`: 400,000 context,
+272,000 input); custom models declare it as `capabilities.input_tokens`.
+`max_output_tokens` is the output cap the run actually sends (see
+[agent limits](agents.md)); for catalog models it defaults to
+`min(output limit, 32000)`.
+
 By default, compaction uses a proportional trigger:
 
 ```text
-trigger_tokens = model_context_limit * percent / 100
+trigger_tokens = input_budget * percent / 100
 ```
 
-`percent` defaults to 70, so a model with a 200,000-token context window
-triggers at 140,000 tokens. Valid percentages are 1 through 99; 100 is rejected
+`percent` defaults to 70, so a model with a 200,000-token context window and a
+32,000-token output cap triggers at 117,600 tokens, and `gpt-5` at 190,400. Valid percentages are 1 through 99; 100 is rejected
 because compaction at the model limit does not preserve useful request
 headroom.
 
 The fixed-buffer form preserves the earlier behavior:
 
 ```text
-trigger_tokens = model_context_limit - buffer_tokens
+trigger_tokens = input_budget - buffer_tokens
 ```
 
-This subtraction saturates at zero. If the buffer equals or exceeds the context
-limit, the trigger becomes 0 and automatic compaction is disabled for that
+This subtraction saturates at zero. If the buffer equals or exceeds the input
+budget, the trigger becomes 0 and automatic compaction is disabled for that
 model.
 
 The threshold is compared against two signals:

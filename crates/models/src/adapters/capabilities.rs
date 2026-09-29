@@ -22,6 +22,9 @@ pub fn validate_capability_ceiling(
         || capabilities.context_tokens == 0
         || capabilities.output_tokens == 0
         || capabilities.output_tokens > capabilities.context_tokens
+        || capabilities
+            .input_tokens
+            .is_some_and(|input| input == 0 || input > capabilities.context_tokens)
     {
         return Err(AdapterCapabilityError::Unsupported);
     }

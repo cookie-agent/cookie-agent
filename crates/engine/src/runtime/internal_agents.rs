@@ -739,8 +739,8 @@ fn internal_timeout_message(timeout_ms: u64) -> String {
 /// internal agent's own document cap is `0` (the default for authored and
 /// built-in internal agents alike), the owner run's document cap applies
 /// instead. The result is `min(model output limit, first nonzero of [internal
-/// document cap, inherited owner cap])`, and `None` only when the model's
-/// output limit is unknown and both caps are zero.
+/// document cap, inherited owner cap])`; when both caps are zero the model's
+/// request default applies (see `policy::effective_max_output_tokens`).
 ///
 /// An explicit nonzero internal document cap therefore still wins over
 /// inheritance, subject to the model minimum. That is also what keeps replay
@@ -756,12 +756,7 @@ pub(super) fn internal_agent_output_limit(
     } else {
         policy.limits.max_output_tokens
     };
-    match (binding.descriptor.capabilities.limits.output, document) {
-        (Some(model), 0) => Some(model),
-        (Some(model), document) => Some(model.min(document)),
-        (None, 0) => None,
-        (None, document) => Some(document),
-    }
+    crate::policy::effective_max_output_tokens(binding, document)
 }
 
 fn internal_model_request(

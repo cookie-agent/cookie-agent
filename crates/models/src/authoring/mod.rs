@@ -493,6 +493,9 @@ fn validate_capabilities(value: &ModelCapabilities) -> Result<(), AuthoringError
         || value.context_tokens == 0
         || value.output_tokens == 0
         || value.output_tokens > value.context_tokens
+        || value
+            .input_tokens
+            .is_some_and(|input| input == 0 || input > value.context_tokens)
         || value.parallel_tool_calls && !value.tool_calling
         || value.compaction != CompactionCapability::Unsupported
     {
