@@ -1,5 +1,4 @@
 use super::*;
-use crate::adapters::oven::{AdapterConfig, AuthConfig, CommonDefaults, ConcreteModel};
 use crate::adapters::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
     GoogleCacheStrategyConfig, OpenAiCacheStrategyConfig,
@@ -564,135 +563,84 @@ fn openai_system_breakpoint_index_is_stable_after_translated_system_emission() {
 
 fn real_openai_resolved(adapter: OvenAdapterFamily, endpoint: String) -> ResolvedExecutableModel {
     let capabilities = resolved(false, 0).0.model().capabilities().clone();
-    if matches!(
-        adapter,
-        OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
-    ) {
-        let provider = oven_sdk::ProviderConfig::new(
+    let declaration =
+        oven_sdk::ModelDeclaration::new(ModelId::new("gpt-5.6-test"), capabilities).unwrap();
+    let api = oven_sdk::ApiEndpoint::parse(endpoint).unwrap();
+    let azure = || {
+        oven_sdk::ProviderConfig::new(
             OvenProviderId::new(oven_sdk_azure::AZURE_OPENAI_PROVIDER_ID),
-            oven_sdk::ApiEndpoint::parse(endpoint).unwrap(),
+            api.clone(),
             oven_sdk_azure::AzureOpenAiAuth::ApiKey(oven_sdk::SecretString::new("test-key")),
             oven_sdk::HeaderConfig::empty(),
         )
-        .unwrap();
-        let declaration =
-            oven_sdk::ModelDeclaration::new(ModelId::new("gpt-5.6-test"), capabilities).unwrap();
-        let model: Arc<dyn LanguageModel> = match adapter {
-            OvenAdapterFamily::AzureOpenaiChat => Arc::new(
-                oven_sdk_azure::AzureOpenAiChatModel::new(oven_sdk::ModelConfig::new(
-                    provider,
-                    declaration,
-                    oven_sdk_azure::AzureOpenAiChatSettings::default(),
-                ))
-                .unwrap(),
-            ),
-            OvenAdapterFamily::AzureOpenaiResponses => Arc::new(
-                oven_sdk_azure::AzureOpenAiResponsesModel::new(oven_sdk::ModelConfig::new(
-                    provider,
-                    declaration,
-                    oven_sdk_azure::AzureOpenAiResponsesSettings::default(),
-                ))
-                .unwrap(),
-            ),
-            _ => unreachable!("Azure family checked"),
-        };
-        return ResolvedExecutableModel {
-            selection: ModelSelection {
-                model: "test/group/model".parse().unwrap(),
-                variant: None,
-            },
-            model,
-            adapter,
-            defaults: crate::ResolvedRequestDefaults::default(),
-            provider_options: BTreeMap::new(),
-            behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
-        };
-    }
-    let adapter_config: AdapterConfig = serde_json::from_value(match adapter {
-        OvenAdapterFamily::OpenaiChat => json!({
-            "adaptor":"openai-chat",
-            "settings":{
-                "system_message_role":"developer",
-                "max_tokens_field":"max_tokens",
-                "stream_usage":false,
-                "structured_output":"unsupported",
-                "reasoning_field":"none",
-                "routing_discriminator":null
-            },
-            "options":{}
-        }),
-        OvenAdapterFamily::OpenaiResponses => json!({
-            "adaptor":"openai-responses",
-            "settings":{"routing_discriminator":null,"compaction":"unsupported"},
-            "options":{}
-        }),
-        OvenAdapterFamily::AzureOpenaiChat => json!({
-            "adaptor":"azure-chat",
-            "settings":{
-                "route":{"kind":"v1"},
-                "revision":null,
-                "system_role":"developer",
-                "max_tokens_field":"max_tokens",
-                "stream_usage":false,
-                "structured_output":"unsupported",
-                "reasoning_field":"none",
-                "omit_reasoning_sampling":false
-            },
-            "options":{}
-        }),
-        OvenAdapterFamily::AzureOpenaiResponses => json!({
-            "adaptor":"azure-responses",
-            "settings":{
-                "route":{"kind":"v1"},
-                "revision":null,
-                "compaction":{"kind":"unsupported"}
-            },
-            "options":{}
-        }),
-        _ => panic!("OpenAI endpoint family"),
-    })
-    .unwrap();
-    let constructed = ConcreteModel {
-        provider_id: if matches!(
-            adapter,
-            OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
-        ) {
-            "azure.openai".into()
-        } else {
-            "openai".into()
-        },
-        model_id: "gpt-5.6-test".into(),
-        endpoint,
-        auth: if matches!(
-            adapter,
-            OvenAdapterFamily::AzureOpenaiChat | OvenAdapterFamily::AzureOpenaiResponses
-        ) {
-            AuthConfig::ApiKey {
-                value: "test-key".into(),
-            }
-        } else {
-            AuthConfig::Openai {
-                api_key: "test-key".into(),
+        .unwrap()
+    };
+    let openai = || {
+        oven_sdk::ProviderConfig::new(
+            OvenProviderId::new("openai"),
+            api.clone(),
+            oven_sdk_openai::OpenAiAuth {
+                api_key: oven_sdk::SecretString::new("test-key"),
                 organization: None,
                 project: None,
-            }
-        },
-        headers: BTreeMap::new(),
-        capabilities,
-        defaults: CommonDefaults::default(),
-        adapter: adapter_config,
-    }
-    .build()
-    .unwrap();
+            },
+            oven_sdk::HeaderConfig::empty(),
+        )
+        .unwrap()
+    };
+    let model: Arc<dyn LanguageModel> = match adapter {
+        OvenAdapterFamily::OpenaiChat => Arc::new(
+            oven_sdk_openai::OpenAiChatModel::new(oven_sdk::ModelConfig::new(
+                openai(),
+                declaration,
+                oven_sdk_openai::OpenAiChatSettings {
+                    system_message_role: oven_sdk_openai::SystemMessageRole::Developer,
+                    max_tokens_field: oven_sdk_openai::MaxTokensField::MaxTokens,
+                    stream_usage: false,
+                    structured_output: oven_sdk_openai::StructuredOutputSupport::Unsupported,
+                    reasoning_field: oven_sdk_openai::ReasoningField::None,
+                    routing_discriminator: None,
+                    client: None,
+                    timeouts: oven_sdk_openai::OpenAiTimeouts::default(),
+                },
+            ))
+            .unwrap(),
+        ),
+        OvenAdapterFamily::OpenaiResponses => Arc::new(
+            oven_sdk_openai::OpenAiResponsesModel::new(oven_sdk::ModelConfig::new(
+                openai(),
+                declaration,
+                oven_sdk_openai::OpenAiResponsesSettings::default(),
+            ))
+            .unwrap(),
+        ),
+        OvenAdapterFamily::AzureOpenaiChat => Arc::new(
+            oven_sdk_azure::AzureOpenAiChatModel::new(oven_sdk::ModelConfig::new(
+                azure(),
+                declaration,
+                oven_sdk_azure::AzureOpenAiChatSettings::default(),
+            ))
+            .unwrap(),
+        ),
+        OvenAdapterFamily::AzureOpenaiResponses => Arc::new(
+            oven_sdk_azure::AzureOpenAiResponsesModel::new(oven_sdk::ModelConfig::new(
+                azure(),
+                declaration,
+                oven_sdk_azure::AzureOpenAiResponsesSettings::default(),
+            ))
+            .unwrap(),
+        ),
+        _ => panic!("OpenAI endpoint family"),
+    };
     ResolvedExecutableModel {
         selection: ModelSelection {
             model: "test/group/model".parse().unwrap(),
             variant: None,
         },
-        model: constructed.model,
+        model,
         adapter,
         defaults: crate::ResolvedRequestDefaults::default(),
-        provider_options: constructed.provider_options,
+        provider_options: BTreeMap::new(),
         behavior_fingerprint: Sha256Digest::new("0".repeat(64)).unwrap(),
     }
 }

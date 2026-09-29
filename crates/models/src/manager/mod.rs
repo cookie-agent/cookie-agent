@@ -29,9 +29,9 @@ use thiserror::Error;
 use crate::{
     BoundedSetupString, ProviderDefinition, SafeSetupValue, SecretString, Sha256Digest,
     adapters::{
-        CacheStrategyConfig, GoogleCacheMode, OpenAiCacheMode, OpenAiPromptCacheRetention,
-        OpenAiPromptCacheTtl, OvenAdapterFamily,
-        oven::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, ModelBuildError},
+        AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, CacheStrategyConfig,
+        GoogleCacheMode, OpenAiCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+        OvenAdapterFamily, oven::ModelBuildError,
     },
     authoring::{AuthOverride, ModelsDevProvider},
     catalog::CatalogSnapshot,
@@ -1797,7 +1797,6 @@ fn compile_behaviors(
         headers.clone(),
         credentials,
         ExecutableBehaviorInput {
-            defaults: &model.defaults,
             options: &model.options,
             reasoning: None,
         },
@@ -1828,7 +1827,6 @@ fn compile_behaviors(
                     .collect(),
                 credentials,
                 ExecutableBehaviorInput {
-                    defaults: &variant.defaults,
                     options: &variant.options,
                     reasoning: variant.reasoning.as_ref(),
                 },
