@@ -3,11 +3,16 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use cookie_agent_config::PluginConfig;
 use cookie_agent_protocol::{
     AgentId, AssistantToolCallRef, CancellationCapability, EventPayload,
-    ExtensionAgentBeforeStartParams, ExtensionBusEventParams, ExtensionSessionBeforeCompactParams,
-    ExtensionToolAfterResultAction, ExtensionToolAfterResultParams, ExtensionToolBeforeCallAction,
-    ExtensionToolBeforeCallParams, Modality, ModelCallId, ModelCapabilities, Notification,
-    PersistedToolResult, PluginDiagnosticKind, ReplayCapability, RunId, SafeDisplayText, SessionId,
-    StoredEvent, ToolCallId, ToolCallTermination, ToolTerminationOutcome,
+    ExtensionAgentBeforeStartParams, ExtensionAgentBeforeStartResult, ExtensionBusEventParams,
+    ExtensionInterceptionHook, ExtensionSessionBeforeCompactParams,
+    ExtensionSessionBeforeCompactResult, ExtensionToolAfterResultAction,
+    ExtensionToolAfterResultParams, ExtensionToolAfterResultResult, ExtensionToolBeforeCallAction,
+    ExtensionToolBeforeCallParams, ExtensionToolBeforeCallResult, Modality, ModelCallId,
+    ModelCapabilities, Notification, PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+    PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD, PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+    PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, PersistedToolResult, PluginDiagnosticKind,
+    ReplayCapability, RunId, SafeDisplayText, SessionId, StoredEvent, ToolCallId,
+    ToolCallTermination, ToolTerminationOutcome,
 };
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -487,6 +492,46 @@ async fn streams_ordered_events_and_bus_without_self_echo() {
     harness.registry.shutdown().await;
 }
 
+/// Sends one hook call to every plugin registered for `hook`, in registry order, through the
+/// production `intercept_named` path. Chaining (short-circuit, accumulated params) belongs to the
+/// runtime call sites and is covered by the engine-flow tests under `runtime/tests`.
+async fn intercept_each<P, R>(
+    registry: &PluginRegistry,
+    hook: ExtensionInterceptionHook,
+    method: &'static str,
+    params: &P,
+    session_id: SessionId,
+    context_id: &str,
+) -> Vec<(String, Result<R, String>)>
+where
+    P: serde::Serialize,
+    R: serde::de::DeserializeOwned,
+{
+    let mut results = Vec::new();
+    for plugin in registry.interception_plugins(hook) {
+        let result = registry
+            .intercept_named(&plugin, method, params, Some(session_id), Some(context_id))
+            .await;
+        results.push((plugin, result));
+    }
+    results
+}
+
+async fn intercept_tool_before_call(
+    registry: &PluginRegistry,
+    params: &ExtensionToolBeforeCallParams,
+) -> Vec<(String, Result<ExtensionToolBeforeCallResult, String>)> {
+    intercept_each(
+        registry,
+        ExtensionInterceptionHook::ToolBeforeCall,
+        PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD,
+        params,
+        params.session_id,
+        &params.context_id,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
     let capabilities = r#"{"producer_messaging":false,"tools":true,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call","tool_after_result","agent_before_start","session_before_compact"]}"#;
@@ -514,50 +559,64 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
         )
         .await;
     let session_id = SessionId::new_v7();
-    let before = active
-        .registry
-        .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+    let before = intercept_tool_before_call(
+        &active.registry,
+        &ExtensionToolBeforeCallParams {
             session_id,
             context_id: plugin_context_id(),
             tool: "fixture_echo".into(),
             arguments: serde_json::json!({"text":"original","path":"src/lib.rs"}),
             permission_name: "fixture_echo".into(),
             resource: Some("src/lib.rs".into()),
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(matches!(
         &before[0].1,
         Ok(result)
             if result.action == ExtensionToolBeforeCallAction::Allow
                 && result.modified_arguments.as_ref().is_some_and(|value| value["text"] == "modified")
     ));
-    let after = active
-        .registry
-        .intercept_tool_after_result(&ExtensionToolAfterResultParams {
+    let context_id = plugin_context_id();
+    let after: Vec<(String, Result<ExtensionToolAfterResultResult, String>)> = intercept_each(
+        &active.registry,
+        ExtensionInterceptionHook::ToolAfterResult,
+        PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+        &ExtensionToolAfterResultParams {
             session_id,
-            context_id: plugin_context_id(),
+            context_id: context_id.clone(),
             tool: "fixture_echo".into(),
             arguments: Value::Null,
             result_content: "original".into(),
             is_error: false,
-        })
-        .await;
+        },
+        session_id,
+        &context_id,
+    )
+    .await;
     assert!(matches!(
         &after[0].1,
         Ok(result)
             if result.action == ExtensionToolAfterResultAction::Replace
                 && result.replacement_content.as_deref() == Some("replaced")
     ));
+    let context_id = plugin_context_id();
+    let agent: Vec<(String, Result<ExtensionAgentBeforeStartResult, String>)> = intercept_each(
+        &active.registry,
+        ExtensionInterceptionHook::AgentBeforeStart,
+        PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+        &ExtensionAgentBeforeStartParams {
+            session_id,
+            context_id: context_id.clone(),
+            agent_path: "primary".into(),
+            prompt_context: Value::Null,
+        },
+        session_id,
+        &context_id,
+    )
+    .await;
     assert_eq!(
-        active
-            .registry
-            .intercept_agent_before_start(&ExtensionAgentBeforeStartParams {
-                session_id,
-                context_id: plugin_context_id(),
-                agent_path: "primary".into(),
-                prompt_context: Value::Null,
-            })
-            .await[0]
+        agent[0]
             .1
             .as_ref()
             .expect("agent interception")
@@ -565,17 +624,25 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
             .as_deref(),
         Some("agent addendum")
     );
-    assert_eq!(
-        active
-            .registry
-            .intercept_session_before_compact(&ExtensionSessionBeforeCompactParams {
+    let context_id = plugin_context_id();
+    let compact: Vec<(String, Result<ExtensionSessionBeforeCompactResult, String>)> =
+        intercept_each(
+            &active.registry,
+            ExtensionInterceptionHook::SessionBeforeCompact,
+            PLUGIN_INTERCEPT_SESSION_BEFORE_COMPACT_METHOD,
+            &ExtensionSessionBeforeCompactParams {
                 session_id,
-                context_id: plugin_context_id(),
+                context_id: context_id.clone(),
                 checkpoint_id: "checkpoint".into(),
                 additions: Vec::new(),
                 instructions: None,
-            })
-            .await[0]
+            },
+            session_id,
+            &context_id,
+        )
+        .await;
+    assert_eq!(
+        compact[0]
             .1
             .as_ref()
             .expect("compaction interception")
@@ -593,17 +660,18 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
         1_000,
     )
     .await;
-    let result = crashed
-        .registry
-        .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+    let result = intercept_tool_before_call(
+        &crashed.registry,
+        &ExtensionToolBeforeCallParams {
             session_id,
             context_id: plugin_context_id(),
             tool: "fixture_echo".into(),
             arguments: serde_json::json!({}),
             permission_name: "fixture_echo".into(),
             resource: None,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(
         result[0]
             .1
@@ -614,35 +682,43 @@ async fn dispatches_all_interception_hooks_and_fails_open_on_crash() {
 }
 
 #[tokio::test]
-async fn tool_before_interception_orders_and_block_short_circuits() {
+async fn interception_plugins_follow_registry_order() {
     let marker = tempfile::tempdir().expect("marker directory");
     let second_file = marker.path().join("second.jsonl");
     let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_before_call"]}"#;
-    let first_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        (
-            "FIXTURE_TOOL_BEFORE_RESULT",
-            r#"{"action":"allow","modified_arguments":{"step":"first"}}"#,
-        ),
-    ];
+    let first_env = [("FIXTURE_CAPABILITIES", capabilities)];
     let second_path = second_file.to_str().expect("second path");
     let second_env = [
         ("FIXTURE_CAPABILITIES", capabilities),
         ("FIXTURE_INTERCEPT_FILE", second_path),
     ];
     let harness = multi_harness(&[("zeta", &first_env), ("alpha", &second_env)]).await;
-    let params = ExtensionToolBeforeCallParams {
-        session_id: SessionId::new_v7(),
-        context_id: plugin_context_id(),
-        tool: "example".into(),
-        arguments: serde_json::json!({"step":"original"}),
-        permission_name: "read".into(),
-        resource: None,
-    };
-    let results = harness.registry.intercept_tool_before_call(&params).await;
+    assert_eq!(
+        harness
+            .registry
+            .interception_plugins(ExtensionInterceptionHook::ToolBeforeCall),
+        ["zeta", "alpha"]
+    );
+    assert!(
+        harness
+            .registry
+            .interception_plugins(ExtensionInterceptionHook::ToolAfterResult)
+            .is_empty()
+    );
+    let results = intercept_tool_before_call(
+        &harness.registry,
+        &ExtensionToolBeforeCallParams {
+            session_id: SessionId::new_v7(),
+            context_id: plugin_context_id(),
+            tool: "example".into(),
+            arguments: serde_json::json!({"step":"original"}),
+            permission_name: "read".into(),
+            resource: None,
+        },
+    )
+    .await;
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].0, "zeta");
-    assert_eq!(results[1].0, "alpha");
+    assert!(results.iter().all(|(_, result)| result.is_ok()));
     let second: Value = serde_json::from_str(
         std::fs::read_to_string(&second_file)
             .expect("second interception")
@@ -653,30 +729,6 @@ async fn tool_before_interception_orders_and_block_short_circuits() {
     .expect("second JSON");
     assert_eq!(second["params"]["arguments"]["step"], "original");
     harness.registry.shutdown().await;
-
-    let blocked_file = marker.path().join("blocked-second.jsonl");
-    let block_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        (
-            "FIXTURE_TOOL_BEFORE_RESULT",
-            r#"{"action":"block","reason":"blocked"}"#,
-        ),
-    ];
-    let blocked_path = blocked_file.to_str().expect("blocked path");
-    let untouched_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        ("FIXTURE_INTERCEPT_FILE", blocked_path),
-    ];
-    let blocked = multi_harness(&[("zeta", &block_env), ("alpha", &untouched_env)]).await;
-    let results = blocked.registry.intercept_tool_before_call(&params).await;
-    assert_eq!(results.len(), 1);
-    assert!(matches!(
-        &results[0].1,
-        Ok(result) if result.action == ExtensionToolBeforeCallAction::Block
-    ));
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!blocked_file.exists());
-    blocked.registry.shutdown().await;
 }
 
 #[tokio::test]
@@ -695,17 +747,18 @@ async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
         ("FIXTURE_INTERCEPT_FILE", second_path),
     ];
     let harness = multi_harness(&[("first", &slow_env), ("second", &steady_env)]).await;
-    let results = harness
-        .registry
-        .intercept_tool_before_call(&ExtensionToolBeforeCallParams {
+    let results = intercept_tool_before_call(
+        &harness.registry,
+        &ExtensionToolBeforeCallParams {
             session_id: SessionId::new_v7(),
             context_id: plugin_context_id(),
             tool: "example".into(),
             arguments: serde_json::json!({}),
             permission_name: "read".into(),
             resource: None,
-        })
-        .await;
+        },
+    )
+    .await;
     assert_eq!(results.len(), 2);
     assert!(
         results[0]
@@ -715,77 +768,6 @@ async fn interception_timeout_fails_open_and_remaining_hooks_continue() {
     );
     assert!(results[1].1.is_ok());
     assert!(second_file.exists());
-    harness.registry.shutdown().await;
-}
-
-#[tokio::test]
-async fn result_agent_and_compaction_hooks_receive_accumulated_state() {
-    let marker = tempfile::tempdir().expect("marker directory");
-    let alpha_file = marker.path().join("alpha.jsonl");
-    let capabilities = r#"{"producer_messaging":false,"tools":false,"resources":false,"subscribe_events":false,"subscribe_bus":false,"publish_bus":false,"publish_session_events":false,"intercept":["tool_after_result","agent_before_start","session_before_compact"]}"#;
-    let zeta_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        (
-            "FIXTURE_TOOL_AFTER_RESULT",
-            r#"{"action":"replace","replacement_content":"zeta result"}"#,
-        ),
-        (
-            "FIXTURE_AGENT_BEFORE_RESULT",
-            r#"{"addendum":"zeta agent"}"#,
-        ),
-        (
-            "FIXTURE_COMPACT_BEFORE_RESULT",
-            r#"{"addendum":"zeta compact"}"#,
-        ),
-    ];
-    let alpha_path = alpha_file.to_str().expect("alpha path");
-    let alpha_env = [
-        ("FIXTURE_CAPABILITIES", capabilities),
-        ("FIXTURE_INTERCEPT_FILE", alpha_path),
-    ];
-    let harness = multi_harness(&[("zeta", &zeta_env), ("alpha", &alpha_env)]).await;
-    let session_id = SessionId::new_v7();
-    harness
-        .registry
-        .intercept_tool_after_result(&ExtensionToolAfterResultParams {
-            session_id,
-            context_id: plugin_context_id(),
-            tool: "example".into(),
-            arguments: serde_json::json!({}),
-            result_content: "original".into(),
-            is_error: false,
-        })
-        .await;
-    harness
-        .registry
-        .intercept_agent_before_start(&ExtensionAgentBeforeStartParams {
-            session_id,
-            context_id: plugin_context_id(),
-            agent_path: "primary".into(),
-            prompt_context: serde_json::json!({"system_prompt":"original prompt"}),
-        })
-        .await;
-    harness
-        .registry
-        .intercept_session_before_compact(&ExtensionSessionBeforeCompactParams {
-            session_id,
-            context_id: plugin_context_id(),
-            checkpoint_id: "checkpoint".into(),
-            additions: Vec::new(),
-            instructions: None,
-        })
-        .await;
-    let records = std::fs::read_to_string(alpha_file)
-        .expect("alpha records")
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("record JSON"))
-        .collect::<Vec<_>>();
-    assert_eq!(records[0]["params"]["result_content"], "zeta result");
-    assert_eq!(
-        records[1]["params"]["prompt_context"]["system_prompt"],
-        "original prompt\nzeta agent"
-    );
-    assert_eq!(records[2]["params"]["additions"][0], "zeta compact");
     harness.registry.shutdown().await;
 }
 
