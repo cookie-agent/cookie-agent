@@ -193,6 +193,7 @@ fn adapter_config(
     } else {
         "none"
     };
+    let claude_on_bedrock = bedrock_anthropic_thinking(model.adapter, model.wire_model_id.as_str());
     let value = match model.adapter {
         OvenAdapterFamily::Anthropic => json!({
             "adaptor": "anthropic",
@@ -312,12 +313,22 @@ fn adapter_config(
             "adaptor": "bedrock",
             "settings": {
                 "region": setup(model, "region")?,
-                "reasoning_wire_format": if model.capabilities.reasoning { "bedrock_reasoning_config" } else { "unsupported" },
-                "signed_reasoning": false,
+                "reasoning_wire_format": match (model.capabilities.reasoning, claude_on_bedrock) {
+                    (false, _) => "unsupported",
+                    (true, true) => "anthropic_thinking",
+                    (true, false) => "bedrock_reasoning_config",
+                },
+                "signed_reasoning": model.capabilities.reasoning
+                    && claude_on_bedrock
+                    && model.capabilities.native_replay == crate::ReplayCapability::Required,
                 "structured_output": if model.capabilities.structured_output { "json_schema" } else { "unsupported" },
                 "max_event_message_bytes": 16 * 1024 * 1024
             },
-            "options": bedrock_options(reasoning)
+            "options": if claude_on_bedrock {
+                bedrock_anthropic_options(model, behavior)
+            } else {
+                bedrock_options(reasoning)
+            }
         }),
         OvenAdapterFamily::AzureOpenaiChat => json!({
             "adaptor": "azure-chat",
@@ -470,6 +481,39 @@ fn anthropic_options(
         "user_id": Value::Null,
         "betas": behavior.options.beta
     })
+}
+
+/// Claude on Bedrock Converse takes Anthropic `thinking` and
+/// `output_config.effort` through `additionalModelRequestFields`
+/// (docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html);
+/// Bedrock's own `reasoningConfig` belongs to other model families.
+pub(crate) fn bedrock_anthropic_thinking(adapter: OvenAdapterFamily, wire_model_id: &str) -> bool {
+    adapter == OvenAdapterFamily::AwsBedrockConverse
+        && wire_model_id.to_ascii_lowercase().contains("claude")
+}
+
+/// Bedrock Converse encoding of [`anthropic_options`]: adaptive thinking with
+/// summarized display for effort and toggle-on variants (manual budgets on
+/// models before Claude 4.6) and `disabled` for toggle-off. The effort level
+/// travels as the request's normalized reasoning effort, which Oven encodes as
+/// `output_config.effort`. Oven rejects a display on manual budgets.
+fn bedrock_anthropic_options(
+    model: &CompiledDynamicModel,
+    behavior: &ExecutableBehaviorInput<'_>,
+) -> Value {
+    let reasoning = behavior.reasoning;
+    let enabled = |budget_tokens: i64| json!({ "reasoning_type": "enabled", "reasoning_budget_tokens": budget_tokens });
+    match reasoning {
+        None => json!({}),
+        Some(ReasoningBehavior::Toggle { enabled: false }) => {
+            json!({ "reasoning_type": "disabled" })
+        }
+        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => enabled(*value),
+        Some(_) if claude_extended_thinking_only(model.wire_model_id.as_str()) => {
+            enabled(extended_thinking_budget(model))
+        }
+        Some(_) => json!({ "reasoning_type": "adaptive", "reasoning_display": "summarized" }),
+    }
 }
 
 /// Claude models released before Claude 4.6 reject adaptive thinking and
@@ -633,9 +677,8 @@ fn bedrock_options(reasoning: Option<&ReasoningBehavior>) -> Value {
             "reasoning_type": "enabled",
             "reasoning_budget_tokens": value
         }),
-        Some(ReasoningBehavior::Effort { .. }) => json!({
-            "max_reasoning_effort": reasoning.and_then(reasoning_effort)
-        }),
+        // Effort reaches Bedrock as the request's normalized reasoning effort;
+        // Oven rejects a second copy in the Bedrock options.
         _ => json!({}),
     }
 }

@@ -178,11 +178,15 @@ Variants the selected wire cannot express are dropped. Wire mapping by family:
 | Family | Effort | `off` | `on` | Budget |
 |---|---|---|---|---|
 | Anthropic and Anthropic-compatible | `thinking = {type = "adaptive", display = "summarized"}` plus `output_config.effort` | `thinking = {type = "disabled"}` | adaptive, summarized | `thinking = {type = "enabled", budget_tokens = N, display = "summarized"}` |
+| Claude on Bedrock Converse | `additionalModelRequestFields` `thinking = {type = "adaptive", display = "summarized"}` plus `output_config.effort` | `thinking = {type = "disabled"}` | adaptive, summarized | `thinking = {type = "enabled", budget_tokens = N}` |
+| Other Bedrock Converse models | `reasoningConfig.maxReasoningEffort` | `reasoningConfig.type = "disabled"` | `reasoningConfig.type = "enabled"` | `reasoningConfig.budgetTokens` |
 | OpenAI-compatible Chat | `reasoning_effort` | provider switch below | provider switch below | not sent |
 
 Claude models before 4.6 accept only manual budgets, so their effort and `on`
 variants send an enabled budget of half the output room above those 4,096
-visible tokens (1,024 to 16,000 tokens) instead of adaptive thinking.
+visible tokens (1,024 to 16,000 tokens) instead of adaptive thinking. Claude
+on Bedrock follows the same rules and requires its signed thinking to be
+replayed, so its native replay is `required`.
 
 The Anthropic wire sends `max_tokens` as visible output plus the thinking
 budget, and the total may not exceed the model's output limit. Requests send

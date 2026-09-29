@@ -15,7 +15,9 @@ use crate::{
     },
     catalog::{CatalogModelRecord, CatalogProviderRecord},
     compiler::{
-        executable::{CompatibleThinkingToggle, compatible_thinking_toggle},
+        executable::{
+            CompatibleThinkingToggle, bedrock_anthropic_thinking, compatible_thinking_toggle,
+        },
         fingerprint::fingerprint,
         projection::{capabilities_from_catalog, validate_capability_shape, validate_defaults},
         variants::{CompiledVariant, CompiledVariantOrigin, custom_variants, managed_variants},
@@ -142,7 +144,7 @@ impl CompiledDynamicModel {
             automatic_replay(
                 selected.adapter,
                 selected.capabilities.reasoning,
-                selected.setup.as_ref(),
+                &selected.wire_model_id,
             )
         });
         Ok(selected)
@@ -197,12 +199,18 @@ impl CompiledDynamicModel {
     }
 }
 
+/// Claude thinking on Bedrock must replay its signed reasoning like the
+/// Anthropic families do; every other family keeps the adapter default.
 fn automatic_replay(
     adapter: OvenAdapterFamily,
     reasoning: bool,
-    _setup: Option<&ValidatedSetup>,
+    wire_model_id: &crate::authoring::WireModelId,
 ) -> crate::ReplayCapability {
-    adapter.automatic_replay(reasoning)
+    if reasoning && bedrock_anthropic_thinking(adapter, wire_model_id.as_str()) {
+        crate::ReplayCapability::Required
+    } else {
+        adapter.automatic_replay(reasoning)
+    }
 }
 
 pub(crate) fn provider_wire_model_id(
@@ -511,8 +519,6 @@ impl DynamicCompiler {
             resolved.endpoint_template.as_deref(),
             authored,
         )?;
-        capabilities.native_replay =
-            automatic_replay(adapter, capabilities.reasoning, setup.as_ref());
         let wire_model_id = override_
             .and_then(|value| value.model_id.clone())
             .map_or_else(
@@ -520,6 +526,8 @@ impl DynamicCompiler {
                 Ok,
             )
             .map_err(ModelLocalError::Provider)?;
+        capabilities.native_replay =
+            automatic_replay(adapter, capabilities.reasoning, &wire_model_id);
         let required_auth_method = match adapter {
             OvenAdapterFamily::AwsBedrockConverse => Some("aws-sigv4-credentials-v1"),
             OvenAdapterFamily::OpenaiResponses if resolved.recipe.family == FamilyKind::Bedrock => {
@@ -742,15 +750,15 @@ impl DynamicCompiler {
             let resolved_adapter = adapter.with_endpoint(options.request_endpoint)?;
             let wire = wire_adapter_for_custom(resolved_adapter);
             let mut capabilities = model.capabilities.resolve(resolved_adapter);
-            if model.capabilities.native_replay.is_none() {
-                capabilities.native_replay =
-                    automatic_replay(resolved_adapter, capabilities.reasoning, Some(&setup));
-            }
             let defaults = model.defaults.resolve();
             let wire_model_id = model.model_id.clone().map_or_else(
                 || provider_wire_model_id(id, resolved_adapter, Some(&setup)),
                 Ok,
             )?;
+            if model.capabilities.native_replay.is_none() {
+                capabilities.native_replay =
+                    automatic_replay(resolved_adapter, capabilities.reasoning, &wire_model_id);
+            }
             if !validate_capability_shape(&capabilities)
                 || validate_capability_ceiling(resolved_adapter, &capabilities).is_err()
                 || !validate_defaults(&defaults, &capabilities)
