@@ -61,7 +61,9 @@ nested objects) are ignored, as is metadata cookie never reads (for example
 `canonical_model_id`, `knowledge`, `experimental`, benchmarks, and links),
 whatever its shape. Display text is trimmed of surrounding whitespace, modality
 arrays may be empty, and prices (JSON floats upstream) round to the nearest
-pico-USD per million tokens, ties up. `providers` carries provider-scoped executable metadata. Root `models`
+pico-USD per million tokens, ties up. An unknown model `status` label is treated
+as active, and unknown `reasoning_options` types and effort labels are skipped
+while the model keeps its known reasoning controls. `providers` carries provider-scoped executable metadata. Root `models`
 carries canonical metadata/provenance only and never defines transport, setup,
 auth, adaptor, or executable inclusion. Exact same-key links are optional
 provenance references; provider records remain executable authority. Invalid
