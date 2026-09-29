@@ -237,6 +237,15 @@ pub fn compatible_auth_method(
     source_family: FamilyKind,
     effective: &FamilyRecipe,
 ) -> Option<&'static str> {
+    // Unauthenticated sources (local servers, or an explicit `no-auth-v1`
+    // override) stay unauthenticated on every wire whose adapter accepts it.
+    if source_method == "no-auth-v1" {
+        return matches!(
+            effective.family,
+            FamilyKind::OpenAiCompatibleChat | FamilyKind::OpenAi | FamilyKind::Anthropic
+        )
+        .then_some("no-auth-v1");
+    }
     if source_family == effective.family
         && let Some(method) = effective
             .allowed_auth_methods

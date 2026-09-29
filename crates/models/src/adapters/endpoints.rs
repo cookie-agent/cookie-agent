@@ -63,7 +63,7 @@ pub fn validate_managed_base_url(
     match managed_base_url_policy(policy) {
         BaseUrlOverridePolicy::ManagedHttps => {
             let parsed = Url::parse(authored.as_str()).map_err(|_| EndpointBuildError::Policy)?;
-            if parsed.scheme() == "https" {
+            if parsed.scheme() == "https" || parsed.scheme() == "http" && loopback_host(&parsed) {
                 Ok(())
             } else {
                 Err(EndpointBuildError::Policy)
@@ -71,6 +71,24 @@ pub fn validate_managed_base_url(
         }
         BaseUrlOverridePolicy::Forbidden => Err(EndpointBuildError::AuthoredOverrideForbidden),
         BaseUrlOverridePolicy::CustomHttpsOrReviewedLoopback { .. } => unreachable!(),
+    }
+}
+
+/// Whether `url` is an `http`/`https` URL on `localhost`, `127.0.0.1`, or
+/// `::1`: a local server, such as LM Studio, Ollama, or QVAC, that may be
+/// reached over plain HTTP and without credentials.
+#[must_use]
+pub fn is_loopback_url(url: &str) -> bool {
+    Url::parse(url)
+        .is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https") && loopback_host(&parsed))
+}
+
+fn loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(domain)) => domain == "localhost",
+        Some(url::Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
+        Some(url::Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
+        None => false,
     }
 }
 
@@ -87,10 +105,8 @@ pub fn validate_custom_endpoint(
     else {
         unreachable!()
     };
-    let host = parsed.host_str().ok_or(EndpointBuildError::Policy)?;
-    let exact_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
     if parsed.scheme() == "http"
-        && exact_loopback
+        && loopback_host(&parsed)
         && parsed.port().is_some()
         && parsed.path() == path
     {
