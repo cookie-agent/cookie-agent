@@ -34,6 +34,48 @@ unavailable. An authored `base_url` cannot inherit store credentials or setup.
 Endpoint selection uses authored `base_url`, catalog API URL, then family
 default; setup-derived families retain their own routing.
 
+### Unavailable models
+
+A catalog model that cookie cannot run stays visible with its reason instead of
+disappearing. A model is unavailable when it is:
+
+- **quarantined**: its models.dev record failed validation (for example
+  `invalid_catalog_model_record`);
+- **unsupported**: the record is valid but cookie has no way to drive it (for
+  example an unknown protocol family or capabilities the endpoint cannot
+  honor);
+- **needs setup**: provider setup values such as a region or resource name are
+  missing;
+- **needs credentials**: no authored or stored credentials are available.
+
+Where it shows:
+
+- **Provider rows** in `/connect` explain a connected or configured provider
+  that yields no usable models, for example `connected · no usable models:
+  4 quarantined (invalid_catalog_model_record)`. An unconfigured provider is
+  flagged only when connecting could not help because every model is
+  quarantined or unsupported.
+- **Provider details** (`Enter` on a row) count every kind, list each
+  unavailable model of a configured provider with its reason, and show the
+  models.dev documentation URL and environment variable names.
+- **The model picker** lists configured providers' unavailable models as a
+  dimmed `Unavailable (N) — not selectable` group below the selectable models.
+- **The connect form** shows `Docs: <url>` and, for single-API-key providers, a
+  config line such as
+  `[providers.kimi] source = "models_dev", api_key = "${env:KIMI_API_KEY}"`.
+  cookie never reads those environment variables on its own; only the authored
+  `${env:NAME}` interpolation does.
+- **The catalog line** at the top of the `/connect` panel names the catalog
+  source (network, cache, or bundled bootstrap), an age warning after 7 or 30
+  days, quarantine counts, and the last refresh error.
+- **The CLI**: `cookie connect` lists model counts per provider and prints the
+  unavailable models, docs URL, and config alternative in the provider details.
+  `cookie run --model <provider/model>` names the reason when that model is
+  unavailable.
+
+Per-model reasons are listed only for providers you configured (authored or
+stored); unconfigured providers report counts alone.
+
 ### Provider fields
 
 | Key | Type | Default | Description |
