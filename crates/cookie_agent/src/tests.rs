@@ -561,6 +561,86 @@ fn setup_and_auth_prompts_are_separate_and_blank_secret_is_rejected() {
     assert!(secret_prompts[0].contains("secret"));
 }
 
+fn unusable_provider() -> ProviderDescriptor {
+    let mut provider = provider(ProviderSupportState::Supported);
+    provider.configuration = ProviderConfigurationState::Stored;
+    provider.documentation_url = Some(SafeDisplayText::new("https://example.test/docs").unwrap());
+    provider.environment = vec![
+        cookie_agent_protocol::CredentialFieldName::new("OPENAI_ORG").unwrap(),
+        cookie_agent_protocol::CredentialFieldName::new("OPENAI_API_KEY").unwrap(),
+    ];
+    provider.model_counts = cookie_agent_protocol::ProviderModelCounts {
+        quarantined: 1,
+        unsupported: 1,
+        ..Default::default()
+    };
+    provider.unavailable_models = serde_json::from_value(serde_json::json!([
+        {"id": "gpt-q", "display_name": "gpt-q", "kind": "quarantined", "reason": "invalid_catalog_model_record"},
+        {"id": "gpt-u", "display_name": "GPT U", "kind": "unsupported", "reason": "unsupported_model_capabilities"}
+    ]))
+    .unwrap();
+    provider
+}
+
+#[test]
+fn provider_listing_and_details_explain_unavailable_models() {
+    let providers = vec![unusable_provider()];
+    let mut io = ScriptedConnectIo {
+        public: VecDeque::from(["1".to_owned()]),
+        ..Default::default()
+    };
+    let chosen = choose_provider(&providers, None, &mut io).unwrap();
+    print_provider_details(chosen, "sha256:catalog", &mut io).unwrap();
+    for line in [
+        "  1. OpenAI (openai) — supported · models: 0 usable, 1 quarantined, 1 unsupported",
+        "Models: 0 usable, 1 quarantined, 1 unsupported",
+        "  gpt-q — quarantined: invalid_catalog_model_record",
+        "  gpt-u — unsupported: unsupported_model_capabilities",
+        "Docs: https://example.test/docs",
+        "Config alternative: [providers.openai] source = \"models_dev\", api_key = \"${env:OPENAI_API_KEY}\"",
+    ] {
+        assert!(
+            io.output.iter().any(|output| output == line),
+            "missing {line:?}: {:#?}",
+            io.output
+        );
+    }
+}
+
+#[test]
+fn headless_model_errors_name_the_unavailable_reason() {
+    let providers = vec![unusable_provider()];
+    assert_eq!(
+        cookie_agent::availability::model_unavailable_reason(
+            &providers,
+            &"openai/gpt-q".parse().unwrap()
+        )
+        .as_deref(),
+        Some("quarantined: invalid_catalog_model_record")
+    );
+    assert_eq!(
+        cookie_agent::availability::model_unavailable_reason(
+            &providers,
+            &"openai/other".parse().unwrap()
+        )
+        .as_deref(),
+        Some("provider `openai` has no usable models (0 usable, 1 quarantined, 1 unsupported)")
+    );
+    assert_eq!(
+        cookie_agent::availability::unusable_configured_providers(&providers).as_deref(),
+        Some(
+            "configured providers without usable models: openai (0 usable, 1 quarantined, 1 unsupported)"
+        )
+    );
+    assert!(
+        cookie_agent::availability::model_unavailable_reason(
+            &providers,
+            &"elsewhere/model".parse().unwrap()
+        )
+        .is_none()
+    );
+}
+
 #[test]
 fn sensitive_connect_serialization_has_current_contract_and_drop_wipes_source() {
     let before = SECRET_VALUES_WIPED.load(TestOrdering::SeqCst);

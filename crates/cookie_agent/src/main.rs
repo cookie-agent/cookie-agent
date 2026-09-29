@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use cookie_agent::run;
+use cookie_agent::{availability, run};
 use cookie_agent_engine::{Engine, EngineOptions};
 use cookie_agent_models::{
     ModelManager,
@@ -900,11 +900,12 @@ fn choose_provider<'a>(
             |reason| format!("{:?}: {}", provider.support.state, reason).to_ascii_lowercase(),
         );
         io.write_line(&format!(
-            "  {}. {} ({}) — {}",
+            "  {}. {} ({}) — {} · models: {}",
             index + 1,
             provider.display_name,
             provider.id,
-            support
+            support,
+            availability::model_counts_text(&provider.model_counts)
         ))?;
     }
     let answer = io.read_public("Provider number or ID: ")?;
@@ -933,6 +934,23 @@ fn print_provider_details(
         io.write_line(&format!("Support reason: {reason}"))?;
     }
     io.write_line(&format!("Configuration: {:?}", provider.configuration))?;
+    io.write_line(&format!(
+        "Models: {}",
+        availability::model_counts_text(&provider.model_counts)
+    ))?;
+    for model in &provider.unavailable_models {
+        io.write_line(&format!(
+            "  {} — {}",
+            model.id,
+            availability::unavailable_model_text(model)
+        ))?;
+    }
+    if let Some(url) = &provider.documentation_url {
+        io.write_line(&format!("Docs: {url}"))?;
+    }
+    if let Some(hint) = availability::env_config_hint(provider) {
+        io.write_line(&format!("Config alternative: {hint}"))?;
+    }
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 //! Noninteractive cookie agent command support.
 
+pub mod availability;
 pub mod run;
 
 #[cfg(test)]
