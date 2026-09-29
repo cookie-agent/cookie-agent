@@ -168,8 +168,11 @@ See [Configuration](guide/configuration.md) and the
    right away, then hourly, with an ETag. A `304 Not Modified` rewrites only the
    cache metadata and reuses the catalog already parsed in memory while the
    on-disk metadata still names the same body revision, and models are
-   recompiled only when the catalog revision or availability changes. Catalog
-   selection is network, cache, or bootstrap.
+   recompiled only when the catalog revision or availability changes. A new
+   body is installed by atomically replacing the body and then the metadata
+   that names its SHA-256 revision; a pair torn by a crash fails validation,
+   so startup falls back to the bootstrap and the next refresh repairs it.
+   Catalog selection is network, cache, or bootstrap.
 2. **Family registry.** A code-owned recipe registry (schema 1) maps the catalog's
    npm package names to protocol families: OpenAI, OpenAI-compatible chat,
    Anthropic, Google, Vertex, Bedrock, Azure, and Cohere. Each recipe declares a

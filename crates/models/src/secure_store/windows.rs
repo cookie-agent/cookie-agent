@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fs,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     mem::{offset_of, size_of, size_of_val},
     os::windows::{
         ffi::OsStrExt,
@@ -844,49 +844,6 @@ pub(super) fn unlock(file: &fs::File) -> io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-pub(super) fn read_journal(
-    lock: &SecureDirectoryLock<'_>,
-    limit: u64,
-) -> Result<Vec<u8>, SecureStoreError> {
-    let metadata = lock._lock.metadata().map_err(SecureStoreError::Io)?;
-    if metadata.len() > limit {
-        return Err(SecureStoreError::TooLarge);
-    }
-    let mut file = lock._lock.try_clone().map_err(SecureStoreError::Io)?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(SecureStoreError::Io)?;
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(SecureStoreError::Io)?;
-    if bytes.len() as u64 > limit {
-        return Err(SecureStoreError::TooLarge);
-    }
-    Ok(bytes)
-}
-
-pub(super) fn append_journal(
-    lock: &SecureDirectoryLock<'_>,
-    bytes: &[u8],
-    limit: u64,
-) -> Result<(), SecureStoreError> {
-    let current = lock._lock.metadata().map_err(SecureStoreError::Io)?.len();
-    if current.saturating_add(bytes.len() as u64) > limit {
-        return Err(SecureStoreError::TooLarge);
-    }
-    let mut file = lock._lock.try_clone().map_err(SecureStoreError::Io)?;
-    file.seek(SeekFrom::End(0)).map_err(SecureStoreError::Io)?;
-    file.write_all(bytes).map_err(SecureStoreError::Io)?;
-    file.sync_all().map_err(SecureStoreError::Io)?;
-    Ok(())
-}
-
-pub(super) fn clear_journal(lock: &SecureDirectoryLock<'_>) -> Result<(), SecureStoreError> {
-    lock._lock.set_len(0).map_err(SecureStoreError::Io)?;
-    lock._lock.sync_all().map_err(SecureStoreError::Io)?;
-    Ok(())
 }
 
 pub(super) fn atomic_replace(
