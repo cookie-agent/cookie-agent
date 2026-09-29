@@ -874,26 +874,6 @@ impl EventLog {
         }
     }
 
-    /// Tool calls the log shows as started and not yet terminated.
-    #[must_use]
-    pub fn open_tool_calls(&self) -> Vec<cookie_agent_protocol::ToolCallId> {
-        let events = self
-            .events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut open = Vec::new();
-        for event in events.all.iter() {
-            match &event.payload {
-                EventPayload::ToolCallStarted { start } => open.push(start.tool_call_id),
-                EventPayload::ToolCallTerminated { termination } => {
-                    open.retain(|call| *call != termination.tool_call_id);
-                }
-                _ => {}
-            }
-        }
-        open
-    }
-
     #[must_use]
     pub fn last_event(&self) -> Option<Arc<StoredEvent>> {
         self.storage().all.last().cloned()
