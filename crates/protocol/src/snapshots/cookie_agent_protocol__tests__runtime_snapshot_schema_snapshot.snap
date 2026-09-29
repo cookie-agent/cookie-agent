@@ -283,9 +283,21 @@ expression: schema_for!(RuntimeSnapshotResult)
         "provider"
       ]
     },
+    "CatalogAge": {
+      "description": "Age of the selected validated catalog body; age never makes it unusable.",
+      "type": "string",
+      "enum": [
+        "current",
+        "older_than_seven_days",
+        "older_than_thirty_days"
+      ]
+    },
     "CatalogRuntimeState": {
       "type": "object",
       "properties": {
+        "age": {
+          "$ref": "#/$defs/CatalogAge"
+        },
         "last_error": {
           "anyOf": [
             {
@@ -319,6 +331,7 @@ expression: schema_for!(RuntimeSnapshotResult)
       "additionalProperties": false,
       "required": [
         "stale",
+        "age",
         "provider_quarantine_count",
         "model_quarantine_count",
         "quarantine_digest",
@@ -586,6 +599,31 @@ expression: schema_for!(RuntimeSnapshotResult)
         "media"
       ]
     },
+    "ModelUnavailableKind": {
+      "description": "Why a provider's catalog model is not selectable.",
+      "oneOf": [
+        {
+          "description": "The catalog parser quarantined the model record.",
+          "type": "string",
+          "const": "quarantined"
+        },
+        {
+          "description": "The record parsed, but cookie cannot drive the model.",
+          "type": "string",
+          "const": "unsupported"
+        },
+        {
+          "description": "Provider setup values (region, resource, deployment) are missing.",
+          "type": "string",
+          "const": "needs_setup"
+        },
+        {
+          "description": "No usable credentials are configured or stored for the provider.",
+          "type": "string",
+          "const": "needs_credentials"
+        }
+      ]
+    },
     "ProviderConfigurationState": {
       "type": "string",
       "enum": [
@@ -614,6 +652,16 @@ expression: schema_for!(RuntimeSnapshotResult)
           "minLength": 1,
           "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
         },
+        "documentation_url": {
+          "description": "The catalog's provider documentation URL, when it has one.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
         "durable_connection": {
           "anyOf": [
             {
@@ -627,11 +675,26 @@ expression: schema_for!(RuntimeSnapshotResult)
         "effective_auth_state": {
           "$ref": "#/$defs/EffectiveAuthState"
         },
+        "environment": {
+          "description": "Environment variable names the catalog associates with the provider,\nin catalog order. Display-only: cookie never reads them implicitly.",
+          "type": "array",
+          "items": {
+            "description": "Strict provider credential field name.",
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Z0-9_]+$"
+          },
+          "maxItems": 32
+        },
         "id": {
           "type": "string",
           "maxLength": 128,
           "minLength": 1,
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "model_counts": {
+          "$ref": "#/$defs/ProviderModelCounts"
         },
         "presence": {
           "$ref": "#/$defs/ProviderPresence"
@@ -654,6 +717,14 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "support": {
           "$ref": "#/$defs/ProviderSupport"
+        },
+        "unavailable_models": {
+          "description": "Unavailable models with reasons, strictly sorted by ID. Listed only\nfor configured (authored or stored) providers; unconfigured providers\nreport counts alone.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UnavailableModelDescriptor"
+          },
+          "maxItems": 4096
         }
       },
       "additionalProperties": false,
@@ -667,7 +738,50 @@ expression: schema_for!(RuntimeSnapshotResult)
         "configuration",
         "effective_auth_state",
         "durable_connection",
-        "quarantine"
+        "quarantine",
+        "documentation_url",
+        "environment",
+        "model_counts",
+        "unavailable_models"
+      ]
+    },
+    "ProviderModelCounts": {
+      "description": "Per-provider model availability counts over every catalog model row that\nis not deprecated, disabled, or non-text.",
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_credentials": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_setup": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quarantined": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unsupported": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "quarantined",
+        "unsupported",
+        "needs_setup",
+        "needs_credentials"
       ]
     },
     "ProviderPresence": {
@@ -814,7 +928,7 @@ expression: schema_for!(RuntimeSnapshotResult)
         },
         "snapshot_schema_version": {
           "type": "integer",
-          "const": 5
+          "const": 6
         }
       },
       "additionalProperties": false,
@@ -965,6 +1079,45 @@ expression: schema_for!(RuntimeSnapshotResult)
         "max_length",
         "minimum",
         "maximum"
+      ]
+    },
+    "UnavailableModelDescriptor": {
+      "description": "One catalog model that is listed but not selectable, with its reason.",
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "description": "Control-free bounded presentation text.",
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 384,
+          "minLength": 1,
+          "pattern": "^[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$"
+        },
+        "kind": {
+          "$ref": "#/$defs/ModelUnavailableKind"
+        },
+        "reason": {
+          "description": "Quarantine code or compiler reason; null for setup and credential gaps.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}]+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "kind",
+        "reason"
       ]
     },
     "VariantOrigin": {

@@ -44,7 +44,11 @@ fn provider() -> ProviderDescriptor {
             "configuration": "unconfigured",
             "effective_auth_state": "unavailable",
             "durable_connection": null,
-            "quarantine": null
+            "quarantine": null,
+            "documentation_url": null,
+            "environment": [],
+            "model_counts": {"available": 0, "quarantined": 0, "unsupported": 0, "needs_setup": 0, "needs_credentials": 0},
+            "unavailable_models": []
         }))
         .expect("provider descriptor")
 }

@@ -249,6 +249,10 @@ fn provider(state: ProviderSupportState) -> ProviderDescriptor {
         effective_auth_state: EffectiveAuthState::Unavailable,
         durable_connection: None,
         quarantine: None,
+        documentation_url: None,
+        environment: Vec::new(),
+        model_counts: cookie_agent_protocol::ProviderModelCounts::default(),
+        unavailable_models: Vec::new(),
     }
 }
 

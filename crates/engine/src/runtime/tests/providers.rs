@@ -840,3 +840,156 @@ async fn accepted_root_run_keeps_its_exact_manifest_binding_after_runtime_change
     assert_eq!(frozen, still_frozen);
     assert_eq!(frozen[0].manifest_revision, session.manifest_revision);
 }
+
+/// Bedrock catalog with one usable model, one parser-quarantined row, and one
+/// row whose shape the compiler rejects.
+fn bedrock_catalog_with_unusable_models() -> Arc<cookie_agent_models::catalog::CatalogSnapshot> {
+    let mut catalog = (*bedrock_catalog()).clone();
+    catalog.revision =
+        CatalogRevision::new(format!("sha256:{}", "7".repeat(64))).expect("catalog revision");
+    let record = catalog
+        .providers
+        .get_mut(&ProviderId::new("amazon-bedrock").expect("provider ID"))
+        .and_then(|entry| entry.record.as_mut())
+        .expect("Bedrock record");
+    let usable = record.models.values().next().expect("model").clone();
+    let quarantined =
+        cookie_agent_protocol::ProviderModelId::new("broken.model-v1:0").expect("model ID");
+    record.models.insert(
+        quarantined.clone(),
+        cookie_agent_models::catalog::CatalogModelEntry {
+            id: quarantined,
+            record: None,
+            quarantine: Some(CatalogQuarantineReason::InvalidCatalogModelRecord),
+        },
+    );
+    let drifted =
+        cookie_agent_protocol::ProviderModelId::new("drifted.model-v1:0").expect("model ID");
+    let mut drifted_entry = usable;
+    drifted_entry.id = drifted.clone();
+    let drifted_record = drifted_entry.record.as_mut().expect("model record");
+    drifted_record.id = drifted.clone();
+    drifted_record.name = "Drifted Model".to_owned();
+    drifted_record.shape = Some("unexpected".to_owned());
+    record.models.insert(drifted, drifted_entry);
+    Arc::new(catalog)
+}
+
+#[test]
+fn unconfigured_provider_reports_model_counts_docs_and_env_without_a_list() {
+    let fixture = fixture();
+    let snapshot = fixture
+        .engine
+        .refresh_catalog(bedrock_catalog_with_unusable_models())
+        .expect("refresh")
+        .snapshot;
+    let provider = &snapshot.providers[0];
+    assert_eq!(
+        provider.model_counts,
+        cookie_agent_protocol::ProviderModelCounts {
+            available: 0,
+            quarantined: 1,
+            unsupported: 1,
+            needs_setup: 1,
+            needs_credentials: 0,
+        }
+    );
+    assert!(provider.unavailable_models.is_empty());
+    assert_eq!(
+        provider
+            .documentation_url
+            .as_ref()
+            .map(cookie_agent_protocol::SafeDisplayText::as_str),
+        Some("https://example.test/bedrock")
+    );
+    assert_eq!(
+        provider
+            .environment
+            .iter()
+            .map(cookie_agent_protocol::CredentialFieldName::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_REGION",
+            "AWS_SECRET_ACCESS_KEY"
+        ]
+    );
+    assert_eq!(
+        snapshot.catalog_state.age,
+        cookie_agent_protocol::CatalogAge::Current
+    );
+}
+
+#[test]
+fn configured_provider_lists_unavailable_models_with_reasons() {
+    let temporary = private_tempdir();
+    let workspace = temporary.path().join("workspace");
+    let config = empty_provider_workspace(&workspace);
+    let catalog = bedrock_catalog_with_unusable_models();
+    let (engine, _) = open_workspace_engine(
+        &workspace,
+        &temporary.path().join("data"),
+        &temporary.path().join("provider-store"),
+        Arc::clone(&catalog),
+        config,
+    );
+    let auth_values: ProviderCredentialValues = serde_json::from_value(serde_json::json!({
+        "access_key_id":"bedrock-access",
+        "secret_access_key":"bedrock-secret",
+        "session_token":"bedrock-session"
+    }))
+    .expect("credential values");
+    let connected = engine
+        .connect_provider(ProviderConnectParams {
+            provider_id: ProviderId::new("amazon-bedrock").expect("provider ID"),
+            expected_catalog_revision: catalog.revision.clone(),
+            setup_values: BTreeMap::from([(
+                SetupFieldId::new("region").expect("setup field"),
+                cookie_agent_protocol::SafeSetupValue::String(
+                    cookie_agent_protocol::BoundedSetupString::new("us-east-1").expect("region"),
+                ),
+            )]),
+            auth_method: cookie_agent_protocol::AuthMethodId::new("aws-sigv4-credentials-v1")
+                .expect("auth method"),
+            auth_values,
+            client_connect_id: ClientConnectId::new("availability-connect").expect("connect ID"),
+        })
+        .expect("connect Bedrock");
+    assert_eq!(connected.runtime.models.len(), 1);
+    let provider = &connected.runtime.providers[0];
+    assert_eq!(provider.model_counts.available, 1);
+    assert_eq!(provider.model_counts.unavailable(), 2);
+    let listed = provider
+        .unavailable_models
+        .iter()
+        .map(|model| {
+            (
+                model.id.as_str(),
+                model.display_name.as_str(),
+                model.kind,
+                model
+                    .reason
+                    .as_ref()
+                    .map(cookie_agent_protocol::SafeErrorMessage::as_str),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(
+        listed[0],
+        (
+            "broken.model-v1:0",
+            "broken.model-v1:0",
+            cookie_agent_protocol::ModelUnavailableKind::Quarantined,
+            Some("invalid_catalog_model_record"),
+        )
+    );
+    assert_eq!(listed[1].0, "drifted.model-v1:0");
+    assert_eq!(listed[1].1, "Drifted Model");
+    assert_eq!(
+        listed[1].2,
+        cookie_agent_protocol::ModelUnavailableKind::Unsupported
+    );
+    assert!(listed[1].3.is_some_and(|reason| !reason.is_empty()));
+}

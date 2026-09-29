@@ -176,6 +176,7 @@ fn runtime() -> RuntimeSnapshotV1 {
         catalog_source: CatalogSource::Network,
         catalog_state: CatalogRuntimeState {
             stale: false,
+            age: CatalogAge::Current,
             provider_quarantine_count: 0,
             model_quarantine_count: 0,
             quarantine_digest: Sha256Digest::of_bytes(b"quarantine"),
@@ -194,19 +195,20 @@ fn runtime() -> RuntimeSnapshotV1 {
 
 #[test]
 fn wire_versions_accept_only_documented_history() {
-    assert_eq!(PROTOCOL_VERSION, 23);
+    assert_eq!(PROTOCOL_VERSION, 24);
     assert_eq!(
         serde_json::to_value(ProtocolVersion::current()).unwrap(),
         json!(PROTOCOL_VERSION)
     );
+    assert!(serde_json::from_value::<ProtocolVersion>(json!(23)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(22)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(21)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(20)).is_err());
     assert!(serde_json::from_value::<ProtocolVersion>(json!(16)).is_err());
-    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 5);
+    assert_eq!(RUNTIME_SNAPSHOT_SCHEMA_VERSION, 6);
     assert!(serde_json::from_value::<ProtocolVersion>(json!(10)).is_err());
     assert!(serde_json::from_value::<AgentSchemaVersion>(json!(4)).is_err());
-    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(4)).is_err());
+    assert!(serde_json::from_value::<RuntimeSnapshotSchemaVersion>(json!(5)).is_err());
     assert!(serde_json::from_value::<ModelSnapshotManifestSchemaVersion>(json!(2)).is_err());
 }
 
@@ -1770,4 +1772,70 @@ fn bounded_display_text_bounds_bytes_but_permits_controls() {
 #[test]
 fn runtime_snapshot_schema_snapshot() {
     insta::assert_json_snapshot!(schema_for!(RuntimeSnapshotResult));
+}
+
+fn provider_descriptor_json(unavailable_models: Value) -> Value {
+    json!({
+        "id": "kimi",
+        "display_name": "Kimi",
+        "presence": "current",
+        "support": {"state": "supported", "reason": null},
+        "setup_fields": [],
+        "auth_methods": [],
+        "configuration": "stored",
+        "effective_auth_state": "provider_store",
+        "durable_connection": null,
+        "quarantine": null,
+        "documentation_url": "https://platform.moonshot.ai/docs",
+        "environment": ["KIMI_API_KEY"],
+        "model_counts": {
+            "available": 0,
+            "quarantined": 1,
+            "unsupported": 1,
+            "needs_setup": 0,
+            "needs_credentials": 0
+        },
+        "unavailable_models": unavailable_models
+    })
+}
+
+#[test]
+fn provider_descriptor_carries_sorted_unavailable_models_with_reasons() {
+    let quarantined = json!({
+        "id": "k2",
+        "display_name": "k2",
+        "kind": "quarantined",
+        "reason": "invalid_catalog_model_record"
+    });
+    let unsupported = json!({
+        "id": "k3",
+        "display_name": "Kimi K3",
+        "kind": "unsupported",
+        "reason": "no_known_protocol_family"
+    });
+    let descriptor: ProviderDescriptor = serde_json::from_value(provider_descriptor_json(json!([
+        quarantined.clone(),
+        unsupported.clone()
+    ])))
+    .expect("sorted descriptor");
+    assert_eq!(descriptor.model_counts.unavailable(), 2);
+    assert_eq!(
+        descriptor.unavailable_models[0].kind,
+        ModelUnavailableKind::Quarantined
+    );
+    assert_eq!(descriptor.environment[0].as_str(), "KIMI_API_KEY");
+    assert_eq!(
+        serde_json::to_value(&descriptor).unwrap(),
+        provider_descriptor_json(json!([quarantined.clone(), unsupported.clone()]))
+    );
+    assert!(
+        serde_json::from_value::<ProviderDescriptor>(provider_descriptor_json(json!([
+            unsupported,
+            quarantined
+        ])))
+        .is_err()
+    );
+    let mut invalid_environment = provider_descriptor_json(json!([]));
+    invalid_environment["environment"] = json!(["kimi-key"]);
+    assert!(serde_json::from_value::<ProviderDescriptor>(invalid_environment).is_err());
 }

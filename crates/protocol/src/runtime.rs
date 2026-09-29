@@ -19,10 +19,20 @@ pub struct CatalogSafeErrorMeta {
     pub time: jiff::Timestamp,
 }
 
+/// Age of the selected validated catalog body; age never makes it unusable.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogAge {
+    Current,
+    OlderThanSevenDays,
+    OlderThanThirtyDays,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogRuntimeState {
     pub stale: bool,
+    pub age: CatalogAge,
     pub provider_quarantine_count: u32,
     pub model_quarantine_count: u32,
     pub quarantine_digest: Sha256Digest,

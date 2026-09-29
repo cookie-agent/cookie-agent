@@ -1,4 +1,4 @@
-//! Exact cookie-agent protocol 23 with versionless session events.
+//! Exact cookie-agent protocol 24 with versionless session events.
 //!
 //! This crate intentionally contains no compatibility aliases or decoders.
 
@@ -135,9 +135,9 @@ pub use session_model::*;
 pub use setup_value::*;
 
 /// The only protocol version supported by this build.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 /// The only coherent runtime snapshot schema supported by this build.
-pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
+pub const RUNTIME_SNAPSHOT_SCHEMA_VERSION: u32 = 6;
 
 macro_rules! exact_numeric_wire_type {
     ($name:ident, $value:expr, $description:literal) => {
@@ -199,10 +199,10 @@ macro_rules! exact_numeric_wire_type {
     };
 }
 
-exact_numeric_wire_type!(ProtocolVersion, 23, "The exact protocol wire version.");
+exact_numeric_wire_type!(ProtocolVersion, 24, "The exact protocol wire version.");
 exact_numeric_wire_type!(
     RuntimeSnapshotSchemaVersion,
-    5,
+    6,
     "The exact coherent runtime snapshot schema version."
 );
 
