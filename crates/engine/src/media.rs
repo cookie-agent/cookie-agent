@@ -1,9 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::Path,
-};
-
-use lopdf::{Document, LoadOptions, Object};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::ToolError;
 use cookie_agent_models::adapters::OvenAdapterFamily;
@@ -18,17 +13,9 @@ const MAX_VIDEO_ENCODED_BYTES: usize = 25 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_ANIMATION_FRAMES: usize = 256;
-const MAX_PDF_OBJECTS: usize = 4_096;
-const MAX_PDF_XREF_ENTRIES: usize = 8_192;
-const MAX_PDF_OBJECT_ID: u32 = 1_000_000;
-const MAX_PDF_PAGES: usize = 1_024;
-const MAX_PDF_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PDF_DECOMPRESSION_RATIO: usize = 128;
-const MAX_PDF_DECOMPRESSION_SLACK: usize = 64 * 1024;
-const MAX_PDF_TRAILER_DEPTH: usize = 64;
-const MAX_PDF_TRAILER_TOKENS: usize = 16_384;
-const MAX_PDF_NAME_BYTES: usize = 256;
-const MAX_PDF_STRING_BYTES: usize = 8 * 1024 * 1024;
+/// Window at the end of a PDF searched for `%%EOF`, and before it for `startxref`; readers
+/// tolerate trailing junk within about this distance.
+const PDF_TAIL_BYTES: usize = 1024;
 /// Anthropic caps each image at 10 MiB of base64; the largest raw size that encodes within it.
 const ANTHROPIC_IMAGE_BYTES: u64 = 10 * 1024 * 1024 / 4 * 3;
 /// Vertex caps each inline image at 7 MiB.
@@ -822,662 +809,79 @@ fn gif_sub_blocks(bytes: &[u8], mut offset: usize) -> Option<usize> {
     }
 }
 
+/// Structural PDF validation without parsing the object graph or decompressing streams: a
+/// version header, an `%%EOF` marker near the end, and a final `startxref` whose offset lands
+/// on a classic `xref` table or a cross-reference stream object. Encrypted documents are
+/// rejected because providers refuse them.
 fn validate_pdf(bytes: &[u8]) -> bool {
-    validate_pdf_bounded(bytes).is_ok()
-}
-
-fn validate_pdf_bounded(bytes: &[u8]) -> Result<usize, usize> {
-    let Some(preflight) = preflight_classic_pdf(bytes) else {
-        return Err(0);
-    };
-    let options = LoadOptions {
-        filter: Some(reject_eager_pdf_container_streams),
-        strict: true,
-        // The accepted contract excludes xref and object streams before load.
-        // A zero eager-decode allowance is a final guard against parser drift.
-        max_decompressed_size: Some(0),
-        ..LoadOptions::default()
-    };
-    let Ok(document) = Document::load_mem_with_options(bytes, options) else {
-        return Err(0);
-    };
-    if document.is_encrypted()
-        || document.objects.is_empty()
-        || document.objects.len() > MAX_PDF_OBJECTS
-        || document.objects.len() != preflight.normal_objects
-        || document.catalog().is_err()
-        || !valid_pdf_xref_objects(bytes, &document)
-    {
-        return Err(0);
-    }
-    let pages = document.get_pages();
-    if pages.is_empty() || pages.len() > MAX_PDF_PAGES {
-        return Err(0);
-    }
-    let mut total_decompressed = 0_usize;
-    let mut total_encoded_streams = 0_usize;
-    for object in document.objects.values() {
-        let Object::Stream(stream) = object else {
-            continue;
-        };
-        total_encoded_streams = match total_encoded_streams.checked_add(stream.content.len()) {
-            Some(total) if total <= MAX_ENCODED_BYTES => total,
-            _ => return Err(total_decompressed),
-        };
-        let remaining = MAX_PDF_DECOMPRESSED_BYTES.saturating_sub(total_decompressed);
-        if stream.dict.get(b"Filter").is_err() {
-            total_decompressed = match total_decompressed.checked_add(stream.content.len()) {
-                Some(total) if total <= MAX_PDF_DECOMPRESSED_BYTES => total,
-                _ => return Err(total_decompressed),
-            };
-            continue;
-        }
-        if remaining == 0 || stream.filters().is_err() || stream.content.is_empty() {
-            return Err(total_decompressed);
-        }
-        let ratio_limit = stream
-            .content
-            .len()
-            .checked_mul(MAX_PDF_DECOMPRESSION_RATIO)
-            .and_then(|limit| limit.checked_add(MAX_PDF_DECOMPRESSION_SLACK))
-            .unwrap_or(usize::MAX);
-        let decode_limit = remaining.min(ratio_limit);
-        if decode_limit == 0 {
-            return Err(total_decompressed);
-        }
-        let Ok(content) = stream.decompressed_content_with_limit(decode_limit) else {
-            return Err(total_decompressed.saturating_add(decode_limit));
-        };
-        total_decompressed = match total_decompressed.checked_add(content.len()) {
-            Some(total) if total <= MAX_PDF_DECOMPRESSED_BYTES => total,
-            _ => return Err(total_decompressed.saturating_add(decode_limit)),
-        };
-    }
-    Ok(total_decompressed)
-}
-
-fn reject_eager_pdf_container_streams(
-    object_id: (u32, u16),
-    object: &mut Object,
-) -> Option<((u32, u16), Object)> {
-    if object.as_stream().is_ok_and(|stream| {
-        stream
-            .dict
-            .get_type()
-            .is_ok_and(|kind| matches!(kind, b"ObjStm" | b"XRef"))
-    }) {
-        return None;
-    }
-    Some((object_id, object.clone()))
-}
-
-#[derive(Clone, Copy)]
-struct PdfPreflight {
-    normal_objects: usize,
-}
-
-fn preflight_classic_pdf(bytes: &[u8]) -> Option<PdfPreflight> {
-    let (xref_offset, startxref_marker) = pdf_startxref(bytes)?;
-    let mut cursor = xref_offset;
-    let xref_line = read_pdf_line(bytes, &mut cursor)?;
-    if xref_line.trim_ascii() != b"xref" {
-        // Cross-reference streams necessarily decompress before lopdf exposes
-        // the document, so they are outside this bounded validation contract.
-        return None;
-    }
-
-    let mut ids = HashSet::new();
-    let mut total_entries = 0_usize;
-    let mut normal_objects = 0_usize;
-    let mut maximum_id = 0_u32;
-    loop {
-        skip_pdf_whitespace(bytes, &mut cursor);
-        if consume_pdf_keyword(bytes, &mut cursor, b"trailer") {
-            break;
-        }
-        let line = read_pdf_line(bytes, &mut cursor)?.trim_ascii();
-        if line.is_empty() {
-            continue;
-        }
-        let (start, count) = parse_xref_subsection(line)?;
-        let count = usize::try_from(count).ok()?;
-        total_entries = total_entries.checked_add(count)?;
-        if total_entries > MAX_PDF_XREF_ENTRIES {
-            return None;
-        }
-        let end_id = start.checked_add(u32::try_from(count).ok()?)?;
-        if end_id > MAX_PDF_OBJECT_ID {
-            return None;
-        }
-        maximum_id = maximum_id.max(end_id.saturating_sub(1));
-        for index in 0..count {
-            let id = start.checked_add(u32::try_from(index).ok()?)?;
-            if !ids.insert(id) {
-                return None;
-            }
-            let entry = parse_xref_entry(read_pdf_line(bytes, &mut cursor)?.trim_ascii())?;
-            if entry.normal {
-                if entry.offset >= xref_offset || id == 0 {
-                    return None;
-                }
-                normal_objects += 1;
-                if normal_objects > MAX_PDF_OBJECTS {
-                    return None;
-                }
-            }
-        }
-    }
-    if normal_objects == 0 || cursor >= startxref_marker {
-        return None;
-    }
-    let trailer = parse_pdf_trailer(&bytes[cursor..startxref_marker])?;
-    if trailer.has_prev
-        || trailer.has_xref_stream
-        || trailer.size == 0
-        || trailer.size > u64::from(MAX_PDF_OBJECT_ID)
-        || trailer.size <= u64::from(maximum_id)
-    {
-        return None;
-    }
-    Some(PdfPreflight { normal_objects })
-}
-
-#[derive(Clone, Copy)]
-struct XrefEntryPreflight {
-    offset: usize,
-    normal: bool,
-}
-
-fn parse_xref_subsection(line: &[u8]) -> Option<(u32, u32)> {
-    let mut fields = line
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|field| !field.is_empty());
-    let start = parse_ascii_u32(fields.next()?)?;
-    let count = parse_ascii_u32(fields.next()?)?;
-    fields.next().is_none().then_some((start, count))
-}
-
-fn parse_xref_entry(line: &[u8]) -> Option<XrefEntryPreflight> {
-    let mut fields = line
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|field| !field.is_empty());
-    let offset = parse_ascii_usize(fields.next()?)?;
-    let generation = parse_ascii_u32(fields.next()?)?;
-    let status = fields.next()?;
-    if fields.next().is_some() || generation > u32::from(u16::MAX) {
-        return None;
-    }
-    let normal = match status {
-        b"n" => true,
-        b"f" => false,
-        _ => return None,
-    };
-    Some(XrefEntryPreflight { offset, normal })
-}
-
-fn parse_ascii_u32(bytes: &[u8]) -> Option<u32> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
-}
-
-fn parse_ascii_usize(bytes: &[u8]) -> Option<usize> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
-}
-
-fn read_pdf_line<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
-    let start = *cursor;
-    let relative_end = bytes
-        .get(start..)?
-        .iter()
-        .position(|byte| matches!(byte, b'\r' | b'\n'));
-    let end = relative_end.map_or(bytes.len(), |relative| start + relative);
-    *cursor = end;
-    if bytes.get(*cursor) == Some(&b'\r') {
-        *cursor += 1;
-    }
-    if bytes.get(*cursor) == Some(&b'\n') {
-        *cursor += 1;
-    }
-    Some(&bytes[start..end])
-}
-
-fn skip_pdf_whitespace(bytes: &[u8], cursor: &mut usize) {
-    while bytes.get(*cursor).is_some_and(u8::is_ascii_whitespace) {
-        *cursor += 1;
-    }
-}
-
-fn consume_pdf_keyword(bytes: &[u8], cursor: &mut usize, keyword: &[u8]) -> bool {
-    let Some(end) = (*cursor).checked_add(keyword.len()) else {
-        return false;
-    };
-    if bytes.get(*cursor..end) != Some(keyword)
-        || bytes
-            .get(end)
-            .is_some_and(|byte| !is_pdf_delimiter(*byte) && !byte.is_ascii_whitespace())
-    {
+    if !(bytes.starts_with(b"%PDF-1.") || bytes.starts_with(b"%PDF-2.")) {
         return false;
     }
-    *cursor = end;
-    true
-}
-
-#[derive(Default)]
-struct PdfTrailerPreflight {
-    size: u64,
-    has_prev: bool,
-    has_xref_stream: bool,
-}
-
-fn parse_pdf_trailer(bytes: &[u8]) -> Option<PdfTrailerPreflight> {
-    let mut lexer = PdfLexer::new(bytes);
-    if !matches!(lexer.next()?, PdfToken::DictStart) {
-        return None;
-    }
-    let mut trailer = PdfTrailerPreflight::default();
-    loop {
-        match lexer.next()? {
-            PdfToken::DictEnd => break,
-            PdfToken::Name(name) => {
-                let value = lexer.next()?;
-                if name == b"Size" {
-                    let PdfToken::Integer(size) = value else {
-                        return None;
-                    };
-                    trailer.size = u64::try_from(size).ok()?;
-                } else {
-                    trailer.has_prev |= name == b"Prev";
-                    trailer.has_xref_stream |= name == b"XRefStm";
-                    skip_pdf_value(&mut lexer, value, 1)?;
-                }
-            }
-            _ => return None,
-        }
-    }
-    lexer.only_whitespace_and_comments().then_some(trailer)
-}
-
-#[derive(Clone)]
-struct PdfLexer<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-    tokens: usize,
-}
-
-impl<'a> PdfLexer<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self {
-            bytes,
-            cursor: 0,
-            tokens: 0,
-        }
-    }
-
-    fn next(&mut self) -> Option<PdfToken<'a>> {
-        self.skip_space_and_comments();
-        self.tokens = self.tokens.checked_add(1)?;
-        if self.tokens > MAX_PDF_TRAILER_TOKENS {
-            return None;
-        }
-        let byte = *self.bytes.get(self.cursor)?;
-        match byte {
-            b'<' if self.bytes.get(self.cursor + 1) == Some(&b'<') => {
-                self.cursor += 2;
-                Some(PdfToken::DictStart)
-            }
-            b'>' if self.bytes.get(self.cursor + 1) == Some(&b'>') => {
-                self.cursor += 2;
-                Some(PdfToken::DictEnd)
-            }
-            b'[' => {
-                self.cursor += 1;
-                Some(PdfToken::ArrayStart)
-            }
-            b']' => {
-                self.cursor += 1;
-                Some(PdfToken::ArrayEnd)
-            }
-            b'/' => self.read_name().map(PdfToken::Name),
-            b'(' => {
-                self.skip_literal_string()?;
-                Some(PdfToken::Atomic)
-            }
-            b'<' => {
-                self.skip_hex_string()?;
-                Some(PdfToken::Atomic)
-            }
-            b'+' | b'-' | b'.' | b'0'..=b'9' => self.read_number_or_atomic(),
-            _ => self.read_keyword().map(PdfToken::Keyword),
-        }
-    }
-
-    fn skip_space_and_comments(&mut self) {
-        loop {
-            while self
-                .bytes
-                .get(self.cursor)
-                .is_some_and(u8::is_ascii_whitespace)
-            {
-                self.cursor += 1;
-            }
-            if self.bytes.get(self.cursor) != Some(&b'%') {
-                return;
-            }
-            while self
-                .bytes
-                .get(self.cursor)
-                .is_some_and(|byte| !matches!(byte, b'\r' | b'\n'))
-            {
-                self.cursor += 1;
-            }
-        }
-    }
-
-    fn only_whitespace_and_comments(mut self) -> bool {
-        self.skip_space_and_comments();
-        self.cursor == self.bytes.len()
-    }
-
-    fn read_name(&mut self) -> Option<Vec<u8>> {
-        self.cursor += 1;
-        let mut name = Vec::new();
-        while let Some(&byte) = self.bytes.get(self.cursor) {
-            if byte.is_ascii_whitespace() || is_pdf_delimiter(byte) {
-                break;
-            }
-            if byte == b'#' {
-                let high = pdf_hex(*self.bytes.get(self.cursor + 1)?)?;
-                let low = pdf_hex(*self.bytes.get(self.cursor + 2)?)?;
-                name.push((high << 4) | low);
-                self.cursor += 3;
-            } else {
-                name.push(byte);
-                self.cursor += 1;
-            }
-            if name.len() > MAX_PDF_NAME_BYTES {
-                return None;
-            }
-        }
-        Some(name)
-    }
-
-    fn skip_literal_string(&mut self) -> Option<()> {
-        let start = self.cursor;
-        self.cursor += 1;
-        let mut depth = 1_usize;
-        while let Some(&byte) = self.bytes.get(self.cursor) {
-            if self.cursor.saturating_sub(start) > MAX_PDF_STRING_BYTES {
-                return None;
-            }
-            match byte {
-                b'\\' => {
-                    self.cursor += 1;
-                    if self.bytes.get(self.cursor) == Some(&b'\r') {
-                        self.cursor += 1;
-                        if self.bytes.get(self.cursor) == Some(&b'\n') {
-                            self.cursor += 1;
-                        }
-                    } else if self.bytes.get(self.cursor) == Some(&b'\n') {
-                        self.cursor += 1;
-                    } else {
-                        self.cursor = self.cursor.checked_add(1)?;
-                    }
-                }
-                b'(' => {
-                    depth = depth.checked_add(1)?;
-                    if depth > 100 {
-                        return None;
-                    }
-                    self.cursor += 1;
-                }
-                b')' => {
-                    depth -= 1;
-                    self.cursor += 1;
-                    if depth == 0 {
-                        return Some(());
-                    }
-                }
-                _ => self.cursor += 1,
-            }
-        }
-        None
-    }
-
-    fn skip_hex_string(&mut self) -> Option<()> {
-        let start = self.cursor;
-        self.cursor += 1;
-        while let Some(&byte) = self.bytes.get(self.cursor) {
-            if self.cursor.saturating_sub(start) > MAX_PDF_STRING_BYTES {
-                return None;
-            }
-            self.cursor += 1;
-            if byte == b'>' {
-                return Some(());
-            }
-            if !byte.is_ascii_whitespace() && !byte.is_ascii_hexdigit() {
-                return None;
-            }
-        }
-        None
-    }
-
-    fn read_number_or_atomic(&mut self) -> Option<PdfToken<'a>> {
-        let start = self.cursor;
-        while self
-            .bytes
-            .get(self.cursor)
-            .is_some_and(|byte| matches!(byte, b'+' | b'-' | b'.' | b'0'..=b'9'))
-        {
-            self.cursor += 1;
-        }
-        let bytes = &self.bytes[start..self.cursor];
-        std::str::from_utf8(bytes)
-            .ok()
-            .and_then(|value| value.parse::<i64>().ok())
-            .map_or(Some(PdfToken::Atomic), |value| {
-                Some(PdfToken::Integer(value))
-            })
-    }
-
-    fn read_keyword(&mut self) -> Option<&'a [u8]> {
-        let start = self.cursor;
-        while self
-            .bytes
-            .get(self.cursor)
-            .is_some_and(|byte| !byte.is_ascii_whitespace() && !is_pdf_delimiter(*byte))
-        {
-            self.cursor += 1;
-        }
-        (self.cursor > start).then_some(&self.bytes[start..self.cursor])
-    }
-}
-
-enum PdfToken<'a> {
-    DictStart,
-    DictEnd,
-    ArrayStart,
-    ArrayEnd,
-    Name(Vec<u8>),
-    Integer(i64),
-    Keyword(&'a [u8]),
-    Atomic,
-}
-
-fn skip_pdf_value(lexer: &mut PdfLexer<'_>, token: PdfToken<'_>, depth: usize) -> Option<()> {
-    if depth > MAX_PDF_TRAILER_DEPTH {
-        return None;
-    }
-    match token {
-        PdfToken::DictStart => loop {
-            match lexer.next()? {
-                PdfToken::DictEnd => break Some(()),
-                PdfToken::Name(_) => {
-                    let value = lexer.next()?;
-                    skip_pdf_value(lexer, value, depth + 1)?;
-                }
-                _ => break None,
-            }
-        },
-        PdfToken::ArrayStart => loop {
-            let value = lexer.next()?;
-            if matches!(value, PdfToken::ArrayEnd) {
-                break Some(());
-            }
-            skip_pdf_value(lexer, value, depth + 1)?;
-        },
-        PdfToken::Integer(_) => {
-            let mut reference = lexer.clone();
-            if matches!(reference.next(), Some(PdfToken::Integer(_)))
-                && matches!(reference.next(), Some(PdfToken::Keyword(b"R")))
-            {
-                *lexer = reference;
-            }
-            Some(())
-        }
-        PdfToken::DictEnd | PdfToken::ArrayEnd => None,
-        PdfToken::Name(_) | PdfToken::Keyword(_) | PdfToken::Atomic => Some(()),
-    }
-}
-
-fn pdf_hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn is_pdf_delimiter(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-    )
-}
-
-fn valid_pdf_xref_objects(bytes: &[u8], document: &Document) -> bool {
-    let mut entries = document
-        .reference_table
-        .entries
-        .iter()
-        .filter_map(|(id, entry)| match entry {
-            lopdf::xref::XrefEntry::Normal { offset, generation } => {
-                Some((*id, *generation, *offset as usize))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|(_, _, offset)| *offset);
-    if entries.is_empty() {
-        return false;
-    }
-    let Some(startxref_marker) = bytes.windows(9).rposition(|window| window == b"startxref") else {
+    let tail_start = bytes.len().saturating_sub(PDF_TAIL_BYTES);
+    let Some(eof) = rfind(&bytes[tail_start..], b"%%EOF").map(|index| tail_start + index) else {
         return false;
     };
-    for (index, (id, generation, offset)) in entries.iter().copied().enumerate() {
-        let end = entries.get(index + 1).map_or_else(
-            || {
-                if offset == document.xref_start {
-                    startxref_marker
-                } else {
-                    document.xref_start
-                }
-            },
-            |(_, _, offset)| *offset,
-        );
-        let Some(mut object) = bytes.get(offset..end) else {
-            return false;
-        };
-        object = trim_ascii_start(object);
-        let Some((found_id, rest)) = parse_pdf_u32(object) else {
-            return false;
-        };
-        let Some((found_generation, rest)) = parse_pdf_u32(trim_ascii_start(rest)) else {
-            return false;
-        };
-        let rest = trim_ascii_start(rest);
-        if found_id != id || found_generation != u32::from(generation) || !rest.starts_with(b"obj")
-        {
-            return false;
-        }
-        let Some(endobj) = object.windows(6).rposition(|window| window == b"endobj") else {
-            return false;
-        };
-        if object[endobj + 6..]
+    let search_start = eof.saturating_sub(PDF_TAIL_BYTES);
+    let Some(marker) = rfind(&bytes[search_start..eof], b"startxref").map(|at| search_start + at)
+    else {
+        return false;
+    };
+    if !bytes[marker - 1].is_ascii_whitespace() {
+        return false;
+    }
+    let pointer = bytes[marker + b"startxref".len()..eof].trim_ascii();
+    if pointer.is_empty() || !pointer.iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    let Some(xref_offset) = std::str::from_utf8(pointer)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|offset| *offset < marker)
+    else {
+        return false;
+    };
+    let xref = bytes[xref_offset..marker].trim_ascii_start();
+    if !(xref.starts_with(b"xref") || pdf_object_header(xref)) {
+        return false;
+    }
+    // The trailer (classic) or stream dictionary (xref stream) ends before the first `stream`
+    // or `startxref` keyword; only that region is searched for an encryption dictionary.
+    let dictionary_end = [&b"stream"[..], b"startxref"]
+        .into_iter()
+        .filter_map(|keyword| find(xref, keyword))
+        .min()
+        .unwrap_or(xref.len());
+    find(&xref[..dictionary_end], b"/Encrypt").is_none()
+}
+
+/// Whether `bytes` starts with an indirect object header, `<id> <generation> obj`.
+fn pdf_object_header(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    for _ in 0..2 {
+        let digits = rest.iter().take_while(|byte| byte.is_ascii_digit()).count();
+        let spaces = rest[digits..]
             .iter()
-            .any(|byte| !byte.is_ascii_whitespace())
-        {
+            .take_while(|byte| byte.is_ascii_whitespace())
+            .count();
+        if digits == 0 || spaces == 0 {
             return false;
         }
+        rest = &rest[digits + spaces..];
     }
-    true
+    rest.starts_with(b"obj")
 }
 
-fn parse_pdf_u32(bytes: &[u8]) -> Option<(u32, &[u8])> {
-    let digits = bytes
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digits == 0 {
-        return None;
-    }
-    let value = std::str::from_utf8(&bytes[..digits]).ok()?.parse().ok()?;
-    Some((value, &bytes[digits..]))
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
-fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    &bytes[start..]
+fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
 }
-
-fn pdf_startxref(bytes: &[u8]) -> Option<(usize, usize)> {
-    if bytes.len() < 32 || !(bytes.starts_with(b"%PDF-1.") || bytes.starts_with(b"%PDF-2.")) {
-        return None;
-    }
-    let mut cursor = bytes.len();
-    while cursor != 0 && bytes[cursor - 1].is_ascii_whitespace() {
-        cursor -= 1;
-    }
-    if cursor < 5 || &bytes[cursor - 5..cursor] != b"%%EOF" {
-        return None;
-    }
-    cursor -= 5;
-    while cursor != 0 && bytes[cursor - 1].is_ascii_whitespace() {
-        cursor -= 1;
-    }
-    let digits_end = cursor;
-    while cursor != 0 && bytes[cursor - 1].is_ascii_digit() {
-        cursor -= 1;
-    }
-    if cursor == digits_end {
-        return None;
-    }
-    let xref_offset = parse_ascii_usize(&bytes[cursor..digits_end])?;
-    while cursor != 0 && bytes[cursor - 1].is_ascii_whitespace() {
-        cursor -= 1;
-    }
-    if cursor < 9 || &bytes[cursor - 9..cursor] != b"startxref" {
-        return None;
-    }
-    let startxref_marker = cursor - 9;
-    if startxref_marker != 0 && !bytes[startxref_marker - 1].is_ascii_whitespace() {
-        return None;
-    }
-    (xref_offset < startxref_marker).then_some((xref_offset, startxref_marker))
-}
-
-#[cfg(test)]
-pub(crate) fn pdf_validation_stats(bytes: &[u8]) -> (bool, usize) {
-    match validate_pdf_bounded(bytes) {
-        Ok(reserved) => (true, reserved),
-        Err(reserved) => (false, reserved),
-    }
-}
-
-#[cfg(test)]
-pub(crate) const PDF_DECOMPRESSION_BUDGET_FOR_TESTS: usize = MAX_PDF_DECOMPRESSED_BYTES;
 
 fn known_media_extension(path: &Path) -> bool {
     path.extension()
@@ -1552,9 +956,8 @@ mod tests {
     };
 
     use super::{
-        AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, PDF_DECOMPRESSION_BUDGET_FOR_TESTS,
-        approved_media_type, attachment_gate_error, elide_excess_media, gate_attachment,
-        pdf_validation_stats,
+        AttachmentGate, BEDROCK_IMAGE_BYTES, BEDROCK_PDF_BYTES, approved_media_type,
+        attachment_gate_error, elide_excess_media, gate_attachment,
     };
 
     fn capabilities(kind: Option<(MediaKind, &str, u64)>) -> ModelCapabilities {
@@ -1792,11 +1195,80 @@ mod tests {
         assert!(rejects("a.gif", &gif(1, 1, 257)));
     }
 
+    fn pdf(xref_stream: bool, trailer_extra: &str) -> Vec<u8> {
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for object in [
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>\nendobj\n",
+        ] {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(object.as_bytes());
+        }
+        let xref = bytes.len();
+        if xref_stream {
+            bytes.extend_from_slice(
+                format!(
+                    "4 0 obj\n<< /Type /XRef /Size 5 /W [1 2 1] /Root 1 0 R{trailer_extra} /Length 0 >>\nstream\n\nendstream\nendobj\n"
+                )
+                .as_bytes(),
+            );
+        } else {
+            bytes.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+            for offset in offsets {
+                bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+            }
+            bytes.extend_from_slice(
+                format!("trailer\n<< /Size 4 /Root 1 0 R{trailer_extra} >>\n").as_bytes(),
+            );
+        }
+        bytes.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+        bytes
+    }
+
     #[test]
-    fn malformed_pdf_is_rejected_within_the_bounded_budget() {
-        let (valid, reserved) = pdf_validation_stats(b"not a PDF");
-        assert!(!valid);
-        assert!(reserved <= PDF_DECOMPRESSION_BUDGET_FOR_TESTS);
+    fn pdfs_need_a_header_eof_marker_and_resolvable_startxref() {
+        assert_eq!(accepts("a.pdf", &pdf(false, "")), Some("application/pdf"));
+        assert_eq!(
+            accepts("a.pdf", &pdf(true, "")),
+            Some("application/pdf"),
+            "cross-reference streams (PDF 1.5+) are accepted"
+        );
+        let mut junk = pdf(false, "");
+        junk.extend_from_slice(&[b' '; 900]);
+        assert!(accepts("a.pdf", &junk).is_some(), "trailing junk near EOF");
+
+        assert!(rejects("a.pdf", b"not a PDF"));
+        assert!(rejects("a.pdf", b"%PDF-9.0\n%%EOF\n"));
+        let valid = pdf(false, "");
+        assert!(
+            rejects("a.pdf", &valid[..valid.len() - 7]),
+            "truncated before %%EOF"
+        );
+        let mut far_junk = valid.clone();
+        far_junk.extend_from_slice(&[b' '; 2_048]);
+        assert!(rejects("a.pdf", &far_junk), "%%EOF must be near the end");
+        let text = String::from_utf8(valid.clone()).unwrap();
+        let without_startxref = text.replace("startxref", "startxrex");
+        assert!(rejects("a.pdf", without_startxref.as_bytes()));
+        let xref = text.find("xref\n0 4").unwrap();
+        let out_of_range = text.replace(
+            &format!("startxref\n{xref}\n"),
+            &format!("startxref\n{}\n", valid.len()),
+        );
+        assert!(rejects("a.pdf", out_of_range.as_bytes()));
+        let misaligned = text.replace(
+            &format!("startxref\n{xref}\n"),
+            &format!("startxref\n{}\n", xref + 1),
+        );
+        assert!(rejects("a.pdf", misaligned.as_bytes()));
+    }
+
+    #[test]
+    fn encrypted_pdfs_are_rejected() {
+        assert!(rejects("a.pdf", &pdf(false, " /Encrypt 5 0 R")));
+        assert!(rejects("a.pdf", &pdf(true, " /Encrypt 5 0 R")));
     }
 
     fn image(tag: &'static [u8]) -> oven_sdk::FilePart {
