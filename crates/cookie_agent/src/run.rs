@@ -468,6 +468,7 @@ async fn prepare_run(
     let selection = resolve_selection(
         &snapshot.agents,
         &snapshot.models,
+        &snapshot.providers,
         resumed.as_ref(),
         remembered.as_ref(),
         args,
@@ -575,6 +576,7 @@ fn resolve_prompt(args: &RunArgs, stdin: &mut dyn IoRead) -> anyhow::Result<Stri
 fn resolve_selection(
     agents: &[cookie_agent_protocol::AgentDescriptor],
     models: &[AvailableModelDescriptor],
+    providers: &[cookie_agent_protocol::ProviderDescriptor],
     resumed: Option<&SessionMeta>,
     remembered: Option<&RunSelection>,
     args: &RunArgs,
@@ -627,8 +629,12 @@ fn resolve_selection(
     .ok_or_else(|| anyhow!("selected agent is not available for this session"))?;
 
     let base_model = if let Some(model) = &args.model {
-        let descriptor = model_descriptor(models, model)
-            .ok_or_else(|| anyhow!("model `{model}` is not available"))?;
+        let descriptor = model_descriptor(models, model).ok_or_else(|| {
+            match crate::availability::model_unavailable_reason(providers, model) {
+                Some(reason) => anyhow!("model `{model}` is not available: {reason}"),
+                None => anyhow!("model `{model}` is not available"),
+            }
+        })?;
         ModelSelection {
             model: model.clone(),
             variant: descriptor.default_variant.clone(),
@@ -647,7 +653,12 @@ fn resolve_selection(
             .find(|selection| selection_is_live(models, selection))
             .cloned()
             .or_else(|| models.first().map(default_model_selection))
-            .ok_or_else(|| anyhow!("no live model is available"))?
+            .ok_or_else(
+                || match crate::availability::unusable_configured_providers(providers) {
+                    Some(detail) => anyhow!("no live model is available; {detail}"),
+                    None => anyhow!("no live model is available"),
+                },
+            )?
     };
     let mut model = base_model;
     if let Some(variant) = args.variant.as_deref() {
