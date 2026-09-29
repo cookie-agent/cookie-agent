@@ -174,7 +174,8 @@ access tokens. Display clipping does not redact stored content. See the
 ### Media attachments
 
 Media files read through `read` or returned by MCP servers are sniffed by
-content and strictly validated (full image decode with bounded memory, classic
+content and strictly validated (image container structure with header dimension,
+pixel, and frame limits, classic
 cross-reference PDF structure, frame-sync and container magic-byte checks for
 audio and video) before
 bytes are retained or sent to a provider. Validation rejects malformed input,
