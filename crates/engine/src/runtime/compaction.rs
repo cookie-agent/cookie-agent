@@ -153,12 +153,61 @@ impl Engine {
         origin: cookie_agent_protocol::EventOrigin,
     ) -> Result<SessionCompactResult, EngineError> {
         let focus = focus.map(str::to_owned);
-        self.request(session, |reply| SessionCommand::Compact {
-            focus,
-            origin,
-            reply,
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.on_actor(session, move |engine| {
+            engine.spawn_compaction(session, focus, origin, reply);
+            Ok(())
         })
-        .await
+        .await?;
+        receiver.await.map_err(|_| EngineError::ActorStopped)?
+    }
+
+    /// Reserves the session for compaction and runs it off the actor, sending
+    /// the outcome to `reply`; a session already held for compaction or a
+    /// run start is rejected as running. Called on the session actor.
+    pub(super) fn spawn_compaction(
+        &self,
+        session: SessionId,
+        focus: Option<String>,
+        origin: cookie_agent_protocol::EventOrigin,
+        reply: tokio::sync::oneshot::Sender<Result<SessionCompactResult, EngineError>>,
+    ) {
+        if !self.reserve_compaction(session) {
+            let _ = reply.send(Err(EngineError::SessionRunning(session)));
+            return;
+        }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            #[cfg(test)]
+            let hook = engine
+                .inner
+                .test_hooks
+                .compaction_execution_hook
+                .lock()
+                .expect("compaction execution hook lock poisoned")
+                .take();
+            #[cfg(test)]
+            if let Some(hook) = hook {
+                if let Some(reached) = hook
+                    .reached
+                    .lock()
+                    .expect("compaction execution reached lock poisoned")
+                    .take()
+                {
+                    let _ = reached.send(());
+                }
+                hook.release.notified().await;
+            }
+            let mut result = engine
+                .compact_session_direct(session, focus.as_deref(), origin)
+                .await;
+            if let Err(error) = engine.finish_compaction(session).await
+                && result.is_ok()
+            {
+                result = Err(error);
+            }
+            let _ = reply.send(result);
+        });
     }
 
     pub(super) async fn compact_session_direct(

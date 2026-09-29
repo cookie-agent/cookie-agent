@@ -17,10 +17,11 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Engine, EngineError, Event, SessionCommand,
+    DelegatedResumeAdmission, Engine, EngineError, Event, SessionCommand,
     admission::{AdmissionGuard, InflightDelegation},
     handles::SubagentScope,
     helpers::{invocation_id, safe_code, safe_display, safe_error, session_depth},
+    mailbox::pending_inputs,
     producers::ProducerAuthority,
 };
 use crate::{
@@ -224,13 +225,29 @@ impl Engine {
         parent_tool_call_id: ToolCallId,
         child_session_id: SessionId,
     ) -> Result<(), EngineError> {
-        self.request(parent_session_id, |reply| {
-            SessionCommand::EnsureToolCallLinked {
-                run: parent_run_id,
-                tool_call_id: parent_tool_call_id,
-                child_session_id,
-                reply,
+        self.on_actor(parent_session_id, move |engine| {
+            let linked = engine
+                .inner
+                .store
+                .log(parent_session_id)?
+                .event_snapshot()
+                .iter()
+                .any(|event| {
+                    matches!(event.payload, Event::ToolCallLinked { tool_call_id, child_session_id: linked_child }
+                        if tool_call_id == parent_tool_call_id && linked_child == child_session_id)
+                });
+            if !linked {
+                engine.append_direct(
+                    parent_session_id,
+                    Some(parent_run_id),
+                    super::event_origin("engine:delegation"),
+                    Event::ToolCallLinked {
+                        tool_call_id: parent_tool_call_id,
+                        child_session_id,
+                    },
+                )?;
             }
+            Ok(())
         })
         .await
     }
@@ -783,13 +800,34 @@ impl Engine {
                 }
                 hook.release.notified().await;
             }
+            let child_session_id = child.session_id;
+            let input = entry.request.prompt.clone();
             let admission = match self
-                .request(child.session_id, |reply| {
-                    SessionCommand::AdmitDelegatedResume {
-                        run: child_run_id,
-                        input: entry.request.prompt.clone(),
-                        reply,
+                .on_actor(child_session_id, move |engine| {
+                    engine.active_run_in(child_session_id, child_run_id)?;
+                    if !engine.run_is_running(child_session_id, child_run_id)? {
+                        return Ok(DelegatedResumeAdmission {
+                            accepted: false,
+                            admission_seq: None,
+                        });
                     }
+                    engine.append_direct(
+                        child_session_id,
+                        Some(child_run_id),
+                        super::event_origin("engine:delegation"),
+                        Event::UserInputAdmitted { input },
+                    )?;
+                    engine.clear_skill_turn_state(child_session_id);
+                    let admission_seq = engine
+                        .inner
+                        .store
+                        .get(child_session_id)?
+                        .meta
+                        .last_event_seq;
+                    Ok(DelegatedResumeAdmission {
+                        accepted: true,
+                        admission_seq: Some(admission_seq),
+                    })
                 })
                 .await
             {
@@ -1252,13 +1290,13 @@ impl Engine {
         tool_call_id: ToolCallId,
         result: ToolResult,
     ) -> Result<bool, EngineError> {
-        self.request(session_id, |reply| {
-            SessionCommand::ResolveDelegateFailureIfPending {
-                run: run_id,
+        self.on_actor(session_id, move |engine| {
+            engine.resolve_delegate_failure_if_pending_direct(
+                session_id,
+                run_id,
                 tool_call_id,
                 result,
-                reply,
-            }
+            )
         })
         .await
     }
@@ -1707,12 +1745,27 @@ impl Engine {
         status: SessionStatus,
     ) -> Result<(), EngineError> {
         let recalled = self
-            .request(child_session_id, |reply| {
-                SessionCommand::RecallDelegatedResume {
-                    run: child_run_id,
-                    admission_seq,
-                    reply,
+            .on_actor(child_session_id, move |engine| {
+                let projection = engine.inner.store.get(child_session_id)?;
+                if !projection.runs.contains_key(&child_run_id) {
+                    return Err(EngineError::MissingRun(child_run_id));
                 }
+                let recalled = pending_inputs(&projection.log.event_snapshot(), child_run_id)
+                    .into_iter()
+                    .find(|pending| pending.admission_seq == admission_seq);
+                let Some(pending) = recalled else {
+                    return Ok(false);
+                };
+                engine.append_direct(
+                    child_session_id,
+                    Some(child_run_id),
+                    super::event_origin("engine:delegation"),
+                    Event::UserInputRecalledV2 {
+                        user_input_seq: admission_seq,
+                        input: pending.input,
+                    },
+                )?;
+                Ok(true)
             })
             .await
             .unwrap_or(false);
@@ -2038,14 +2091,13 @@ impl Engine {
         producer_id: Option<ProducerId>,
         teaser: DelegateTeaser,
     ) -> Result<bool, EngineError> {
-        self.request(reservation.parent_session_id, |reply| {
-            SessionCommand::Producer(
-                super::producers::ProducerCommand::CommitDelegationCompletion {
-                    reservation,
-                    producer_id,
-                    teaser,
-                    reply,
-                },
+        let parent_session_id = reservation.parent_session_id;
+        self.on_actor(parent_session_id, move |engine| {
+            engine.commit_delegation_completion_direct(
+                parent_session_id,
+                &reservation,
+                producer_id,
+                teaser,
             )
         })
         .await
@@ -2423,13 +2475,13 @@ impl Engine {
                     })?;
                 drop(admission_guard);
                 let result = self
-                    .request(child_session_id, |reply| SessionCommand::Steer {
-                        run: child_run_id,
-                        origin: super::event_origin("engine:delegation"),
-                        input: message,
-                        original_input: None,
-                        reply,
-                    })
+                    .admit_steer(
+                        child_session_id,
+                        child_run_id,
+                        super::event_origin("engine:delegation"),
+                        message,
+                        None,
+                    )
                     .await?;
                 if !result.accepted {
                     return Err(EngineError::ToolFailed(

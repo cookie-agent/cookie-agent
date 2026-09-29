@@ -14,8 +14,8 @@ use tokio::sync::oneshot;
 
 use super::{
     ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
-    InternalAgentHistoryInput, SessionCommand, approval_projection::doom_loop_repetitions,
-    helpers::root_id, internal_agents::parse_internal_approval,
+    InternalAgentHistoryInput, approval_projection::doom_loop_repetitions, helpers::root_id,
+    internal_agents::parse_internal_approval,
 };
 use crate::permissions::ApprovalStore;
 use crate::tool_api::{PreparedExecutorCell, UNSCOPED_PERMISSION_RESOURCE_DISPLAY};
@@ -345,17 +345,20 @@ impl Engine {
             }
             PermissionMode::Yolo => unreachable!("yolo approvals resolve before prompting"),
         };
+        let session = active.session;
+        let cancelled = active.cancellation.is_cancelled();
+        let evaluated = (request.clone(), executor.clone());
         let transition = self
-            .request(active.session, |reply| {
-                SessionCommand::ApprovalEvaluationComplete {
+            .on_actor(session, move |engine| {
+                let (request, executor) = evaluated;
+                engine.approval_evaluation_complete_direct(
+                    session,
                     run,
-                    request: request.clone(),
-                    executor: executor.clone(),
-                    decision: internal_kind,
-                    permission_mode,
-                    cancelled: active.cancellation.is_cancelled(),
-                    reply,
-                }
+                    request,
+                    executor,
+                    (permission_mode, internal_kind),
+                    cancelled,
+                )
             })
             .await?;
         let mut receiver = match transition {
@@ -366,13 +369,8 @@ impl Engine {
         tokio::select! {
             decision = &mut receiver => decision.map_err(|_| EngineError::ActorStopped),
             _ = active.cancellation.cancelled() => {
-                let finalized = self.request(active.session, |reply| {
-                    SessionCommand::ApprovalTerminal {
-                        run,
-                        approval_id,
-                        terminal: ApprovalTerminal::Cancelled,
-                        reply,
-                    }
+                let finalized = self.on_actor(session, move |engine| {
+                    engine.approval_terminal_direct(session, run, approval_id, ApprovalTerminal::Cancelled)
                 }).await?;
                 if finalized {
                     Ok(ApprovalOutcome {
@@ -384,13 +382,8 @@ impl Engine {
                 }
             },
             _ = tokio::time::sleep(expiry_wait) => {
-                let finalized = self.request(active.session, |reply| {
-                    SessionCommand::ApprovalTerminal {
-                        run,
-                        approval_id,
-                        terminal: ApprovalTerminal::Expired,
-                        reply,
-                    }
+                let finalized = self.on_actor(session, move |engine| {
+                    engine.approval_terminal_direct(session, run, approval_id, ApprovalTerminal::Expired)
                 }).await?;
                 if finalized {
                     Ok(ApprovalOutcome {

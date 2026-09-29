@@ -7,7 +7,7 @@
 //! session, and the existing producer machinery admits it into the recipient's
 //! run at the next safe boundary (`steer`), claims it at the next run start
 //! (`queue`), or wakes an idle/finished session through post-send reconcile.
-//! `SessionCommand::Steer` is intentionally not used for agent mail; using
+//! User-input steering is intentionally not used for agent mail; using
 //! both paths would double-deliver the same message.
 //!
 //! Both guards are enforced at acceptance: `max_hops` bounds inherited chain
@@ -20,8 +20,8 @@ use cookie_agent_protocol::{
     RunId, SessionId, SessionOrigin, SessionProducersParams, SessionStatus, ToolCallId,
 };
 
-use super::producers::{ProducerAuthority, ProducerCommand, producer_description};
-use super::{Engine, EngineError, SessionCommand};
+use super::producers::{ProducerAuthority, producer_description};
+use super::{Engine, EngineError};
 
 /// Stable `send_message:<code>` error codes carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces these strings verbatim
@@ -290,7 +290,7 @@ impl Engine {
     /// call)`: a retried call returns the original `message_id` and delivers
     /// once. The inbox-cap check, the pair-window check, the hop guard, and the
     /// acceptance run atomically inside the recipient's actor
-    /// (`ProducerCommand::SendAgentMessage`).
+    /// (`accept_agent_message_direct`).
     ///
     /// Chain depth is computed here, from the *sender's* log, because the hop
     /// basis is the sender run's own durable observation of agent mail — a
@@ -343,21 +343,23 @@ impl Engine {
         ))
         .expect("agent message idempotency key fits the producer key bound");
         let description = producer_description("Agent message from ", &sender_agent_type);
+        let recipient = invocation.recipient_session_id;
+        let mode = invocation.mode;
         let message_id = self
-            .request(invocation.recipient_session_id, |reply| {
-                SessionCommand::Producer(ProducerCommand::SendAgentMessage {
-                    authority,
+            .on_actor(recipient, move |engine| {
+                engine.accept_agent_message_direct(
+                    recipient,
+                    &authority,
                     producer_id,
-                    mode: invocation.mode,
+                    mode,
                     key,
                     description,
-                    sender: invocation.sender_session_id,
-                    sender_agent_type,
-                    body: invocation.body,
+                    invocation.sender_session_id,
+                    &sender_agent_type,
+                    invocation.body,
                     include_reply_hint,
                     hop,
-                    reply,
-                })
+                )
             })
             .await
             .map_err(map_shutdown)?;

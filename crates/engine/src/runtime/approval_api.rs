@@ -4,7 +4,7 @@ use cookie_agent_protocol::{
 };
 
 use super::{
-    Engine, EngineError, PreparedApprovalInvalidation, SessionCommand,
+    Engine, EngineError, PreparedApprovalInvalidation,
     approval_projection::{approval_records, permission_overlay_epoch},
     helpers::root_id,
 };
@@ -14,7 +14,7 @@ impl Engine {
     pub async fn approval_respond(
         &self,
         params: ApprovalRespondParams,
-        origin: EventOrigin,
+        _origin: EventOrigin,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let _permission_guard = self
             .inner
@@ -32,10 +32,8 @@ impl Engine {
             .map(|pending| (pending.executor.clone(), pending.permission_overlay_epoch));
         let Some((executor, pending_epoch)) = pending else {
             return self
-                .request(params.session_id, |reply| SessionCommand::ApprovalRespond {
-                    params,
-                    origin,
-                    reply,
+                .on_actor(params.session_id, move |engine| {
+                    engine.approval_respond_direct(params)
                 })
                 .await;
         };
@@ -63,19 +61,13 @@ impl Engine {
         }
         if let Some(invalidation) = invalidation {
             return self
-                .request(params.session_id, |reply| {
-                    SessionCommand::ApprovalCapabilityInvalid {
-                        params,
-                        invalidation,
-                        reply,
-                    }
+                .on_actor(params.session_id, move |engine| {
+                    engine.approval_capability_invalid_direct(params, invalidation)
                 })
                 .await;
         }
-        self.request(params.session_id, |reply| SessionCommand::ApprovalRespond {
-            params,
-            origin,
-            reply,
+        self.on_actor(params.session_id, move |engine| {
+            engine.approval_respond_direct(params)
         })
         .await
     }
