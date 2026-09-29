@@ -73,16 +73,15 @@ and the CLI share one implementation of the protocol mechanics.
   ready, so responses can arrive out of request order. Notifications from work
   a request started, such as the live tail of `events.subscribe`, are written
   only after that request's response.
-- **ClientProtocol.** The client contract is implemented by the shared
-  `protocol::Client`. Its connection task correlates requests by id, demuxes
+- **Client.** The client side is the concrete `protocol::Client`. Its connection task correlates requests by id, demuxes
   notifications into an ordered `ClientDelivery` stream, injects cursor replays
   and gap recovery before buffered live notifications, fetches replays in pages
   of 2,000 events and delivers each replay whole once its final page arrives,
   wipes secret-bearing
   serialized frames, and fails outstanding calls on shutdown.
 - **TUI and CLI.** The TUI client is a thin adapter re-exporting the server's
-  `Client` wrapper; the CLI uses the same client through the `ClientProtocol`
-  trait. Both still work without the `tui` feature.
+  `Client` wrapper; the CLI uses the same client. Both still work without the
+  `tui` feature.
 
 ## Methods
 

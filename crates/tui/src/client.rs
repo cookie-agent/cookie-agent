@@ -1,8 +1,6 @@
 //! TUI adapter for the shared protocol client.
 
-pub use cookie_agent_server::{
-    ClientDelivery, ClientError, ClientProtocol, validate_websocket_url,
-};
+pub use cookie_agent_server::{ClientDelivery, ClientError, validate_websocket_url};
 
 use std::{ops::Deref, sync::Arc};
 
