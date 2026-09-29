@@ -304,6 +304,58 @@ fn claude_on_vertex_is_unsupported_with_an_honest_reason() {
     }
 }
 
+#[test]
+fn anthropic_auth_follows_the_credential_kind_across_families() {
+    let compile = |catalog: &CatalogProviderRecord, authored: ModelsDevProvider| {
+        DynamicCompiler::family_registry()
+            .compile_managed("sha256:test", catalog, Some(&authored))
+            .unwrap()
+            .models
+            .into_values()
+            .next()
+            .unwrap()
+            .auth
+            .method
+    };
+    let with_override = |method: &str, fields: &[(&str, &str)]| ModelsDevProvider {
+        auth_override: Some(auth(method, fields)),
+        ..toml::from_str("").unwrap()
+    };
+    let mut mixed = record("@ai-sdk/openai-compatible", Some("https://example.com/v1"));
+    only_model(&mut mixed).provider = Some(CatalogModelProviderMetadata {
+        npm: Some("@ai-sdk/anthropic".into()),
+        api: Some("https://example.com/anthropic/v1".into()),
+        shape: None,
+    });
+    // API keys of a bearer provider reach its Anthropic models as x-api-key.
+    assert_eq!(compile(&mixed, api_key_provider()), "anthropic-api-key-v1");
+    assert_eq!(
+        compile(
+            &mixed,
+            with_override("bearer-api-key-v1", &[("api_key", "secret")])
+        ),
+        "anthropic-api-key-v1"
+    );
+    // OAuth access tokens stay bearer tokens.
+    assert_eq!(
+        compile(
+            &mixed,
+            with_override("oauth-access-token-v1", &[("access_token", "token")])
+        ),
+        "bearer-api-key-v1"
+    );
+    // Native Anthropic providers keep the authored method.
+    let native = record("@ai-sdk/anthropic", None);
+    assert_eq!(compile(&native, api_key_provider()), "anthropic-api-key-v1");
+    assert_eq!(
+        compile(
+            &native,
+            with_override("bearer-api-key-v1", &[("api_key", "secret")])
+        ),
+        "bearer-api-key-v1"
+    );
+}
+
 fn auth(method: &str, fields: &[(&str, &str)]) -> AuthOverride {
     AuthOverride {
         method: AuthMethodId::new(method).unwrap(),
