@@ -1,16 +1,56 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use cookie_agent_identity::AuthFieldName;
-use oven_sdk::ModelCapabilities;
+use oven_sdk::{
+    AdapterId, CompactionCapability as OvenCompaction, LanguageModel, ModelCapabilities,
+    ModelConfig, ModelDeclaration, ModelError, ModelId,
+};
+use oven_sdk_anthropic::{
+    AnthropicCompatibleModel, AnthropicCompatibleSettings, AnthropicModel,
+    AnthropicProtocolSettings, AnthropicRequestOptions, AnthropicSettings, AnthropicThinking,
+    AnthropicThinkingSupport,
+};
+use oven_sdk_azure::{
+    AzureApiRoute, AzureMaxTokensField, AzureOpenAiChatModel, AzureOpenAiChatOptions,
+    AzureOpenAiChatSettings, AzureOpenAiCompletionsConfig, AzureOpenAiResponsesCompaction,
+    AzureOpenAiResponsesModel, AzureOpenAiResponsesOptions, AzureOpenAiResponsesSettings,
+    AzureOpenAiRevision, AzureReasoningField, AzureStructuredOutputSupport, AzureSystemMessageRole,
+};
+use oven_sdk_bedrock::{
+    BedrockConverseSettings, BedrockEventStreamLimits, BedrockModel, BedrockReasoningWireFormat,
+    BedrockRequestOptions, BedrockStructuredOutput,
+};
+use oven_sdk_cohere::{CohereModel, CohereRequestOptions, CohereSettings, CohereThinking};
+use oven_sdk_google::{
+    GoogleGenerateContentSettings, GoogleModel, GoogleRequestOptions, GoogleThinkingConfig,
+    GoogleThinkingSettings, GoogleToolSettings,
+};
+use oven_sdk_google_vertex::{
+    GoogleVertexMediaSettings, GoogleVertexModel, GoogleVertexRequestOptions, GoogleVertexResource,
+    GoogleVertexSettings, GoogleVertexThinkingConfig, GoogleVertexThinkingMode,
+    GoogleVertexToolSettings, google_vertex_native_context_scope,
+};
+use oven_sdk_openai::{
+    CompatibleChatOptions, MaxTokensField, OpenAiChatModel, OpenAiChatOptions, OpenAiChatSettings,
+    OpenAiCompatibleChatModel, OpenAiCompatibleChatSettings, OpenAiResponsesCompaction,
+    OpenAiResponsesModel, OpenAiResponsesOptions, OpenAiResponsesSettings, ReasoningField,
+    StructuredOutputSupport, SystemMessageRole,
+};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use zeroize::Zeroize as _;
 
 use crate::{
-    ProviderOptions, ReasoningBehavior, ReasoningEffort, RequestDefaults,
+    ProviderOptions, ReasoningBehavior, ReasoningEffort,
     adapters::{
         OvenAdapterFamily,
-        oven::{AdapterConfig, AuthConfig, CommonDefaults, ConcreteModel, ModelBuildError},
+        oven::{
+            AuthConfig, CommonProvider, ModelBuildError, TimeoutsConfig,
+            combined_routing_discriminator, header_routing_discriminator, namespace, wrong_auth,
+        },
     },
     compiler::CompiledDynamicModel,
 };
@@ -21,7 +61,6 @@ pub(crate) struct ExecutableCredentialMaterial {
 }
 
 pub(crate) struct ExecutableBehaviorInput<'a> {
-    pub defaults: &'a RequestDefaults,
     pub options: &'a ProviderOptions,
     pub reasoning: Option<&'a ReasoningBehavior>,
 }
@@ -37,7 +76,7 @@ impl Drop for ExecutableCredentialMaterial {
 pub(crate) fn compile_executable(
     provider_id: &str,
     model: &CompiledDynamicModel,
-    capabilities: ModelCapabilities,
+    mut capabilities: ModelCapabilities,
     mut headers: BTreeMap<String, String>,
     credentials: &ExecutableCredentialMaterial,
     behavior: ExecutableBehaviorInput<'_>,
@@ -52,28 +91,34 @@ pub(crate) fn compile_executable(
         }
     }
     let auth = executable_auth(model, credentials, behavior.options)?;
-    let adapter = adapter_config(model, &behavior)?;
-    let compiled = ConcreteModel {
-        provider_id: executable_provider_id(provider_id, model.adapter, model.custom).to_owned(),
-        model_id: executable_model_id(model),
-        endpoint,
-        auth,
-        headers,
+    let provider = CommonProvider::new(
+        executable_provider_id(provider_id, model.adapter, model.custom),
+        &endpoint,
+        &headers,
+    )?;
+    capabilities.compaction = if native_compaction(model) {
+        OvenCompaction::Native
+    } else {
+        OvenCompaction::Unsupported
+    };
+    let declaration = ModelDeclaration::new(
+        ModelId::new(model.wire_model_id.as_str().to_owned()),
         capabilities,
-        defaults: CommonDefaults {
-            max_output_tokens: behavior.defaults.max_output_tokens,
-            temperature: behavior
-                .defaults
-                .temperature
-                .map(|value| f64::from(value.get())),
-            top_p: behavior.defaults.top_p.map(|value| f64::from(value.get())),
-            reasoning_effort: behavior.reasoning.and_then(reasoning_effort),
-            include_raw: false,
-        },
-        adapter,
-    }
-    .build()?;
-    Ok(compiled)
+    )?;
+    let header_discriminator =
+        (!headers.is_empty()).then(|| header_routing_discriminator(&headers));
+    let (model, provider_options) = construct(
+        model,
+        &behavior,
+        &provider,
+        declaration,
+        &auth,
+        header_discriminator.as_deref(),
+    )?;
+    Ok(crate::ConstructedAdapter {
+        model,
+        provider_options,
+    })
 }
 
 pub(crate) fn executable_provider_id(
@@ -178,206 +223,421 @@ fn executable_auth(
     })
 }
 
-fn adapter_config(
+/// OpenAI-protocol Responses served by a compatible gateway or without
+/// credentials: a caller-named adapter identity and no native compaction.
+fn compatible_responses(model: &CompiledDynamicModel) -> bool {
+    model.adapter == OvenAdapterFamily::OpenaiResponses
+        && (model.adapter_id.starts_with("oven.openai-compatible.")
+            || model.auth.method == "no-auth-v1")
+}
+
+fn native_compaction(model: &CompiledDynamicModel) -> bool {
+    model.capabilities.compaction == crate::CompactionCapability::Native
+        && match model.adapter {
+            OvenAdapterFamily::OpenaiResponses => !compatible_responses(model),
+            OvenAdapterFamily::AzureOpenaiResponses => true,
+            _ => false,
+        }
+}
+
+/// Routing label for a caller-selected API-key header, so replay scopes of
+/// gateways keyed by different headers never collide.
+fn api_key_header_route(model: &CompiledDynamicModel) -> Option<String> {
+    (model.auth.method == "api-key-header-v1").then(|| {
+        format!(
+            "header:{}",
+            model
+                .auth
+                .safe_parameters
+                .get("header_name")
+                .map_or("api-key", String::as_str)
+        )
+    })
+}
+
+type Constructed = (Arc<dyn LanguageModel>, BTreeMap<String, Value>);
+
+/// Builds the family's Oven model and its per-model request options.
+fn construct(
     model: &CompiledDynamicModel,
     behavior: &ExecutableBehaviorInput<'_>,
-) -> Result<AdapterConfig, ModelBuildError> {
+    provider: &CommonProvider,
+    declaration: ModelDeclaration,
+    auth: &AuthConfig,
+    header_discriminator: Option<&str>,
+) -> Result<Constructed, ModelBuildError> {
     let reasoning = behavior.reasoning;
-    let structured = if model.capabilities.structured_output {
-        "json_schema"
+    let capabilities = &model.capabilities;
+    let timeouts = TimeoutsConfig::default();
+    let structured = if capabilities.structured_output {
+        StructuredOutputSupport::JsonSchema
     } else {
-        "unsupported"
+        StructuredOutputSupport::Unsupported
     };
-    let reasoning_field = if model.capabilities.reasoning {
-        "reasoning_content"
-    } else {
-        "none"
-    };
-    let claude_on_bedrock = bedrock_anthropic_thinking(model.adapter, model.wire_model_id.as_str());
-    let value = match model.adapter {
-        OvenAdapterFamily::Anthropic => json!({
-            "adaptor": "anthropic",
-            "settings": {
-                "thinking": if model.capabilities.reasoning { "both" } else { "none" },
-                "thinking_default_active": false,
-                "thinking_disable_allowed": model.capabilities.reasoning,
-                "thinking_disable_forbidden_efforts": [],
-                "effort": model.capabilities.reasoning,
-                "assistant_prefill": false,
-                "reject_non_default_sampling": false,
-                "native_context_discriminator": Value::Null
-            },
-            "options": anthropic_options(model, behavior)
-        }),
-        OvenAdapterFamily::AnthropicCompatible => json!({
-            "adaptor": "anthropic-compatible",
-            "settings": {
-                "adapter_id": model.adapter_id,
-                "thinking": if model.capabilities.reasoning { "both" } else { "none" },
-                "thinking_default_active": false,
-                "thinking_disable_allowed": model.capabilities.reasoning,
-                "thinking_disable_forbidden_efforts": [],
-                "effort": model.capabilities.reasoning,
-                "assistant_prefill": false,
-                "reject_non_default_sampling": !model.capabilities.temperature,
-                "native_context_discriminator": Value::Null
-            },
-            "options": anthropic_options(model, behavior)
-        }),
-        OvenAdapterFamily::OpenaiChat => json!({
-            "adaptor": "openai-chat",
-            "settings": {
-                "system_message_role": "developer",
-                "max_tokens_field": if model.capabilities.reasoning { "max_completion_tokens" } else { "max_tokens" },
-                "stream_usage": false,
-                "structured_output": structured,
-                "reasoning_field": reasoning_field,
-                "routing_discriminator": Value::Null
-            },
-            "options": { "reasoning_effort": reasoning.and_then(reasoning_effort) }
-        }),
-        OvenAdapterFamily::OpenaiResponses
-            if model.adapter_id.starts_with("oven.openai-compatible.")
-                || model.auth.method == "no-auth-v1" =>
-        {
-            json!({
-                "adaptor": "compatible-responses",
-                "adapter_id": model.adapter_id,
-                "settings": {
-                    "routing_discriminator": (model.auth.method == "api-key-header-v1")
-                        .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
+    Ok(match model.adapter {
+        OvenAdapterFamily::Anthropic => (
+            Arc::new(AnthropicModel::new(ModelConfig::new(
+                provider.with_auth(auth.anthropic()?),
+                declaration,
+                AnthropicSettings {
+                    client: anthropic_client(timeouts)?,
+                    timeouts: timeouts.anthropic(),
+                    protocol: anthropic_protocol(model, false),
+                    native_context_discriminator: None,
                 },
-                "options": {
-                    "parallel_tool_calls": model.capabilities.parallel_tool_calls
-                }
-            })
-        }
-        OvenAdapterFamily::OpenaiResponses => json!({
-            "adaptor": "openai-responses",
-            "settings": {
-                "routing_discriminator": Value::Null,
-                "compaction": if model.capabilities.compaction == crate::CompactionCapability::Native {
-                    "openai-responses-compact"
+            ))?),
+            namespace("anthropic", anthropic_options(model, behavior))?,
+        ),
+        OvenAdapterFamily::AnthropicCompatible => (
+            Arc::new(AnthropicCompatibleModel::new(ModelConfig::new(
+                provider.with_auth(auth.anthropic_compatible()?),
+                declaration,
+                AnthropicCompatibleSettings {
+                    adapter_id: AdapterId::new(model.adapter_id.clone()),
+                    client: anthropic_client(timeouts)?,
+                    timeouts: timeouts.anthropic(),
+                    protocol: anthropic_protocol(model, !capabilities.temperature),
+                    native_context_discriminator: None,
+                },
+            ))?),
+            namespace("anthropic", anthropic_options(model, behavior))?,
+        ),
+        OvenAdapterFamily::OpenaiChat => {
+            let settings = OpenAiChatSettings {
+                system_message_role: SystemMessageRole::Developer,
+                max_tokens_field: if capabilities.reasoning {
+                    MaxTokensField::MaxCompletionTokens
                 } else {
-                    "unsupported"
-                }
-            },
-            "options": {
-                "parallel_tool_calls": model.capabilities.parallel_tool_calls,
-                "reasoning_summary": model.capabilities.reasoning.then_some("auto")
-            }
-        }),
-        OvenAdapterFamily::OpenaiCompatible => json!({
-            "adaptor": "openai-compatible",
-            "settings": {
-                "adapter_id": model.adapter_id,
-                "system_message_role": "system",
-                "max_tokens_field": "max_tokens",
-                "stream_usage": false,
-                "structured_output": structured,
-                "reasoning_field": if model.capabilities.reasoning { model.reasoning_field.as_str() } else { "none" },
-                "routing_discriminator": (model.auth.method == "api-key-header-v1")
-                    .then(|| format!("header:{}", model.auth.safe_parameters.get("header_name").map_or("api-key", String::as_str)))
-            },
-            "options": {
-                "extra_body": compatible_thinking_body(model.thinking_toggle, reasoning)
-            }
-        }),
-        OvenAdapterFamily::GoogleGemini => json!({
-            "adaptor": "google",
-            "settings": {
-                "model_resource": format!("models/{}", model.wire_model_id.as_str()),
-                "thinking": google_thinking(reasoning),
-                "strict_functions": model.capabilities.structured_output,
-                "mixed_client_and_provider_tools": false,
-                "current_turn_signature_sentinel": model.capabilities.native_replay != crate::ReplayCapability::Unsupported
-            },
-            "options": google_options(reasoning)
-        }),
-        OvenAdapterFamily::GoogleVertexGemini => json!({
-            "adaptor": "vertex",
-            "settings": {
-                "project": setup(model, "project")?,
-                "location": setup(model, "location")?,
-                "resource": { "type": "publisher_model", "publisher": "google", "model": model.wire_model_id.as_str() },
-                "thinking": vertex_thinking(reasoning),
-                "provider_tools": false,
-                "mixed_client_and_provider_tools": false,
-                "strict_functions": model.capabilities.structured_output,
-                "stream_function_call_arguments": false,
-                "media": vertex_media()
-            },
-            "options": vertex_options(reasoning)
-        }),
-        OvenAdapterFamily::AwsBedrockConverse => json!({
-            "adaptor": "bedrock",
-            "settings": {
-                "region": setup(model, "region")?,
-                "reasoning_wire_format": match (model.capabilities.reasoning, claude_on_bedrock) {
-                    (false, _) => "unsupported",
-                    (true, true) => "anthropic_thinking",
-                    (true, false) => "bedrock_reasoning_config",
+                    MaxTokensField::MaxTokens
                 },
-                "signed_reasoning": model.capabilities.reasoning
-                    && claude_on_bedrock
-                    && model.capabilities.native_replay == crate::ReplayCapability::Required,
-                "structured_output": if model.capabilities.structured_output { "json_schema" } else { "unsupported" },
-                "max_event_message_bytes": 16 * 1024 * 1024
-            },
-            "options": if claude_on_bedrock {
-                bedrock_anthropic_options(model, behavior)
+                stream_usage: false,
+                structured_output: structured,
+                reasoning_field: if capabilities.reasoning {
+                    ReasoningField::ReasoningContent
+                } else {
+                    ReasoningField::None
+                },
+                routing_discriminator: combined_routing_discriminator(None, header_discriminator),
+                client: timeouts.shared_client(),
+                timeouts: timeouts.openai(),
+            };
+            let language_model: Arc<dyn LanguageModel> = if matches!(auth, AuthConfig::None) {
+                Arc::new(OpenAiChatModel::new_no_auth(ModelConfig::new(
+                    provider.with_auth(()),
+                    declaration,
+                    settings,
+                ))?)
             } else {
-                bedrock_options(reasoning)
-            }
-        }),
-        OvenAdapterFamily::AzureOpenaiChat => json!({
-            "adaptor": "azure-chat",
-            "settings": {
-                "route": { "kind": "v1" },
-                "revision": azure_revision(model),
-                "system_role": "developer",
-                "max_tokens_field": if model.capabilities.reasoning { "max_completion_tokens" } else { "max_tokens" },
-                "stream_usage": false,
-                "structured_output": structured,
-                "reasoning_field": reasoning_field,
-                "omit_reasoning_sampling": model.capabilities.reasoning
-            },
-            "options": { "reasoning_effort": reasoning.and_then(reasoning_effort) }
-        }),
-        OvenAdapterFamily::AzureOpenaiResponses => json!({
-            "adaptor": "azure-responses",
-            "settings": {
-                "route": { "kind": "v1" },
-                "revision": azure_revision(model),
-                "compaction": if model.capabilities.compaction == crate::CompactionCapability::Native {
-                    json!({
-                        "kind": "azure-responses-compact",
-                        "routing_discriminator": model.adapter_id
-                    })
-                } else {
-                    json!({ "kind": "unsupported" })
-                }
-            },
-            "options": {}
-        }),
-        OvenAdapterFamily::CohereV2Chat => json!({
-            "adaptor": "cohere",
-            "settings": {
-                "strict_tools": model.capabilities.structured_output,
-                "safety_mode": Value::Null,
-                "thinking": cohere_thinking(reasoning),
-                "reasoning_effort": {},
-                "top_k": Value::Null,
-                "seed": Value::Null,
-                "frequency_penalty": Value::Null,
-                "presence_penalty": Value::Null,
-                "stop_sequences": [],
-                "priority": Value::Null
-            },
-            "options": {}
-        }),
-    };
-    serde_json::from_value(value).map_err(ModelBuildError::ProviderOptions)
+                Arc::new(OpenAiChatModel::new(ModelConfig::new(
+                    provider.with_auth(auth.openai()?),
+                    declaration,
+                    settings,
+                ))?)
+            };
+            let options = OpenAiChatOptions {
+                reasoning_effort: reasoning.and_then(reasoning_effort),
+                ..OpenAiChatOptions::default()
+            };
+            (
+                language_model,
+                namespace("openai", json!({ "chat": options }))?,
+            )
+        }
+        OvenAdapterFamily::OpenaiResponses if compatible_responses(model) => (
+            Arc::new(OpenAiResponsesModel::new_compatible(
+                ModelConfig::new(
+                    provider.with_auth(auth.openai_compatible()?),
+                    declaration,
+                    OpenAiResponsesSettings {
+                        routing_discriminator: combined_routing_discriminator(
+                            api_key_header_route(model).as_deref(),
+                            header_discriminator,
+                        ),
+                        compaction: OpenAiResponsesCompaction::Unsupported,
+                        client: timeouts.shared_client(),
+                        timeouts: timeouts.openai(),
+                    },
+                ),
+                AdapterId::new(model.adapter_id.clone()),
+            )?),
+            namespace(
+                "openai",
+                json!({ "responses": compatible_responses_options(model) }),
+            )?,
+        ),
+        OvenAdapterFamily::OpenaiResponses => (
+            Arc::new(OpenAiResponsesModel::new(ModelConfig::new(
+                provider.with_auth(auth.openai()?),
+                declaration,
+                OpenAiResponsesSettings {
+                    routing_discriminator: combined_routing_discriminator(
+                        None,
+                        header_discriminator,
+                    ),
+                    compaction: if native_compaction(model) {
+                        OpenAiResponsesCompaction::V1
+                    } else {
+                        OpenAiResponsesCompaction::Unsupported
+                    },
+                    client: timeouts.shared_client(),
+                    timeouts: timeouts.openai(),
+                },
+            ))?),
+            namespace(
+                "openai",
+                json!({ "responses": openai_responses_options(model) }),
+            )?,
+        ),
+        OvenAdapterFamily::OpenaiCompatible => (
+            Arc::new(OpenAiCompatibleChatModel::new(ModelConfig::new(
+                provider.with_auth(auth.openai_compatible()?),
+                declaration,
+                OpenAiCompatibleChatSettings {
+                    adapter_id: AdapterId::new(model.adapter_id.clone()),
+                    system_message_role: SystemMessageRole::System,
+                    max_tokens_field: MaxTokensField::MaxTokens,
+                    stream_usage: false,
+                    structured_output: structured,
+                    reasoning_field: match (capabilities.reasoning, model.reasoning_field.as_str())
+                    {
+                        (false, _) | (true, "none") => ReasoningField::None,
+                        (true, "reasoning") => ReasoningField::Reasoning,
+                        (true, _) => ReasoningField::ReasoningContent,
+                    },
+                    query: Vec::new(),
+                    request_id_headers: vec!["x-request-id".into()],
+                    strict_sse_content_type: false,
+                    routing_discriminator: combined_routing_discriminator(
+                        api_key_header_route(model).as_deref(),
+                        header_discriminator,
+                    ),
+                    client: timeouts.shared_client(),
+                    timeouts: timeouts.openai(),
+                },
+            ))?),
+            namespace(
+                "openai_compatible",
+                CompatibleChatOptions {
+                    extra_body: compatible_thinking_body(model.thinking_toggle, reasoning),
+                },
+            )?,
+        ),
+        OvenAdapterFamily::GoogleGemini => (
+            Arc::new(GoogleModel::new(ModelConfig::new(
+                provider.with_auth(auth.google()?),
+                declaration,
+                GoogleGenerateContentSettings {
+                    model_resource: format!("models/{}", model.wire_model_id.as_str()),
+                    timeouts: timeouts.google(),
+                    thinking: google_thinking(reasoning),
+                    tools: GoogleToolSettings {
+                        strict_functions: capabilities.structured_output,
+                        mixed_client_and_provider_tools: false,
+                        current_turn_signature_sentinel: capabilities.native_replay
+                            != crate::ReplayCapability::Unsupported,
+                    },
+                },
+            ))?),
+            namespace(
+                "google",
+                GoogleRequestOptions {
+                    thinking_config: google_thinking_config(reasoning).map(
+                        |(thinking_budget, thinking_level, include_thoughts)| {
+                            GoogleThinkingConfig {
+                                thinking_budget,
+                                thinking_level,
+                                include_thoughts,
+                            }
+                        },
+                    ),
+                    ..GoogleRequestOptions::default()
+                },
+            )?,
+        ),
+        OvenAdapterFamily::GoogleVertexGemini => {
+            let project = setup(model, "project")?;
+            let location = setup(model, "location")?;
+            let provider = provider.with_auth(auth.vertex()?);
+            let resource = GoogleVertexResource::PublisherModel {
+                publisher: "google".into(),
+                model: model.wire_model_id.as_str().to_owned(),
+            };
+            let native_context_scope = google_vertex_native_context_scope(
+                provider.id.clone(),
+                declaration.id.clone(),
+                &provider.api,
+                project,
+                location,
+                &resource,
+            )?;
+            let settings = GoogleVertexSettings {
+                project: project.to_owned(),
+                location: location.to_owned(),
+                resource,
+                thinking: match reasoning {
+                    Some(ReasoningBehavior::Effort { .. }) => GoogleVertexThinkingMode::Level,
+                    Some(_) => GoogleVertexThinkingMode::Budget,
+                    None => GoogleVertexThinkingMode::Unsupported,
+                },
+                tools: GoogleVertexToolSettings {
+                    provider_tools: false,
+                    mixed_client_and_provider_tools: false,
+                    strict_functions: capabilities.structured_output,
+                },
+                stream_function_call_arguments: false,
+                media: GoogleVertexMediaSettings {
+                    max_images: 20,
+                    max_https_images: 20,
+                    max_documents: 5,
+                    max_audio: 5,
+                    max_videos: 5,
+                    max_https_videos: 5,
+                    max_inline_image_bytes: 7 * 1024 * 1024,
+                    max_inline_pdf_bytes: 32 * 1024 * 1024,
+                    max_inline_text_bytes: 1024 * 1024,
+                    url_schemes: vec!["https".into()],
+                },
+                native_context_scope,
+                client: timeouts.shared_client(),
+                timeouts: timeouts.vertex(),
+            };
+            (
+                Arc::new(GoogleVertexModel::new(ModelConfig::new(
+                    provider,
+                    declaration,
+                    settings,
+                ))?),
+                namespace(
+                    "google_vertex",
+                    GoogleVertexRequestOptions {
+                        thinking_config: google_thinking_config(reasoning).map(
+                            |(thinking_budget, thinking_level, include_thoughts)| {
+                                GoogleVertexThinkingConfig {
+                                    thinking_budget,
+                                    thinking_level,
+                                    include_thoughts,
+                                }
+                            },
+                        ),
+                        ..GoogleVertexRequestOptions::default()
+                    },
+                )?,
+            )
+        }
+        OvenAdapterFamily::AwsBedrockConverse => {
+            let claude = bedrock_anthropic_thinking(model.adapter, model.wire_model_id.as_str());
+            (
+                Arc::new(BedrockModel::new(ModelConfig::new(
+                    provider.with_auth(auth.bedrock()?),
+                    declaration,
+                    BedrockConverseSettings {
+                        region: setup(model, "region")?.to_owned(),
+                        reasoning_wire_format: match (capabilities.reasoning, claude) {
+                            (false, _) => BedrockReasoningWireFormat::Unsupported,
+                            (true, true) => BedrockReasoningWireFormat::AnthropicThinking,
+                            (true, false) => BedrockReasoningWireFormat::BedrockReasoningConfig,
+                        },
+                        signed_reasoning: capabilities.reasoning
+                            && claude
+                            && capabilities.native_replay == crate::ReplayCapability::Required,
+                        structured_output: if capabilities.structured_output {
+                            BedrockStructuredOutput::JsonSchema
+                        } else {
+                            BedrockStructuredOutput::Unsupported
+                        },
+                        event_stream: BedrockEventStreamLimits::new(16 * 1024 * 1024),
+                        timeouts: timeouts.bedrock(),
+                        client: timeouts.shared_client(),
+                    },
+                ))?),
+                namespace(
+                    "bedrock",
+                    if claude {
+                        bedrock_anthropic_options(model, reasoning)
+                    } else {
+                        bedrock_options(reasoning)
+                    },
+                )?,
+            )
+        }
+        OvenAdapterFamily::AzureOpenaiChat => (
+            Arc::new(AzureOpenAiChatModel::new(ModelConfig::new(
+                provider.with_auth(auth.azure()?),
+                declaration,
+                AzureOpenAiChatSettings {
+                    route: AzureApiRoute::V1,
+                    revision: azure_revision(model),
+                    timeouts: timeouts.azure(),
+                    completions: AzureOpenAiCompletionsConfig {
+                        system_role: AzureSystemMessageRole::Developer,
+                        max_tokens_field: if capabilities.reasoning {
+                            AzureMaxTokensField::MaxCompletionTokens
+                        } else {
+                            AzureMaxTokensField::MaxTokens
+                        },
+                        stream_usage: false,
+                        structured_output: if capabilities.structured_output {
+                            AzureStructuredOutputSupport::JsonSchema
+                        } else {
+                            AzureStructuredOutputSupport::Unsupported
+                        },
+                        reasoning_field: if capabilities.reasoning {
+                            AzureReasoningField::ReasoningContent
+                        } else {
+                            AzureReasoningField::None
+                        },
+                        omit_reasoning_sampling: capabilities.reasoning,
+                    },
+                },
+            ))?),
+            namespace(
+                "azure_openai",
+                json!({ "chat": azure_chat_options(reasoning) }),
+            )?,
+        ),
+        OvenAdapterFamily::AzureOpenaiResponses => (
+            Arc::new(AzureOpenAiResponsesModel::new(ModelConfig::new(
+                provider.with_auth(auth.azure()?),
+                declaration,
+                AzureOpenAiResponsesSettings {
+                    route: AzureApiRoute::V1,
+                    revision: azure_revision(model),
+                    timeouts: timeouts.azure(),
+                    compaction: if native_compaction(model) {
+                        AzureOpenAiResponsesCompaction::V1 {
+                            routing_discriminator: model.adapter_id.clone(),
+                        }
+                    } else {
+                        AzureOpenAiResponsesCompaction::Unsupported
+                    },
+                },
+            ))?),
+            namespace(
+                "azure_openai",
+                json!({ "responses": AzureOpenAiResponsesOptions::default() }),
+            )?,
+        ),
+        OvenAdapterFamily::CohereV2Chat => (
+            Arc::new(CohereModel::new(ModelConfig::new(
+                provider.with_auth(auth.cohere()?),
+                declaration,
+                CohereSettings {
+                    timeouts: timeouts.cohere(),
+                    strict_tools: capabilities.structured_output,
+                    safety_mode: None,
+                    thinking: cohere_thinking(reasoning),
+                    reasoning_effort: BTreeMap::new(),
+                    top_k: None,
+                    seed: None,
+                    frequency_penalty: None,
+                    presence_penalty: None,
+                    stop_sequences: Vec::new(),
+                    priority: None,
+                },
+            ))?),
+            namespace("cohere", CohereRequestOptions::default())?,
+        ),
+    })
 }
 
 fn setup<'a>(model: &'a CompiledDynamicModel, name: &str) -> Result<&'a str, ModelBuildError> {
@@ -389,17 +649,12 @@ fn setup<'a>(model: &'a CompiledDynamicModel, name: &str) -> Result<&'a str, Mod
         .ok_or_else(|| wrong_auth("dynamic", "complete setup material"))
 }
 
-fn azure_revision(model: &CompiledDynamicModel) -> Value {
-    match (
-        setup(model, "model"),
-        setup(model, "version"),
-        setup(model, "deployment_type"),
-    ) {
-        (Ok(model), Ok(version), Ok(deployment_type)) => {
-            json!({ "model": model, "version": version, "deployment_type": deployment_type })
-        }
-        _ => Value::Null,
-    }
+fn azure_revision(model: &CompiledDynamicModel) -> Option<AzureOpenAiRevision> {
+    Some(AzureOpenAiRevision {
+        model: setup(model, "model").ok()?.to_owned(),
+        version: setup(model, "version").ok()?.to_owned(),
+        deployment_type: setup(model, "deployment_type").ok()?.to_owned(),
+    })
 }
 
 fn executable_endpoint(model: &CompiledDynamicModel) -> Result<String, ModelBuildError> {
@@ -417,10 +672,6 @@ fn executable_endpoint(model: &CompiledDynamicModel) -> Result<String, ModelBuil
     } else {
         Ok(endpoint)
     }
-}
-
-fn executable_model_id(model: &CompiledDynamicModel) -> String {
-    model.wire_model_id.as_str().to_owned()
 }
 
 fn reasoning_effort(reasoning: &ReasoningBehavior) -> Option<String> {
@@ -442,6 +693,32 @@ fn reasoning_effort(reasoning: &ReasoningBehavior) -> Option<String> {
     }
 }
 
+fn anthropic_client(timeouts: TimeoutsConfig) -> Result<reqwest::Client, ModelBuildError> {
+    timeouts
+        .shared_client()
+        .ok_or_else(|| ModelError::transport("could not construct Anthropic HTTP client").into())
+}
+
+fn anthropic_protocol(
+    model: &CompiledDynamicModel,
+    reject_non_default_sampling: bool,
+) -> AnthropicProtocolSettings {
+    let reasoning = model.capabilities.reasoning;
+    AnthropicProtocolSettings {
+        thinking: if reasoning {
+            AnthropicThinkingSupport::Both
+        } else {
+            AnthropicThinkingSupport::None
+        },
+        thinking_default_active: false,
+        thinking_disable_allowed: reasoning,
+        thinking_disable_forbidden_efforts: BTreeSet::new(),
+        effort: reasoning,
+        assistant_prefill: false,
+        reject_non_default_sampling,
+    }
+}
+
 /// Anthropic Messages reasoning controls.
 ///
 /// Thinking is requested with `display: "summarized"`: Claude Opus 4.7 and
@@ -454,33 +731,31 @@ fn reasoning_effort(reasoning: &ReasoningBehavior) -> Option<String> {
 fn anthropic_options(
     model: &CompiledDynamicModel,
     behavior: &ExecutableBehaviorInput<'_>,
-) -> Value {
+) -> AnthropicRequestOptions {
     let reasoning = behavior.reasoning;
-    let enabled = |budget_tokens: i64| json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": "summarized" });
-    let active = || {
-        if claude_extended_thinking_only(model.wire_model_id.as_str()) {
-            enabled(extended_thinking_budget(model))
-        } else {
-            json!({ "type": "adaptive", "display": "summarized" })
-        }
+    let enabled = |budget_tokens| AnthropicThinking::Enabled {
+        budget_tokens,
+        display: Some("summarized".into()),
     };
     let thinking = match reasoning {
-        None => Value::Null,
-        Some(ReasoningBehavior::Toggle { enabled: false }) => json!({ "type": "disabled" }),
-        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => enabled(*value),
-        Some(
-            ReasoningBehavior::Toggle { enabled: true }
-            | ReasoningBehavior::Effort { .. }
-            | ReasoningBehavior::BudgetTokens { .. },
-        ) => active(),
+        None => None,
+        Some(ReasoningBehavior::Toggle { enabled: false }) => Some(AnthropicThinking::Disabled),
+        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => {
+            Some(enabled(value.unsigned_abs()))
+        }
+        Some(_) if claude_extended_thinking_only(model.wire_model_id.as_str()) => {
+            Some(enabled(extended_thinking_budget(model)))
+        }
+        Some(_) => Some(AnthropicThinking::Adaptive {
+            display: Some("summarized".into()),
+        }),
     };
-    json!({
-        "thinking": thinking,
-        "effort": reasoning.and_then(reasoning_effort),
-        "cache_ttl": Value::Null,
-        "user_id": Value::Null,
-        "betas": behavior.options.beta
-    })
+    AnthropicRequestOptions {
+        thinking,
+        effort: reasoning.and_then(reasoning_effort),
+        betas: behavior.options.beta.clone(),
+        ..AnthropicRequestOptions::default()
+    }
 }
 
 /// Claude on Bedrock Converse takes Anthropic `thinking` and
@@ -499,20 +774,30 @@ pub(crate) fn bedrock_anthropic_thinking(adapter: OvenAdapterFamily, wire_model_
 /// `output_config.effort`. Oven rejects a display on manual budgets.
 fn bedrock_anthropic_options(
     model: &CompiledDynamicModel,
-    behavior: &ExecutableBehaviorInput<'_>,
-) -> Value {
-    let reasoning = behavior.reasoning;
-    let enabled = |budget_tokens: i64| json!({ "reasoning_type": "enabled", "reasoning_budget_tokens": budget_tokens });
+    reasoning: Option<&ReasoningBehavior>,
+) -> BedrockRequestOptions {
+    let enabled = |budget_tokens| BedrockRequestOptions {
+        reasoning_type: Some("enabled".into()),
+        reasoning_budget_tokens: Some(budget_tokens),
+        ..BedrockRequestOptions::default()
+    };
     match reasoning {
-        None => json!({}),
-        Some(ReasoningBehavior::Toggle { enabled: false }) => {
-            json!({ "reasoning_type": "disabled" })
+        None => BedrockRequestOptions::default(),
+        Some(ReasoningBehavior::Toggle { enabled: false }) => BedrockRequestOptions {
+            reasoning_type: Some("disabled".into()),
+            ..BedrockRequestOptions::default()
+        },
+        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => {
+            enabled(value.unsigned_abs())
         }
-        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => enabled(*value),
         Some(_) if claude_extended_thinking_only(model.wire_model_id.as_str()) => {
             enabled(extended_thinking_budget(model))
         }
-        Some(_) => json!({ "reasoning_type": "adaptive", "reasoning_display": "summarized" }),
+        Some(_) => BedrockRequestOptions {
+            reasoning_type: Some("adaptive".into()),
+            reasoning_display: Some("summarized".into()),
+            ..BedrockRequestOptions::default()
+        },
     }
 }
 
@@ -540,14 +825,12 @@ fn claude_extended_thinking_only(wire_model_id: &str) -> bool {
 /// Manual thinking budget for effort and toggle variants on models that
 /// accept only budgets: half the output room left after the minimum visible
 /// output, capped at 16,000 tokens and floored at the 1,024 minimum.
-fn extended_thinking_budget(model: &CompiledDynamicModel) -> i64 {
+fn extended_thinking_budget(model: &CompiledDynamicModel) -> u64 {
     let room = model
         .capabilities
         .output_tokens
         .saturating_sub(super::variants::MIN_VISIBLE_OUTPUT_TOKENS);
-    i64::try_from(room / 2)
-        .unwrap_or(i64::MAX)
-        .clamp(1024, 16_000)
+    (room / 2).clamp(1024, 16_000)
 }
 
 /// Documented OpenAI-compatible Chat request fields that turn thinking on or
@@ -589,117 +872,106 @@ pub(crate) fn compatible_thinking_toggle(provider_id: &str) -> Option<Compatible
 fn compatible_thinking_body(
     toggle: Option<CompatibleThinkingToggle>,
     reasoning: Option<&ReasoningBehavior>,
-) -> Value {
+) -> Map<String, Value> {
     let Some(ReasoningBehavior::Toggle { enabled }) = reasoning else {
-        return json!({});
+        return Map::new();
     };
-    match toggle {
-        Some(CompatibleThinkingToggle::ThinkingType) => {
-            json!({ "thinking": { "type": if *enabled { "enabled" } else { "disabled" } } })
-        }
-        Some(CompatibleThinkingToggle::EnableThinking) => json!({ "enable_thinking": enabled }),
-        Some(CompatibleThinkingToggle::ReasoningEffortNone) | None => json!({}),
+    let field = match toggle {
+        Some(CompatibleThinkingToggle::ThinkingType) => (
+            "thinking",
+            json!({ "type": if *enabled { "enabled" } else { "disabled" } }),
+        ),
+        Some(CompatibleThinkingToggle::EnableThinking) => ("enable_thinking", json!(enabled)),
+        Some(CompatibleThinkingToggle::ReasoningEffortNone) | None => return Map::new(),
+    };
+    Map::from_iter([(field.0.to_owned(), field.1)])
+}
+
+/// Responses options for compatible gateways: parallel tool calls follow the
+/// capability.
+fn compatible_responses_options(model: &CompiledDynamicModel) -> OpenAiResponsesOptions {
+    OpenAiResponsesOptions {
+        parallel_tool_calls: Some(model.capabilities.parallel_tool_calls),
+        ..OpenAiResponsesOptions::default()
     }
 }
 
-fn google_thinking(reasoning: Option<&ReasoningBehavior>) -> Value {
-    match reasoning {
-        Some(ReasoningBehavior::Effort { value }) => json!({
-            "type": "level",
-            "effort_levels": { reasoning_effort(&ReasoningBehavior::Effort { value: *value }).unwrap_or_default(): reasoning_effort(&ReasoningBehavior::Effort { value: *value }).unwrap_or_default() }
-        }),
-        Some(_) => json!({ "type": "budget", "effort_budgets": {} }),
-        None => json!({ "type": "unsupported" }),
+/// Official Responses options: as for compatible gateways, and reasoning
+/// models request automatic summaries.
+fn openai_responses_options(model: &CompiledDynamicModel) -> OpenAiResponsesOptions {
+    OpenAiResponsesOptions {
+        reasoning_summary: model.capabilities.reasoning.then(|| "auto".into()),
+        ..compatible_responses_options(model)
     }
 }
 
-fn google_options(reasoning: Option<&ReasoningBehavior>) -> Value {
-    let thinking = match reasoning {
-        Some(ReasoningBehavior::BudgetTokens { value }) => {
-            json!({ "thinking_budget": value, "thinking_level": Value::Null, "include_thoughts": true })
-        }
-        Some(ReasoningBehavior::Toggle { enabled }) => {
-            json!({ "thinking_budget": if *enabled { -1 } else { 0 }, "thinking_level": Value::Null, "include_thoughts": *enabled })
-        }
-        Some(ReasoningBehavior::Effort { .. }) => {
-            json!({ "thinking_budget": Value::Null, "thinking_level": reasoning.and_then(reasoning_effort), "include_thoughts": true })
-        }
-        None => Value::Null,
-    };
-    json!({ "thinking": thinking })
-}
-
-fn vertex_thinking(reasoning: Option<&ReasoningBehavior>) -> &'static str {
-    match reasoning {
-        Some(ReasoningBehavior::Effort { .. }) => "level",
-        Some(_) => "budget",
-        None => "unsupported",
+fn azure_chat_options(reasoning: Option<&ReasoningBehavior>) -> AzureOpenAiChatOptions {
+    AzureOpenAiChatOptions {
+        reasoning_effort: reasoning.and_then(reasoning_effort),
+        ..AzureOpenAiChatOptions::default()
     }
 }
 
-fn vertex_options(reasoning: Option<&ReasoningBehavior>) -> Value {
-    let thinking = match reasoning {
-        Some(ReasoningBehavior::BudgetTokens { value }) => {
-            json!({ "thinking_budget": value, "thinking_level": Value::Null, "include_thoughts": true })
-        }
-        Some(ReasoningBehavior::Toggle { enabled }) => {
-            json!({ "thinking_budget": if *enabled { -1 } else { 0 }, "thinking_level": Value::Null, "include_thoughts": *enabled })
-        }
-        Some(ReasoningBehavior::Effort { .. }) => {
-            json!({ "thinking_budget": Value::Null, "thinking_level": reasoning.and_then(reasoning_effort), "include_thoughts": true })
-        }
-        None => Value::Null,
-    };
-    json!({ "thinking": thinking })
-}
-
-fn vertex_media() -> Value {
-    json!({
-        "max_images": 20,
-        "max_https_images": 20,
-        "max_documents": 5,
-        "max_audio": 5,
-        "max_videos": 5,
-        "max_https_videos": 5,
-        "max_inline_image_bytes": 7 * 1024 * 1024,
-        "max_inline_pdf_bytes": 32 * 1024 * 1024,
-        "max_inline_text_bytes": 1024 * 1024,
-        "url_schemes": ["https"]
-    })
-}
-
-fn bedrock_options(reasoning: Option<&ReasoningBehavior>) -> Value {
+fn google_thinking(reasoning: Option<&ReasoningBehavior>) -> GoogleThinkingSettings {
     match reasoning {
-        Some(ReasoningBehavior::Toggle { enabled }) => json!({
-            "reasoning_type": if *enabled { "enabled" } else { "disabled" }
-        }),
-        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => json!({
-            "reasoning_type": "enabled",
-            "reasoning_budget_tokens": value
-        }),
+        Some(effort @ ReasoningBehavior::Effort { .. }) => {
+            let level = reasoning_effort(effort).unwrap_or_default();
+            GoogleThinkingSettings::Level {
+                effort_levels: BTreeMap::from([(level.clone(), level)]),
+            }
+        }
+        Some(_) => GoogleThinkingSettings::Budget {
+            effort_budgets: BTreeMap::new(),
+        },
+        None => GoogleThinkingSettings::Unsupported,
+    }
+}
+
+/// Gemini `thinkingConfig` as `(thinking_budget, thinking_level,
+/// include_thoughts)`, shared by the Gemini API and Vertex encodings.
+fn google_thinking_config(
+    reasoning: Option<&ReasoningBehavior>,
+) -> Option<(Option<i64>, Option<String>, Option<bool>)> {
+    match reasoning? {
+        ReasoningBehavior::BudgetTokens { value } => Some((Some(*value), None, Some(true))),
+        ReasoningBehavior::Toggle { enabled } => {
+            Some((Some(if *enabled { -1 } else { 0 }), None, Some(*enabled)))
+        }
+        effort @ ReasoningBehavior::Effort { .. } => {
+            Some((None, reasoning_effort(effort), Some(true)))
+        }
+    }
+}
+
+fn bedrock_options(reasoning: Option<&ReasoningBehavior>) -> BedrockRequestOptions {
+    match reasoning {
+        Some(ReasoningBehavior::Toggle { enabled }) => BedrockRequestOptions {
+            reasoning_type: Some(if *enabled { "enabled" } else { "disabled" }.into()),
+            ..BedrockRequestOptions::default()
+        },
+        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => BedrockRequestOptions {
+            reasoning_type: Some("enabled".into()),
+            reasoning_budget_tokens: Some(value.unsigned_abs()),
+            ..BedrockRequestOptions::default()
+        },
         // Effort reaches Bedrock as the request's normalized reasoning effort;
         // Oven rejects a second copy in the Bedrock options.
-        _ => json!({}),
+        _ => BedrockRequestOptions::default(),
     }
 }
 
-fn cohere_thinking(reasoning: Option<&ReasoningBehavior>) -> Value {
-    match reasoning {
-        Some(ReasoningBehavior::Toggle { enabled }) => {
-            json!({ "enabled": enabled, "token_budget": Value::Null })
-        }
-        Some(ReasoningBehavior::BudgetTokens { value }) if *value > 0 => {
-            json!({ "enabled": true, "token_budget": value })
-        }
-        Some(ReasoningBehavior::BudgetTokens { .. }) => {
-            json!({ "enabled": true, "token_budget": Value::Null })
-        }
-        _ => Value::Null,
+fn cohere_thinking(reasoning: Option<&ReasoningBehavior>) -> Option<CohereThinking> {
+    match reasoning? {
+        ReasoningBehavior::Toggle { enabled } => Some(CohereThinking {
+            enabled: *enabled,
+            token_budget: None,
+        }),
+        ReasoningBehavior::BudgetTokens { value } => Some(CohereThinking {
+            enabled: true,
+            token_budget: (*value > 0).then(|| value.unsigned_abs()),
+        }),
+        ReasoningBehavior::Effort { .. } => None,
     }
-}
-
-fn wrong_auth(adapter: &'static str, expected: &'static str) -> ModelBuildError {
-    ModelBuildError::WrongAuth { adapter, expected }
 }
 
 #[cfg(test)]
@@ -808,9 +1080,7 @@ capabilities = { input = ["text"], output = ["text"], context_tokens = 32768, ou
         );
     }
 
-    fn openai_responses_options(
-        reasoning: bool,
-    ) -> crate::adapters::oven::OpenAiResponsesOptionsConfig {
+    fn openai_responses_options(reasoning: bool) -> oven_sdk_openai::OpenAiResponsesOptions {
         let temporary = TempDir::new().expect("temporary directory");
         let provider_id = ProviderId::new("openai").expect("provider ID");
         let definition = toml::from_str::<ProviderDefinition>(&format!(
@@ -838,15 +1108,8 @@ capabilities = {{ input = ["text"], output = ["text"], context_tokens = 32768, o
             .next()
             .expect("compiled model")
             .model;
-        let behavior = super::ExecutableBehaviorInput {
-            defaults: &compiled.defaults,
-            options: &compiled.options,
-            reasoning: None,
-        };
-        match super::adapter_config(compiled, &behavior).expect("adapter config") {
-            crate::adapters::oven::AdapterConfig::OpenaiResponses { options, .. } => options,
-            other => panic!("expected openai-responses adapter config, got {other:?}"),
-        }
+        assert!(!super::compatible_responses(compiled));
+        super::openai_responses_options(compiled)
     }
 
     #[test]

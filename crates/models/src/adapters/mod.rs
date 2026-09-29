@@ -8,9 +8,10 @@ mod headers;
 pub(crate) mod oven;
 
 pub use cache::{
-    BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
-    CacheStrategyConfig, GoogleCacheMode, GoogleCacheStrategyConfig, OpenAiCacheMode,
-    OpenAiCacheStrategyConfig, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
+    AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig, BedrockCachePoint, BedrockCacheStrategy,
+    BedrockCacheTtl, BedrockMessageCachePoint, CacheStrategyConfig, GoogleCacheMode,
+    GoogleCacheStrategyConfig, OpenAiCacheMode, OpenAiCacheStrategyConfig,
+    OpenAiPromptCacheRetention, OpenAiPromptCacheTtl,
 };
 pub use capabilities::{AdapterCapabilityError, validate_capability_ceiling};
 pub use compaction::with_native_compaction_instructions;
@@ -19,7 +20,6 @@ pub use endpoints::{
     is_loopback_url, managed_base_url_policy, validate_custom_endpoint, validate_managed_base_url,
 };
 pub use headers::{StaticHeaderError, validate_static_headers};
-pub use oven::{AnthropicCacheStrategyConfig, AnthropicCacheTtlConfig};
 
 use serde::{Deserialize, Serialize};
 

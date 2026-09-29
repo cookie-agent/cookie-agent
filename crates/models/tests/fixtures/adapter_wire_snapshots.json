@@ -7395,6 +7395,9 @@
       "azure_openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -7650,6 +7653,9 @@
       "azure_openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -7907,6 +7913,9 @@
       "azure_openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -8164,6 +8173,9 @@
       "azure_openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -8424,6 +8436,9 @@
       "azure_openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": "minimal",
           "service_tier": null,
           "user": null,
@@ -8683,6 +8698,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -8975,6 +8993,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -9273,6 +9294,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -9580,6 +9604,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -17319,6 +17346,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -17420,6 +17450,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -17519,6 +17552,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -17776,6 +17812,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": null,
           "service_tier": null,
           "user": null,
@@ -18039,6 +18078,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": "high",
           "service_tier": null,
           "user": null,
@@ -18305,6 +18347,9 @@
       "openai": {
         "chat": {
           "parallel_tool_calls": null,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_effort": "minimal",
           "service_tier": null,
           "user": null,
@@ -19027,6 +19072,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -20220,6 +20268,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -20530,6 +20581,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -20831,6 +20885,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -21139,6 +21196,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": null,
           "service_tier": null,
@@ -21440,6 +21500,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -21756,6 +21819,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -22075,6 +22141,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -27333,6 +27402,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -27641,6 +27713,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,
@@ -27952,6 +28027,9 @@
         "responses": {
           "include": [],
           "parallel_tool_calls": true,
+          "prompt_cache_key": null,
+          "prompt_cache_options": null,
+          "prompt_cache_retention": null,
           "reasoning_mode": null,
           "reasoning_summary": "auto",
           "service_tier": null,

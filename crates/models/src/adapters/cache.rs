@@ -2,7 +2,21 @@ pub use oven_sdk_bedrock::{
     BedrockCachePoint, BedrockCacheStrategy, BedrockCacheTtl, BedrockMessageCachePoint,
 };
 
-use super::AnthropicCacheStrategyConfig;
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicCacheTtlConfig {
+    FiveMinutes,
+    OneHour,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AnthropicCacheStrategyConfig {
+    pub system: Option<AnthropicCacheTtlConfig>,
+    pub tools: Option<AnthropicCacheTtlConfig>,
+    pub rolling: Option<AnthropicCacheTtlConfig>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CacheStrategyConfig {
