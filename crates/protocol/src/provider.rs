@@ -349,6 +349,90 @@ impl<'de> Deserialize<'de> for DurableConnectionDescriptor {
     }
 }
 
+/// Why a provider's catalog model is not selectable.
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelUnavailableKind {
+    /// The catalog parser quarantined the model record.
+    Quarantined,
+    /// The record parsed, but cookie cannot drive the model.
+    Unsupported,
+    /// Provider setup values (region, resource, deployment) are missing.
+    NeedsSetup,
+    /// No usable credentials are configured or stored for the provider.
+    NeedsCredentials,
+}
+
+/// Per-provider model availability counts over every catalog model row that
+/// is not deprecated, disabled, or non-text.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderModelCounts {
+    pub available: u32,
+    pub quarantined: u32,
+    pub unsupported: u32,
+    pub needs_setup: u32,
+    pub needs_credentials: u32,
+}
+
+impl ProviderModelCounts {
+    #[must_use]
+    pub const fn unavailable(&self) -> u32 {
+        self.quarantined
+            .saturating_add(self.unsupported)
+            .saturating_add(self.needs_setup)
+            .saturating_add(self.needs_credentials)
+    }
+
+    #[must_use]
+    pub const fn count(&self, kind: ModelUnavailableKind) -> u32 {
+        match kind {
+            ModelUnavailableKind::Quarantined => self.quarantined,
+            ModelUnavailableKind::Unsupported => self.unsupported,
+            ModelUnavailableKind::NeedsSetup => self.needs_setup,
+            ModelUnavailableKind::NeedsCredentials => self.needs_credentials,
+        }
+    }
+}
+
+/// One catalog model that is listed but not selectable, with its reason.
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnavailableModelDescriptor {
+    pub id: ProviderModelId,
+    pub display_name: SafeDisplayText,
+    pub kind: ModelUnavailableKind,
+    /// Quarantine code or compiler reason; null for setup and credential gaps.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<SafeErrorMessage>", required)]
+    pub reason: Option<SafeErrorMessage>,
+}
+impl<'de> Deserialize<'de> for UnavailableModelDescriptor {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            id: ProviderModelId,
+            display_name: SafeDisplayText,
+            kind: ModelUnavailableKind,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            reason: Option<SafeErrorMessage>,
+        }
+        let wire = Wire::deserialize(d)?;
+        Ok(Self {
+            id: wire.id,
+            display_name: wire.display_name,
+            kind: wire.kind,
+            reason: wire.reason,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDescriptor {
@@ -366,6 +450,20 @@ pub struct ProviderDescriptor {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<QuarantineDiagnostic>", required)]
     pub quarantine: Option<QuarantineDiagnostic>,
+    /// The catalog's provider documentation URL, when it has one.
+    #[serde(deserialize_with = "crate::deserialize_required_option")]
+    #[schemars(with = "crate::NullableSchema<SafeDisplayText>", required)]
+    pub documentation_url: Option<SafeDisplayText>,
+    /// Environment variable names the catalog associates with the provider,
+    /// in catalog order. Display-only: cookie never reads them implicitly.
+    #[schemars(length(max = 32))]
+    pub environment: Vec<CredentialFieldName>,
+    pub model_counts: ProviderModelCounts,
+    /// Unavailable models with reasons, strictly sorted by ID. Listed only
+    /// for configured (authored or stored) providers; unconfigured providers
+    /// report counts alone.
+    #[schemars(length(max = 4096))]
+    pub unavailable_models: Vec<UnavailableModelDescriptor>,
 }
 impl<'de> Deserialize<'de> for ProviderDescriptor {
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
@@ -387,9 +485,20 @@ impl<'de> Deserialize<'de> for ProviderDescriptor {
             durable_connection: Option<DurableConnectionDescriptor>,
             #[serde(deserialize_with = "crate::deserialize_required_option")]
             quarantine: Option<QuarantineDiagnostic>,
+            #[serde(deserialize_with = "crate::deserialize_required_option")]
+            documentation_url: Option<SafeDisplayText>,
+            environment: Vec<CredentialFieldName>,
+            model_counts: ProviderModelCounts,
+            unavailable_models: Vec<UnavailableModelDescriptor>,
         }
         let wire = Wire::deserialize(d)?;
         if wire.setup_fields.len() > 32
+            || wire.environment.len() > 32
+            || wire.unavailable_models.len() > 4096
+            || wire
+                .unavailable_models
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
             || wire
                 .setup_fields
                 .windows(2)
@@ -421,6 +530,10 @@ impl<'de> Deserialize<'de> for ProviderDescriptor {
             effective_auth_state: wire.effective_auth_state,
             durable_connection: wire.durable_connection,
             quarantine: wire.quarantine,
+            documentation_url: wire.documentation_url,
+            environment: wire.environment,
+            model_counts: wire.model_counts,
+            unavailable_models: wire.unavailable_models,
         })
     }
 }

@@ -425,7 +425,7 @@ source's tree and therefore needs that tree's lock, taking it when it is free
 and failing as foreign-owned when it is not. Grants and grant invalidations
 committed by another process become
 visible after restart. Concurrent MCP configuration edits remain last-writer
-wins. Ownership failures in protocol 23 use an ordinary fault
+wins. Ownership failures in protocol 24 use an ordinary fault
 message rather than a new wire error.
 
 The data directory must be on a local filesystem with correct `flock` or
@@ -463,7 +463,7 @@ details.
 ## Protocol surface
 
 The wire protocol is unchanged by the session-layer refactor: JSON-RPC 2.0 over
-an authenticated WebSocket at `/ws`, protocol 23 current-only, `handshake` first.
+an authenticated WebSocket at `/ws`, protocol 24 current-only, `handshake` first.
 Discovery is a single `runtime.snapshot.get` call that returns one coherent
 runtime snapshot (schema 5). Session events stream through `events.subscribe`
 and plugin bus events through `events.plugin`. Raw tool output is not streamed

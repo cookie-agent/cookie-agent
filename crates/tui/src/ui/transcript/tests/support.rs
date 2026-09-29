@@ -1047,7 +1047,11 @@ pub(crate) fn provider_descriptor(
             "configuration": if connected {"stored"} else {"unconfigured"},
             "effective_auth_state": if connected {"provider_store"} else {"unavailable"},
             "durable_connection": durable,
-            "quarantine": null
+            "quarantine": null,
+            "documentation_url": null,
+            "environment": [],
+            "model_counts": {"available": 0, "quarantined": 0, "unsupported": 0, "needs_setup": 0, "needs_credentials": 0},
+            "unavailable_models": []
         }))
         .expect("provider descriptor")
 }
@@ -1120,6 +1124,7 @@ pub(crate) fn runtime_snapshot(
         catalog_source: cookie_agent_protocol::CatalogSource::Network,
         catalog_state: cookie_agent_protocol::CatalogRuntimeState {
             stale: false,
+            age: cookie_agent_protocol::CatalogAge::Current,
             provider_quarantine_count: 0,
             model_quarantine_count: 0,
             quarantine_digest: Sha256Digest::of_bytes(b"quarantine"),

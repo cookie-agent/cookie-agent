@@ -190,6 +190,7 @@ mod tests {
             catalog_source: CatalogSource::Network,
             catalog_state: cookie_agent_protocol::CatalogRuntimeState {
                 stale: false,
+                age: cookie_agent_protocol::CatalogAge::Current,
                 provider_quarantine_count: 0,
                 model_quarantine_count: 0,
                 quarantine_digest: cookie_agent_protocol::Sha256Digest::of_bytes(b"quarantine"),

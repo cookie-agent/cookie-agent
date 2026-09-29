@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cookie_agent_models::{
     CompiledModelRuntime, EffectiveCredentialSource, ProviderPresence as ModelProviderPresence,
     catalog::CatalogQuarantineReason,
-    compiler::{CompiledModelStatus, CompiledVariantOrigin},
+    compiler::{CompiledModelStatus, CompiledVariantOrigin, UnsupportedModelKind},
     manager::RetainedFamilyMatch,
     recipes::{CredentialKind, auth_method, family_registry, placeholders, setup_field_name},
 };
@@ -19,10 +19,26 @@ pub(crate) fn build_runtime_snapshot(
     agents: &AgentRegistry,
     agent_presets: &BTreeMap<String, std::sync::Arc<AgentRegistry>>,
 ) -> Result<protocol::RuntimeSnapshotV1, EngineError> {
+    let mut compiled_by_provider =
+        BTreeMap::<protocol::ProviderId, Vec<&cookie_agent_models::CompiledRuntimeModel>>::new();
+    for model in models.models().values() {
+        compiled_by_provider
+            .entry(model.key.provider_id())
+            .or_default()
+            .push(model);
+    }
     let providers = models
         .providers()
         .iter()
-        .map(|provider| provider_descriptor(models, provider))
+        .map(|provider| {
+            provider_descriptor(
+                models,
+                provider,
+                compiled_by_provider
+                    .get(&provider.id)
+                    .map_or(&[][..], Vec::as_slice),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let available_models = models
         .models()
@@ -86,6 +102,17 @@ pub(crate) fn build_runtime_snapshot(
                 catalog.state.availability,
                 cookie_agent_models::catalog::CatalogAvailability::Ready
             ),
+            age: match catalog.state.age {
+                cookie_agent_models::catalog::CatalogAgeState::Current => {
+                    protocol::CatalogAge::Current
+                }
+                cookie_agent_models::catalog::CatalogAgeState::OlderThanSevenDays => {
+                    protocol::CatalogAge::OlderThanSevenDays
+                }
+                cookie_agent_models::catalog::CatalogAgeState::OlderThanThirtyDays => {
+                    protocol::CatalogAge::OlderThanThirtyDays
+                }
+            },
             provider_quarantine_count: quarantine.provider_count,
             model_quarantine_count: quarantine.model_count,
             quarantine_digest: quarantine.digest,
@@ -180,9 +207,90 @@ pub(crate) fn runtime_revision(
     )
 }
 
+/// Model availability for one provider: counts over every compiled or
+/// rejected catalog row, plus per-model reasons for configured providers.
+fn model_availability(
+    provider: &cookie_agent_models::CompiledProviderState,
+    record: Option<&cookie_agent_models::catalog::CatalogProviderRecord>,
+    compiled: &[&cookie_agent_models::CompiledRuntimeModel],
+) -> (
+    protocol::ProviderModelCounts,
+    Vec<protocol::UnavailableModelDescriptor>,
+) {
+    let listed = provider.authored || provider.stored;
+    let mut counts = protocol::ProviderModelCounts::default();
+    let mut unavailable = Vec::new();
+    let mut push = |id: &protocol::ProviderModelId,
+                    display_name: &str,
+                    kind: protocol::ModelUnavailableKind,
+                    reason: Option<&str>| {
+        let count = match kind {
+            protocol::ModelUnavailableKind::Quarantined => &mut counts.quarantined,
+            protocol::ModelUnavailableKind::Unsupported => &mut counts.unsupported,
+            protocol::ModelUnavailableKind::NeedsSetup => &mut counts.needs_setup,
+            protocol::ModelUnavailableKind::NeedsCredentials => &mut counts.needs_credentials,
+        };
+        *count = count.saturating_add(1);
+        if listed {
+            unavailable.push(protocol::UnavailableModelDescriptor {
+                id: id.clone(),
+                display_name: protocol::SafeDisplayText::new(display_name)
+                    .or_else(|_| protocol::SafeDisplayText::new(id.as_str()))
+                    .expect("provider model IDs are safe display text"),
+                kind,
+                reason: reason.and_then(safe_message),
+            });
+        }
+    };
+    for model in compiled {
+        let kind = match model.model.status {
+            CompiledModelStatus::Available => {
+                counts.available = counts.available.saturating_add(1);
+                continue;
+            }
+            CompiledModelStatus::SetupUnavailable => protocol::ModelUnavailableKind::NeedsSetup,
+            CompiledModelStatus::CredentialsUnavailable => {
+                protocol::ModelUnavailableKind::NeedsCredentials
+            }
+        };
+        push(&model.key.model_id(), &model.model.display_name, kind, None);
+    }
+    for model in &provider.unsupported_models {
+        let display_name = record
+            .and_then(|record| record.models.get(&model.id))
+            .and_then(|entry| entry.record.as_ref())
+            .map_or(model.id.as_str(), |record| record.name.as_str());
+        let kind = match model.kind {
+            UnsupportedModelKind::Quarantined => protocol::ModelUnavailableKind::Quarantined,
+            UnsupportedModelKind::Unsupported => protocol::ModelUnavailableKind::Unsupported,
+        };
+        push(&model.id, display_name, kind, Some(&model.reason));
+    }
+    unavailable.sort_by(|left, right| left.id.cmp(&right.id));
+    unavailable.truncate(4096);
+    (counts, unavailable)
+}
+
+/// Control-free, byte-bounded display text for a free-form compiler reason.
+fn safe_message(value: &str) -> Option<protocol::SafeErrorMessage> {
+    let mut text = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>();
+    if text.len() > protocol::SafeErrorMessage::MAX_BYTES {
+        let mut end = protocol::SafeErrorMessage::MAX_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    protocol::SafeErrorMessage::new(text).ok()
+}
+
 fn provider_descriptor(
     runtime: &CompiledModelRuntime,
     provider: &cookie_agent_models::CompiledProviderState,
+    compiled: &[&cookie_agent_models::CompiledRuntimeModel],
 ) -> Result<protocol::ProviderDescriptor, EngineError> {
     let catalog_entry = runtime.catalog().provider(&provider.id);
     let quarantined = catalog_entry.is_some_and(|entry| entry.quarantine.is_some());
@@ -296,6 +404,21 @@ fn provider_descriptor(
         Vec::new()
     };
     auth_methods.sort_by(|left, right| left.id.cmp(&right.id));
+    let (model_counts, unavailable_models) = model_availability(provider, record, compiled);
+    let documentation_url = record
+        .map(|record| record.documentation_url.trim())
+        .filter(|url| !url.is_empty())
+        .and_then(|url| protocol::SafeDisplayText::new(url).ok());
+    let environment = record
+        .map(|record| {
+            record
+                .environment
+                .iter()
+                .filter_map(|name| protocol::CredentialFieldName::new(name.as_str()).ok())
+                .take(32)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(protocol::ProviderDescriptor {
         id: provider.id.clone(),
         display_name: protocol::SafeDisplayText::new(provider.display_name.clone())
@@ -324,6 +447,10 @@ fn provider_descriptor(
             message: protocol::SafeErrorMessage::new("catalog provider record is quarantined")
                 .expect("static quarantine message is valid"),
         }),
+        documentation_url,
+        environment,
+        model_counts,
+        unavailable_models,
     })
 }
 

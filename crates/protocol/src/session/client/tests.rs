@@ -35,6 +35,7 @@ fn runtime_snapshot_json(digit: &str) -> Value {
         "catalog_source": "bootstrap",
         "catalog_state": {
             "stale": true,
+            "age": "current",
             "provider_quarantine_count": 0,
             "model_quarantine_count": 0,
             "quarantine_digest": digit.repeat(64 / digit.len()),

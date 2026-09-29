@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 23 is current-only. A client must call `handshake` with
-`{ "protocol_version": 23 }` before any other method.
+Protocol 24 is current-only. A client must call `handshake` with
+`{ "protocol_version": 24 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 23.
+members of protocol 24.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 23 alongside independent display and output references. The
+preserved in protocol 24 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -132,6 +132,27 @@ on the governing run policy and session overlay. `session.list` returns root
 sessions only: a delegated child is selected as part of its root's tree, not as
 a top-level entry, and stays reachable via `session.tree`, `session.children`,
 `session.get`, and `session.resume`.
+
+### Model availability
+
+Protocol 24 (runtime snapshot schema 6) makes unusable models visible instead
+of silently dropping them. `snapshot.models` still lists only selectable
+models. Each `ProviderDescriptor` additionally carries:
+
+- `model_counts`: `available`, `quarantined`, `unsupported`, `needs_setup`, and
+  `needs_credentials` counts over the provider's catalog rows (deprecated,
+  disabled, and non-text models are not counted).
+- `unavailable_models`: one entry per unusable model with `id`,
+  `display_name`, `kind` (the four unavailable kinds above), and a nullable
+  `reason` (the quarantine code or compiler reason). The list is strictly
+  sorted by `id` and is populated only for configured (authored or stored)
+  providers; unconfigured providers report counts alone.
+- `documentation_url` and `environment`: the models.dev `doc` URL and `env`
+  variable names. They are display hints; cookie never reads those variables.
+
+`catalog_state.age` is `current`, `older_than_seven_days`, or
+`older_than_thirty_days` for the selected catalog body, alongside the existing
+`stale` flag, quarantine counts, and nullable `last_error`.
 
 ## Steering
 
