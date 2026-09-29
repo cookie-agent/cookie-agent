@@ -50,6 +50,16 @@ pub(crate) enum VariantCompileError {
 /// to reasoning clients.
 const MAX_GENERATED_BUDGET: i64 = 31_999;
 
+/// Visible output kept free when sizing generated thinking budgets. Requests
+/// send the model's full output limit, and a thinking budget must fit inside
+/// it (Anthropic Messages sends `max_tokens = visible + budget`; other wires
+/// count thinking within the output limit), so a budget may use at most the
+/// output limit less this reserve. 4,096 tokens still fits a final answer or a
+/// sizeable tool call such as a file write after the model thinks; 1,024 would
+/// truncate those. A 32K-output model (Claude Opus 4.1) keeps a 27,904-token
+/// maximum budget.
+pub(crate) const MIN_VISIBLE_OUTPUT_TOKENS: u64 = 4_096;
+
 pub(crate) fn managed_variants(
     source: &[CatalogReasoningOption],
     output_limit: u64,
@@ -58,9 +68,7 @@ pub(crate) fn managed_variants(
     defaults: &RequestDefaults,
     options: &ProviderOptions,
 ) -> Result<CompiledVariants, VariantCompileError> {
-    // Anthropic-style adapters send `max_tokens = max_output_tokens + budget`,
-    // so a budget may only use the output room left by the default reservation.
-    let budget_room = output_limit.saturating_sub(defaults.max_output_tokens.unwrap_or(1));
+    let budget_room = output_limit.saturating_sub(MIN_VISIBLE_OUTPUT_TOKENS);
     let (mut variants, mut order) = generated(
         source,
         i64::try_from(budget_room).unwrap_or(i64::MAX),
@@ -158,7 +166,8 @@ fn generated(
 /// Generated budget variants: `budget-auto` for a dynamic (`-1`) minimum,
 /// `budget-min` for a fixed minimum, then `budget-high` (half the usable
 /// maximum, at least the minimum) and `budget-max`. The usable maximum is the
-/// catalog maximum capped at 31,999 tokens and at the model's free output room;
+/// catalog maximum capped at 31,999 tokens and at the output limit less
+/// [`MIN_VISIBLE_OUTPUT_TOKENS`];
 /// levels that do not fit or repeat a lower level are skipped.
 fn budget_levels(min: Option<i64>, max: Option<i64>, room: i64) -> Vec<(&'static str, i64)> {
     let mut levels = Vec::new();
@@ -478,18 +487,13 @@ mod tests {
         min: Option<i64>,
         max: Option<i64>,
         output_limit: u64,
-        max_output_tokens: Option<u64>,
     ) -> Vec<(String, i64)> {
-        let defaults = RequestDefaults {
-            max_output_tokens,
-            ..RequestDefaults::default()
-        };
         let (variants, order, _) = super::managed_variants(
             &[CatalogReasoningOption::BudgetTokens { min, max }],
             output_limit,
             |_| true,
             None,
-            &defaults,
+            &RequestDefaults::default(),
             &ProviderOptions::default(),
         )
         .unwrap();
@@ -507,7 +511,7 @@ mod tests {
     fn budget_without_catalog_maximum_derives_high_and_max_levels() {
         // Claude Haiku 4.5: models.dev gives only `min: 1024`.
         assert_eq!(
-            budget_variants(Some(1024), None, 64_000, Some(16_384)),
+            budget_variants(Some(1024), None, 64_000),
             levels(&[
                 ("budget-min", 1024),
                 ("budget-high", 16_000),
@@ -517,29 +521,28 @@ mod tests {
     }
 
     #[test]
-    fn budget_levels_fit_the_output_room_left_by_the_default_reservation() {
-        // Claude Opus 4.1: 32K output with a 16K default reservation.
+    fn budget_levels_leave_the_minimum_visible_output_free() {
+        // Claude Opus 4.1: 32K output keeps 4,096 visible tokens.
         assert_eq!(
-            budget_variants(Some(1024), None, 32_000, Some(16_384)),
+            budget_variants(Some(1024), None, 32_000),
             levels(&[
                 ("budget-min", 1024),
-                ("budget-high", 7808),
-                ("budget-max", 15_616)
+                ("budget-high", 13_952),
+                ("budget-max", 27_904)
             ])
         );
         // No room at all: no fixed budget fits.
-        assert_eq!(budget_variants(Some(1024), None, 16_384, Some(16_384)), []);
-        // An unset reservation leaves `output - 1`.
+        assert_eq!(budget_variants(Some(1024), None, 4_096), []);
         assert_eq!(
-            budget_variants(None, Some(8000), 4096, None),
-            levels(&[("budget-high", 2048), ("budget-max", 4095)])
+            budget_variants(None, Some(8000), 8_192),
+            levels(&[("budget-high", 2048), ("budget-max", 4096)])
         );
     }
 
     #[test]
     fn budget_levels_respect_catalog_bounds_and_skip_duplicates() {
         assert_eq!(
-            budget_variants(Some(128), Some(262_144), 400_000, Some(16_384)),
+            budget_variants(Some(128), Some(262_144), 400_000),
             levels(&[
                 ("budget-min", 128),
                 ("budget-high", 16_000),
@@ -547,11 +550,11 @@ mod tests {
             ])
         );
         assert_eq!(
-            budget_variants(Some(1024), Some(1024), 64_000, Some(16_384)),
+            budget_variants(Some(1024), Some(1024), 64_000),
             levels(&[("budget-min", 1024)])
         );
         assert_eq!(
-            budget_variants(Some(-1), Some(24_576), 65_536, Some(16_384)),
+            budget_variants(Some(-1), Some(24_576), 65_536),
             levels(&[
                 ("budget-auto", -1),
                 ("budget-high", 12_288),

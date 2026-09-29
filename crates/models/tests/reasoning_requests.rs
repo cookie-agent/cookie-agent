@@ -197,6 +197,16 @@ async fn capture_http_request() -> (String, tokio::task::JoinHandle<String>) {
 /// Sends one request through the named generated variant and returns the
 /// captured JSON body.
 async fn request_body(catalog: &Catalog, variant: &str) -> Value {
+    request_body_with_output_cap(catalog, variant, None).await
+}
+
+/// Like [`request_body`], with the request's `max_output_tokens` set as the
+/// engine sets it (the model's output limit, or a smaller agent cap).
+async fn request_body_with_output_cap(
+    catalog: &Catalog,
+    variant: &str,
+    max_output_tokens: Option<u64>,
+) -> Value {
     let temporary = TempDir::new().unwrap();
     let (endpoint, captured) = capture_http_request().await;
     let manager = manager(catalog, endpoint, &temporary);
@@ -209,11 +219,12 @@ async fn request_body(catalog: &Catalog, variant: &str) -> Value {
             variant: Some(VariantId::new(variant).unwrap()),
         })
         .unwrap();
-    let request = oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
+    let mut request = oven_sdk::Request::new(vec![oven_sdk::HistoryTurn::user(
         oven_sdk::UserMessage::new(vec![oven_sdk::InputPart::Text(oven_sdk::TextPart::new(
             "hello",
         ))]),
     )]);
+    request.inference.max_output_tokens = max_output_tokens;
     let error = resolved
         .model()
         .stream(
@@ -270,7 +281,7 @@ async fn anthropic_effort_variants_enable_summarized_adaptive_thinking() {
     let body = request_body(&catalog, "xhigh").await;
     assert_eq!(body["thinking"], ADAPTIVE());
     assert_eq!(body["output_config"]["effort"], "xhigh");
-    assert_eq!(body["max_tokens"], 16_384);
+    assert_eq!(body["max_tokens"], 128_000);
 }
 
 #[tokio::test]
@@ -332,8 +343,42 @@ async fn anthropic_budget_variants_send_manual_thinking_budgets() {
             json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": "summarized" }),
             "{variant}"
         );
-        assert_eq!(body["max_tokens"], 16_384 + budget_tokens, "{variant}");
+        assert_eq!(body["max_tokens"], 64_000, "{variant}");
         assert!(body.get("output_config").is_none(), "{variant}");
+    }
+}
+
+#[tokio::test]
+async fn anthropic_budget_variants_fit_the_output_limit_with_full_or_capped_output() {
+    // Claude Opus 4.1: 32K output. The engine sends the full output limit (or a
+    // smaller agent cap) as visible output, and the Anthropic adapter adds the
+    // thinking budget on top, so visible output must shrink to fit.
+    let catalog = anthropic("claude-opus-4-1", 32_000, vec![budget(Some(1024), None)]);
+    assert_eq!(
+        variant_names(&catalog),
+        ["budget-min", "budget-high", "budget-max"]
+    );
+    for (cap, budget_tokens, max_tokens) in [
+        // Full output limit: visible output is what the budget leaves.
+        (32_000, 27_904, 32_000),
+        (32_000, 1024, 32_000),
+        // A smaller agent cap that still fits is kept.
+        (2_048, 27_904, 2_048 + 27_904),
+        // A cap that does not fit beside the budget is lowered.
+        (8_000, 27_904, 32_000),
+    ] {
+        let variant = if budget_tokens == 1024 {
+            "budget-min"
+        } else {
+            "budget-max"
+        };
+        let body = request_body_with_output_cap(&catalog, variant, Some(cap)).await;
+        assert_eq!(
+            body["thinking"],
+            json!({ "type": "enabled", "budget_tokens": budget_tokens, "display": "summarized" }),
+            "{variant} {cap}"
+        );
+        assert_eq!(body["max_tokens"], max_tokens, "{variant} {cap}");
     }
 }
 

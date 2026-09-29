@@ -269,8 +269,45 @@ impl ResolvedExecutableModel {
         request
             .provider_options
             .extend(self.provider_options.clone());
+        fit_visible_output_to_thinking_budget(
+            &mut request,
+            self.model.capabilities().limits.output,
+        );
         let strategy = strategy_override.flatten().cloned();
         (request, strategy)
+    }
+}
+
+/// Bounds visible output so output plus a manual thinking budget stays within the model's output
+/// limit.
+///
+/// Requests default to the model's full output limit. Anthropic Messages treats
+/// `max_output_tokens` as visible output and sends `max_tokens = max_output_tokens +
+/// budget_tokens`, rejecting totals above the output limit, so every manual budget would fail.
+/// The budget is read from the resolved request's Anthropic options, which every
+/// Anthropic-protocol adapter (first-party, compatible, Vertex, AWS) shares; wires that count
+/// thinking inside the output limit (Bedrock Converse, Gemini) carry no such budget and are
+/// unaffected. An explicit smaller cap is kept.
+fn fit_visible_output_to_thinking_budget(request: &mut Request, output_limit: Option<u64>) {
+    let (Some(limit), Some(requested)) = (output_limit, request.inference.max_output_tokens) else {
+        return;
+    };
+    let budget = request
+        .provider_options
+        .get("anthropic")
+        .and_then(|options| {
+            serde_json::from_value::<oven_sdk_anthropic::AnthropicRequestOptions>(options.clone())
+                .ok()
+        })
+        .and_then(|options| match options.thinking {
+            Some(oven_sdk_anthropic::AnthropicThinking::Enabled { budget_tokens, .. }) => {
+                Some(budget_tokens)
+            }
+            _ => None,
+        });
+    if let Some(budget) = budget {
+        request.inference.max_output_tokens =
+            Some(requested.min(limit.saturating_sub(budget)).max(1));
     }
 }
 
