@@ -1104,3 +1104,64 @@ fn initialize_params(producer_messaging: bool) -> ExtensionInitializeParams {
         },
     }
 }
+
+#[test]
+fn interception_hooks_map_to_their_wire_methods() {
+    assert_eq!(INTERCEPTION_HOOKS.len(), 13);
+    for hook in INTERCEPTION_HOOKS.iter().copied() {
+        let name = serde_json::to_value(hook).unwrap();
+        let method = format!("plugin/intercept/{}", name.as_str().unwrap());
+        assert_eq!(interception_hook(&method), Some(hook), "{method}");
+    }
+    assert_eq!(interception_hook("plugin/intercept/unknown"), None);
+    assert_eq!(interception_hook(PLUGIN_TOOLS_CALL_METHOD), None);
+}
+
+#[tokio::test]
+async fn interception_rejects_unregistered_unknown_and_malformed_calls() {
+    let server = PluginServer::builder("hooks", "0.1.0")
+        .tool_before_call(|_ctx, _request| async { allow() })
+        .build()
+        .unwrap();
+    let (engine_side, plugin_side) = tokio::io::duplex(64 * 1024);
+    let (plugin_read, plugin_write) = tokio::io::split(plugin_side);
+    let server_task = tokio::spawn(server.run_io(plugin_read, plugin_write));
+    let (engine_read, mut engine_write) = tokio::io::split(engine_side);
+    let mut engine_read = BufReader::new(engine_read);
+    write_wire(&mut engine_write, &extension_initialize_request("test")).await;
+    let _ = read_wire(&mut engine_read).await;
+
+    let calls = [
+        (
+            PLUGIN_INTERCEPT_TOOL_AFTER_RESULT_METHOD,
+            METHOD_NOT_FOUND,
+            "interception hook is not registered",
+        ),
+        (
+            "plugin/intercept/unknown",
+            METHOD_NOT_FOUND,
+            "plugin method is not supported",
+        ),
+        (PLUGIN_INTERCEPT_TOOL_BEFORE_CALL_METHOD, INVALID_PARAMS, ""),
+    ];
+    for (id, (method, code, message)) in (2..).zip(calls) {
+        let request = Request::new(
+            JsonRpcId::Number(id),
+            method,
+            Some(json!({"session_id": SessionId::new_v7(), "context_id": "bad"})),
+        );
+        write_wire(&mut engine_write, &request).await;
+        let response = read_wire(&mut engine_read).await;
+        assert_eq!(response["id"], id, "{method}");
+        assert_eq!(response["error"]["code"], code, "{method}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{method}"
+        );
+    }
+    write_wire(&mut engine_write, &extension_shutdown_notification()).await;
+    server_task.await.unwrap().unwrap();
+}
