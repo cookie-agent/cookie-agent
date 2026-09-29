@@ -356,6 +356,81 @@ fn anthropic_auth_follows_the_credential_kind_across_families() {
     );
 }
 
+#[test]
+fn authored_base_url_routes_mixed_provider_models() {
+    let compile = |npm: &str, provider_api: &str, model_api: Option<&str>, base_url: &str| {
+        let mut catalog = record("@ai-sdk/openai-compatible", Some(provider_api));
+        only_model(&mut catalog).provider = Some(CatalogModelProviderMetadata {
+            npm: Some(npm.into()),
+            api: model_api.map(str::to_owned),
+            shape: None,
+        });
+        let authored: ModelsDevProvider =
+            toml::from_str(&format!("base_url = \"{base_url}\"\napi_key = \"secret\"")).unwrap();
+        let model = DynamicCompiler::family_registry()
+            .compile_managed("sha256:test", &catalog, Some(&authored))
+            .unwrap()
+            .models
+            .into_values()
+            .next()
+            .unwrap();
+        (model.adapter, model.endpoint.unwrap())
+    };
+    // A gateway base_url (the opencode-go setup) serves every wire itself.
+    for (npm, adapter) in [
+        ("@ai-sdk/anthropic", OvenAdapterFamily::AnthropicCompatible),
+        ("@ai-sdk/openai", OvenAdapterFamily::OpenaiResponses),
+    ] {
+        assert_eq!(
+            compile(
+                npm,
+                "https://opencode.ai/zen/go/v1",
+                None,
+                "https://gw.test/v1"
+            ),
+            (adapter, "https://gw.test/v1".to_owned())
+        );
+    }
+    // Per-model endpoints on the provider's origin keep their path difference.
+    assert_eq!(
+        compile(
+            "@ai-sdk/anthropic",
+            "https://zenmux.ai/api/v1",
+            Some("https://zenmux.ai/api/anthropic/v1"),
+            "https://gw.test/api/v1"
+        ),
+        (
+            OvenAdapterFamily::AnthropicCompatible,
+            "https://gw.test/api/anthropic/v1".to_owned()
+        )
+    );
+    assert_eq!(
+        compile(
+            "@ai-sdk/google",
+            "https://api.ofox.ai/v1",
+            Some("https://api.ofox.ai/gemini/v1beta"),
+            "https://gw.test/v1"
+        ),
+        (
+            OvenAdapterFamily::GoogleGemini,
+            "https://gw.test/gemini/v1beta".to_owned()
+        )
+    );
+    // A gateway that does not mirror the provider's layout gets every model.
+    assert_eq!(
+        compile(
+            "@ai-sdk/anthropic",
+            "https://zenmux.ai/api/v1",
+            Some("https://zenmux.ai/api/anthropic/v1"),
+            "https://gw.test/zenmux"
+        ),
+        (
+            OvenAdapterFamily::AnthropicCompatible,
+            "https://gw.test/zenmux".to_owned()
+        )
+    );
+}
+
 fn auth(method: &str, fields: &[(&str, &str)]) -> AuthOverride {
     AuthOverride {
         method: AuthMethodId::new(method).unwrap(),

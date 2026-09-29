@@ -371,7 +371,7 @@ impl DynamicCompiler {
             if override_.and_then(|value| value.enabled) == Some(false) {
                 continue;
             }
-            let resolved = match resolve_model(record, model, None, None) {
+            let mut resolved = match resolve_model(record, model, None, None) {
                 Ok(resolved) => resolved,
                 Err(error) => {
                     unsupported_models.push(UnsupportedModel {
@@ -382,6 +382,16 @@ impl DynamicCompiler {
                     continue;
                 }
             };
+            if let Some(base_url) = authored.and_then(|value| value.base_url.as_ref()) {
+                resolved.endpoint_template = Some(authored_model_endpoint(
+                    base_url.as_str(),
+                    record.api.as_deref(),
+                    model
+                        .provider
+                        .as_ref()
+                        .and_then(|value| value.api.as_deref()),
+                ));
+            }
             match self.compile_managed_model(
                 catalog_revision,
                 &record.id,
@@ -495,15 +505,10 @@ impl DynamicCompiler {
                 ModelLocalError::Unsupported("unsupported_model_capabilities".to_owned())
             });
         }
-        let template = authored
-            .and_then(|value| value.base_url.as_ref())
-            .map(crate::authoring::EndpointUrl::as_str)
-            .map(str::to_owned)
-            .or_else(|| resolved.endpoint_template.clone());
         let (setup, endpoint) = resolved_managed_setup_and_endpoint(
             provider_family,
             resolved.recipe.family,
-            template.as_deref(),
+            resolved.endpoint_template.as_deref(),
             authored,
         )?;
         capabilities.native_replay =
@@ -892,6 +897,67 @@ impl DynamicCompiler {
 
 static EMPTY_HEADERS: BTreeMap<HeaderName, SafeStaticHeaderValue> = BTreeMap::new();
 
+/// Endpoint of one managed model when the provider has an authored `base_url`.
+///
+/// The authored URL replaces the provider-level catalog API URL. A model that
+/// pins its own catalog API URL on the same origin as the provider's (mixed
+/// gateways such as zenmux or ofox serve Anthropic under `/anthropic/v1`) is
+/// rebased: the path suffix where it differs from the provider API is swapped
+/// in for the provider's suffix at the end of `base_url`. When `base_url` does
+/// not end with that suffix it is a gateway with its own layout, and every
+/// model goes to `base_url` itself. A model API on another origin is a
+/// separate upstream and is kept.
+pub(crate) fn authored_model_endpoint(
+    base_url: &str,
+    provider_api: Option<&str>,
+    model_api: Option<&str>,
+) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    let (Some(provider_api), Some(model_api)) = (provider_api, model_api) else {
+        return model_api.map_or(base_url, |api| api).to_owned();
+    };
+    let (provider_origin, provider_path) = split_origin(provider_api);
+    let (model_origin, model_path) = split_origin(model_api);
+    if provider_origin != model_origin {
+        return model_api.to_owned();
+    }
+    let common = provider_path
+        .iter()
+        .zip(&model_path)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let (base_origin, base_path) = split_origin(base_url);
+    let Some(kept) = base_path
+        .len()
+        .checked_sub(provider_path.len() - common)
+        .filter(|kept| base_path[*kept..] == provider_path[common..])
+    else {
+        return base_url.to_owned();
+    };
+    let mut endpoint = base_origin.to_owned();
+    for segment in base_path[..kept].iter().chain(&model_path[common..]) {
+        endpoint.push('/');
+        endpoint.push_str(segment);
+    }
+    endpoint
+}
+
+/// Splits a URL (or `${PLACEHOLDER}` template) into its origin and non-empty
+/// path segments.
+fn split_origin(url: &str) -> (&str, Vec<&str>) {
+    let authority = url.find("://").map_or(0, |index| index + 3);
+    let end = url[authority..]
+        .find('/')
+        .map_or(url.len(), |index| authority + index);
+    (
+        &url[..end],
+        url[end..]
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect(),
+    )
+}
+
 fn merge_headers<'a>(
     layers: impl IntoIterator<Item = (&'a BTreeMap<HeaderName, SafeStaticHeaderValue>, String)>,
 ) -> Result<BTreeMap<HeaderName, SafeStaticHeaderValue>, DynamicCompileError> {
@@ -1250,5 +1316,73 @@ fn reasoning_supported(
                 | OvenAdapterFamily::GoogleVertexGemini
                 | OvenAdapterFamily::CohereV2Chat
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authored_model_endpoint;
+
+    #[test]
+    fn authored_base_url_rebases_same_origin_model_endpoints() {
+        let rebase = |base, provider, model| authored_model_endpoint(base, provider, model);
+        // Models without their own API URL, or with the provider's, use base_url.
+        let zen = Some("https://zenmux.ai/api/v1");
+        assert_eq!(
+            rebase("https://gw.test/v1/", zen, None),
+            "https://gw.test/v1"
+        );
+        assert_eq!(rebase("https://gw.test/v1", zen, zen), "https://gw.test/v1");
+        // Same-origin model endpoints keep their path difference.
+        assert_eq!(
+            rebase(
+                "https://gw.test/zen/v1",
+                zen,
+                Some("https://zenmux.ai/api/anthropic/v1")
+            ),
+            "https://gw.test/zen/anthropic/v1"
+        );
+        assert_eq!(
+            rebase(
+                "https://gw.test/v1",
+                Some("https://api.ofox.ai/v1"),
+                Some("https://api.ofox.ai/gemini/v1beta")
+            ),
+            "https://gw.test/gemini/v1beta"
+        );
+        assert_eq!(
+            rebase(
+                "https://gw.test/v1",
+                Some("${NEON_AI_GATEWAY_BASE_URL}/v1"),
+                Some("${NEON_AI_GATEWAY_BASE_URL}/openai/v1")
+            ),
+            "https://gw.test/openai/v1"
+        );
+        // A gateway with its own layout serves every model at base_url.
+        assert_eq!(
+            rebase(
+                "https://gw.test/proxy",
+                zen,
+                Some("https://zenmux.ai/api/anthropic/v1")
+            ),
+            "https://gw.test/proxy"
+        );
+        // Another origin is a separate upstream.
+        assert_eq!(
+            rebase(
+                "https://gw.test/v1",
+                Some("https://cc.freemodel.dev/v1"),
+                Some("https://api.freemodel.dev/v1")
+            ),
+            "https://api.freemodel.dev/v1"
+        );
+        assert_eq!(
+            rebase("https://gw.test/v1", None, Some("https://other.test/v1")),
+            "https://other.test/v1"
+        );
+        assert_eq!(
+            rebase("https://gw.test/v1", None, None),
+            "https://gw.test/v1"
+        );
     }
 }
