@@ -21,7 +21,10 @@ endpoint: account access, deployed model features, and billing may differ.
 Models the catalog lists without tool calling stay selectable: they work for
 agents that publish no tools and for internal agents such as session titles,
 while a request that carries tools or tool history fails with "tool calling is
-not supported by this model".
+not supported by this model". Claude on Vertex AI (the
+`google-vertex-anthropic` provider and any model routed to
+`@ai-sdk/google-vertex/anthropic`) is unsupported: it needs the Anthropic
+Messages `rawPredict` wire, which cookie-agent does not implement.
 
 This is a complete `config.toml` alternative to `/connect`, with credentials
 supplied by the environment:
