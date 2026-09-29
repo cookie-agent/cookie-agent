@@ -1511,14 +1511,6 @@ pub(crate) async fn scripted_queued_resume_server() -> (
             accept_scripted_planned_request(&listener, "queued resumed child request").await;
         requests.push(String::from_utf8(request).expect("queued resumed child request text"));
         write_scripted_sse(&mut resumed, &scripted_text_body("queued resume done")).await;
-        let (mut steered, request) =
-            accept_scripted_planned_request(&listener, "queued resume steer request").await;
-        requests.push(String::from_utf8(request).expect("queued resume steer request text"));
-        write_scripted_sse(
-            &mut steered,
-            &scripted_text_body("queued resume correction done"),
-        )
-        .await;
         spawn_scripted_auxiliary_tail(listener);
         requests
     });
@@ -1529,103 +1521,6 @@ pub(crate) async fn scripted_queued_resume_server() -> (
         release_tx,
         task,
     )
-}
-
-pub(crate) async fn scripted_queued_steer_recovery_server() -> (
-    String,
-    tokio::sync::oneshot::Receiver<()>,
-    tokio::sync::oneshot::Sender<()>,
-    tokio::task::JoinHandle<Vec<String>>,
-) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("queued steer listener");
-    let address = listener.local_addr().expect("listener address");
-    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let (mut initial, _) = listener
-            .accept()
-            .await
-            .expect("queued steer parent initial");
-        let _ = read_scripted_http_request(&mut initial).await;
-        let calls = (0..5)
-            .map(|index| {
-                serde_json::json!({
-                    "index": index,
-                    "id": format!("queued-steer-delegate-{index}"),
-                    "type": "function",
-                    "function": {
-                        "name": "delegate_subagent",
-                        "arguments": serde_json::json!({
-                            "agent_type":"worker",
-                            "description":format!("Queued steer child {index}"),
-                            "prompt":format!("queued steer child {index}"),
-                            "background":true
-                        }).to_string()
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        let body = format!(
-            "data: {}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
-            serde_json::json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":null}]})
-        );
-        write_scripted_sse(&mut initial, &body).await;
-
-        let mut children = Vec::new();
-        let mut parent_responded = false;
-        while children.len() < 4 || !parent_responded {
-            let (mut socket, _) = listener.accept().await.expect("queued steer request");
-            let request = read_scripted_http_request(&mut socket).await;
-            if String::from_utf8_lossy(&request).contains("\"role\":\"tool\"") {
-                let body = "data: {\"choices\":[{\"delta\":{\"content\":\"parent queued children\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-                write_scripted_sse(&mut socket, body).await;
-                parent_responded = true;
-            } else {
-                children.push(socket);
-            }
-        }
-        let _ = reached_tx.send(());
-        let _ = release_rx.await;
-        drop(children);
-
-        let (mut queued, first) = loop {
-            let (mut socket, _) = listener.accept().await.expect("recovered queued child");
-            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
-                .expect("queued initial request");
-            if request.contains("Worker prompt.") {
-                break (socket, request);
-            }
-            write_scripted_sse(
-                &mut socket,
-                &scripted_text_body("parent accepted recovered child completion"),
-            )
-            .await;
-        };
-        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued initial pass\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-        write_scripted_sse(&mut queued, body).await;
-
-        let (mut steered, second) = loop {
-            let (mut socket, _) = listener.accept().await.expect("recovered steer request");
-            let request = String::from_utf8(read_scripted_http_request(&mut socket).await)
-                .expect("queued steered request");
-            if request.contains("Worker prompt.")
-                && request.contains("apply this queued correction")
-            {
-                break (socket, request);
-            }
-            write_scripted_sse(
-                &mut socket,
-                &scripted_text_body("parent accepted recovered child completion"),
-            )
-            .await;
-        };
-        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"queued steer done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-        write_scripted_sse(&mut steered, body).await;
-        vec![first, second]
-    });
-    (format!("http://{address}/v1"), reached_rx, release_tx, task)
 }
 
 pub(crate) async fn scripted_approval_server(

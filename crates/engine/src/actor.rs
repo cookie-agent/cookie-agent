@@ -54,9 +54,4 @@ impl<M: Send + 'static> SessionActor<M> {
     pub async fn send(&self, message: M) -> Result<(), mpsc::error::SendError<M>> {
         self.sender.send(message).await
     }
-
-    /// Used only by synchronous facade methods called outside a Tokio worker.
-    pub fn blocking_send(&self, message: M) -> Result<(), mpsc::error::SendError<M>> {
-        self.sender.blocking_send(message)
-    }
 }

@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use cookie_agent_protocol::{
-    ClientRunId, EventPayload, ProducerDeliveryMode, RunStartParams, SessionId, SessionStatus,
-};
+use cookie_agent_protocol::{ClientRunId, ProducerDeliveryMode, RunStartParams, SessionStatus};
 
 use crate::{AgentMessageInvocation, Engine, EngineOptions};
 
@@ -94,7 +92,7 @@ async fn running_subagent_result_is_empty_waits_and_cancel_is_session_addressed(
 }
 
 #[tokio::test]
-async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_state() {
+async fn running_subagent_results_are_scoped_to_the_callers_tree() {
     let (endpoint, reached, release, server) = scripted_running_steer_server().await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     fixture
@@ -136,26 +134,6 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
     )
     .await
     .session_id;
-    let steered = fixture
-        .engine
-        .steer_subagent(
-            parent.session_id,
-            child_session_id,
-            "focus on the revised requirement".into(),
-        )
-        .await
-        .expect("steer running child");
-    assert_eq!(steered.metadata["status"], "running");
-    let foreign_error = fixture
-        .engine
-        .steer_subagent(foreign.session_id, child_session_id, "foreign steer".into())
-        .await
-        .expect_err("foreign parent cannot steer child");
-    assert!(
-        foreign_error
-            .to_string()
-            .contains("not owned by the caller")
-    );
     let foreign_result_error = fixture
         .engine
         .get_subagent_result(
@@ -197,51 +175,17 @@ async fn running_subagent_steer_promotes_user_input_and_enforces_ownership_and_s
     let foreign_handle_message = foreign_handle_error.to_string();
     assert!(foreign_handle_message.contains("unknown subagent reference"));
     assert!(foreign_handle_message.contains(&child_handle));
-    let missing_id = SessionId::new_v7();
-    let missing_error = fixture
-        .engine
-        .steer_subagent(parent.session_id, missing_id, "missing steer".into())
-        .await
-        .expect_err("missing child cannot be steered");
-    assert!(missing_error.to_string().contains(&missing_id.to_string()));
     release.send(()).expect("release child response");
 
     await_child(
         &fixture.engine,
         parent.session_id,
-        "steered child completion",
+        "child completion",
         |child| child.status == SessionStatus::Completed,
     )
     .await;
-    let child_events = fixture
-        .engine
-        .inner
-        .store
-        .get(child_session_id)
-        .expect("steered child projection")
-        .log
-        .events();
-    assert!(child_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputAdmitted { input }
-            if input == "focus on the revised requirement"
-    )));
-    assert!(child_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputSubmitted { input }
-            if input == "focus on the revised requirement"
-    )));
-    let terminal_error = fixture
-        .engine
-        .steer_subagent(parent.session_id, child_session_id, "too late".into())
-        .await
-        .expect_err("terminal child cannot be steered");
-    assert!(terminal_error.to_string().contains("terminal (completed)"));
-    let requests = with_watchdog("server fixture completion", server)
-        .await
-        .expect("running steer server");
-    assert_eq!(requests.len(), 3);
-    assert!(requests[2].contains("focus on the revised requirement"));
+    // The script also serves a steered follow-up turn that never comes.
+    server.abort();
     fixture.engine.shutdown().await;
 }
 
@@ -369,151 +313,6 @@ async fn finished_subagent_woken_by_send_message_reports_running_then_new_turn_t
     assert_eq!(requests.len(), 4);
     assert!(requests[3].contains("next task"));
     fixture.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn queued_subagent_steer_survives_restart_and_promotes_on_first_run() {
-    let (endpoint, reached, release, server) = scripted_queued_steer_recovery_server().await;
-    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
-    fixture
-        .engine
-        .register_tool_provider(Arc::new(TestDelegateProvider {
-            engine: fixture.engine.clone(),
-        }));
-    let parent = fixture
-        .engine
-        .create_session(selection.clone())
-        .expect("queued steer parent");
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: parent.session_id,
-                client_run_id: ClientRunId::new("queued-subagent-steer").expect("run ID"),
-                selection,
-                input: "queue five children".into(),
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("accepted queued steer parent run");
-    with_watchdog("reached fixture completion", reached)
-        .await
-        .expect("queue reached capacity");
-    let queued_id = fixture
-        .engine
-        .inner
-        .delegation_events
-        .entries()
-        .into_iter()
-        .find(|entry| entry.child_run_id.is_none())
-        .expect("queued child reservation event")
-        .reservation
-        .child_session_id;
-    let steered = fixture
-        .engine
-        .steer_subagent(
-            parent.session_id,
-            queued_id,
-            "apply this queued correction".into(),
-        )
-        .await
-        .expect("steer queued child");
-    assert_eq!(steered.metadata["status"], "queued");
-    let queued = fixture
-        .engine
-        .inner
-        .store
-        .get(queued_id)
-        .expect("queued child projection");
-    assert!(queued.log.is_persisted());
-    assert!(queued.log.events().iter().any(|event| {
-        event.run_id.is_none()
-            && matches!(
-                &event.payload,
-                EventPayload::UserInputAdmitted { input }
-                    if input == "apply this queued correction"
-            )
-    }));
-
-    let snapshot = private_tempdir();
-    let cwd = fixture._directory.path().to_owned();
-    let config = fixture.config.clone();
-    let manager = Arc::clone(&fixture.manager);
-    for session in fixture.engine.inner.store.all() {
-        session.log.flush().expect("flush crash snapshot");
-    }
-    copy_test_tree(
-        &fixture._directory.path().join("data"),
-        &snapshot.path().join("data"),
-    );
-    fixture.engine.shutdown().await;
-    release.send(()).expect("release stopped child sockets");
-    drop(fixture.engine);
-    let reopened = Engine::open(EngineOptions {
-        data_dir: snapshot.path().join("data"),
-        cwd,
-        config,
-        model_manager: manager,
-        tools: Vec::new(),
-    })
-    .expect("reopen queued child snapshot");
-    reopened
-        .resume(parent.session_id)
-        .await
-        .expect("adopt queued parent for recovery");
-    await_running_background_delegations(
-        &reopened,
-        parent.session_id,
-        0,
-        "parent adoption releases interrupted child capacity",
-    )
-    .await;
-    for child_id in reopened
-        .inner
-        .delegation_events
-        .entries()
-        .into_iter()
-        .filter_map(|entry| {
-            (entry.reservation.child_session_id != queued_id)
-                .then_some(entry.reservation.child_session_id)
-        })
-    {
-        reopened
-            .resume(child_id)
-            .await
-            .expect("adopt running child for recovery");
-    }
-    reopened
-        .resume(queued_id)
-        .await
-        .expect("adopt queued child for recovery");
-    await_projection(
-        &reopened,
-        queued_id,
-        "recovered queued steer completion",
-        |child| child.status == SessionStatus::Completed,
-    )
-    .await;
-    let recovered_events = reopened
-        .inner
-        .store
-        .get(queued_id)
-        .expect("recovered queued child")
-        .log
-        .events();
-    assert!(recovered_events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::UserInputSubmitted { input }
-            if input == "apply this queued correction"
-    )));
-    let requests = with_watchdog("server fixture completion", server)
-        .await
-        .expect("queued steer recovery server");
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].contains("apply this queued correction"));
-    reopened.shutdown().await;
 }
 
 #[tokio::test]

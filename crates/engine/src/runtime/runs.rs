@@ -31,21 +31,6 @@ impl Engine {
         .await
     }
 
-    /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
-    pub fn start_run_blocking(
-        &self,
-        params: RunStartParams,
-        origin: EventOrigin,
-    ) -> Result<RunStartResult, EngineError> {
-        let session = params.session_id;
-        self.request_blocking(session, |reply| SessionCommand::Start {
-            params,
-            origin,
-            admission: None,
-            reply,
-        })
-    }
-
     pub async fn steer(
         &self,
         run_id: RunId,
@@ -66,74 +51,45 @@ impl Engine {
                 input,
                 original_input,
             } => {
-                self.admit_steer(active.session, run_id, origin, input, original_input)
-                    .await
+                let session = active.session;
+                self.on_actor(session, move |engine| {
+                    engine.active_run_in(session, run_id)?;
+                    if !engine.run_is_running(session, run_id)? {
+                        return Ok(RunSteerResult {
+                            accepted: false,
+                            handled_reason: None,
+                        });
+                    }
+                    if let Some(original_input) = original_input {
+                        engine.append_direct(
+                            session,
+                            Some(run_id),
+                            origin.clone(),
+                            Event::UserInputTransformed {
+                                original_input,
+                                input: input.clone(),
+                            },
+                        )?;
+                    }
+                    engine.append_direct(
+                        session,
+                        Some(run_id),
+                        origin,
+                        Event::UserInputAdmitted { input },
+                    )?;
+                    engine.clear_skill_turn_state(session);
+                    Ok(RunSteerResult {
+                        accepted: true,
+                        handled_reason: None,
+                    })
+                })
+                .await
             }
             UserInputInterception::Handled { reason } => Ok(RunSteerResult {
                 accepted: false,
                 handled_reason: Some(reason),
             }),
         }
-    }
-
-    /// Admits `input` into `run` as pending user input, unless the run is no
-    /// longer running.
-    pub(super) async fn admit_steer(
-        &self,
-        session: SessionId,
-        run_id: RunId,
-        origin: EventOrigin,
-        input: String,
-        original_input: Option<String>,
-    ) -> Result<RunSteerResult, EngineError> {
-        self.on_actor(session, move |engine| {
-            engine.active_run_in(session, run_id)?;
-            if !engine.run_is_running(session, run_id)? {
-                return Ok(RunSteerResult {
-                    accepted: false,
-                    handled_reason: None,
-                });
-            }
-            if let Some(original_input) = original_input {
-                engine.append_direct(
-                    session,
-                    Some(run_id),
-                    origin.clone(),
-                    Event::UserInputTransformed {
-                        original_input,
-                        input: input.clone(),
-                    },
-                )?;
-            }
-            engine.append_direct(
-                session,
-                Some(run_id),
-                origin,
-                Event::UserInputAdmitted { input },
-            )?;
-            engine.clear_skill_turn_state(session);
-            Ok(RunSteerResult {
-                accepted: true,
-                handled_reason: None,
-            })
-        })
-        .await
-    }
-
-    /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
-    pub fn steer_blocking(
-        &self,
-        run_id: RunId,
-        input: String,
-        origin: EventOrigin,
-    ) -> Result<RunSteerResult, EngineError> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                EngineError::Mcp(format!("create blocking steering runtime: {error}"))
-            })?
-            .block_on(self.steer(run_id, input, origin))
     }
 
     pub async fn recall_steer(&self, run_id: RunId) -> Result<RunRecallSteerResult, EngineError> {

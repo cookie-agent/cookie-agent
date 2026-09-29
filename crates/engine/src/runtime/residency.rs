@@ -139,7 +139,6 @@ impl Engine {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn install_janitor_before_barrier_hook_for_test(
         &self,
     ) -> (

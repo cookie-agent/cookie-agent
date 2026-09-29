@@ -146,8 +146,9 @@ queued child durably accepts the message and it is claimed when the child's
 run starts; finished children, unreachable by `steer_subagent`, are reachable
 via wake. The model-visible `steer_subagent` tool is removed from
 `DelegateToolProvider`; `delegate_subagent`, `get_subagent_result`, and
-`cancel_subagent` remain. The underlying `SessionCommand::Steer` machinery
-stays for user steering (`run.steer`) only — `send_message` does not use it.
+`cancel_subagent` remain. The engine's `steer_subagent` method is gone too;
+user steering (`run.steer`) keeps its own admission path, which `send_message`
+does not use.
 Consequences:
 
 - Parent→child authority is expressed entirely through `message` permission
@@ -180,14 +181,14 @@ guard checks and acceptance are serialized inside the recipient actor.
    recipients get steer/queue delivery; `Queued`/idle recipients get a durable
    admission claimed at start; `Finished`/`Completed` recipients are **woken**.
 3. **Engine API**: `engine.send_agent_message(invocation) -> AgentMessageHandle`
-   in `messaging_api.rs`, internally using the atomic
-   `ProducerCommand::SendAgentMessage` path. Sender-side auto-registration of its
+   in `messaging_api.rs`, internally accepting the message atomically on the
+   recipient's session actor. Sender-side auto-registration of its
    `Agent` producer on the recipient mirrors how background monitors register
    `ProducerOwner::Delegation` on parents.
 4. **Wake and delivery are producer-backed everywhere.** Idle and finished
    recipients wake through the producer reconcile path — the same reconcile
    that restarts delivery of accepted-but-unconsumed producer mail after idle
-   eviction or restart — never through `SessionCommand::Steer` or a runless
+   eviction or restart — never through user steering or a runless
    `UserInputAdmitted`. Messaging an idle-evicted actor therefore reuses the
    existing producer wake machinery (`spawn_actor`) with no special casing.
 5. **Guards** — see [Guards](#guards).
@@ -402,7 +403,7 @@ Deliberately shallow — the mechanisms already exist; do not re-specify them:
 - **Wake lifecycle**: waking an idle or finished session reuses the producer
   reconcile path: accepted-but-unconsumed mail makes the session deliverable,
   the actor is spawned if evicted, and a fresh run starts on the same session
-  with the message as input. No `SessionCommand::Steer` or runless
+  with the message as input. No user steering or runless
   `UserInputAdmitted` is involved. The completed delegation is not reopened;
   no new completion notification fires unless the woken agent sends one.
 - **Delivery semantics**: `steer` and `queue` follow the existing producer

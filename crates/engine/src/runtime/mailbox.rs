@@ -247,22 +247,6 @@ impl Engine {
         Ok(receiver)
     }
 
-    /// Synchronous setup/CLI wrapper. Do not call from a Tokio runtime.
-    pub fn append_blocking(
-        &self,
-        session: SessionId,
-        run: Option<RunId>,
-        origin: EventOrigin,
-        event: Event,
-    ) -> Result<(), EngineError> {
-        self.request_blocking(session, |reply| SessionCommand::Append {
-            run,
-            origin,
-            event: Box::new(event),
-            reply,
-        })
-    }
-
     /// Commits a completed tool invocation through its session actor.
     pub async fn submit_tool_result(
         &self,
@@ -930,34 +914,6 @@ impl Engine {
             .await
             .map_err(|_| EngineError::ActorStopped)?;
         Ok(receiver)
-    }
-
-    pub(super) fn request_blocking<T>(
-        &self,
-        session: SessionId,
-        command: impl FnOnce(oneshot::Sender<Result<T, EngineError>>) -> SessionCommand,
-    ) -> Result<T, EngineError> {
-        let (reply, receiver) = oneshot::channel();
-        {
-            let _residency = self.inner.sessions.residency_mutation.blocking_lock();
-            self.ensure_session_owned(session)?;
-            self.spawn_actor(session)?;
-            let actor = self
-                .inner
-                .sessions
-                .actors
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&session)
-                .cloned()
-                .ok_or(EngineError::MissingActor(session))?;
-            actor
-                .blocking_send(command(reply))
-                .map_err(|_| EngineError::ActorStopped)?;
-        }
-        receiver
-            .blocking_recv()
-            .map_err(|_| EngineError::ActorStopped)?
     }
 
     pub(crate) fn spawn_actor(&self, session: SessionId) -> Result<(), EngineError> {

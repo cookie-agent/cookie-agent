@@ -272,9 +272,9 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
     );
 }
 
-#[test]
-fn published_tool_order_is_stable_across_registration_and_overlay_order() {
-    fn definitions(reversed: bool) -> Vec<oven_sdk::ToolDefinition> {
+#[tokio::test]
+async fn published_tool_order_is_stable_across_registration_and_overlay_order() {
+    async fn definitions(reversed: bool) -> Vec<oven_sdk::ToolDefinition> {
         let agent = "---\ndescription: Tool ordering agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/a-model\", variant: null }]\npermissions: {}\n---\nTest stable tool ordering.\n";
         let fixture = synthetic_default_fixture(Some(agent));
         let providers: Vec<Arc<dyn ToolProvider>> = if reversed {
@@ -338,7 +338,7 @@ fn published_tool_order_is_stable_across_registration_and_overlay_order() {
         }
         fixture
             .engine
-            .append_blocking(
+            .append(
                 session.session_id,
                 None,
                 cookie_agent_protocol::EventOrigin::new("engine:test").unwrap(),
@@ -346,6 +346,7 @@ fn published_tool_order_is_stable_across_registration_and_overlay_order() {
                     overlay: SessionPermissionOverlay { rules },
                 },
             )
+            .await
             .unwrap();
         fixture
             .engine
@@ -353,8 +354,8 @@ fn published_tool_order_is_stable_across_registration_and_overlay_order() {
             .unwrap()
     }
 
-    let forward = definitions(false);
-    let reversed = definitions(true);
+    let forward = definitions(false).await;
+    let reversed = definitions(true).await;
     assert_eq!(
         forward
             .iter()
