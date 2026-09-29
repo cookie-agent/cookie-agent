@@ -1,12 +1,12 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over an authenticated WebSocket at `/ws`.
-Protocol 22 is current-only. A client must call `handshake` with
-`{ "protocol_version": 22 }` before any other method.
+Protocol 23 is current-only. A client must call `handshake` with
+`{ "protocol_version": 23 }` before any other method.
 
 The unreleased MCP approval methods and their `pending_approval` and `rejected`
 server states were removed before any release. They are not compatibility
-members of protocol 22.
+members of protocol 23.
 
 ## Error diagnostics
 
@@ -29,7 +29,7 @@ data. No request headers or credential dumps are added. See
 ## Tool-emitted messages
 
 Protocol 16 introduced optional `additional_messages` to `PersistedToolResult`,
-preserved in protocol 22 alongside independent display and output references. The
+preserved in protocol 23 alongside independent display and output references. The
 field is an ordered array of at most four messages. Each message has role
 `system` or `user` and one or more ordered `text` or `file` content parts. Empty
 arrays are omitted on the wire; event validation bounds text and attachment
@@ -140,7 +140,7 @@ a top-level entry, and stays reachable via `session.tree`, `session.children`,
 The engine implements these methods through its per-session actor. Goal mutations
 are root-only; producer inspection is available for any owned session.
 Goal/producer request shapes remain unchanged. Session protocol 18 added declared
-tool-output channels, generic named raw-output subscriptions, terminal output
+tool-output channels, terminal output
 references, and independent UI display. Plugin extension `0.0.6` uses typed
 terminal single/named output and final display; package versions are unchanged.
 
@@ -223,13 +223,15 @@ the title, and continues with new physical sequences.
 | `runtime.changed` | Previous revision, complete snapshot, sorted change reasons |
 | `events.subscription` | One stored event or a session sequence gap |
 | `events.plugin` | Session-scoped non-durable plugin event |
-| `events.tool_output_snapshot` | Stream and retained output snapshot |
-| `events.tool_output_delta` | Tool call, stream, byte offset, data |
-| `events.tool_output_gap` | Tool call, stream, next available offset |
 
 The shared client maps these to `ClientDelivery` variants (`Live`, replay
-deliveries, output stream events, `RuntimeChanged`, `RecoveryFailed`), so a UI
+deliveries, `PluginEvent`, `RuntimeChanged`, `RecoveryFailed`), so a UI
 consumes one ordered stream and never parses raw JSON-RPC frames.
+
+Protocol 23 removed the `events.tool_output_snapshot`, `events.tool_output_delta`,
+and `events.tool_output_gap` notifications. Tool display comes from durable
+`tool_call_progress` and `tool_call_terminated` events; retained output is read
+through its artifact references.
 
 Session metadata includes additive `skipped_events` entries with the physical
 sequence (or source line number when no sequence was readable) and a safe reason.

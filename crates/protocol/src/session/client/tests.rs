@@ -3,7 +3,7 @@ use jiff::Timestamp;
 
 use super::*;
 use crate as cookie_agent_protocol;
-use crate::MessageStream;
+use crate::{EventPayload, MessageStream};
 
 fn delivery_channel() -> (
     mpsc::UnboundedSender<ClientDelivery>,
@@ -335,7 +335,6 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         .expect("prepare replay");
     let (deliveries, mut receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
-    let mut tools = HashMap::new();
 
     route_live(
         EventSubscriptionMessage::Event {
@@ -344,7 +343,6 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         &deliveries,
         &subscriptions,
         &recovery,
-        &mut tools,
     )
     .await;
     begin_replay(
@@ -353,7 +351,6 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         &subscriptions,
         &deliveries,
         &recovery,
-        &mut tools,
     )
     .await;
 
@@ -378,7 +375,6 @@ async fn live_event_racing_replay_is_delivered_after_replay_end() {
         &deliveries,
         &subscriptions,
         &recovery,
-        &mut tools,
     )
     .await;
     assert!(matches!(
@@ -407,15 +403,7 @@ async fn replay_larger_than_delivery_capacity_reduces_completely() {
         let subscriptions = subscriptions.clone();
         let recovery = recovery.clone();
         async move {
-            begin_replay(
-                request,
-                events,
-                &subscriptions,
-                &deliveries,
-                &recovery,
-                &mut HashMap::new(),
-            )
-            .await;
+            begin_replay(request, events, &subscriptions, &deliveries, &recovery).await;
         }
     });
     let mut replayed = 0;
@@ -768,7 +756,6 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
         .expect("prepare replay");
     let (deliveries, _receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
-    let mut tools = HashMap::new();
     for seq in [11, 13] {
         route_live(
             EventSubscriptionMessage::Event {
@@ -777,7 +764,6 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
             &deliveries,
             &subscriptions,
             &recovery,
-            &mut tools,
         )
         .await;
     }
@@ -787,7 +773,6 @@ async fn non_contiguous_buffered_tail_keeps_prefix_cursor_and_recovers() {
         &subscriptions,
         &deliveries,
         &recovery,
-        &mut tools,
     )
     .await;
     assert_eq!(
@@ -810,7 +795,6 @@ async fn buffered_gap_schedules_one_recovery() {
         .expect("prepare replay");
     let (deliveries, _receiver) = delivery_channel();
     let (recovery, mut recovery_receiver) = recovery();
-    let mut tools = HashMap::new();
     route_live(
         EventSubscriptionMessage::Gap {
             session_id,
@@ -819,7 +803,6 @@ async fn buffered_gap_schedules_one_recovery() {
         &deliveries,
         &subscriptions,
         &recovery,
-        &mut tools,
     )
     .await;
     begin_replay(
@@ -828,7 +811,6 @@ async fn buffered_gap_schedules_one_recovery() {
         &subscriptions,
         &deliveries,
         &recovery,
-        &mut tools,
     )
     .await;
     assert_eq!(
@@ -856,14 +838,12 @@ async fn stale_replay_attempt_response_is_discarded() {
         .expect("second request");
     let (deliveries, mut receiver) = delivery_channel();
     let (recovery, _recovery_receiver) = recovery();
-    let mut tools = HashMap::new();
     begin_replay(
         first,
         vec![event(session_id, 1)],
         &subscriptions,
         &deliveries,
         &recovery,
-        &mut tools,
     )
     .await;
     assert!(receiver.try_recv().is_err());
@@ -873,207 +853,12 @@ async fn stale_replay_attempt_response_is_discarded() {
         &subscriptions,
         &deliveries,
         &recovery,
-        &mut tools,
     )
     .await;
     assert!(matches!(
         receiver.recv().await,
         Some(ClientDelivery::ReplayStart { .. })
     ));
-}
-
-#[tokio::test]
-async fn replayed_named_tool_snapshots_precede_replay_end() {
-    named_tool_replay(false).await;
-}
-
-#[tokio::test]
-async fn display_only_replay_suppresses_sustained_raw_output_before_all_buffers() {
-    named_tool_replay(true).await;
-}
-
-async fn named_tool_replay(display_only: bool) {
-    let session_id = SessionId::new_v7();
-    let call_id = ToolCallId::new_v7();
-    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-    let request = prepare_subscription(&subscriptions, session_id, 0, false, true)
-        .await
-        .expect("prepare replay");
-    let (deliveries, mut receiver) = delivery_channel();
-    let deliveries: Box<dyn ClientEventSink> = if display_only {
-        Box::new(DisplayOnlySink(deliveries))
-    } else {
-        Box::new(deliveries)
-    };
-    let (recovery, _recovery_receiver) = recovery();
-    let mut tools = HashMap::new();
-    let started = StoredEvent {
-            engine_version: None,
-            origin: None,
-            session_id,
-            run_id: Some(cookie_agent_protocol::RunId::new_v7()),
-            seq: 1,
-            timestamp: Timestamp::now(),
-            payload: EventPayload::ToolCallStarted {
-                start: cookie_agent_protocol::ToolCallStart {
-output: crate::ToolOutputDeclaration::Named { streams: vec!["results".into(), "diagnostics".into()] },
-                    tool_call_id: call_id,
-                    owner: cookie_agent_protocol::AssistantToolCallRef {
-                        model_turn_seq: 1,
-                        content_index: 0,
-                        model_call_id: cookie_agent_protocol::ModelCallId::new("model-call")
-                            .expect("model call id"),
-                        provider_item_id: None,
-                    },
-                    presentation: cookie_agent_protocol::ToolCallPresentation {
-                        title: cookie_agent_protocol::SafeDisplayText::new("bash")
-                            .expect("presentation title"),
-                        primary_argument: None,
-                    },
-                    operation_fingerprint:
-                        cookie_agent_protocol::OperationFingerprint::from_prepared_operation(
-                            &cookie_agent_protocol::PreparedOperationIdentity::new(
-                                cookie_agent_protocol::Sha256Digest::of_bytes(b"arguments"),
-                                vec![cookie_agent_protocol::ApprovalCapability {
-                                    action: cookie_agent_protocol::PermissionAction::Bash,
-                                    operation:
-                                        cookie_agent_protocol::PreparedCapabilityOperation::new(
-                                            "execute",
-                                        )
-                                        .expect("capability operation"),
-                                }],
-                                vec![cookie_agent_protocol::PreparedApprovalResource {
-                                    capability: cookie_agent_protocol::PermissionAction::Bash,
-                                    canonical:
-                                        cookie_agent_protocol::PreparedResourceIdentity::new(
-                                            "command:replay",
-                                        )
-                                        .expect("resource identity"),
-                                    binding_digest:
-                                        cookie_agent_protocol::PreparedResourceDigest::from_canonical_binding_bytes(
-                                            b"replay",
-                                        ),
-                                    binding_lifetime:
-                                        cookie_agent_protocol::PreparedBindingLifetime::ProcessLocal,
-                                    boundary: cookie_agent_protocol::ApprovalBoundary::Exact,
-                                    source:
-                                        cookie_agent_protocol::ApprovalResourceSource::PrimaryOperation,
-                                }],
-                                cookie_agent_protocol::Sha256Digest::of_bytes(b"context"),
-                            )
-                            .expect("prepared operation"),
-                        ),
-                },
-            },
-        };
-    begin_replay(
-        request,
-        vec![started],
-        &subscriptions,
-        deliveries.as_ref(),
-        &recovery,
-        &mut tools,
-    )
-    .await;
-    if display_only {
-        let live_call = ToolCallId::new_v7();
-        tools.insert(live_call, session_id);
-        // Exercise both replay-owned and live output while the consumer is stalled.
-        let data = "eHh4".repeat(22 * 1024);
-        for offset in 0..1600 {
-            for call_id in [call_id, live_call] {
-                route_output(
-                    ClientDelivery::OutputDelta(OutputDelta {
-                        call_id,
-                        stream: OutputStream::Named("results".into()),
-                        byte_offset: offset * 66 * 1024,
-                        data: data.clone(),
-                    }),
-                    deliveries.as_ref(),
-                    &subscriptions,
-                    &recovery,
-                    &mut tools,
-                )
-                .await;
-            }
-            assert_eq!(receiver.len(), 2);
-            let locked = subscriptions.lock().await;
-            assert!(locked[&session_id].buffered.is_empty());
-            assert_eq!(locked[&session_id].awaiting_snapshots.len(), 2);
-        }
-        let mut progress = event(session_id, 2);
-        progress.payload = EventPayload::ToolCallProgress {
-            tool_call_id: call_id,
-            message: crate::SafeDisplayText::new("working").unwrap(),
-            display: Some("live display".into()),
-        };
-        route_live(
-            EventSubscriptionMessage::Event {
-                event: Box::new(progress),
-            },
-            deliveries.as_ref(),
-            &subscriptions,
-            &recovery,
-            &mut tools,
-        )
-        .await;
-        assert_eq!(subscriptions.lock().await[&session_id].buffered.len(), 1);
-    }
-    for stream in [
-        OutputStream::Named("results".into()),
-        OutputStream::Named("diagnostics".into()),
-    ] {
-        route_output(
-            ClientDelivery::OutputSnapshot(OutputSnapshotEnvelope {
-                stream,
-                snapshot: cookie_agent_protocol::OutputSnapshot {
-                    call_id,
-                    start_offset: 0,
-                    end_offset: 0,
-                    chunks: Vec::new(),
-                },
-            }),
-            deliveries.as_ref(),
-            &subscriptions,
-            &recovery,
-            &mut tools,
-        )
-        .await;
-    }
-
-    assert!(matches!(
-        receiver.recv().await,
-        Some(ClientDelivery::ReplayStart { .. })
-    ));
-    assert!(matches!(
-        receiver.recv().await,
-        Some(ClientDelivery::ReplayEvent { .. })
-    ));
-    if !display_only {
-        assert!(matches!(
-            receiver.recv().await,
-            Some(ClientDelivery::OutputSnapshot(_))
-        ));
-        assert!(matches!(
-            receiver.recv().await,
-            Some(ClientDelivery::OutputSnapshot(_))
-        ));
-    }
-    assert!(matches!(
-        receiver.recv().await,
-        Some(ClientDelivery::ReplayEnd { .. })
-    ));
-    if display_only {
-        assert!(matches!(receiver.recv().await,
-                Some(ClientDelivery::Live { message, .. })
-                    if matches!(&*message, EventSubscriptionMessage::Event { event }
-                        if matches!(event.payload, EventPayload::ToolCallProgress { display: Some(ref display), .. } if display == "live display"))));
-        let locked = subscriptions.lock().await;
-        assert_eq!(locked[&session_id].cursor, 2);
-        assert!(!locked[&session_id].fetching);
-        assert!(locked[&session_id].awaiting_snapshots.is_empty());
-        assert!(locked[&session_id].buffered.is_empty());
-    }
 }
 
 #[tokio::test]
@@ -1089,7 +874,6 @@ async fn discontinuity_queues_targeted_recovery() {
         &deliveries,
         &subscriptions,
         &recovery,
-        &mut HashMap::new(),
     )
     .await;
     assert_eq!(receiver.recv().await, Some((false, Some(session_id))));

@@ -3109,12 +3109,6 @@ pub struct OutputSnapshot {
     pub end_offset: u64,
     pub chunks: Vec<OutputDelta>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutputSnapshotEnvelope {
-    pub stream: OutputStream,
-    pub snapshot: OutputSnapshot,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EventSchemaError {

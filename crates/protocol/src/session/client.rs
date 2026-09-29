@@ -3,7 +3,7 @@
 mod runtime;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt,
     sync::{
         Arc, Mutex as StdMutex,
@@ -14,32 +14,30 @@ use std::{
 
 use crate::{
     ApprovalListParams, ApprovalListResult, ApprovalRespondParams, ApprovalRespondResult,
-    ClientHello, EventPayload, EventSubscriptionMessage, EventsSubscribeParams,
-    EventsSubscribeResult, JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult,
-    McpAuthCancelParams, McpAuthCancelResult, McpServerAddParams, McpServerEditParams,
-    McpServerListParams, McpServerListResult, McpServerMutationResult, McpServerNameParams,
-    McpServerPersistParams, McpServerSetEnabledParams, MessageFrame, Notification, OutputDelta,
-    OutputGap, OutputSnapshotEnvelope, OutputStream, ProtocolVersion, Response, RunCancelParams,
-    RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams, RunStartResult,
-    RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult, ServerHello,
-    SessionChildrenParams, SessionChildrenResult, SessionCompactParams, SessionCompactResult,
-    SessionCreateParams, SessionCreateResult, SessionForkParams, SessionForkResult,
-    SessionGetParams, SessionGetResult, SessionGoalGetParams, SessionGoalGetResult,
-    SessionGoalLifecycleParams, SessionGoalLifecycleResult, SessionGoalSetParams,
-    SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
+    ClientHello, EventSubscriptionMessage, EventsSubscribeParams, EventsSubscribeResult,
+    JsonRpcError, JsonRpcId, McpAuthBeginParams, McpAuthBeginResult, McpAuthCancelParams,
+    McpAuthCancelResult, McpServerAddParams, McpServerEditParams, McpServerListParams,
+    McpServerListResult, McpServerMutationResult, McpServerNameParams, McpServerPersistParams,
+    McpServerSetEnabledParams, MessageFrame, Notification, ProtocolVersion, Response,
+    RunCancelParams, RunCancelResult, RunRecallSteerParams, RunRecallSteerResult, RunStartParams,
+    RunStartResult, RunSteerParams, RunSteerResult, RunToolStdinParams, RunToolStdinResult,
+    ServerHello, SessionChildrenParams, SessionChildrenResult, SessionCompactParams,
+    SessionCompactResult, SessionCreateParams, SessionCreateResult, SessionForkParams,
+    SessionForkResult, SessionGetParams, SessionGetResult, SessionGoalGetParams,
+    SessionGoalGetResult, SessionGoalLifecycleParams, SessionGoalLifecycleResult,
+    SessionGoalSetParams, SessionGoalSetResult, SessionId, SessionListParams, SessionListResult,
     SessionPermissionClearParams, SessionPermissionGetParams, SessionPermissionGetResult,
     SessionPermissionMutationResult, SessionPermissionSetParams, SessionProducersParams,
     SessionProducersResult, SessionRenameParams, SessionRenameResult, SessionResumeParams,
     SessionResumeResult, SessionRevertParams, SessionRevertResult, SessionSetPermissionModeParams,
     SessionSetPermissionModeResult, SessionTreeParams, SessionTreeResult, SessionTreeUsageResult,
     SessionUsageParams, SessionUsageResult, SkillsGetParams, SkillsGetResult, SkillsListParams,
-    SkillsListResult, StoredEvent, ToolCallId, Transport, TransportError,
+    SkillsListResult, StoredEvent, Transport, TransportError,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::time::Instant;
 use zeroize::{Zeroize, Zeroizing};
 
 const COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -80,9 +78,6 @@ pub enum ClientDelivery {
         generation: u64,
         final_seq: u64,
     },
-    OutputSnapshot(OutputSnapshotEnvelope),
-    OutputDelta(OutputDelta),
-    OutputGap(OutputGap),
     PluginEvent(crate::ExtensionBusEventParams),
     RecoveryFailed {
         session_id: Option<SessionId>,
@@ -94,34 +89,7 @@ pub enum ClientDelivery {
     RuntimeChanged(Box<crate::RuntimeChangedNotification>),
 }
 
-/// Consumer of ordered protocol notifications and replay deliveries.
-pub trait ClientEventSink: Send + Sync + 'static {
-    fn deliver(&self, delivery: ClientDelivery);
-
-    /// Whether to retain raw tool output in replay buffers and deliveries.
-    /// Snapshot barrier bookkeeping is performed regardless of this preference.
-    fn wants_raw_tool_output(&self) -> bool {
-        true
-    }
-}
-
-struct DisplayOnlySink(mpsc::UnboundedSender<ClientDelivery>);
-
-impl ClientEventSink for DisplayOnlySink {
-    fn deliver(&self, delivery: ClientDelivery) {
-        self.0.deliver(delivery);
-    }
-
-    fn wants_raw_tool_output(&self) -> bool {
-        false
-    }
-}
-
-impl ClientEventSink for mpsc::UnboundedSender<ClientDelivery> {
-    fn deliver(&self, delivery: ClientDelivery) {
-        let _ = self.send(delivery);
-    }
-}
+type Deliveries = mpsc::UnboundedSender<ClientDelivery>;
 
 /// Errors returned by the transport or a JSON-RPC operation.
 #[derive(Debug, Error)]
@@ -264,9 +232,6 @@ struct Subscription {
     fetching: bool,
     rebuild: bool,
     final_seq: u64,
-    replay_tools: HashSet<ToolCallId>,
-    awaiting_snapshots: HashSet<(ToolCallId, String)>,
-    snapshot_deadline: Option<Instant>,
     buffered: Vec<ClientDelivery>,
     recovery_requested: Option<bool>,
     /// Earlier pages of the replay attempt `replay_pages_attempt`, held until
@@ -279,8 +244,6 @@ impl Subscription {
     fn abort_replay(&mut self) {
         self.cursor = self.rollback_cursor;
         self.fetching = false;
-        self.awaiting_snapshots.clear();
-        self.replay_tools.clear();
         self.replay_pages = Vec::new();
     }
 }
@@ -336,40 +299,8 @@ impl Client {
         // consumption. This sole-consumer queue is lossless; a permanently
         // stalled UI may grow memory, but it is terminal rather than lossy.
         let (delivery_sender, delivery_receiver) = mpsc::unbounded_channel();
-        Self::connect_stream_with_sink(transport, delivery_sender, Some(delivery_receiver))
-    }
-
-    /// Connect a display-only consumer without queuing raw tool snapshots,
-    /// deltas, or gaps. Durable events (including display and terminal results)
-    /// and replay barriers are unchanged. Runtime output retention is unaffected.
-    pub fn connect_display_stream<T>(transport: T) -> Self
-    where
-        T: Transport + 'static,
-    {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        Self::connect_stream_with_sink(transport, DisplayOnlySink(sender), Some(receiver))
-    }
-
-    /// Connect a transport and forward ordered protocol deliveries to a consumer-defined sink.
-    pub fn connect_with_event_sink<T, E>(transport: T, sink: E) -> Self
-    where
-        T: Transport + 'static,
-        E: ClientEventSink,
-    {
-        Self::connect_stream_with_sink(transport, sink, None)
-    }
-
-    fn connect_stream_with_sink<T, E>(
-        transport: T,
-        sink: E,
-        delivery_receiver: Option<mpsc::UnboundedReceiver<ClientDelivery>>,
-    ) -> Self
-    where
-        T: Transport + 'static,
-        E: ClientEventSink,
-    {
         let (commands, command_rx) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
-        let deliveries = Arc::new(StdMutex::new(delivery_receiver));
+        let deliveries = Arc::new(StdMutex::new(Some(delivery_receiver)));
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
         let (recovery_sender, recovery_receiver) = mpsc::unbounded_channel();
         let recovery = Arc::new(RecoveryQueue {
@@ -384,7 +315,7 @@ impl Client {
             ConnectionTask {
                 commands: command_rx,
                 controls: control_rx,
-                deliveries: Arc::new(sink),
+                deliveries: delivery_sender,
                 subscriptions: subscriptions.clone(),
                 recovery: recovery.clone(),
                 pending_command_count: pending_command_count.clone(),
@@ -424,7 +355,7 @@ impl Client {
         Ok(hello)
     }
 
-    /// Take the sole live, replay, and output delivery receiver. It never
+    /// Take the sole live and replay delivery receiver. It never
     /// backpressures the connection task.
     #[must_use]
     pub fn subscribe_deliveries(&self) -> Option<mpsc::UnboundedReceiver<ClientDelivery>> {
@@ -1079,7 +1010,7 @@ static NEXT_REQUEST_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::Atomic
 struct ConnectionTask {
     commands: mpsc::Receiver<Command>,
     controls: mpsc::UnboundedReceiver<ConnectionControl>,
-    deliveries: Arc<dyn ClientEventSink>,
+    deliveries: Deliveries,
     subscriptions: Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: Arc<RecoveryQueue>,
     pending_command_count: Arc<AtomicUsize>,
@@ -1091,9 +1022,10 @@ where
     S: Transport,
 {
     let mut pending = HashMap::new();
-    let mut tool_sessions = HashMap::new();
     let mut failure = None;
-    let mut replay_timeout = tokio::time::interval(Duration::from_millis(25));
+    // Drops calls whose callers stopped waiting; it only runs while calls are pending.
+    let mut prune = tokio::time::interval(Duration::from_millis(100));
+    prune.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             () = task.shutdown.cancelled() => break,
@@ -1127,12 +1059,11 @@ where
             }
             Some(control) = task.controls.recv() => match control {
                 ConnectionControl::RecoveryFailed { session_id, error } => {
-                    task.deliveries.deliver(ClientDelivery::RecoveryFailed { session_id, error });
+                    let _ = task.deliveries.send(ClientDelivery::RecoveryFailed { session_id, error });
                 }
             },
-            _ = replay_timeout.tick() => {
+            _ = prune.tick(), if !pending.is_empty() => {
                 prune_cancelled_commands(&mut pending);
-                release_expired_replays(&task.subscriptions, task.deliveries.as_ref(), &task.recovery, &mut tool_sessions).await;
             }
             incoming = stream.recv() => {
                 let frame = match incoming {
@@ -1147,10 +1078,9 @@ where
                 if let Err(error) = handle_frame(
                     frame,
                     &mut pending,
-                    task.deliveries.as_ref(),
+                    &task.deliveries,
                     &task.subscriptions,
                     &task.recovery,
-                    &mut tool_sessions,
                 ).await {
                     resolve_malformed_response(error, &mut pending);
                 }
@@ -1167,8 +1097,7 @@ where
         let _ = pending.response.send(Err(error));
     }
     if let Some(error) = failure {
-        task.deliveries
-            .deliver(ClientDelivery::Disconnected { error });
+        let _ = task.deliveries.send(ClientDelivery::Disconnected { error });
     }
     task.pending_command_count.store(0, Ordering::Relaxed);
 }
@@ -1256,10 +1185,9 @@ fn resolve_malformed_response(error: ClientError, pending: &mut HashMap<i64, Pen
 async fn handle_frame(
     frame: MessageFrame,
     pending: &mut HashMap<i64, PendingCommand>,
-    deliveries: &dyn ClientEventSink,
+    deliveries: &Deliveries,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
 ) -> Result<(), ClientError> {
     let value = match frame {
         MessageFrame::Value(value) => value,
@@ -1310,15 +1238,7 @@ async fn handle_frame(
                             // mpsc consumer while this task injects a large
                             // replay under natural channel backpressure.
                             let _ = command.response.send(Ok(Value::Null));
-                            begin_replay(
-                                replay,
-                                events,
-                                subscriptions,
-                                deliveries,
-                                recovery,
-                                tool_sessions,
-                            )
-                            .await;
+                            begin_replay(replay, events, subscriptions, deliveries, recovery).await;
                         }
                         Err(error) => {
                             let _ = command.response.send(Err(ClientError::InvalidFrame(error)));
@@ -1339,48 +1259,15 @@ async fn handle_frame(
     match notification.method.as_str() {
         "events.subscription" => {
             let message: EventSubscriptionMessage = serde_json::from_value(params)?;
-            route_live(message, deliveries, subscriptions, recovery, tool_sessions).await;
-        }
-        "events.tool_output_snapshot" => {
-            let snapshot = serde_json::from_value(params)?;
-            route_output(
-                ClientDelivery::OutputSnapshot(snapshot),
-                deliveries,
-                subscriptions,
-                recovery,
-                tool_sessions,
-            )
-            .await;
-        }
-        "events.tool_output_delta" => {
-            let delta = serde_json::from_value(params)?;
-            route_output(
-                ClientDelivery::OutputDelta(delta),
-                deliveries,
-                subscriptions,
-                recovery,
-                tool_sessions,
-            )
-            .await;
-        }
-        "events.tool_output_gap" => {
-            let gap = serde_json::from_value(params)?;
-            route_output(
-                ClientDelivery::OutputGap(gap),
-                deliveries,
-                subscriptions,
-                recovery,
-                tool_sessions,
-            )
-            .await;
+            route_live(message, deliveries, subscriptions, recovery).await;
         }
         "events.plugin" => {
             let event = serde_json::from_value(params)?;
-            deliveries.deliver(ClientDelivery::PluginEvent(event));
+            let _ = deliveries.send(ClientDelivery::PluginEvent(event));
         }
         crate::RUNTIME_CHANGED_METHOD => {
             let changed = serde_json::from_value(params)?;
-            deliveries.deliver(ClientDelivery::RuntimeChanged(Box::new(changed)));
+            let _ = deliveries.send(ClientDelivery::RuntimeChanged(Box::new(changed)));
         }
         _ => {}
     }
@@ -1437,11 +1324,9 @@ async fn begin_replay(
     replay: ReplayRequest,
     events: Vec<StoredEvent>,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-    deliveries: &dyn ClientEventSink,
+    deliveries: &Deliveries,
     recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
 ) {
-    let active_tools = active_tools(&events);
     let final_seq = {
         let mut subscriptions = subscriptions.lock().await;
         let Some(subscription) = subscriptions.get_mut(&replay.session_id) else {
@@ -1457,86 +1342,33 @@ async fn begin_replay(
             .unwrap_or(subscription.cursor);
         subscription.final_seq = final_seq;
         subscription.rebuild = replay.rebuild;
-        subscription.replay_tools = active_tools.iter().copied().collect();
-        subscription.awaiting_snapshots = events
-            .iter()
-            .filter_map(|event| match &event.payload {
-                EventPayload::ToolCallStarted { start }
-                    if active_tools.contains(&start.tool_call_id) =>
-                {
-                    Some(start)
-                }
-                _ => None,
-            })
-            .flat_map(|start| {
-                start
-                    .output
-                    .channels()
-                    .into_iter()
-                    .map(|name| (start.tool_call_id, name.unwrap_or_default()))
-            })
-            .collect();
-        subscription.snapshot_deadline = (!subscription.awaiting_snapshots.is_empty())
-            .then(|| Instant::now() + Duration::from_millis(250));
         final_seq
     };
-    deliveries.deliver(ClientDelivery::ReplayStart {
+    let _ = deliveries.send(ClientDelivery::ReplayStart {
         session_id: replay.session_id,
         generation: replay.generation,
         final_seq,
         rebuild: replay.rebuild,
     });
     for event in events {
-        if let EventPayload::ToolCallStarted { start } = &event.payload {
-            tool_sessions.insert(start.tool_call_id, event.session_id);
-        }
-        deliveries.deliver(ClientDelivery::ReplayEvent {
+        let _ = deliveries.send(ClientDelivery::ReplayEvent {
             session_id: replay.session_id,
             generation: replay.generation,
             final_seq,
             event: Box::new(event),
         });
     }
-    finish_ready_replay(
-        replay.session_id,
-        subscriptions,
-        deliveries,
-        recovery,
-        tool_sessions,
-    )
-    .await;
-}
-
-fn active_tools(events: &[StoredEvent]) -> HashSet<ToolCallId> {
-    let mut tools = HashSet::new();
-    for event in events {
-        match &event.payload {
-            EventPayload::ToolCallStarted { start } => {
-                tools.insert(start.tool_call_id);
-            }
-            EventPayload::ToolCallTerminated { termination } => {
-                tools.remove(&termination.tool_call_id);
-            }
-            _ => {}
-        }
-    }
-    tools
+    finish_ready_replay(replay.session_id, subscriptions, deliveries, recovery).await;
 }
 
 async fn route_live(
     message: EventSubscriptionMessage,
-    deliveries: &dyn ClientEventSink,
+    deliveries: &Deliveries,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
     recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
 ) {
     let session_id = match &message {
-        EventSubscriptionMessage::Event { event } => {
-            if let EventPayload::ToolCallStarted { start } = &event.payload {
-                tool_sessions.insert(start.tool_call_id, event.session_id);
-            }
-            event.session_id
-        }
+        EventSubscriptionMessage::Event { event } => event.session_id,
         EventSubscriptionMessage::Gap { session_id, .. } => *session_id,
     };
     let publish;
@@ -1576,75 +1408,24 @@ async fn route_live(
             generation,
         };
     }
-    deliveries.deliver(publish);
+    let _ = deliveries.send(publish);
     if let Some((full, session)) = recover {
         Client::schedule_recovery_queue(recovery, full, session);
     }
 }
 
-async fn route_output(
-    delivery: ClientDelivery,
-    deliveries: &dyn ClientEventSink,
-    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-    recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
-) {
-    let retain_output = deliveries.wants_raw_tool_output();
-    let (call_id, stream) = match &delivery {
-        ClientDelivery::OutputSnapshot(snapshot) => {
-            (snapshot.snapshot.call_id, stream_key(&snapshot.stream))
-        }
-        ClientDelivery::OutputDelta(delta) => (delta.call_id, stream_key(&delta.stream)),
-        ClientDelivery::OutputGap(gap) => (gap.call_id, stream_key(&gap.stream)),
-        _ => return,
-    };
-    let mut buffered = false;
-    let mut completes_replay = None;
-    if let Some(session_id) = tool_sessions.get(&call_id).copied() {
-        let mut subscriptions = subscriptions.lock().await;
-        if let Some(subscription) = subscriptions.get_mut(&session_id)
-            && subscription.fetching
-        {
-            let replay_output = subscription.replay_tools.contains(&call_id);
-            if matches!(&delivery, ClientDelivery::OutputSnapshot(_))
-                && subscription.awaiting_snapshots.remove(&(call_id, stream))
-            {
-                completes_replay = Some(session_id);
-            } else if !replay_output && retain_output {
-                subscription.buffered.push(delivery.clone());
-                buffered = true;
-            }
-        }
-    }
-    if !buffered && retain_output {
-        deliveries.deliver(delivery);
-    }
-    if let Some(session_id) = completes_replay {
-        finish_ready_replay(
-            session_id,
-            subscriptions,
-            deliveries,
-            recovery,
-            tool_sessions,
-        )
-        .await;
-    }
-    let _ = recovery;
-}
-
 async fn finish_ready_replay(
     session_id: SessionId,
     subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-    deliveries: &dyn ClientEventSink,
+    deliveries: &Deliveries,
     recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
 ) {
     let (generation, final_seq, buffered, recovery_requested, tail_has_gap) = {
         let mut subscriptions = subscriptions.lock().await;
         let Some(subscription) = subscriptions.get_mut(&session_id) else {
             return;
         };
-        if !subscription.fetching || !subscription.awaiting_snapshots.is_empty() {
+        if !subscription.fetching {
             return;
         }
         subscription.fetching = false;
@@ -1665,8 +1446,6 @@ async fn finish_ready_replay(
             },
         );
         subscription.cursor = tail_cursor;
-        subscription.replay_tools.clear();
-        subscription.snapshot_deadline = None;
         (
             subscription.generation,
             subscription.final_seq,
@@ -1675,7 +1454,7 @@ async fn finish_ready_replay(
             tail_has_gap,
         )
     };
-    deliveries.deliver(ClientDelivery::ReplayEnd {
+    let _ = deliveries.send(ClientDelivery::ReplayEnd {
         session_id,
         generation,
         final_seq,
@@ -1683,61 +1462,15 @@ async fn finish_ready_replay(
     for delivery in buffered {
         if let ClientDelivery::Live { message, .. } = &delivery
             && let EventSubscriptionMessage::Event { event } = message.as_ref()
+            && event.seq <= final_seq
         {
-            if event.seq <= final_seq {
-                continue;
-            }
-            if let EventPayload::ToolCallStarted { start } = &event.payload {
-                tool_sessions.insert(start.tool_call_id, event.session_id);
-            }
+            continue;
         }
-        deliveries.deliver(delivery);
+        let _ = deliveries.send(delivery);
     }
     if let Some(full) = recovery_requested.or(tail_has_gap.then_some(false)) {
         Client::schedule_recovery_queue(recovery, full, (!full).then_some(session_id));
     }
-}
-
-async fn release_expired_replays(
-    subscriptions: &Arc<Mutex<HashMap<SessionId, Subscription>>>,
-    deliveries: &dyn ClientEventSink,
-    recovery: &Arc<RecoveryQueue>,
-    tool_sessions: &mut HashMap<ToolCallId, SessionId>,
-) {
-    let sessions = {
-        let subscriptions = subscriptions.lock().await;
-        subscriptions
-            .iter()
-            .filter_map(|(session_id, subscription)| {
-                (subscription.fetching
-                    && subscription
-                        .snapshot_deadline
-                        .is_some_and(|deadline| deadline <= Instant::now()))
-                .then_some(*session_id)
-            })
-            .collect::<Vec<_>>()
-    };
-    // Server output-tail setup is bounded. Do not hold an event replay open
-    // indefinitely if a call completed between its persisted start and output
-    // hub registration; live output remains ordered through the same stream.
-    for session_id in sessions {
-        if let Some(subscription) = subscriptions.lock().await.get_mut(&session_id) {
-            subscription.awaiting_snapshots.clear();
-        }
-        finish_ready_replay(
-            session_id,
-            subscriptions,
-            deliveries,
-            recovery,
-            tool_sessions,
-        )
-        .await;
-    }
-    let _ = recovery;
-}
-
-fn stream_key(stream: &OutputStream) -> String {
-    stream.name().to_owned()
 }
 
 #[cfg(test)]
