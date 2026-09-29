@@ -221,6 +221,7 @@ fn projection_fold_with(
     let mut delegated_title = None;
     let mut user_title: Option<Option<cookie_agent_protocol::SessionTitle>> = None;
     let mut title_eligibility = AutomaticTitleEligibility::default();
+    let mut committed_turns = None;
     let recorded_usage_turns = events
         .iter()
         .filter_map(|event| match event.payload {
@@ -339,7 +340,10 @@ fn projection_fold_with(
             }
             EventPayload::ToolCallStarted { start } => {
                 if let Some(run) = runs.get_mut(&run_id) {
-                    let tool = turns_tool_name(&events, &start.owner).unwrap_or_default();
+                    let tool = committed_turns
+                        .get_or_insert_with(|| CommittedTurns::index(&events))
+                        .tool_name(&start.owner)
+                        .unwrap_or_default();
                     run.pending_calls.insert(start.tool_call_id, tool);
                 }
             }
@@ -483,25 +487,48 @@ pub(super) fn add_usage(total: &mut Option<u64>, value: Option<u64>) {
     }
 }
 
-pub(super) fn turns_tool_name(
-    events: &[Arc<cookie_agent_protocol::StoredEvent>],
-    owner: &cookie_agent_protocol::AssistantToolCallRef,
-) -> Option<String> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ModelTurnCommitted {
-            model_turn_seq,
-            turn,
-            ..
-        } if *model_turn_seq == owner.model_turn_seq => {
-            match turn.content.get(owner.content_index as usize) {
-                Some(cookie_agent_protocol::PersistedAssistantPart::ToolCall { name, .. }) => {
-                    Some(name.as_str().to_owned())
-                }
-                _ => None,
+/// Committed model turns of a visible log by `model_turn_seq`, in log order,
+/// built in one pass so resolving each tool start's name does not rescan
+/// the log.
+pub(super) struct CommittedTurns<'a>(
+    HashMap<u64, Vec<&'a cookie_agent_protocol::PersistedModelTurn>>,
+);
+
+impl<'a> CommittedTurns<'a> {
+    pub(super) fn index(events: &'a [Arc<cookie_agent_protocol::StoredEvent>]) -> Self {
+        let mut turns = HashMap::<u64, Vec<_>>::new();
+        for event in events {
+            if let EventPayload::ModelTurnCommitted {
+                model_turn_seq,
+                turn,
+                ..
+            } = &event.payload
+            {
+                turns.entry(*model_turn_seq).or_default().push(turn);
             }
         }
-        _ => None,
-    })
+        Self(turns)
+    }
+
+    /// The tool name of `owner`'s call part, taken from the latest committed
+    /// turn with that sequence that carries one.
+    pub(super) fn tool_name(
+        &self,
+        owner: &cookie_agent_protocol::AssistantToolCallRef,
+    ) -> Option<String> {
+        self.0
+            .get(&owner.model_turn_seq)?
+            .iter()
+            .rev()
+            .find_map(
+                |turn| match turn.content.get(owner.content_index as usize) {
+                    Some(cookie_agent_protocol::PersistedAssistantPart::ToolCall {
+                        name, ..
+                    }) => Some(name.as_str().to_owned()),
+                    _ => None,
+                },
+            )
+    }
 }
 
 #[cfg(test)]
